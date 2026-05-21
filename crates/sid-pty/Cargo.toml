@@ -7,3 +7,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+sid-core.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+insta.workspace = true
+loom.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[features]
+default = []
+loom-tests = []
