@@ -87,6 +87,47 @@ enum Cmd {
         #[command(subcommand)]
         op: DbOp,
     },
+    /// SSH host registry operations.
+    ///
+    /// Stores manually-added SSH hosts in the redb `ssh_hosts` table. The TUI
+    /// merges these with entries from `~/.ssh/config` on the SSH tab.
+    Ssh {
+        #[command(subcommand)]
+        op: SshOp,
+    },
+}
+
+/// Operations on the SSH host registry.
+#[derive(Clone, clap::Subcommand, Debug)]
+enum SshOp {
+    /// Add an SSH host.
+    Add {
+        /// Alias used to refer to the host within sid.
+        alias: String,
+        /// Hostname or IP address.
+        host: String,
+        /// SSH user.
+        #[arg(long, default_value = "root")]
+        user: String,
+        /// SSH port.
+        #[arg(long, default_value_t = 22)]
+        port: u16,
+        /// Optional identity file path.
+        #[arg(long)]
+        identity_file: Option<String>,
+    },
+    /// Remove an SSH host by alias.
+    Remove {
+        /// Alias passed to `add`.
+        alias: String,
+    },
+    /// List registered SSH hosts (manual + ssh-config).
+    List,
+    /// Connect to an alias (launches the TUI pre-pointed at the host).
+    Connect {
+        /// Alias to connect to.
+        alias: String,
+    },
 }
 
 /// Operations on the saved DB connections registry (Plan 4).
@@ -311,6 +352,19 @@ async fn main() -> Result<()> {
         return handle_db_cmd(store.clone(), op).await;
     }
 
+    // Handle `sid ssh` subcommands; only `connect` falls through to TUI launch.
+    let mut start_ssh_alias: Option<String> = None;
+    if let Some(Cmd::Ssh { ref op }) = cli.cmd {
+        match op {
+            SshOp::Connect { alias } => {
+                start_ssh_alias = Some(alias.clone());
+            }
+            _ => {
+                return handle_ssh_cmd(&*store, op.clone());
+            }
+        }
+    }
+
     // Startup workspace discovery (scan ~/vcs/ by default).
     if !cli.skip_discovery {
         let roots = wire::default_discovery_roots();
@@ -330,7 +384,35 @@ async fn main() -> Result<()> {
     // Start a new session record.
     let session_id = format!("sess-{}", now_epoch());
     let workspaces = store.list_workspaces().unwrap_or_default();
-    let mut app = wire::build_app(cli.start_tab.as_deref(), workspaces);
+
+    // Load SSH hosts from the store + entries from ~/.ssh/config.
+    let ssh_hosts = store.list_ssh_hosts().unwrap_or_default();
+    let cfg_path = directories::UserDirs::new()
+        .map(|d| d.home_dir().join(".ssh/config"))
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.ssh/config"));
+    let ssh_cfg_entries: Vec<sid_widgets::ssh::SshConfigEntryLite> =
+        sid_ssh::read_ssh_config(&cfg_path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| !e.host.contains('*'))
+            .map(|e| sid_widgets::ssh::SshConfigEntryLite {
+                alias: e.host.clone(),
+                host: e.hostname.unwrap_or(e.host),
+                port: e.port.unwrap_or(22),
+                user: e.user.unwrap_or_else(|| {
+                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                }),
+                identity_file: e.identity_file,
+            })
+            .collect();
+
+    let mut app = wire::build_app_full(
+        cli.start_tab.as_deref(),
+        workspaces,
+        ssh_hosts,
+        ssh_cfg_entries,
+        start_ssh_alias,
+    );
 
     // Hydrate global quick-actions into the palette registry (Plan 6).
     if let Err(e) = wire::hydrate_quick_actions_into_registry(&*store, app.actions_mut()) {
@@ -637,6 +719,67 @@ fn handle_workspace_cmd(store: &dyn Store, op: WorkspaceOp) -> Result<()> {
                     println!("{:<40} {:?}  {}", w.name, w.kind, w.path.display());
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Dispatch a `sid ssh …` subcommand (excluding `connect`).
+fn handle_ssh_cmd(store: &dyn Store, op: SshOp) -> Result<()> {
+    use sid_store::{SshHost, SshHostSource};
+    match op {
+        SshOp::Add {
+            alias,
+            host,
+            user,
+            port,
+            identity_file,
+        } => {
+            let h = SshHost {
+                alias: alias.clone(),
+                host,
+                port,
+                user,
+                identity_file,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+            };
+            store
+                .upsert_ssh_host(&h)
+                .with_context(|| "upsert ssh host")?;
+            println!("added ssh host: {alias}");
+        }
+        SshOp::Remove { alias } => {
+            store
+                .remove_ssh_host(&alias)
+                .with_context(|| "remove ssh host")?;
+            println!("removed ssh host: {alias}");
+        }
+        SshOp::List => {
+            for h in store.list_ssh_hosts().unwrap_or_default() {
+                println!(
+                    "{:<20} {}@{}:{} [Manual]",
+                    h.alias, h.user, h.host, h.port
+                );
+            }
+            let cfg_path = directories::UserDirs::new()
+                .map(|d| d.home_dir().join(".ssh/config"))
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.ssh/config"));
+            for e in sid_ssh::read_ssh_config(&cfg_path).unwrap_or_default() {
+                let user = e.user.unwrap_or_else(|| "?".to_string());
+                let hostname = e.hostname.unwrap_or_else(|| e.host.clone());
+                println!(
+                    "{:<20} {}@{}:{} [SshConfig]",
+                    e.host,
+                    user,
+                    hostname,
+                    e.port.unwrap_or(22)
+                );
+            }
+        }
+        SshOp::Connect { .. } => {
+            // Handled in main: falls through to TUI launch.
         }
     }
     Ok(())

@@ -400,8 +400,56 @@ pub fn build_sys_probe(interval: Duration) -> Arc<SysProbe> {
     Arc::new(SysProbe::new(provider, interval))
 }
 
+#[allow(dead_code)]
 pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
+    build_app_full(start_tab, workspaces, vec![], vec![], None)
+}
+
+/// Construct an SSH client factory (russh-backed). Cheap; no I/O.
+#[allow(dead_code)]
+pub fn build_ssh_client_factory() -> Arc<sid_ssh::RusshClientFactory> {
+    Arc::new(sid_ssh::RusshClientFactory::new())
+}
+
+/// Construct a PTY provider (portable-pty-backed). Cheap; no I/O.
+#[allow(dead_code)]
+pub fn build_pty_provider() -> Arc<sid_pty::PortablePtyProvider> {
+    Arc::new(sid_pty::PortablePtyProvider::new())
+}
+
+/// Build the App with optional SSH host hydration. The SSH tab is initialized
+/// with a merged view of `ssh_hosts` (from the store) + `ssh_config_entries`
+/// (from `~/.ssh/config`). If `start_ssh_alias` is `Some`, the SSH tab is
+/// pre-selected and the connection state is set to Connecting on that alias.
+pub fn build_app_full(
+    start_tab: Option<&str>,
+    workspaces: Vec<Workspace>,
+    ssh_hosts: Vec<sid_store::SshHost>,
+    ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
+    start_ssh_alias: Option<String>,
+) -> App {
     let git_factory = Arc::new(Git2ProviderFactory::new());
+
+    // Build the SSH widget with pre-loaded state.
+    let ssh_state = sid_widgets::ssh::SshState::new(ssh_hosts, ssh_config_entries);
+    let mut ssh_widget = SshWidget::with_state(ssh_state);
+    if let Some(ref alias) = start_ssh_alias {
+        let aliases: Vec<_> = ssh_widget
+            .state()
+            .visible_hosts()
+            .iter()
+            .map(|h| h.alias.clone())
+            .collect();
+        if let Some(idx) = aliases.iter().position(|a| a == alias) {
+            for _ in 0..idx {
+                ssh_widget.state_mut().select_next();
+            }
+            ssh_widget
+                .connection_mut()
+                .begin_connecting(alias.clone());
+        }
+    }
+
     let tabs = TabManager::new(vec![
         tab(
             "workspaces",
@@ -409,7 +457,7 @@ pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
             Box::new(WorkspacesWidget::new(workspaces, Some(git_factory))),
             Some('1'),
         ),
-        tab("ssh", "SSH", Box::new(SshWidget::new()), Some('2')),
+        tab("ssh", "SSH", Box::new(ssh_widget), Some('2')),
         tab(
             "database",
             "Database",
@@ -451,8 +499,11 @@ pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
         ));
     }
     let mut app = App::new(tabs, kb, reg);
-    if let Some(id) = start_tab {
-        let _ = app.tabs_mut().switch_to(&TabId::new(id));
+    let effective_start_tab = start_tab
+        .map(|s| s.to_string())
+        .or_else(|| start_ssh_alias.as_ref().map(|_| "ssh".to_string()));
+    if let Some(id) = effective_start_tab {
+        let _ = app.tabs_mut().switch_to(&TabId::new(&id));
     }
     app
 }
