@@ -1,8 +1,6 @@
 //! `PortablePtyProvider` — opens portable-pty master/slave pairs and spawns a
 //! child process on the slave end. Filled in over Tasks 12–14.
 
-use sid_core::adapters::pty::PtyProvider;
-
 /// Stateless provider; per-PTY handles are produced by `open_pty`.
 ///
 /// # Examples
@@ -35,6 +33,4 @@ impl Default for PortablePtyProvider {
     }
 }
 
-impl PtyProvider for PortablePtyProvider {
-    // Methods filled in over Tasks 12-14.
-}
+// PtyProvider impl arrives in Task 12 once open_pty/try_read/write/resize land.
