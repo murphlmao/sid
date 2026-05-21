@@ -1,0 +1,38 @@
+name: Audit
+
+# Weekly RustSec advisory check. Fails on vulnerability-category advisories
+# affecting any dependency in `Cargo.lock`.
+#
+# `cargo-deny` (run by ci.yml) already checks advisories, so this workflow
+# is a focused, schedule-driven backstop: it runs even when there are no
+# code changes, so advisories that surface against our pinned versions are
+# caught within a week.
+
+on:
+  schedule:
+    # Mondays 09:00 UTC.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # `rustsec/audit-check` posts results as a check-run; needs check write.
+  checks: write
+  issues: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: rustsec/audit-check
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
