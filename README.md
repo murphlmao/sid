@@ -27,7 +27,7 @@
 | **Database** | Postgres + SQLite. Query editor, paginated results, history |
 | **Network** | Listening ports, processes, interfaces — all sortable; `/` filter; `k` kills selected PID with SIGTERM → 5s grace → SIGKILL; CLI: `sid net ports/procs/interfaces/kill` |
 | **System** | Pinned config files, systemctl services, custom shell quick-actions |
-| **Settings** | Theme, keybinds, behavior — all in-app, no config-file scavenger hunt |
+| **Settings** | Theme picker (live preview), keybind editor (capture mode + conflict detection), behavior toggles, workspace roots, quick actions, DB path — all in-app, no config-file scavenger hunt |
 
 Plus:
 
@@ -74,16 +74,24 @@ sid net interfaces
 sid net kill 1234              # SIGTERM with 5s grace, then SIGKILL
 sid net kill 1234 --force      # SIGKILL immediately
 sid net kill port:8080         # kill whoever owns port 8080
+
+# Settings (scripted)
+sid settings list                   # dump every setting key + value
+sid settings get theme_name         # print one value
+sid settings set theme_name void    # change theme (takes effect next launch)
+sid settings set default_tab workspaces
+sid settings delete theme_name      # remove an override
 ```
 
 **Keybinds in this build:** `Ctrl+←/→` switch tabs · `Ctrl+1..6` jump · `Ctrl+F` command palette · `Ctrl+Q` quit · `Ctrl+,` open Settings.
 
-> **What works in this build:** Foundation + Workspaces + Network tab fully functional. Ports/processes/interfaces panes; sort, `/` filter, `k` kill with two-stage confirmation; non-interactive `sid net …` CLI for scripting. SSH, Database, System, Settings tabs render as labelled stubs in the cosmos theme; their content arrives in subsequent plans.
+> **What works in this build:** Foundation + Workspaces + Network + Settings tabs fully functional. Settings tab carries theme picker with live preview, keybind editor with capture-mode + conflict detection, behavior toggles, workspace roots editor, quick actions editor, DB path override (writes the one-line `~/.config/sid/sid.toml`), and reset-to-defaults flow; `sid settings get/set/list/delete` provides scripted access. SSH, Database, System tabs render as labelled stubs in the cosmos theme; their content arrives in subsequent plans.
 
 ## Documentation
 
 - [**Architecture**](docs/ARCHITECTURE.md) — crate layout, data flow, theming, persistence
 - [**Installation**](docs/INSTALLATION.md) — prerequisites and first-run
+- [**Settings**](docs/Settings.md) — every setting key, the in-app editor, the CLI, `sid.toml`
 - [**Development**](docs/DEVELOPMENT.md) — how to extend sid (new widgets, themes, tabs, adapters)
 - [**Testing**](docs/TESTING.md) — running tests, coverage, mutation testing, MC/DC
 - [**Contributing**](docs/CONTRIBUTING.md) — pull request rules
