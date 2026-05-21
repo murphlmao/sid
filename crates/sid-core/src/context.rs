@@ -23,8 +23,17 @@ impl WidgetCtx {
         self.redraw = true;
     }
 
-    /// Consumed by the App after each event to decide whether to call `render`.
+    /// Read the redraw flag without consuming it. Useful for tests; prefer
+    /// `take_redraw` in the App's event loop so the flag doesn't latch.
     pub fn needs_redraw(&self) -> bool {
         self.redraw
+    }
+
+    /// Consume the redraw flag: returns its value and resets it to false.
+    /// The App calls this after each render pass to debounce subsequent frames.
+    pub fn take_redraw(&mut self) -> bool {
+        let v = self.redraw;
+        self.redraw = false;
+        v
     }
 }

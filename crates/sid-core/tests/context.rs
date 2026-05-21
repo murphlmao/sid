@@ -19,3 +19,13 @@ fn ctx_redraw_flag_persists() {
     ctx.request_redraw();
     assert!(ctx.needs_redraw());
 }
+
+#[test]
+fn ctx_take_redraw_clears_flag() {
+    let (tx, _rx) = mpsc::channel();
+    let mut ctx = WidgetCtx::new(tx);
+    ctx.request_redraw();
+    assert!(ctx.take_redraw());
+    assert!(!ctx.needs_redraw());
+    assert!(!ctx.take_redraw());
+}
