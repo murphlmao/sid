@@ -1,7 +1,19 @@
-# minimal stub — will be replaced in later tasks
 [package]
 name = "sid-job"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+sid-core.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
