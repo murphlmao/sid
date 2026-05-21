@@ -9,12 +9,19 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::adapters::pty::{PtyProvider, TerminalScreen};
 use sid_core::adapters::ssh::{SftpEntry, SshClient};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
 use sid_store::{SshHost, SshHostSource};
+use sid_ui::Theme;
+use sid_ui::themes::cosmos;
 
 // ---------------------------------------------------------------------------
 // SSH config entry (lite copy — widget crate never names sid-ssh)
@@ -562,6 +569,230 @@ impl SshWidget {
             .or_insert_with(|| CommandHistory::new(100))
             .push(cmd);
     }
+
+    /// Render the widget into a ratatui [`Frame`]. Used by the insta snapshot
+    /// tests and by the future direct-frame plumbing in the binary.
+    ///
+    /// Layout:
+    ///
+    /// ```text
+    /// ┌──────────────────┬─────────────────────────────────┐
+    /// │ Hosts            │ Status header                   │
+    /// │  ● my-prod       ├─────────────────────────────────┤
+    /// │  ○ staging (cfg) │ Body (disconnected hint / PTY / │
+    /// │                  │ SFTP listing)                   │
+    /// │                  ├─────────────────────────────────┤
+    /// │                  │ Last command (history bar)      │
+    /// └──────────────────┴─────────────────────────────────┘
+    /// ```
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+        let left = split[0];
+        let right = split[1];
+
+        // Right side: status header (3 lines, bordered), body, then a 1-line
+        // history bar at the bottom.
+        let right_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(right);
+        let status_rect = right_split[0];
+        let body_rect = right_split[1];
+        let history_rect = right_split[2];
+
+        self.render_host_list(frame, left, theme);
+        self.render_status_header(frame, status_rect, theme);
+        if self.sftp_panel.visibility() == SftpPanelVisibility::Visible {
+            self.render_sftp_body(frame, body_rect, theme);
+        } else {
+            self.render_pty_body(frame, body_rect, theme);
+        }
+        self.render_history_bar(frame, history_rect, theme);
+    }
+
+    fn render_host_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let hosts = self.state.visible_hosts();
+        let selected = self.state.selected_alias();
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(hosts.len().max(1));
+        if hosts.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (no hosts configured)",
+                Style::default().fg(theme.muted.into()),
+            )));
+        } else {
+            for h in hosts {
+                let is_selected = selected == Some(h.alias.as_str());
+                let dot = if is_selected { '●' } else { '○' };
+                let marker = if is_selected { '>' } else { ' ' };
+                let suffix = if h.source == SshHostSource::SshConfig {
+                    " (cfg)"
+                } else {
+                    ""
+                };
+                let label = format!("{marker} {dot} {}{suffix}", h.alias);
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.foreground.into())
+                };
+                lines.push(Line::from(Span::styled(label, style)));
+            }
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Hosts (j/k Enter) ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_status_header(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let phase = self.connection.phase();
+        let alias = self.connection.alias().unwrap_or("");
+        let (dot_color, label) = match phase {
+            ConnectionPhase::Idle | ConnectionPhase::Disconnected => {
+                (theme.muted, "Disconnected".to_string())
+            }
+            ConnectionPhase::Connecting => (
+                theme.accent_warning,
+                format!("Connecting to {alias}"),
+            ),
+            ConnectionPhase::Connected => (
+                theme.accent_success,
+                format!("Connected to {alias}"),
+            ),
+            ConnectionPhase::Failed => {
+                let err = self.connection.error_message().unwrap_or("unknown error");
+                (theme.accent_error, format!("Failed: {err}"))
+            }
+        };
+        let line = Line::from(vec![
+            Span::styled("● ", Style::default().fg(dot_color.into())),
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Status ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Paragraph::new(line).block(block), rect);
+    }
+
+    fn render_pty_body(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let phase = self.connection.phase();
+        let body: Vec<Line<'_>> = match phase {
+            ConnectionPhase::Connected => {
+                // TODO: hook the live vt100 buffer up here once the
+                // TerminalScreen draw path is exposed. For now, show a
+                // placeholder that proves we know we're connected.
+                let alias = self.connection.alias().unwrap_or("?");
+                vec![
+                    Line::from(Span::styled(
+                        format!("PTY active — connected to {alias}"),
+                        Style::default().fg(theme.foreground.into()),
+                    )),
+                    Line::from(Span::styled(
+                        "(terminal buffer rendering not yet wired)",
+                        Style::default().fg(theme.muted.into()),
+                    )),
+                ]
+            }
+            ConnectionPhase::Connecting => {
+                let alias = self.connection.alias().unwrap_or("?");
+                vec![Line::from(Span::styled(
+                    format!("Connecting to {alias}..."),
+                    Style::default().fg(theme.accent_warning.into()),
+                ))]
+            }
+            ConnectionPhase::Failed => {
+                let err = self.connection.error_message().unwrap_or("unknown error");
+                vec![Line::from(Span::styled(
+                    format!("Connection failed: {err}"),
+                    Style::default().fg(theme.accent_error.into()),
+                ))]
+            }
+            ConnectionPhase::Idle | ConnectionPhase::Disconnected => vec![
+                Line::from(Span::styled(
+                    "Select a host with j/k, Enter to connect.",
+                    Style::default().fg(theme.foreground.into()),
+                )),
+                Line::from(Span::styled(
+                    "Tab toggles SFTP panel.",
+                    Style::default().fg(theme.muted.into()),
+                )),
+            ],
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Session ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Paragraph::new(body).block(block), rect);
+    }
+
+    fn render_sftp_body(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let cwd = self.sftp_panel.cwd();
+        let entries = self.sftp_panel.entries();
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(entries.len() + 1);
+        lines.push(Line::from(Span::styled(
+            format!("cwd: {cwd}"),
+            Style::default()
+                .fg(theme.accent_primary.into())
+                .add_modifier(Modifier::BOLD),
+        )));
+        if entries.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(no entries yet)",
+                Style::default().fg(theme.muted.into()),
+            )));
+        } else {
+            for e in entries {
+                let glyph = if e.is_dir { '/' } else { ' ' };
+                let label = format!("  {glyph} {}", e.name);
+                lines.push(Line::from(Span::styled(
+                    label,
+                    Style::default().fg(theme.foreground.into()),
+                )));
+            }
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" SFTP ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_history_bar(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let last = self
+            .state
+            .selected_alias()
+            .and_then(|alias| self.history.get(alias))
+            .and_then(|h| h.entries().into_iter().next_back());
+        let text = match last {
+            Some(cmd) => format!(" last: {cmd}"),
+            None => " (no recent commands)".to_string(),
+        };
+        let para = Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.muted.into()),
+        )));
+        frame.render_widget(para, rect);
+    }
 }
 
 impl Default for SshWidget {
@@ -607,4 +838,39 @@ impl Widget for SshWidget {
         }
         EventOutcome::Bubble
     }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience: render the widget into a fresh ratatui `Buffer` for tests.
+// ---------------------------------------------------------------------------
+
+/// Render the widget into a fresh test buffer of `(width, height)` using the
+/// cosmos theme. Mirrors `sid_widgets::network::render_to_string`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::ssh::render_to_string;
+/// use sid_widgets::SshWidget;
+/// let w = SshWidget::new();
+/// let s = render_to_string(&w, 80, 24);
+/// assert!(s.contains("Hosts"));
+/// ```
+pub fn render_to_string(widget: &SshWidget, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| widget.render_into_frame(f, f.area(), &theme))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        s.push('\n');
+    }
+    s
 }
