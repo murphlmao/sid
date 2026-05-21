@@ -19,3 +19,12 @@ tempfile.workspace = true
 proptest.workspace = true
 insta.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+criterion.workspace = true
+
+[[bench]]
+name = "list_processes"
+harness = false
+
+[[bench]]
+name = "list_listening_ports"
+harness = false
