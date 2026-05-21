@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use sid_core::adapters::sys::Pid;
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
 
@@ -605,6 +605,15 @@ impl Widget for NetworkWidget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("K", "kill"),
+            FooterHint::new("/", "filter"),
+            FooterHint::new("R", "refresh"),
+            FooterHint::new("Tab", "pane"),
+        ]
     }
 
     fn render(&self, _target: &mut dyn RenderTarget) {

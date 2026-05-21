@@ -18,7 +18,7 @@ use sid_core::adapters::pty::{PtyProvider, TerminalScreen};
 use sid_core::adapters::ssh::{SftpEntry, SshClient};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_store::{SshHost, SshHostSource};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
@@ -804,6 +804,16 @@ impl Widget for SshWidget {
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("N", "new host"),
+            FooterHint::new("G", "gen key"),
+            FooterHint::new("S", "setup remote"),
+            FooterHint::new("K", "keys"),
+            FooterHint::new("X", "debug"),
+            FooterHint::new("?", "help"),
+        ]
     }
     fn render(&self, _target: &mut dyn RenderTarget) {
         // Rendering deferred to the binary's draw() function.

@@ -28,4 +28,4 @@ pub use palette::CommandPalette;
 pub use persister::StatePersister;
 pub use restore::{RestoreDecision, SessionView, decide};
 pub use tab::{Tab, TabId, TabManager};
-pub use widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+pub use widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};

@@ -17,7 +17,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
@@ -966,6 +966,16 @@ impl Widget for SystemWidget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("N", "new"),
+            FooterHint::new("E", "edit"),
+            FooterHint::new("D", "remove"),
+            FooterHint::new("Enter", "open"),
+            FooterHint::new("Tab", "pane"),
+        ]
     }
 
     fn render(&self, target: &mut dyn RenderTarget) {

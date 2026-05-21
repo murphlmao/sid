@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Row as TableRow, Table};
 use sid_core::adapters::db_client::{DbClient, DbKind, PageCursor, QueryPage};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_db_clients::lexer::{Token, tokenize};
 use sid_store::{DbConnection, QueryRecord};
 use sid_ui::Theme;
@@ -883,6 +883,17 @@ impl Widget for DatabaseWidget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("N", "new"),
+            FooterHint::new("E", "edit"),
+            FooterHint::new("D", "delete"),
+            FooterHint::new("T", "test"),
+            FooterHint::new("Tab", "pane"),
+            FooterHint::new("Ctrl+R", "run"),
+        ]
     }
 
     fn render(&self, target: &mut dyn RenderTarget) {
