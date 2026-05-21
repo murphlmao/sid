@@ -101,7 +101,7 @@ pub fn build_app(start_tab: Option<&str>) -> App {
         tab(
             "workspaces",
             "Workspaces",
-            Box::new(WorkspacesWidget::new()),
+            Box::new(WorkspacesWidget::new(vec![], None)),
             Some('1'),
         ),
         tab("ssh", "SSH", Box::new(SshWidget::new()), Some('2')),
