@@ -9,7 +9,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use sid::wire::{NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
-use sid_store::{OpenStore, RedbStore};
+use sid_store::{OpenStore, RedbStore, Store};
 use tempfile::tempdir;
 
 fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
@@ -18,6 +18,10 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
     let store = Arc::new(RedbStore::open(&db_file).expect("open redb"));
     // Leak tempdir so it survives the benchmark loop.
     std::mem::forget(dir);
+    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+        Arc::new(sid_secrets::PlainStore::new(
+            Arc::clone(&store) as Arc<dyn Store>
+        ));
     SidApp {
         app: build_app(start_tab, vec![]),
         store,
@@ -25,6 +29,9 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         sys_probe: None,
         systemctl: Arc::new(NoopSystemctlClient),
         spawner: Arc::new(NoopTerminalSpawner),
+        postgres: sid_db_clients::PostgresClient::factory(),
+        sqlite: sid_db_clients::SqliteClient::factory(),
+        secrets,
     }
 }
 

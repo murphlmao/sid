@@ -78,6 +78,51 @@ enum Cmd {
         #[command(subcommand)]
         op: SystemOp,
     },
+    /// Database connections — add / remove / list / run a query.
+    ///
+    /// Stores Postgres + SQLite connections in the redb `db_connections` table.
+    /// `query` runs a SQL statement against the named connection and prints
+    /// CSV on stdout (SELECT/WITH) or a `rows affected` summary (otherwise).
+    Db {
+        #[command(subcommand)]
+        op: DbOp,
+    },
+}
+
+/// Operations on the saved DB connections registry (Plan 4).
+#[derive(clap::Subcommand, Debug)]
+enum DbOp {
+    /// Add a saved DB connection.
+    Add {
+        /// Stable id (used by `sid db query <id>`).
+        id: String,
+        /// `postgres` or `sqlite`.
+        #[arg(long)]
+        kind: String,
+        /// User-facing label.
+        #[arg(long)]
+        name: String,
+        /// DSN (Postgres) or filesystem path / `:memory:` (SQLite).
+        #[arg(long)]
+        dsn: String,
+        /// Optional password (Postgres). Stored in the secrets table.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Remove a connection by id.
+    Remove {
+        /// Stable id passed to `add`.
+        id: String,
+    },
+    /// List saved connections.
+    List,
+    /// Run a SQL statement and print the result as CSV on stdout.
+    Query {
+        /// Connection id.
+        id: String,
+        /// SQL to run.
+        sql: String,
+    },
 }
 
 /// Operations on the System tab — pinned configs, systemd services, quick actions.
@@ -261,6 +306,11 @@ async fn main() -> Result<()> {
         return handle_system_cmd(&*store, op);
     }
 
+    // Handle `sid db` subcommands (exit before launching TUI).
+    if let Some(Cmd::Db { op }) = cli.cmd {
+        return handle_db_cmd(store.clone(), op).await;
+    }
+
     // Startup workspace discovery (scan ~/vcs/ by default).
     if !cli.skip_discovery {
         let roots = wire::default_discovery_roots();
@@ -311,6 +361,12 @@ async fn main() -> Result<()> {
 
     let systemctl = wire::build_systemctl_client();
     let spawner = wire::build_terminal_spawner();
+    let postgres = sid_db_clients::PostgresClient::factory();
+    let sqlite = sid_db_clients::SqliteClient::factory();
+    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+        Arc::new(sid_secrets::PlainStore::new(
+            Arc::clone(&store) as Arc<dyn Store>
+        ));
 
     let mut sid_app = wire::SidApp {
         app,
@@ -319,6 +375,9 @@ async fn main() -> Result<()> {
         sys_probe: Some(Arc::clone(&sys_probe)),
         systemctl,
         spawner,
+        postgres,
+        sqlite,
+        secrets,
     };
 
     // Set up terminal.
@@ -741,6 +800,147 @@ fn handle_system_cmd(store: &dyn Store, op: SystemOp) -> Result<()> {
                 std::process::exit(status.code().unwrap_or(1));
             }
         },
+    }
+}
+
+async fn handle_db_cmd(store: Arc<RedbStore>, op: DbOp) -> Result<()> {
+    use sid_core::adapters::db_client::{DbClient, DbKind, OpenParams};
+    use sid_core::adapters::secrets::{SecretId, SecretStore};
+    use sid_db_clients::{PostgresClient, SqliteClient};
+    use sid_secrets::PlainStore;
+    use sid_store::{DbConnection, QueryRecord};
+
+    match op {
+        DbOp::Add {
+            id,
+            kind,
+            name,
+            dsn,
+            password,
+        } => {
+            let kind = match kind.as_str() {
+                "postgres" => DbKind::Postgres,
+                "sqlite" => DbKind::Sqlite,
+                other => anyhow::bail!("unknown kind '{other}' (use 'postgres' or 'sqlite')"),
+            };
+            let secret_ref = if let Some(pw) = password {
+                let r = SecretId::new(format!("db.{id}.password"));
+                let plain = PlainStore::new(store.clone() as Arc<dyn Store>);
+                plain
+                    .put(&r, pw.as_bytes())
+                    .map_err(|e| anyhow!("put secret: {e}"))?;
+                Some(r)
+            } else {
+                None
+            };
+            let conn = DbConnection {
+                id: id.clone(),
+                kind,
+                name,
+                dsn,
+                secret_ref,
+                created_at: now_epoch(),
+            };
+            store.upsert_db_connection(&conn)?;
+            println!("added connection: {id}");
+            Ok(())
+        }
+        DbOp::Remove { id } => {
+            if let Some(c) = store.get_db_connection(&id)? {
+                if let Some(r) = c.secret_ref {
+                    let plain = PlainStore::new(store.clone() as Arc<dyn Store>);
+                    let _ = plain.delete(&r);
+                }
+            }
+            store.remove_db_connection(&id)?;
+            println!("removed connection: {id}");
+            Ok(())
+        }
+        DbOp::List => {
+            for c in store.list_db_connections()? {
+                println!("{:<24} {:?}  {}  ({})", c.id, c.kind, c.name, c.dsn);
+            }
+            Ok(())
+        }
+        DbOp::Query { id, sql } => {
+            let conn = store
+                .get_db_connection(&id)?
+                .ok_or_else(|| anyhow!("no such connection: {id}"))?;
+            let password = if let Some(r) = conn.secret_ref.as_ref() {
+                let plain = PlainStore::new(store.clone() as Arc<dyn Store>);
+                plain
+                    .get(r)
+                    .map_err(|e| anyhow!("get secret: {e}"))?
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                None
+            };
+            let factory: Arc<dyn DbClient> = match conn.kind {
+                DbKind::Postgres => PostgresClient::factory(),
+                DbKind::Sqlite => SqliteClient::factory(),
+            };
+            let client = factory
+                .open(OpenParams {
+                    kind: conn.kind,
+                    dsn: conn.dsn.clone(),
+                    password,
+                })
+                .await
+                .map_err(|e| anyhow!("open: {e}"))?;
+            let trimmed = sql.trim_start().to_ascii_uppercase();
+            let is_query = trimmed.starts_with("SELECT") || trimmed.starts_with("WITH");
+            if is_query {
+                let mut cursor = None;
+                let mut wrote_header = false;
+                let stdout = std::io::stdout();
+                let mut lock = stdout.lock();
+                loop {
+                    let page = client
+                        .query_paged(&sql, cursor, 500)
+                        .await
+                        .map_err(|e| anyhow!("query: {e}"))?;
+                    if !wrote_header {
+                        let header_page = sid_core::adapters::db_client::QueryPage {
+                            columns: page.columns.clone(),
+                            rows: vec![],
+                            next_cursor: None,
+                            duration_ms: 0,
+                        };
+                        sid_widgets::csv_export::write_page_csv(&header_page, &mut lock)?;
+                        wrote_header = true;
+                    }
+                    {
+                        let mut w = csv::Writer::from_writer(&mut lock);
+                        for r in &page.rows {
+                            w.write_record(r.values.iter().map(|s| s.as_str()))
+                                .map_err(std::io::Error::other)?;
+                        }
+                        w.flush()?;
+                    }
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+            } else {
+                let r = client
+                    .execute(&sql)
+                    .await
+                    .map_err(|e| anyhow!("execute: {e}"))?;
+                println!("{} rows affected ({}ms)", r.rows_affected, r.duration_ms);
+            }
+            let _ = store.append_query_record(&QueryRecord {
+                conn_id: id.clone(),
+                sql: sql.clone(),
+                duration_ms: 0,
+                row_count: 0,
+                ts_ns: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+            });
+            Ok(())
+        }
     }
 }
 

@@ -26,8 +26,11 @@ sid-widgets.workspace = true
 sid-git.workspace = true
 sid-sysinfo.workspace = true
 sid-system.workspace = true
+sid-db-clients.workspace = true
+sid-secrets.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
+csv.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true
@@ -46,6 +49,9 @@ futures.workspace = true
 tempfile.workspace = true
 criterion.workspace = true
 which.workspace = true
+sid-core.workspace = true
+sid-secrets.workspace = true
+sid-db-clients.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "test-util"] }
 
 [[bench]]
