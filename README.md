@@ -73,9 +73,17 @@ sid --db /tmp/sid.redb
 
 ## Documentation
 
+- [**Architecture**](docs/ARCHITECTURE.md) — crate layout, data flow, theming, persistence
+- [**Installation**](docs/INSTALLATION.md) — prerequisites and first-run
+- [**Development**](docs/DEVELOPMENT.md) — how to extend sid (new widgets, themes, tabs, adapters)
+- [**Testing**](docs/TESTING.md) — running tests, coverage, mutation testing, MC/DC
+- [**Contributing**](docs/CONTRIBUTING.md) — pull request rules
+- [**Troubleshooting**](docs/TROUBLESHOOTING.md) — common problems
+
+Specs and plans:
+
 - [**Foundation design (v1 spec)**](docs/superpowers/specs/2026-05-20-sid-foundation-design.md) — architecture, all six tabs, storage, themes, keybinds, adapter layers
 - [**Future features**](docs/superpowers/specs/2026-05-20-sid-future-features.md) — planned v2+ work and "someday" ideas
-- Implementation docs will land here as crates do
 
 ## Tech stack
 
