@@ -17,14 +17,19 @@ fn network_widget_default_matches_new() {
 }
 
 #[test]
-fn network_save_state_returns_empty() {
+fn network_save_state_returns_versioned_blob() {
     let w = NetworkWidget::new();
-    assert!(w.save_state().is_empty());
+    // Plan 5: save_state now returns a versioned postcard blob of the
+    // persisted prefs (focus + sort), no longer empty.
+    let bytes = w.save_state();
+    assert!(!bytes.is_empty());
+    assert_eq!(bytes[0], 1, "version prefix should be 1");
 }
 
 #[test]
-fn network_load_state_is_noop() {
+fn network_load_state_unknown_version_is_noop() {
     let mut w = NetworkWidget::new();
+    // Unknown version byte: load must be a silent no-op (forward compat).
     w.load_state(&[0xDE, 0xAD]);
     assert_eq!(w.id().as_str(), "network.root");
 }
