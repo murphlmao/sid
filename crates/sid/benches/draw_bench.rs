@@ -33,6 +33,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         secrets,
         animation: sid_core::animation::AnimationConfig::default(),
         fx_state: None,
+        modal_stack: Vec::new(),
+        pending_submits: Vec::new(),
     }
 }
 

@@ -463,6 +463,93 @@ pub enum FieldValue {
 /// Bullet character used to mask passwords. U+2022 BULLET.
 const PASSWORD_BULLET: char = '\u{2022}';
 
+/// Outcome of routing a single key event through an open modal.
+///
+/// The binary's event loop interprets:
+/// - `Consumed`  — keep the modal open, redraw on next frame.
+/// - `Submit`    — pop the modal, hand `collect_values()` to the submit handler.
+/// - `Cancel`    — pop the modal without invoking any handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalKeyOutcome {
+    Consumed,
+    Submit,
+    Cancel,
+}
+
+/// Route a single crossterm `KeyEvent` into `modal` and return what the caller
+/// should do next.
+///
+/// - `Esc`                       → Cancel
+/// - `Tab` / `Shift+Tab`         → cycle focus, Consumed
+/// - `Backspace`                 → backspace on focused text/password/picker, Consumed
+/// - `Enter` on Toggle / Choice  → toggle/cycle the field, Consumed
+/// - `Enter` on Text / Password / Picker → Submit
+/// - `Char(c)` (no Ctrl/Alt)     → type_char, Consumed
+/// - any other key               → Consumed (modal swallows it)
+///
+/// # Examples
+///
+/// ```
+/// use crossterm::event::{KeyCode, KeyModifiers};
+/// use sid_core::event::KeyChord;
+/// use sid_widgets::modal::{Field, ModalKeyOutcome, ModalSpec, route_key_to_modal};
+///
+/// let mut m = ModalSpec::new("id", "t",
+///     vec![Field::Text { label: "n".into(), value: String::new(), placeholder: None }]);
+///
+/// // Esc -> Cancel
+/// let esc = KeyChord { code: KeyCode::Esc, mods: KeyModifiers::NONE };
+/// assert_eq!(route_key_to_modal(&mut m, esc), ModalKeyOutcome::Cancel);
+///
+/// // Enter on a text field -> Submit
+/// let enter = KeyChord { code: KeyCode::Enter, mods: KeyModifiers::NONE };
+/// assert_eq!(route_key_to_modal(&mut m, enter), ModalKeyOutcome::Submit);
+/// ```
+pub fn route_key_to_modal(
+    modal: &mut ModalSpec,
+    key: sid_core::event::KeyChord,
+) -> ModalKeyOutcome {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match (key.code, key.mods) {
+        (KeyCode::Esc, _) => ModalKeyOutcome::Cancel,
+        (KeyCode::Tab, KeyModifiers::NONE) => {
+            modal.cycle_focus_forward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::BackTab, _) => {
+            modal.cycle_focus_backward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Backspace, _) => {
+            modal.backspace();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Enter, _) => match modal.fields.get(modal.focus) {
+            Some(Field::Toggle { .. } | Field::Choice { .. }) => {
+                modal.space_or_enter_on_field();
+                ModalKeyOutcome::Consumed
+            }
+            _ => ModalKeyOutcome::Submit,
+        },
+        (KeyCode::Char(' '), _)
+            if matches!(
+                modal.fields.get(modal.focus),
+                Some(Field::Toggle { .. } | Field::Choice { .. })
+            ) =>
+        {
+            modal.space_or_enter_on_field();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Char(c), m)
+            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+        {
+            modal.type_char(c);
+            ModalKeyOutcome::Consumed
+        }
+        _ => ModalKeyOutcome::Consumed,
+    }
+}
+
 /// Number of body lines each field occupies in the modal: one for the label,
 /// one for the value/control.
 const LINES_PER_FIELD: u16 = 2;
