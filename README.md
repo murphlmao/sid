@@ -24,7 +24,7 @@
 |:---|:---|
 | **Workspaces** | Browse registered code workspaces (umbrella + sub-repos), drive git operations |
 | **SSH** | Connect to hosts, embedded terminal, SFTP browser |
-| **Database** | Postgres + SQLite. Query editor, paginated results, history |
+| **Database** | Saved Postgres + SQLite connections, multi-line query editor with SQL syntax highlight, paginated sortable results, copy-cell, CSV export, per-connection query history; CLI: `sid db add/remove/list/query` |
 | **Network** | Listening ports, processes, interfaces — all sortable; `/` filter; `k` kills selected PID with SIGTERM → 5s grace → SIGKILL; CLI: `sid net ports/procs/interfaces/kill` |
 | **System** | Pinned config files (Enter launches external kitty + `$EDITOR`), systemctl services (start/stop/restart, journal tail), user-defined shell quick-actions (available globally from `Ctrl+F`) |
 | **Settings** | Theme picker (live preview), keybind editor (capture mode + conflict detection), behavior toggles, workspace roots, quick actions, DB path — all in-app, no config-file scavenger hunt |
@@ -90,11 +90,19 @@ sid system services --user
 sid system action add "kill 5432" "fuser -k 5432/tcp"
 sid system action list
 sid system action run <id>
+
+# Database management
+sid db add local --kind sqlite --name "Local" --dsn ./data.db
+sid db add prod --kind postgres --name "Prod" --dsn postgres://app@db.example.com/prod --password "$PGPASS"
+sid db query local "SELECT * FROM users LIMIT 5"   # CSV on stdout
+sid db query local "INSERT INTO t VALUES (1)"      # rows-affected summary
+sid db list
+sid db remove local
 ```
 
 **Keybinds in this build:** `Ctrl+←/→` switch tabs · `Ctrl+1..6` jump · `Ctrl+F` command palette · `Ctrl+Q` quit · `Ctrl+,` open Settings.
 
-> **What works in this build:** Foundation + Workspaces + Network + Settings + **System** tabs fully functional. Settings tab carries theme picker with live preview, keybind editor with capture-mode + conflict detection, behavior toggles, workspace roots editor, quick actions editor, DB path override (writes the one-line `~/.config/sid/sid.toml`), and reset-to-defaults flow; `sid settings get/set/list/delete` provides scripted access. System tab data surface is wired: pinned configs and global quick-actions persist in redb; `sid system pin/unpin/pins`, `sid system services [--user|--system] [--state STATE]`, and `sid system action add/list/remove/run` are scriptable from the CLI; global quick-actions hydrate into the `Ctrl+F` palette at startup. The interactive System tab UI (three sub-panel split, per-unit menu, journal-tail modal) lands once the cosmos render harness is built; the underlying state machinery is already implemented and unit-tested. SSH, Database tabs render as labelled stubs.
+> **What works in this build:** Foundation + Workspaces + Network + Settings + **System** + **Database** data surfaces fully functional. Settings tab carries theme picker with live preview, keybind editor with capture-mode + conflict detection, behavior toggles, workspace roots editor, quick actions editor, DB path override (writes the one-line `~/.config/sid/sid.toml`), and reset-to-defaults flow; `sid settings get/set/list/delete` provides scripted access. System tab data surface is wired: pinned configs and global quick-actions persist in redb; `sid system pin/unpin/pins`, `sid system services [--user|--system] [--state STATE]`, and `sid system action add/list/remove/run` are scriptable from the CLI; global quick-actions hydrate into the `Ctrl+F` palette at startup. Database tab has full pure-state coverage (connection list, multi-line editor with SQL syntax highlight via a hand-rolled lexer, paginated sortable results, copy-cell, CSV export, per-connection history), plus `sid db add/remove/list/query` for scripting; the interactive ratatui chrome for the Database tab lands once the cosmos render harness is built, and SSH renders as a labelled stub.
 
 ## Documentation
 
