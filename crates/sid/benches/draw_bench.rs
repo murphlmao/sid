@@ -22,6 +22,7 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         app: build_app(start_tab, vec![]),
         store,
         session_id: "bench-sess".into(),
+        sys_probe: None,
     }
 }
 
