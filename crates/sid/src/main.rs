@@ -163,10 +163,26 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Construct the SysProbe and spawn its polling loop so the Network tab
+    // sees fresh snapshots while the TUI runs.
+    let sys_probe = wire::build_sys_probe(Duration::from_secs(2));
+    let probe_task = {
+        let probe = Arc::clone(&sys_probe);
+        // SysProbe::run consumes self; clone the inner Arc and re-wrap.
+        tokio::spawn(async move {
+            // Build a transient owned SysProbe sharing the provider handle
+            // and interval. We bypass Arc::try_unwrap because the Arc may
+            // have outstanding references in tests.
+            let owned = sid_core::sys_probe::SysProbe::new(probe.provider(), probe.interval());
+            owned.run().await;
+        })
+    };
+
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
         session_id: session_id.clone(),
+        sys_probe: Some(Arc::clone(&sys_probe)),
     };
 
     // Set up terminal.
@@ -183,6 +199,7 @@ async fn main() -> Result<()> {
     // Run.
     let run_result = wire::run_event_loop(&mut terminal, &mut sid_app, &mut rx).await;
     pump.abort();
+    probe_task.abort();
 
     // Restore terminal.
     disable_raw_mode()?;

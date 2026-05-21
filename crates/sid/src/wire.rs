@@ -3,7 +3,8 @@
 //! Ratatui render loop.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use directories::{ProjectDirs, UserDirs};
@@ -13,10 +14,12 @@ use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use sid_core::Result as SidResult;
 use sid_core::action::{Action, ActionRegistry};
+use sid_core::adapters::sys::SysProvider;
 use sid_core::app::{App, Dispatch};
 use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
+use sid_core::sys_probe::SysProbe;
 use sid_core::tab::{Tab, TabId, TabManager};
 use sid_core::widget::Widget;
 use sid_core::workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root};
@@ -46,12 +49,36 @@ use tokio::sync::mpsc::Receiver;
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 /// let app = build_app(None, vec![]);
-/// let sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
+/// let sid_app = SidApp { app, store, session_id: "sess-1".to_string(), sys_probe: None };
 /// ```
 pub struct SidApp {
     pub app: App,
     pub store: Arc<RedbStore>,
     pub session_id: String,
+    /// Periodic system / network probe. `None` in tests that don't want a
+    /// background polling task; constructed by [`build_sys_probe`] in the
+    /// production binary path. The field is currently only read through
+    /// [`SidApp::subscribe_to_sys`]; future tasks wire its broadcast
+    /// receiver into `NetworkWidget` so the field becomes load-bearing in
+    /// the render loop.
+    #[allow(dead_code)]
+    pub sys_probe: Option<Arc<SysProbe>>,
+}
+
+impl SidApp {
+    /// Subscribe to fresh [`sid_core::sys_probe::SysSnapshot`]s if a probe
+    /// is attached. Returns `None` when the probe is absent (e.g., in tests
+    /// that opt out of the background polling task).
+    ///
+    /// The returned receiver lives independently of the probe; dropping it
+    /// is fine. Snapshots only flow while the probe's `run()` future is
+    /// being polled on a Tokio task.
+    #[allow(dead_code)]
+    pub fn subscribe_to_sys(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<sid_core::sys_probe::SysSnapshot>> {
+        self.sys_probe.as_ref().map(|p| p.subscribe())
+    }
 }
 
 /// Return the path to the redb database file.
@@ -102,6 +129,28 @@ pub fn db_path(override_path: Option<PathBuf>) -> PathBuf {
 /// assert_eq!(app.tabs().tabs().len(), 6);
 /// assert_eq!(app.tabs().active().id.as_str(), "workspaces");
 /// ```
+/// Build a [`SysProbe`] backed by the production [`sid_sysinfo::SysinfoProvider`]
+/// with the given poll interval.
+///
+/// The probe is returned but not yet spawned; the caller is responsible for
+/// calling `tokio::spawn(async move { probe.run().await })` and keeping the
+/// `Arc<SysProbe>` alive for the lifetime of the run.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+/// use sid::wire::build_sys_probe;
+///
+/// let probe = build_sys_probe(Duration::from_secs(2));
+/// assert_eq!(probe.interval(), Duration::from_secs(2));
+/// ```
+pub fn build_sys_probe(interval: Duration) -> Arc<SysProbe> {
+    let provider: Arc<Mutex<dyn SysProvider>> =
+        Arc::new(Mutex::new(sid_sysinfo::SysinfoProvider::new()));
+    Arc::new(SysProbe::new(provider, interval))
+}
+
 pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
     let git_factory = Arc::new(Git2ProviderFactory::new());
     let tabs = TabManager::new(vec![
@@ -251,6 +300,7 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     app: build_app(None, vec![]),
 ///     store,
 ///     session_id: "sess-1".to_string(),
+///     sys_probe: None,
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -573,7 +623,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///     let mut terminal = Terminal::new(backend).unwrap();
 ///     let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 ///     let app = build_app(None, vec![]);
-///     let mut sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
+///     let mut sid_app = SidApp { app, store, session_id: "sess-1".to_string(), sys_probe: None };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
 ///     drop(tx);
@@ -1227,6 +1277,7 @@ mod tests {
             app: build_app(start_tab, vec![]),
             store,
             session_id: "draw-test-sess".into(),
+            sys_probe: None,
         }
     }
 }
