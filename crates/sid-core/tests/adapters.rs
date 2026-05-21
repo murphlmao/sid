@@ -10,7 +10,7 @@ use sid_core::adapters::git::{
     Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
 };
 use sid_core::adapters::notifier::{Notifier, NotifyLevel};
-use sid_core::adapters::pty::PtyProvider;
+use sid_core::adapters::pty::{PtyError, PtyHandle, PtyProvider, PtySize, PtySpawn};
 use sid_core::adapters::ssh::{
     ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
 };
@@ -89,8 +89,39 @@ impl SshClient for NoopSsh {
     }
 }
 
+struct NoopPtyHandle {
+    size: PtySize,
+}
+impl PtyHandle for NoopPtyHandle {
+    fn write(&mut self, b: &[u8]) -> Result<usize, PtyError> {
+        Ok(b.len())
+    }
+    fn try_read(&mut self) -> Result<Vec<u8>, PtyError> {
+        Ok(vec![])
+    }
+    fn resize(&mut self, s: PtySize) -> Result<(), PtyError> {
+        self.size = s;
+        Ok(())
+    }
+    fn child_alive(&self) -> bool {
+        false
+    }
+    fn size(&self) -> PtySize {
+        self.size
+    }
+    fn kill(&mut self) -> Result<(), PtyError> {
+        Ok(())
+    }
+}
+
 struct NoopPty;
-impl PtyProvider for NoopPty {}
+impl PtyProvider for NoopPty {
+    fn open_pty(&self, _spec: &PtySpawn) -> Result<Box<dyn PtyHandle>, PtyError> {
+        Ok(Box::new(NoopPtyHandle {
+            size: PtySize::default(),
+        }))
+    }
+}
 
 struct NoopDb;
 #[async_trait::async_trait]
