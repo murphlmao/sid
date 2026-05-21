@@ -12,7 +12,9 @@ use sid_core::adapters::git::{
 use sid_core::adapters::notifier::{NotifyLevel, Notifier};
 use sid_core::adapters::pty::PtyProvider;
 use sid_core::adapters::ssh::SshClient;
-use sid_core::adapters::sys::SysProvider;
+use sid_core::adapters::sys::{
+    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+};
 
 // ---------------------------------------------------------------------------
 // No-op impls for each trait
@@ -56,7 +58,20 @@ struct NoopDb;
 impl DbClient for NoopDb {}
 
 struct NoopSys;
-impl SysProvider for NoopSys {}
+impl SysProvider for NoopSys {
+    fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
+        Ok(vec![])
+    }
+    fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
+        Ok(vec![])
+    }
+    fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
+        Ok(vec![])
+    }
+    fn kill_process(&mut self, _pid: Pid, _sig: Signal) -> Result<(), SysError> {
+        Ok(())
+    }
+}
 
 struct NoopClipboard;
 impl Clipboard for NoopClipboard {
