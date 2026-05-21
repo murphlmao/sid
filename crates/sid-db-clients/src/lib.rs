@@ -11,3 +11,5 @@
 pub mod lexer;
 pub mod postgres;
 pub mod sqlite;
+
+pub use sqlite::SqliteClient;
