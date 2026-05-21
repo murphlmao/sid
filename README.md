@@ -51,14 +51,25 @@ VS Code is slow and visually noisy. `lazygit`, `gitui`, `k9s` are great but each
 
 ## Quickstart
 
-> Not yet — building from the current commit does not produce a usable binary. See the foundation spec below for design and status.
-
-Once shipped:
-
 ```sh
-cargo install --path crates/sid
-sid
+# Clone, build, run
+git clone https://github.com/murphlmao/sid && cd sid
+cargo build --release
+./target/release/sid
+
+# Or run from source
+cargo run -p sid
+
+# Tests
+cargo test --workspace
+
+# Override the DB location (otherwise XDG default applies)
+sid --db /tmp/sid.redb
 ```
+
+**Keybinds in this build:** `Ctrl+←/→` switch tabs · `Ctrl+1..6` jump · `Ctrl+F` command palette · `Ctrl+Q` quit · `Ctrl+,` open Settings.
+
+> **What works in this build:** Foundation complete. Six tabs render as labelled stubs in the cosmos theme; navigation, command palette, theme, and active-tab persistence work. Real tab content arrives in subsequent plans.
 
 ## Documentation
 
