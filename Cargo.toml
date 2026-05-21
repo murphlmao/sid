@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sid",
+    "crates/sid-core",
+    "crates/sid-ui",
+    "crates/sid-store",
+    "crates/sid-job",
+    "crates/sid-widgets",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/murphlmao/sid"
+authors = ["Murphy Malcolm"]
+
+[workspace.dependencies]
+# Internal
+sid-core = { path = "crates/sid-core" }
+sid-ui = { path = "crates/sid-ui" }
+sid-store = { path = "crates/sid-store" }
+sid-job = { path = "crates/sid-job" }
+sid-widgets = { path = "crates/sid-widgets" }
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Async
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Storage
+redb = "4.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1.1", features = ["use-std"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Errors / logging
+thiserror = "2"
+anyhow = "1"
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Paths
+directories = "5"
+
+# Test
+insta = { version = "1", features = ["yaml"] }
+proptest = "1"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

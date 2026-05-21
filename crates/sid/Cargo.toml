@@ -1,0 +1,9 @@
+# minimal stub — will be replaced in later tasks
+[package]
+name = "sid"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sid"
+path = "src/main.rs"

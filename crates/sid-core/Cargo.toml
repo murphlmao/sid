@@ -1,0 +1,7 @@
+# minimal stub — will be replaced in Task 4
+[package]
+name = "sid-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

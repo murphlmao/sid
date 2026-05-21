@@ -1,0 +1,7 @@
+# minimal stub — will be replaced in later tasks
+[package]
+name = "sid-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
