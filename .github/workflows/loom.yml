@@ -1,0 +1,45 @@
+name: Loom
+
+# Loom is a concurrency model checker that exhaustively explores thread
+# interleavings. It's slow (each test can take minutes), so we run it on
+# a weekly cadence and on demand — not on every PR.
+#
+# Targets currently:
+#   - crates/sid-job/tests/loom_concurrency.rs
+#
+# Add additional `cargo test --test ... -p ...` steps below as new loom
+# suites land (StatePersister, SshPool, detach IPC, etc. — see CLAUDE.md).
+
+on:
+  schedule:
+    # Mondays 07:00 UTC.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  loom:
+    name: loom concurrency model check
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      RUSTFLAGS: --cfg loom
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: sid-job loom_concurrency
+        run: cargo test --test loom_concurrency -p sid-job --release --locked
