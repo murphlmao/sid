@@ -1,0 +1,21 @@
+---
+source: crates/sid-widgets/tests/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ ✦ Three Text Fields ─────────────────────────┐                
+                │  alias                                       │                
+                │  prod                                        │                
+                │  host                                        │                
+                │> prod.example.com                            │                
+                │  user                                        │                
+                │  root                                        │                
+                │                                              │                
+                │  [ Enter: Save ]   [ Esc: Cancel ]           │                
+                │                                              │                
+                └──────────────────────────────────────────────┘

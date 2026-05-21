@@ -1,0 +1,19 @@
+---
+source: crates/sid-widgets/tests/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ ✦ Pick Algorithm ────────────────────────────┐                
+                │  algorithm                                   │                
+                │> ( ) Ed25519  (●) RSA-4096  ( ) ECDSA-256    │                
+                │                                              │                
+                │  [ Enter: Save ]   [ Esc: Cancel ]           │                
+                │                                              │                
+                └──────────────────────────────────────────────┘

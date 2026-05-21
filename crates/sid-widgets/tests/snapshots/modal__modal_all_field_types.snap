@@ -1,0 +1,24 @@
+---
+source: crates/sid-widgets/tests/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ ✦ All Field Types ───────────────────────────┐                
+                │  alias                                       │                
+                │  prod                                        │                
+                │  passphrase                                  │                
+                │  •••••••                                     │                
+                │  use_agent                                   │                
+                │> [x] on                                      │                
+                │  algorithm                                   │                
+                │  (●) Ed25519  ( ) RSA-4096                   │                
+                │  identity                                    │                
+                │  ~/.ssh/id_ed25519  [browse ~/.ssh]          │                
+                │                                              │                
+                │  Tab moves between fields. Enter to save.    │                
+                │  [ Enter: Save ]   [ Esc: Cancel ]           │                
+                │                                              │                
+                └──────────────────────────────────────────────┘
