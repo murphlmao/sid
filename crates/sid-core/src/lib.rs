@@ -1,6 +1,9 @@
-//! Core abstractions for sid: the Widget trait, App, tabs, keybinds, actions.
-//! No knowledge of Ratatui, Tokio, or storage backends lives here.
+//! Core abstractions for sid.
 
+pub mod context;
 pub mod error;
+pub mod event;
+pub mod widget;
 
 pub use error::{Result, SidError};
+pub use widget::{EventOutcome, RenderTarget, Widget, WidgetId};
