@@ -11,6 +11,7 @@ fn host(alias: &str) -> SshHost {
         source: SshHostSource::Manual,
         last_connected: 0,
         command_history: Vec::new(),
+        last_sftp_path: None,
     }
 }
 

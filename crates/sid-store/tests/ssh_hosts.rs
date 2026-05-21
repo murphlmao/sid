@@ -11,6 +11,7 @@ fn host(alias: &str, host: &str, user: &str) -> SshHost {
         source: SshHostSource::Manual,
         last_connected: now_epoch(),
         command_history: Vec::new(),
+        last_sftp_path: None,
     }
 }
 
@@ -95,6 +96,7 @@ fn list_with_many_hosts_returns_all() {
                 source: SshHostSource::Manual,
                 last_connected: 0,
                 command_history: Vec::new(),
+                last_sftp_path: None,
             })
             .unwrap();
     }
@@ -114,10 +116,63 @@ fn long_command_history_round_trips() {
         source: SshHostSource::Manual,
         last_connected: 0,
         command_history: (0..500).map(|i| format!("cmd {i}")).collect(),
+        last_sftp_path: None,
     };
     store.upsert_ssh_host(&h).unwrap();
     let back = store.get_ssh_host("a").unwrap().unwrap();
     assert_eq!(back.command_history.len(), 500);
+}
+
+// ── Schema migration: v1 (no last_sftp_path) → v2 ─────────────────────────────
+
+/// A v1 record written before the `last_sftp_path` field was introduced must
+/// decode cleanly, with `last_sftp_path == None`.
+#[test]
+fn decode_v1_blob_maps_to_v2_with_none_last_sftp_path() {
+    use serde::{Deserialize, Serialize};
+    use sid_store::codec::encode_versioned;
+    use sid_store::{SshHostSource, decode_ssh_host};
+
+    // Mirror of the pre-v2 wire shape.
+    #[derive(Serialize, Deserialize)]
+    struct OldSshHost {
+        alias: String,
+        host: String,
+        port: u16,
+        user: String,
+        identity_file: Option<String>,
+        source: SshHostSource,
+        last_connected: i64,
+        command_history: Vec<String>,
+    }
+
+    let old = OldSshHost {
+        alias: "legacy".into(),
+        host: "h".into(),
+        port: 22,
+        user: "u".into(),
+        identity_file: None,
+        source: SshHostSource::Manual,
+        last_connected: 17,
+        command_history: vec!["echo hi".into()],
+    };
+    let bytes = encode_versioned(1, &old).unwrap();
+    let migrated = decode_ssh_host(&bytes).unwrap();
+    assert_eq!(migrated.alias, "legacy");
+    assert_eq!(migrated.command_history, vec!["echo hi".to_string()]);
+    assert_eq!(migrated.last_sftp_path, None, "v1 → v2 sets None");
+}
+
+/// New (v2) records round-trip through upsert/get with `last_sftp_path` intact.
+#[test]
+fn upsert_get_round_trips_last_sftp_path() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    let mut h = host("a", "h", "u");
+    h.last_sftp_path = Some("/var/log".into());
+    store.upsert_ssh_host(&h).unwrap();
+    let back = store.get_ssh_host("a").unwrap().unwrap();
+    assert_eq!(back.last_sftp_path.as_deref(), Some("/var/log"));
 }
 
 use proptest::prelude::*;
@@ -139,6 +194,7 @@ proptest! {
             source: SshHostSource::Manual,
             last_connected: 0,
             command_history: Vec::new(),
+            last_sftp_path: None,
         };
         store.upsert_ssh_host(&entry).unwrap();
         let back = store.get_ssh_host(&alias).unwrap().unwrap();
