@@ -1,6 +1,7 @@
 //! Core abstractions for sid.
 
 pub mod action;
+pub mod adapters;
 pub mod context;
 pub mod error;
 pub mod event;
