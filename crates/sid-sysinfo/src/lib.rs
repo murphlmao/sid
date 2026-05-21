@@ -8,6 +8,22 @@
 //! All access to the inner `sysinfo::System` is serialized via `&mut self`;
 //! the `SysProbe` in `sid-core` wraps the provider in `Arc<Mutex<…>>` for
 //! cross-task sharing.
+//!
+//! ## Refresh contract
+//!
+//! - `list_processes`: refreshes the process list, CPU, memory, user, and
+//!   command line for every visible process (`sysinfo`'s `ProcessRefreshKind`
+//!   wired to the matching subset). Safe to call at the 500 ms cadence
+//!   exposed in Settings; intentionally not faster than that.
+//! - `list_listening_ports`: enumerates sockets via `netstat2` on each call
+//!   and uses the cached `sysinfo::System` only to map PID → command name.
+//!   No `sysinfo` refresh is performed inside `list_listening_ports` itself,
+//!   so PID-to-command attribution lags a `list_processes` call.
+//! - `list_interfaces`: builds a fresh `sysinfo::Networks` each call. This
+//!   is intentional — sysinfo's `Networks` is cheap relative to a full
+//!   `System` refresh.
+//! - `kill_process`: no `sysinfo` state read or written; signal delivery
+//!   goes through `nix::sys::signal::kill` directly.
 
 use sid_core::adapters::sys::{
     ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
@@ -74,3 +90,14 @@ impl SysProvider for SysinfoProvider {
         kill::kill_process(pid, sig)
     }
 }
+
+// Compile-time assertion: `SysinfoProvider` is `Send + Sync`. The `SysProbe`
+// holds it inside `Arc<Mutex<dyn SysProvider>>`, which requires both.
+// `sysinfo::System` and `netstat2` provide auto-impls today; if a future
+// release drops them, this assertion fails the build and we either wrap the
+// inner state in a `Mutex` or follow the `unsafe impl Send + Sync` pattern
+// used in `sid-git` (with a `// SAFETY:` comment).
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SysinfoProvider>();
+};
