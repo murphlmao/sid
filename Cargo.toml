@@ -27,10 +27,10 @@ sid-widgets = { path = "crates/sid-widgets" }
 
 # TUI
 ratatui = "0.30"
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async
-tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util", "test-util"] }
 tokio-util = "0.7"
 futures = "0.3"
 
