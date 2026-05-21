@@ -20,6 +20,7 @@ use sid_core::adapters::systemctl::{
     JournalEntry, SystemUnit, SystemctlClient, SystemctlError, UnitBus, UnitFilter,
 };
 use sid_core::adapters::terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner};
+use sid_core::animation::AnimationConfig;
 use sid_core::app::{App, Dispatch};
 use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
@@ -31,14 +32,13 @@ use sid_core::workspace_discovery::{
     WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
 };
 use sid_core::workspace_metadata::WorkspaceKind;
+use sid_fx::FxState;
 use sid_git::Git2ProviderFactory;
 use sid_store::{RedbStore, SessionRecord, Store, Workspace, now_epoch};
 use sid_ui::helpers::styled_block;
 use sid_ui::theme::{Color as UiColor, GlyphSet, Theme};
 use sid_ui::theme_registry::ThemeRegistry;
 use sid_ui::themes::cosmos;
-use sid_core::animation::AnimationConfig;
-use sid_fx::FxState;
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
 };
@@ -74,6 +74,8 @@ use tokio::sync::mpsc::Receiver;
 ///     secrets,
 ///     animation: sid_core::animation::AnimationConfig::default(),
 ///     fx_state: None,
+///     modal_stack: Vec::new(),
+///     pending_submits: Vec::new(),
 /// };
 /// ```
 pub struct SidApp {
@@ -681,6 +683,10 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     postgres: sid_db_clients::PostgresClient::factory(),
 ///     sqlite: sid_db_clients::SqliteClient::factory(),
 ///     secrets,
+///     animation: sid_core::animation::AnimationConfig::default(),
+///     fx_state: None,
+///     modal_stack: Vec::new(),
+///     pending_submits: Vec::new(),
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -724,25 +730,48 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     let tabs_h: u16 = 2;
     let status_h: u16 = if inner.height >= 12 { 1 } else { 0 };
     let footer_h: u16 = if inner.height >= 10 { 2 } else { 1 };
-    let body_h = inner
-        .height
-        .saturating_sub(tabs_h + status_h + footer_h);
+    let body_h = inner.height.saturating_sub(tabs_h + status_h + footer_h);
 
     let mut y = inner.y;
-    let tabs_rect = Rect { x: inner.x, y, width: inner.width, height: tabs_h.min(inner.height) };
+    let tabs_rect = Rect {
+        x: inner.x,
+        y,
+        width: inner.width,
+        height: tabs_h.min(inner.height),
+    };
     y = y.saturating_add(tabs_rect.height);
-    let body_rect = Rect { x: inner.x, y, width: inner.width, height: body_h };
+    let body_rect = Rect {
+        x: inner.x,
+        y,
+        width: inner.width,
+        height: body_h,
+    };
     y = y.saturating_add(body_h);
-    let status_rect = Rect { x: inner.x, y, width: inner.width, height: status_h };
+    let status_rect = Rect {
+        x: inner.x,
+        y,
+        width: inner.width,
+        height: status_h,
+    };
     y = y.saturating_add(status_h);
-    let footer_rect = Rect { x: inner.x, y, width: inner.width, height: footer_h };
+    let footer_rect = Rect {
+        x: inner.x,
+        y,
+        width: inner.width,
+        height: footer_h,
+    };
 
     // ─── Tab strip ────────────────────────────────────────────────────────
     let active_idx = app.tabs().active_index();
     let mut spans: Vec<Span> = Vec::new();
     for (i, t) in app.tabs().tabs().iter().enumerate() {
         let (marker, marker_style) = if i == active_idx {
-            ('●', TextStyle::default().fg(ui_to_ratatui(theme.accent_primary)).add_modifier(TextMod::BOLD))
+            (
+                '●',
+                TextStyle::default()
+                    .fg(ui_to_ratatui(theme.accent_primary))
+                    .add_modifier(TextMod::BOLD),
+            )
         } else {
             ('·', TextStyle::default().fg(ui_to_ratatui(theme.muted)))
         };
@@ -751,7 +780,9 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         }
         spans.push(Span::styled(format!("{marker} "), marker_style));
         let title_style = if i == active_idx {
-            TextStyle::default().fg(ui_to_ratatui(theme.foreground)).add_modifier(TextMod::BOLD)
+            TextStyle::default()
+                .fg(ui_to_ratatui(theme.foreground))
+                .add_modifier(TextMod::BOLD)
         } else {
             TextStyle::default().fg(ui_to_ratatui(theme.muted))
         };
@@ -829,8 +860,8 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     // ─── Status line (above footer) ───────────────────────────────────────
     if status_h > 0 {
         let status_text = build_status_line(sid_app);
-        let status = Paragraph::new(status_text)
-            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        let status =
+            Paragraph::new(status_text).style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
         frame.render_widget(status, status_rect);
     }
 
@@ -840,7 +871,10 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     let footer_split = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(if footer_h >= 2 {
-            vec![ratatui::layout::Constraint::Length(1), ratatui::layout::Constraint::Length(1)]
+            vec![
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(1),
+            ]
         } else {
             vec![ratatui::layout::Constraint::Length(1)]
         })
@@ -852,10 +886,7 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
                 .iter()
                 .flat_map(|h| {
                     [
-                        Span::styled(
-                            "  [ ",
-                            TextStyle::default().fg(ui_to_ratatui(theme.muted)),
-                        ),
+                        Span::styled("  [ ", TextStyle::default().fg(ui_to_ratatui(theme.muted))),
                         Span::styled(
                             h.chord.clone(),
                             TextStyle::default()
@@ -873,12 +904,12 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
             let p = Paragraph::new(Line::from(spans));
             frame.render_widget(p, footer_split[0]);
         }
-        let global = Paragraph::new(help_line())
-            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        let global =
+            Paragraph::new(help_line()).style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
         frame.render_widget(global, footer_split[1]);
     } else {
-        let global = Paragraph::new(help_line())
-            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        let global =
+            Paragraph::new(help_line()).style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
         frame.render_widget(global, footer_split[0]);
     }
 
@@ -980,10 +1011,22 @@ fn help_line() -> &'static str {
 
 /// Render a one-line status string for the bar between body and footer.
 fn build_status_line(sid_app: &SidApp) -> String {
-    let workspaces = sid_app.store.list_workspaces().map(|v| v.len()).unwrap_or(0);
+    let workspaces = sid_app
+        .store
+        .list_workspaces()
+        .map(|v| v.len())
+        .unwrap_or(0);
     let hosts = sid_app.store.list_ssh_hosts().map(|v| v.len()).unwrap_or(0);
-    let dbs = sid_app.store.list_db_connections().map(|v| v.len()).unwrap_or(0);
-    let pins = sid_app.store.list_pinned_configs().map(|v| v.len()).unwrap_or(0);
+    let dbs = sid_app
+        .store
+        .list_db_connections()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let pins = sid_app
+        .store
+        .list_pinned_configs()
+        .map(|v| v.len())
+        .unwrap_or(0);
     let anim = if sid_app.animation.enabled {
         format!("animation on @ {}fps", sid_app.animation.fps)
     } else {
@@ -1164,6 +1207,10 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         postgres: sid_db_clients::PostgresClient::factory(),
 ///         sqlite: sid_db_clients::SqliteClient::factory(),
 ///         secrets,
+///         animation: sid_core::animation::AnimationConfig::default(),
+///         fx_state: None,
+///         modal_stack: Vec::new(),
+///         pending_submits: Vec::new(),
 ///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -1216,13 +1263,14 @@ where
         if let SidEvent::Key(chord) = ev {
             // Global quit always wins, even with a modal open.
             let is_global_quit = chord.code == crossterm::event::KeyCode::Char('q')
-                && chord
-                    .mods
-                    .contains(crossterm::event::KeyModifiers::CONTROL);
+                && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
             if !is_global_quit && !sid_app.modal_stack.is_empty() {
                 handled = true;
                 let outcome = {
-                    let modal = sid_app.modal_stack.last_mut().expect("modal_stack non-empty");
+                    let modal = sid_app
+                        .modal_stack
+                        .last_mut()
+                        .expect("modal_stack non-empty");
                     sid_widgets::route_key_to_modal(modal, chord)
                 };
                 match outcome {
@@ -1236,11 +1284,10 @@ where
                         sid_app.pending_submits.push((popped.id, values));
                     }
                 }
-            } else if !is_global_quit {
-                if let Some(modal) = workspace_modal_for_key(sid_app, chord) {
-                    sid_app.modal_stack.push(modal);
-                    handled = true;
-                }
+            } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord)
+            {
+                sid_app.modal_stack.push(modal);
+                handled = true;
             }
         }
 
@@ -1256,21 +1303,21 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3 — Modal routing + Workspaces CRUD
+// Phase 3 / 4 / 5 — Modal routing + per-tab CRUD
 // ---------------------------------------------------------------------------
 
-/// If `chord` is one of the active tab's modal-opening keys, return the modal
-/// to push. Returns `None` if the key has no modal binding.
-fn workspace_modal_for_key(
+/// Dispatch a key chord to the per-tab modal-opener for whichever tab is
+/// currently active. Returns `None` if the key has no modal binding on the
+/// active tab (or if a global modifier is held).
+///
+/// Per-tab branches live in their own helpers
+/// ([`workspaces_modal_for_key`], [`ssh_modal_for_key`],
+/// [`database_modal_for_key`], [`system_modal_for_key`]).
+fn modal_for_active_tab_key(
     sid_app: &SidApp,
     chord: sid_core::event::KeyChord,
 ) -> Option<sid_widgets::ModalSpec> {
-    use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_widgets::{Field, ModalSpec};
-    let active = sid_app.app.tabs().active().id.as_str();
-    if active != "workspaces" {
-        return None;
-    }
+    use crossterm::event::KeyModifiers;
     // Only plain (unmodified) keys open modals; ctrl/alt combos are reserved
     // for global actions.
     if chord
@@ -1279,6 +1326,23 @@ fn workspace_modal_for_key(
     {
         return None;
     }
+    match sid_app.app.tabs().active().id.as_str() {
+        "workspaces" => workspaces_modal_for_key(sid_app, chord),
+        "ssh" => ssh_modal_for_key(sid_app, chord),
+        "database" => database_modal_for_key(sid_app, chord),
+        "system" => system_modal_for_key(sid_app, chord),
+        _ => None,
+    }
+}
+
+/// Workspaces-tab modal opener. `N` creates, `A` adds a sub-repo to the
+/// selected umbrella, `R` confirms removal of the selected workspace.
+fn workspaces_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::KeyCode;
+    use sid_widgets::{Field, ModalSpec};
     match chord.code {
         KeyCode::Char('N') | KeyCode::Char('n') => Some(
             ModalSpec::new(
@@ -1340,6 +1404,286 @@ fn workspace_modal_for_key(
     }
 }
 
+/// SSH-tab modal opener. `N` adds a new host, `G` opens the key-gen wizard,
+/// `Del` / `D` confirms removal of a manual host (ssh-config entries are
+/// read-only and are skipped).
+fn ssh_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::KeyCode;
+    use sid_store::SshHostSource;
+    use sid_widgets::{Field, ModalSpec};
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => {
+            let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+            Some(
+                ModalSpec::new(
+                    "ssh.new",
+                    "Add Host",
+                    vec![
+                        Field::Text {
+                            label: "alias".into(),
+                            value: String::new(),
+                            placeholder: Some("e.g. my-prod".into()),
+                        },
+                        Field::Text {
+                            label: "host".into(),
+                            value: String::new(),
+                            placeholder: Some("e.g. host.example.com".into()),
+                        },
+                        Field::Text {
+                            label: "user".into(),
+                            value: default_user,
+                            placeholder: None,
+                        },
+                        Field::Text {
+                            label: "port".into(),
+                            value: "22".into(),
+                            placeholder: None,
+                        },
+                        Field::Picker {
+                            label: "identity_file".into(),
+                            value: String::new(),
+                            hint: "optional".into(),
+                        },
+                        Field::Choice {
+                            label: "auth".into(),
+                            options: vec!["Key".into(), "Password".into(), "Agent".into()],
+                            selected: 0,
+                        },
+                    ],
+                )
+                .with_help("Tab moves between fields · Enter saves · Esc cancels"),
+            )
+        }
+        KeyCode::Char('G') | KeyCode::Char('g') => {
+            let default_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+            let host = hostname_or_local();
+            let default_comment = format!("{default_user}@{host}");
+            let default_path = home_join(".ssh/id_ed25519");
+            Some(
+                ModalSpec::new(
+                    "ssh.gen_key",
+                    "Generate SSH Key",
+                    vec![
+                        Field::Choice {
+                            label: "algorithm".into(),
+                            options: vec!["Ed25519".into(), "RSA-4096".into(), "ECDSA-256".into()],
+                            selected: 0,
+                        },
+                        Field::Picker {
+                            label: "output_path".into(),
+                            value: default_path,
+                            hint: "path".into(),
+                        },
+                        Field::Password {
+                            label: "passphrase".into(),
+                            value: String::new(),
+                        },
+                        Field::Password {
+                            label: "confirm_passphrase".into(),
+                            value: String::new(),
+                        },
+                        Field::Text {
+                            label: "comment".into(),
+                            value: default_comment,
+                            placeholder: None,
+                        },
+                    ],
+                )
+                .with_help("Runs ssh-keygen. Passphrase fields must match."),
+            )
+        }
+        KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d') => {
+            let host = ssh_selected_host(sid_app)?;
+            // Read-only ssh-config hosts cannot be removed from the store.
+            if host.source == SshHostSource::SshConfig {
+                return None;
+            }
+            let alias = host.alias.clone();
+            Some(
+                ModalSpec::new(
+                    format!("ssh.remove:{alias}"),
+                    format!("Remove host {alias}?"),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, remove".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Removes the host from the store. ssh-config entries are unaffected."),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Database-tab modal opener. `N` adds a new connection; `Del` / `D` removes
+/// the selected one.
+fn database_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::KeyCode;
+    use sid_widgets::{Field, ModalSpec};
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => Some(
+            ModalSpec::new(
+                "database.new",
+                "Add Connection",
+                vec![
+                    Field::Text {
+                        label: "id".into(),
+                        value: String::new(),
+                        placeholder: Some("stable id, e.g. prod-pg".into()),
+                    },
+                    Field::Text {
+                        label: "name".into(),
+                        value: String::new(),
+                        placeholder: Some("display label".into()),
+                    },
+                    Field::Choice {
+                        label: "kind".into(),
+                        options: vec!["Postgres".into(), "SQLite".into()],
+                        selected: 0,
+                    },
+                    Field::Text {
+                        label: "dsn".into(),
+                        value: String::new(),
+                        placeholder: Some("postgres://user@host/db or /path/to/file.sqlite".into()),
+                    },
+                    Field::Password {
+                        label: "password".into(),
+                        value: String::new(),
+                    },
+                ],
+            )
+            .with_help("Password is stored in the secrets table (Postgres only)."),
+        ),
+        KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d') => {
+            let conn = database_selected_connection(sid_app)?;
+            let id = conn.id.clone();
+            Some(
+                ModalSpec::new(
+                    format!("database.remove:{id}"),
+                    format!("Remove connection {id}?"),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, remove".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Removes the connection record and forgets the stored password."),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// System-tab modal opener. The shape of the modal depends on which sub-pane
+/// is focused — `PinnedConfigs` or `QuickActions`. Pressing `N` / `D` while
+/// the `Services` pane is focused is a no-op (services are read from
+/// systemd, not stored).
+fn system_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::KeyCode;
+    use sid_widgets::system::SystemPane;
+    use sid_widgets::{Field, ModalSpec};
+    let pane = system_focused_pane(sid_app)?;
+    match (chord.code, pane) {
+        (KeyCode::Char('N') | KeyCode::Char('n'), SystemPane::PinnedConfigs) => Some(
+            ModalSpec::new(
+                "system.pin_config",
+                "Pin a Config",
+                vec![
+                    Field::Picker {
+                        label: "path".into(),
+                        value: String::new(),
+                        hint: "absolute path".into(),
+                    },
+                    Field::Text {
+                        label: "label".into(),
+                        value: String::new(),
+                        placeholder: Some("defaults to basename".into()),
+                    },
+                ],
+            )
+            .with_help("Pins the file; opens later via the System tab pinned-configs pane."),
+        ),
+        (KeyCode::Char('N') | KeyCode::Char('n'), SystemPane::QuickActions) => Some(
+            ModalSpec::new(
+                "system.quick_action.new",
+                "Add Quick Action",
+                vec![
+                    Field::Text {
+                        label: "id".into(),
+                        value: String::new(),
+                        placeholder: Some("e.g. qa-restart-pg".into()),
+                    },
+                    Field::Text {
+                        label: "label".into(),
+                        value: String::new(),
+                        placeholder: Some("display label".into()),
+                    },
+                    Field::Text {
+                        label: "command".into(),
+                        value: String::new(),
+                        placeholder: Some("shell command to run".into()),
+                    },
+                    Field::Choice {
+                        label: "scope".into(),
+                        options: vec!["Global".into(), "Workspace".into()],
+                        selected: 0,
+                    },
+                    Field::Text {
+                        label: "keybind".into(),
+                        value: String::new(),
+                        placeholder: Some("optional chord, e.g. Char('r')|2".into()),
+                    },
+                ],
+            )
+            .with_help("Global actions appear in the command palette after save."),
+        ),
+        (KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d'), SystemPane::PinnedConfigs) => {
+            let pin = system_selected_pin(sid_app)?;
+            let path = pin.path.clone();
+            Some(
+                ModalSpec::new(
+                    format!("system.remove_pin:{}", path.display()),
+                    format!("Remove pin {}?", path.display()),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, remove".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Removes the pin. The file on disk is untouched."),
+            )
+        }
+        (KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d'), SystemPane::QuickActions) => {
+            let qa = system_selected_quick_action(sid_app)?;
+            let id = qa.id.clone();
+            Some(
+                ModalSpec::new(
+                    format!("system.remove_quick_action:{id}"),
+                    format!("Remove quick action {id}?"),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, remove".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Removes the action from the store and the command palette."),
+            )
+        }
+        // Services pane has no add/remove modal; everything comes from systemd.
+        _ => None,
+    }
+}
+
 /// Inspect the active Workspaces widget for the selected workspace's path.
 fn workspaces_selected_path(sid_app: &SidApp) -> Option<PathBuf> {
     use sid_widgets::WorkspacesWidget;
@@ -1347,6 +1691,68 @@ fn workspaces_selected_path(sid_app: &SidApp) -> Option<PathBuf> {
     let widget = layout.iter_widgets().next()?;
     let ws = widget.as_any().downcast_ref::<WorkspacesWidget>()?;
     ws.state().selected_workspace().map(|w| w.path.clone())
+}
+
+/// Inspect the active SSH widget for the currently-selected host.
+fn ssh_selected_host(sid_app: &SidApp) -> Option<sid_store::SshHost> {
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let ssh = widget.as_any().downcast_ref::<SshWidget>()?;
+    ssh.state().selected_host().cloned()
+}
+
+/// Inspect the active Database widget for the currently-selected connection.
+fn database_selected_connection(sid_app: &SidApp) -> Option<sid_store::DbConnection> {
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let db = widget.as_any().downcast_ref::<DatabaseWidget>()?;
+    db.state().selected_connection().cloned()
+}
+
+/// Which sub-pane is focused on the System tab, if any.
+fn system_focused_pane(sid_app: &SidApp) -> Option<sid_widgets::system::SystemPane> {
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let sys = widget.as_any().downcast_ref::<SystemWidget>()?;
+    Some(sys.state().focused_pane())
+}
+
+/// Inspect the System widget for the selected pinned config.
+fn system_selected_pin(sid_app: &SidApp) -> Option<sid_store::PinnedConfig> {
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let sys = widget.as_any().downcast_ref::<SystemWidget>()?;
+    sys.pinned_configs().selected().cloned()
+}
+
+/// Inspect the System widget for the selected quick action.
+fn system_selected_quick_action(sid_app: &SidApp) -> Option<sid_store::QuickAction> {
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let sys = widget.as_any().downcast_ref::<SystemWidget>()?;
+    sys.quick_actions().selected().cloned()
+}
+
+/// Best-effort lookup of a default `$HOME`-relative path for the SSH keygen
+/// modal. Falls back to a bare relative path if `$HOME` is unset.
+fn home_join(rel: &str) -> String {
+    match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h).join(rel).to_string_lossy().into_owned(),
+        None => rel.to_string(),
+    }
+}
+
+/// Best-effort hostname for use in default ssh-keygen comments. Returns
+/// `"localhost"` if the lookup fails.
+fn hostname_or_local() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| {
+        // Try /etc/hostname as a fallback; some shells don't export HOSTNAME.
+        std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "localhost".to_string())
+    })
 }
 
 /// Drain any queued modal submits and call the corresponding handler.
@@ -1438,32 +1844,362 @@ fn dispatch_modal_submit(
                 .map_err(|e| anyhow::anyhow!("remove workspace: {e}"))?;
             refresh_workspaces_widget(sid_app);
         }
+    } else if key == "ssh.new" {
+        submit_ssh_new(sid_app, values)?;
+    } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
+        submit_ssh_remove(sid_app, alias, values)?;
+    } else if key == "ssh.gen_key" {
+        submit_ssh_gen_key(values)?;
+    } else if key == "database.new" {
+        submit_database_new(sid_app, values)?;
+    } else if let Some(conn_id) = key.strip_prefix("database.remove:") {
+        submit_database_remove(sid_app, conn_id, values)?;
+    } else if key == "system.pin_config" {
+        submit_system_pin_config(sid_app, values)?;
+    } else if let Some(path_str) = key.strip_prefix("system.remove_pin:") {
+        submit_system_remove_pin(sid_app, path_str, values)?;
+    } else if key == "system.quick_action.new" {
+        submit_system_quick_action_new(sid_app, values)?;
+    } else if let Some(qa_id) = key.strip_prefix("system.remove_quick_action:") {
+        submit_system_remove_quick_action(sid_app, qa_id, values)?;
     } else {
         tracing::debug!("unhandled modal submit id={key}");
     }
     Ok(())
 }
 
-fn string_value(
+// ---------------------------------------------------------------------------
+// Per-tab submit handlers
+// ---------------------------------------------------------------------------
+
+/// Handle a successful submit of the `ssh.new` modal: validate inputs,
+/// upsert the host into the store, refresh the SSH widget.
+fn submit_ssh_new(
+    sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
-    label: &str,
-) -> Option<String> {
-    use sid_widgets::FieldValue;
-    values.iter().find(|(k, _)| k == label).and_then(|(_, v)| match v {
-        FieldValue::Text(s) | FieldValue::Picker(s) | FieldValue::Password(s) => Some(s.clone()),
-        _ => None,
-    })
+) -> Result<()> {
+    use sid_store::{SshHost, SshHostSource};
+    let alias = string_value(values, "alias").unwrap_or_default();
+    let host = string_value(values, "host").unwrap_or_default();
+    let user = string_value(values, "user").unwrap_or_default();
+    let port_str = string_value(values, "port").unwrap_or_default();
+    let identity_file = string_value(values, "identity_file").filter(|s| !s.is_empty());
+    // The auth choice is currently advisory — concrete connect-time wiring
+    // lives in Plan 3's `russh` path. Read it to validate the modal but do
+    // not persist (the SshHost record doesn't have a slot for it yet).
+    let _auth = choice_value(values, "auth").unwrap_or_default();
+    if alias.is_empty() || host.is_empty() || user.is_empty() {
+        return Err(anyhow::anyhow!("alias, host, and user are required"));
+    }
+    let port: u16 = port_str
+        .parse()
+        .map_err(|e| anyhow::anyhow!("port must be a u16 (got {port_str:?}): {e}"))?;
+    let record = SshHost {
+        alias,
+        host,
+        port,
+        user,
+        identity_file,
+        source: SshHostSource::Manual,
+        last_connected: 0,
+        command_history: Vec::new(),
+    };
+    sid_app
+        .store
+        .upsert_ssh_host(&record)
+        .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    Ok(())
 }
 
-fn choice_value(
+/// Handle a `ssh.remove:<alias>` submit. Confirms via the Choice field
+/// before deleting.
+fn submit_ssh_remove(
+    sid_app: &mut SidApp,
+    alias: &str,
     values: &[(String, sid_widgets::FieldValue)],
-    label: &str,
-) -> Option<String> {
+) -> Result<()> {
+    if choice_value(values, "confirm").as_deref() != Some("Yes, remove") {
+        return Ok(());
+    }
+    sid_app
+        .store
+        .remove_ssh_host(alias)
+        .map_err(|e| anyhow::anyhow!("remove ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    Ok(())
+}
+
+/// Handle the `ssh.gen_key` modal: validate the inputs (passphrase match,
+/// non-empty output path, output path does not already exist), then invoke
+/// `ssh-keygen`. Surfaces success / failure as tracing events; toast
+/// surfacing is deferred to a follow-up.
+fn submit_ssh_gen_key(values: &[(String, sid_widgets::FieldValue)]) -> Result<()> {
+    use std::process::Command;
+    let algorithm = choice_value(values, "algorithm").unwrap_or_default();
+    let output_path = string_value(values, "output_path").unwrap_or_default();
+    let passphrase = string_value(values, "passphrase").unwrap_or_default();
+    let confirm = string_value(values, "confirm_passphrase").unwrap_or_default();
+    let comment = string_value(values, "comment").unwrap_or_default();
+
+    if output_path.is_empty() {
+        return Err(anyhow::anyhow!("output_path is required"));
+    }
+    if passphrase != confirm {
+        return Err(anyhow::anyhow!(
+            "passphrase and confirm_passphrase do not match"
+        ));
+    }
+    let out_path = PathBuf::from(&output_path);
+    if out_path.exists() {
+        return Err(anyhow::anyhow!(
+            "output_path already exists: {output_path} (ssh-keygen would overwrite — refusing)"
+        ));
+    }
+
+    let algo_flag = match algorithm.as_str() {
+        "Ed25519" => "ed25519",
+        "RSA-4096" => "rsa",
+        "ECDSA-256" => "ecdsa",
+        other => return Err(anyhow::anyhow!("unknown algorithm: {other}")),
+    };
+    let mut cmd = Command::new("ssh-keygen");
+    cmd.arg("-t").arg(algo_flag);
+    if algorithm == "RSA-4096" {
+        cmd.arg("-b").arg("4096");
+    }
+    if algorithm == "ECDSA-256" {
+        cmd.arg("-b").arg("256");
+    }
+    cmd.arg("-f").arg(&output_path);
+    cmd.arg("-N").arg(&passphrase);
+    if !comment.is_empty() {
+        cmd.arg("-C").arg(&comment);
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| anyhow::anyhow!("ssh-keygen not on PATH: {e}"))?;
+    if !status.success() {
+        tracing::warn!(?status, "ssh-keygen exited with non-zero status");
+        return Err(anyhow::anyhow!(
+            "ssh-keygen exited with non-zero status: {status}"
+        ));
+    }
+    tracing::info!(path = %output_path, "ssh-keygen completed successfully");
+    Ok(())
+}
+
+/// Handle a `database.new` submit: validate, persist the connection, and
+/// (for Postgres) write the password to the secret store.
+fn submit_database_new(
+    sid_app: &mut SidApp,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_core::adapters::db_client::DbKind;
+    use sid_core::adapters::secrets::SecretId;
+    use sid_store::{DbConnection, now_epoch};
+    let id = string_value(values, "id").unwrap_or_default();
+    let name = string_value(values, "name").unwrap_or_default();
+    let kind_str = choice_value(values, "kind").unwrap_or_default();
+    let dsn = string_value(values, "dsn").unwrap_or_default();
+    let password = string_value(values, "password").unwrap_or_default();
+    if id.is_empty() || name.is_empty() || dsn.is_empty() {
+        return Err(anyhow::anyhow!("id, name, and dsn are required"));
+    }
+    let kind = match kind_str.as_str() {
+        "Postgres" => DbKind::Postgres,
+        "SQLite" => DbKind::Sqlite,
+        other => return Err(anyhow::anyhow!("unknown db kind: {other}")),
+    };
+    let secret_ref = if kind == DbKind::Postgres && !password.is_empty() {
+        let sid = SecretId::new(format!("db.connection.{id}.password"));
+        sid_app
+            .secrets
+            .put(&sid, password.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write db password: {e}"))?;
+        Some(sid)
+    } else {
+        None
+    };
+    let conn = DbConnection {
+        id,
+        kind,
+        name,
+        dsn,
+        secret_ref,
+        created_at: now_epoch(),
+    };
+    sid_app
+        .store
+        .upsert_db_connection(&conn)
+        .map_err(|e| anyhow::anyhow!("upsert db connection: {e}"))?;
+    refresh_database_widget(sid_app);
+    Ok(())
+}
+
+/// Handle a `database.remove:<id>` submit. On confirm, removes the
+/// connection record AND best-effort deletes any stored password.
+fn submit_database_remove(
+    sid_app: &mut SidApp,
+    conn_id: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_core::adapters::secrets::SecretId;
+    if choice_value(values, "confirm").as_deref() != Some("Yes, remove") {
+        return Ok(());
+    }
+    sid_app
+        .store
+        .remove_db_connection(conn_id)
+        .map_err(|e| anyhow::anyhow!("remove db connection: {e}"))?;
+    // Best-effort password cleanup — never fails the remove.
+    let secret = SecretId::new(format!("db.connection.{conn_id}.password"));
+    if let Err(e) = sid_app.secrets.delete(&secret) {
+        tracing::warn!("failed to delete db connection secret: {e}");
+    }
+    refresh_database_widget(sid_app);
+    Ok(())
+}
+
+/// Handle a `system.pin_config` submit: validate the path, default the label
+/// to the basename, persist.
+fn submit_system_pin_config(
+    sid_app: &mut SidApp,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_store::{PinnedConfig, now_epoch};
+    let path_str = string_value(values, "path").unwrap_or_default();
+    let label = string_value(values, "label").unwrap_or_default();
+    if path_str.is_empty() {
+        return Err(anyhow::anyhow!("path is required"));
+    }
+    let path = PathBuf::from(&path_str);
+    let abs = std::fs::canonicalize(&path).unwrap_or(path);
+    let label = if label.is_empty() {
+        abs.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pin")
+            .to_string()
+    } else {
+        label
+    };
+    let pin = PinnedConfig {
+        path: abs,
+        label,
+        opener_cmd: None,
+        created_at: now_epoch(),
+    };
+    sid_app
+        .store
+        .upsert_pinned_config(&pin)
+        .map_err(|e| anyhow::anyhow!("upsert pinned config: {e}"))?;
+    refresh_system_widget(sid_app);
+    Ok(())
+}
+
+/// Handle a `system.remove_pin:<path>` submit.
+fn submit_system_remove_pin(
+    sid_app: &mut SidApp,
+    path_str: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    if choice_value(values, "confirm").as_deref() != Some("Yes, remove") {
+        return Ok(());
+    }
+    let path = PathBuf::from(path_str);
+    sid_app
+        .store
+        .remove_pinned_config(&path)
+        .map_err(|e| anyhow::anyhow!("remove pinned config: {e}"))?;
+    refresh_system_widget(sid_app);
+    Ok(())
+}
+
+/// Handle a `system.quick_action.new` submit. Stores the action and, if it
+/// is globally scoped, refreshes the palette via
+/// [`rehydrate_global_quick_actions`].
+fn submit_system_quick_action_new(
+    sid_app: &mut SidApp,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_store::{QuickAction, QuickActionScope};
+    let id = string_value(values, "id").unwrap_or_default();
+    let label = string_value(values, "label").unwrap_or_default();
+    let cmd = string_value(values, "command").unwrap_or_default();
+    let scope_str = choice_value(values, "scope").unwrap_or_default();
+    let keybind = string_value(values, "keybind").filter(|s| !s.is_empty());
+    if id.is_empty() || label.is_empty() || cmd.is_empty() {
+        return Err(anyhow::anyhow!("id, label, and command are required"));
+    }
+    let scope = match scope_str.as_str() {
+        "Workspace" => QuickActionScope::Workspace,
+        _ => QuickActionScope::Global,
+    };
+    let qa = QuickAction {
+        id,
+        label,
+        cmd,
+        keybind,
+        scope,
+    };
+    sid_app
+        .store
+        .upsert_quick_action(&qa)
+        .map_err(|e| anyhow::anyhow!("upsert quick action: {e}"))?;
+    refresh_system_widget(sid_app);
+    rehydrate_palette_quick_actions(sid_app);
+    Ok(())
+}
+
+/// Handle a `system.remove_quick_action:<id>` submit.
+fn submit_system_remove_quick_action(
+    sid_app: &mut SidApp,
+    qa_id: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    if choice_value(values, "confirm").as_deref() != Some("Yes, remove") {
+        return Ok(());
+    }
+    sid_app
+        .store
+        .remove_quick_action(qa_id)
+        .map_err(|e| anyhow::anyhow!("remove quick action: {e}"))?;
+    refresh_system_widget(sid_app);
+    rehydrate_palette_quick_actions(sid_app);
+    Ok(())
+}
+
+/// Replace the globally-scoped quick-action entries in the App's action
+/// registry with the current store contents. Errors are logged but do not
+/// propagate — the palette is best-effort, not authoritative.
+fn rehydrate_palette_quick_actions(sid_app: &mut SidApp) {
+    if let Err(e) = rehydrate_global_quick_actions(&*sid_app.store, sid_app.app.actions_mut()) {
+        tracing::warn!("rehydrate quick actions: {e}");
+    }
+}
+
+fn string_value(values: &[(String, sid_widgets::FieldValue)], label: &str) -> Option<String> {
     use sid_widgets::FieldValue;
-    values.iter().find(|(k, _)| k == label).and_then(|(_, v)| match v {
-        FieldValue::Choice(s) => Some(s.clone()),
-        _ => None,
-    })
+    values
+        .iter()
+        .find(|(k, _)| k == label)
+        .and_then(|(_, v)| match v {
+            FieldValue::Text(s) | FieldValue::Picker(s) | FieldValue::Password(s) => {
+                Some(s.clone())
+            }
+            _ => None,
+        })
+}
+
+fn choice_value(values: &[(String, sid_widgets::FieldValue)], label: &str) -> Option<String> {
+    use sid_widgets::FieldValue;
+    values
+        .iter()
+        .find(|(k, _)| k == label)
+        .and_then(|(_, v)| match v {
+            FieldValue::Choice(s) => Some(s.clone()),
+            _ => None,
+        })
 }
 
 /// Reload the WorkspacesWidget's state from `store.list_workspaces()`.
@@ -1486,6 +2222,85 @@ fn refresh_workspaces_widget(sid_app: &mut SidApp) {
                 let any_ref = w as &mut dyn std::any::Any;
                 if let Some(ww) = any_ref.downcast_mut::<WorkspacesWidget>() {
                     *ww.state_mut() = sid_widgets::workspaces::WorkspacesState::new(ws);
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// Reload the SshWidget's host list from `store.list_ssh_hosts()`. Preserves
+/// the rest of the widget's transient state (connection phase, SFTP panel,
+/// per-host history).
+fn refresh_ssh_widget(sid_app: &mut SidApp) {
+    let hosts = match sid_app.store.list_ssh_hosts() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("list_ssh_hosts after modal submit failed: {e}");
+            return;
+        }
+    };
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "ssh" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                if let Some(ww) = any_ref.downcast_mut::<SshWidget>() {
+                    ww.state_mut().set_store_hosts(hosts);
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// Reload the DatabaseWidget's connection list from
+/// `store.list_db_connections()`. Other state (active client, results,
+/// history) is left intact.
+fn refresh_database_widget(sid_app: &mut SidApp) {
+    let conns = match sid_app.store.list_db_connections() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("list_db_connections after modal submit failed: {e}");
+            return;
+        }
+    };
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "database" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                if let Some(ww) = any_ref.downcast_mut::<DatabaseWidget>() {
+                    ww.state_mut().set_connections(conns);
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// Reload the SystemWidget's pinned configs and quick actions from the
+/// store. Services pane is read live from systemd; nothing to reload.
+fn refresh_system_widget(sid_app: &mut SidApp) {
+    let pins = match sid_app.store.list_pinned_configs() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("list_pinned_configs after modal submit failed: {e}");
+            return;
+        }
+    };
+    let qas = match sid_app.store.list_quick_actions() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("list_quick_actions after modal submit failed: {e}");
+            return;
+        }
+    };
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "system" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                if let Some(ww) = any_ref.downcast_mut::<SystemWidget>() {
+                    ww.pinned_configs_mut().replace_items(pins);
+                    ww.quick_actions_mut().replace_items(qas);
                 }
             }
             break;
@@ -2408,7 +3223,7 @@ mod tests {
 
     // ---- Phase 3 modal routing ----
 
-    /// `workspace_modal_for_key` opens a "New Workspace" modal when on the
+    /// `modal_for_active_tab_key` opens a "New Workspace" modal when on the
     /// Workspaces tab and `N` is pressed.
     #[test]
     fn modal_for_key_n_on_workspaces_opens_new_modal() {
@@ -2419,7 +3234,7 @@ mod tests {
             code: KeyCode::Char('N'),
             mods: KeyModifiers::NONE,
         };
-        let modal = workspace_modal_for_key(&sid_app, chord);
+        let modal = modal_for_active_tab_key(&sid_app, chord);
         assert!(modal.is_some(), "N on workspaces should open a modal");
         let m = modal.unwrap();
         assert_eq!(m.id.0, "workspaces.new");
@@ -2427,17 +3242,18 @@ mod tests {
         assert_eq!(m.fields.len(), 3);
     }
 
-    /// Pressing `N` on a non-workspaces tab does not open a modal.
+    /// Pressing `N` on a non-workspaces tab does not open a Workspaces modal.
     #[test]
     fn modal_for_key_n_on_other_tab_returns_none() {
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::KeyChord;
+        // Settings has no modal trigger for `N`.
         let sid_app = build_test_sid_app(Some("settings"));
         let chord = KeyChord {
             code: KeyCode::Char('N'),
             mods: KeyModifiers::NONE,
         };
-        assert!(workspace_modal_for_key(&sid_app, chord).is_none());
+        assert!(modal_for_active_tab_key(&sid_app, chord).is_none());
     }
 
     /// Modifier-combined keys (Ctrl+N) do NOT trigger the modal — those are
@@ -2451,7 +3267,7 @@ mod tests {
             code: KeyCode::Char('N'),
             mods: KeyModifiers::CONTROL,
         };
-        assert!(workspace_modal_for_key(&sid_app, chord).is_none());
+        assert!(modal_for_active_tab_key(&sid_app, chord).is_none());
     }
 
     /// Submitting a "New Workspace" modal upserts the workspace into the
@@ -2549,5 +3365,825 @@ mod tests {
             sid_app.store.list_workspaces().unwrap().is_empty(),
             "yes-remove must delete"
         );
+    }
+
+    // ─── Phase 4 — SSH tab modals ───────────────────────────────────────────
+
+    fn plain_chord(c: char) -> sid_core::event::KeyChord {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        sid_core::event::KeyChord {
+            code: KeyCode::Char(c),
+            mods: KeyModifiers::NONE,
+        }
+    }
+
+    fn delete_chord() -> sid_core::event::KeyChord {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        sid_core::event::KeyChord {
+            code: KeyCode::Delete,
+            mods: KeyModifiers::NONE,
+        }
+    }
+
+    /// Pressing `N` on the SSH tab opens the `ssh.new` modal with the six
+    /// expected fields.
+    #[test]
+    fn ssh_new_modal_for_key_opens_on_ssh() {
+        let sid_app = build_test_sid_app(Some("ssh"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
+            .expect("N on ssh should open a modal");
+        assert_eq!(modal.id.0, "ssh.new");
+        assert_eq!(modal.fields.len(), 6);
+    }
+
+    /// `N` on a non-SSH tab does NOT open `ssh.new`. (Confirmed by checking
+    /// the modal id, since other tabs may have their own `N` modals.)
+    #[test]
+    fn ssh_new_modal_for_key_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert_ne!(id, "ssh.new", "workspaces N must not produce ssh.new");
+    }
+
+    /// Submitting an `ssh.new` modal upserts the host into the store AND the
+    /// SSH widget sees the new host on the next render.
+    #[test]
+    fn ssh_new_submit_persists_and_refreshes() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        assert!(sid_app.store.list_ssh_hosts().unwrap().is_empty());
+
+        let id = ModalId("ssh.new".to_string());
+        let values = vec![
+            ("alias".to_string(), FieldValue::Text("my-prod".into())),
+            ("host".to_string(), FieldValue::Text("10.0.0.1".into())),
+            ("user".to_string(), FieldValue::Text("root".into())),
+            ("port".to_string(), FieldValue::Text("22".into())),
+            (
+                "identity_file".to_string(),
+                FieldValue::Picker(String::new()),
+            ),
+            ("auth".to_string(), FieldValue::Choice("Key".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+
+        let hosts = sid_app.store.list_ssh_hosts().unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].alias, "my-prod");
+        assert_eq!(hosts[0].port, 22);
+        assert!(hosts[0].identity_file.is_none());
+
+        // The widget should see it too.
+        let widget_aliases: Vec<String> = sid_app
+            .app
+            .tabs()
+            .active()
+            .layout
+            .iter_widgets()
+            .next()
+            .and_then(|w| w.as_any().downcast_ref::<SshWidget>())
+            .map(|s| {
+                s.state()
+                    .visible_hosts()
+                    .iter()
+                    .map(|h| h.alias.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(widget_aliases.contains(&"my-prod".to_string()));
+    }
+
+    /// `ssh.new` requires alias, host, user. Empty alias → Err.
+    #[test]
+    fn ssh_new_submit_rejects_missing_required_fields() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.new".to_string());
+        let values = vec![
+            ("alias".to_string(), FieldValue::Text(String::new())),
+            ("host".to_string(), FieldValue::Text("h".into())),
+            ("user".to_string(), FieldValue::Text("u".into())),
+            ("port".to_string(), FieldValue::Text("22".into())),
+            (
+                "identity_file".to_string(),
+                FieldValue::Picker(String::new()),
+            ),
+            ("auth".to_string(), FieldValue::Choice("Key".into())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("alias"));
+    }
+
+    /// `ssh.new` rejects a port that is not a u16.
+    #[test]
+    fn ssh_new_submit_rejects_non_u16_port() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.new".to_string());
+        let values = vec![
+            ("alias".to_string(), FieldValue::Text("a".into())),
+            ("host".to_string(), FieldValue::Text("h".into())),
+            ("user".to_string(), FieldValue::Text("u".into())),
+            ("port".to_string(), FieldValue::Text("not-a-number".into())),
+            (
+                "identity_file".to_string(),
+                FieldValue::Picker(String::new()),
+            ),
+            ("auth".to_string(), FieldValue::Choice("Key".into())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("port"));
+    }
+
+    /// `Del` on the SSH tab with a selected manual host opens the remove
+    /// modal. With no hosts present, it returns None.
+    #[test]
+    fn ssh_remove_modal_for_key_opens_on_ssh_with_manual_host() {
+        use sid_store::{SshHost, SshHostSource};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        sid_app
+            .store
+            .upsert_ssh_host(&SshHost {
+                alias: "to-kill".into(),
+                host: "h".into(),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+            })
+            .unwrap();
+        // Refresh the widget to pick up the new host.
+        refresh_ssh_widget(&mut sid_app);
+
+        let modal = modal_for_active_tab_key(&sid_app, delete_chord())
+            .expect("Del on ssh with selected host opens remove modal");
+        assert_eq!(modal.id.0, "ssh.remove:to-kill");
+    }
+
+    /// `Del` on the SSH tab does not open a modal on a different tab (e.g.
+    /// Database). Database has its own Del handler with its own id prefix.
+    #[test]
+    fn ssh_remove_modal_for_key_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, delete_chord());
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert!(!id.starts_with("ssh.remove"));
+    }
+
+    /// "No, cancel" on `ssh.remove:<alias>` leaves the host present.
+    #[test]
+    fn ssh_remove_cancel_does_not_delete() {
+        use sid_store::{SshHost, SshHostSource};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        sid_app
+            .store
+            .upsert_ssh_host(&SshHost {
+                alias: "keep".into(),
+                host: "h".into(),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+            })
+            .unwrap();
+        let id = ModalId("ssh.remove:keep".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("No, cancel".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.store.list_ssh_hosts().unwrap().len(), 1);
+    }
+
+    /// "Yes, remove" on `ssh.remove:<alias>` deletes the host.
+    #[test]
+    fn ssh_remove_yes_deletes() {
+        use sid_store::{SshHost, SshHostSource};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        sid_app
+            .store
+            .upsert_ssh_host(&SshHost {
+                alias: "doomed".into(),
+                host: "h".into(),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+            })
+            .unwrap();
+        let id = ModalId("ssh.remove:doomed".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("Yes, remove".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(sid_app.store.list_ssh_hosts().unwrap().is_empty());
+    }
+
+    /// `G` on the SSH tab opens the keygen modal with all five fields.
+    #[test]
+    fn ssh_gen_key_modal_for_key_opens_on_ssh() {
+        let sid_app = build_test_sid_app(Some("ssh"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('G'))
+            .expect("G on ssh opens keygen modal");
+        assert_eq!(modal.id.0, "ssh.gen_key");
+        assert_eq!(modal.fields.len(), 5);
+    }
+
+    /// `G` on a non-SSH tab does not open the keygen modal.
+    #[test]
+    fn ssh_gen_key_modal_for_key_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('G'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert_ne!(id, "ssh.gen_key");
+    }
+
+    /// `ssh.gen_key` rejects mismatched passphrase before invoking
+    /// `ssh-keygen`. Verified by passing two different strings.
+    #[test]
+    fn ssh_gen_key_rejects_mismatched_passphrase() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("id_ed25519");
+        let id = ModalId("ssh.gen_key".to_string());
+        let values = vec![
+            (
+                "algorithm".to_string(),
+                FieldValue::Choice("Ed25519".into()),
+            ),
+            (
+                "output_path".to_string(),
+                FieldValue::Picker(out.to_string_lossy().into_owned()),
+            ),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password("alpha".into()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password("BETA".into()),
+            ),
+            ("comment".to_string(), FieldValue::Text("c".into())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("do not match"));
+        // Output file must not exist after a rejected attempt.
+        assert!(!out.exists());
+    }
+
+    /// `ssh.gen_key` rejects an existing output path before invoking
+    /// `ssh-keygen` (so the test never shells out).
+    #[test]
+    fn ssh_gen_key_rejects_existing_path() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("id_existing");
+        std::fs::write(&out, "preexisting").unwrap();
+        let id = ModalId("ssh.gen_key".to_string());
+        let values = vec![
+            (
+                "algorithm".to_string(),
+                FieldValue::Choice("Ed25519".into()),
+            ),
+            (
+                "output_path".to_string(),
+                FieldValue::Picker(out.to_string_lossy().into_owned()),
+            ),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            ("comment".to_string(), FieldValue::Text("c".into())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        // File must still hold its original content.
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "preexisting");
+    }
+
+    /// `ssh.gen_key` rejects an empty output_path.
+    #[test]
+    fn ssh_gen_key_rejects_empty_output_path() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.gen_key".to_string());
+        let values = vec![
+            (
+                "algorithm".to_string(),
+                FieldValue::Choice("Ed25519".into()),
+            ),
+            ("output_path".to_string(), FieldValue::Picker(String::new())),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            ("comment".to_string(), FieldValue::Text(String::new())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("output_path"));
+    }
+
+    /// Real ssh-keygen end-to-end test. Skipped by default — ssh-keygen may
+    /// not be on PATH or may interact with the controlling terminal in
+    /// undesirable ways inside CI.
+    #[test]
+    #[ignore = "needs ssh-keygen"]
+    fn ssh_gen_key_invokes_ssh_keygen_when_inputs_valid() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("id_ed25519_gen_test");
+        let id = ModalId("ssh.gen_key".to_string());
+        let values = vec![
+            (
+                "algorithm".to_string(),
+                FieldValue::Choice("Ed25519".into()),
+            ),
+            (
+                "output_path".to_string(),
+                FieldValue::Picker(out.to_string_lossy().into_owned()),
+            ),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            ("comment".to_string(), FieldValue::Text("sid-test".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(
+            out.exists(),
+            "ssh-keygen should have produced the private key"
+        );
+        let pub_path = dir.path().join("id_ed25519_gen_test.pub");
+        assert!(pub_path.exists(), "ssh-keygen should have produced a .pub");
+    }
+
+    // ─── Phase 5 — Database tab modals ──────────────────────────────────────
+
+    /// `N` on the Database tab opens the `database.new` modal.
+    #[test]
+    fn database_new_modal_for_key_opens_on_database() {
+        let sid_app = build_test_sid_app(Some("database"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
+            .expect("N on database opens add-connection modal");
+        assert_eq!(modal.id.0, "database.new");
+        assert_eq!(modal.fields.len(), 5);
+    }
+
+    /// `N` on a different tab does not produce the database modal.
+    #[test]
+    fn database_new_modal_for_key_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert_ne!(id, "database.new");
+    }
+
+    /// Submitting `database.new` writes a record to the store and refreshes
+    /// the widget. With a non-empty Postgres password, the secret is also
+    /// persisted via the SecretStore.
+    #[test]
+    fn database_new_submit_persists_and_refreshes_postgres_with_password() {
+        use sid_core::adapters::secrets::SecretId;
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("database"));
+        assert!(sid_app.store.list_db_connections().unwrap().is_empty());
+
+        let id = ModalId("database.new".to_string());
+        let values = vec![
+            ("id".to_string(), FieldValue::Text("local-pg".into())),
+            ("name".to_string(), FieldValue::Text("Local PG".into())),
+            ("kind".to_string(), FieldValue::Choice("Postgres".into())),
+            (
+                "dsn".to_string(),
+                FieldValue::Text("postgres://u@h/db".into()),
+            ),
+            ("password".to_string(), FieldValue::Password("pw".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let conns = sid_app.store.list_db_connections().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].id, "local-pg");
+        let secret = SecretId::new("db.connection.local-pg.password");
+        assert_eq!(
+            sid_app.secrets.get(&secret).unwrap().as_deref(),
+            Some(b"pw".as_slice())
+        );
+
+        // Widget reflects the change.
+        let widget_conns: Vec<String> = sid_app
+            .app
+            .tabs()
+            .active()
+            .layout
+            .iter_widgets()
+            .next()
+            .and_then(|w| w.as_any().downcast_ref::<DatabaseWidget>())
+            .map(|d| {
+                d.state()
+                    .connections()
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(widget_conns.contains(&"local-pg".to_string()));
+    }
+
+    /// SQLite connections ignore the password field even if supplied — no
+    /// secret is written.
+    #[test]
+    fn database_new_submit_sqlite_ignores_password() {
+        use sid_core::adapters::secrets::SecretId;
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("database"));
+        let id = ModalId("database.new".to_string());
+        let values = vec![
+            ("id".to_string(), FieldValue::Text("scratch".into())),
+            ("name".to_string(), FieldValue::Text("Scratch".into())),
+            ("kind".to_string(), FieldValue::Choice("SQLite".into())),
+            ("dsn".to_string(), FieldValue::Text(":memory:".into())),
+            (
+                "password".to_string(),
+                FieldValue::Password("ignored".into()),
+            ),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let secret = SecretId::new("db.connection.scratch.password");
+        assert!(sid_app.secrets.get(&secret).unwrap().is_none());
+        let conn = sid_app.store.get_db_connection("scratch").unwrap().unwrap();
+        assert!(conn.secret_ref.is_none());
+    }
+
+    /// "No, cancel" on `database.remove:<id>` does not delete.
+    #[test]
+    fn database_remove_cancel_does_not_delete() {
+        use sid_core::adapters::db_client::DbKind;
+        use sid_store::{DbConnection, now_epoch};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("database"));
+        sid_app
+            .store
+            .upsert_db_connection(&DbConnection {
+                id: "keep".into(),
+                kind: DbKind::Sqlite,
+                name: "Keep".into(),
+                dsn: ":memory:".into(),
+                secret_ref: None,
+                created_at: now_epoch(),
+            })
+            .unwrap();
+        let id = ModalId("database.remove:keep".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("No, cancel".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.store.list_db_connections().unwrap().len(), 1);
+    }
+
+    /// "Yes, remove" on `database.remove:<id>` deletes the row AND the
+    /// associated secret.
+    #[test]
+    fn database_remove_yes_deletes_and_clears_secret() {
+        use sid_core::adapters::db_client::DbKind;
+        use sid_core::adapters::secrets::SecretId;
+        use sid_store::{DbConnection, now_epoch};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("database"));
+        let secret = SecretId::new("db.connection.doomed.password");
+        sid_app.secrets.put(&secret, b"pw").unwrap();
+        sid_app
+            .store
+            .upsert_db_connection(&DbConnection {
+                id: "doomed".into(),
+                kind: DbKind::Postgres,
+                name: "Doomed".into(),
+                dsn: "postgres://u@h/db".into(),
+                secret_ref: Some(secret.clone()),
+                created_at: now_epoch(),
+            })
+            .unwrap();
+        let id = ModalId("database.remove:doomed".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("Yes, remove".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(sid_app.store.list_db_connections().unwrap().is_empty());
+        assert!(sid_app.secrets.get(&secret).unwrap().is_none());
+    }
+
+    // ─── Phase 5 — System tab modals ────────────────────────────────────────
+
+    /// On the System tab with PinnedConfigs focused, `N` opens the
+    /// `system.pin_config` modal.
+    #[test]
+    fn system_pin_modal_for_key_opens_on_system() {
+        let sid_app = build_test_sid_app(Some("system"));
+        // Default focused pane is PinnedConfigs.
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
+            .expect("N on system PinnedConfigs opens pin modal");
+        assert_eq!(modal.id.0, "system.pin_config");
+        assert_eq!(modal.fields.len(), 2);
+    }
+
+    /// `N` on a non-System tab does not open the pin modal.
+    #[test]
+    fn system_pin_modal_for_key_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert_ne!(id, "system.pin_config");
+    }
+
+    /// Submitting `system.pin_config` writes the pin to the store and the
+    /// widget reflects it.
+    #[test]
+    fn system_pin_submit_persists_and_refreshes() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+        let id = ModalId("system.pin_config".to_string());
+        let values = vec![
+            (
+                "path".to_string(),
+                FieldValue::Picker(target.to_string_lossy().into_owned()),
+            ),
+            ("label".to_string(), FieldValue::Text("zshrc".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let pins = sid_app.store.list_pinned_configs().unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].label, "zshrc");
+
+        // Widget mirrors it.
+        let widget_labels: Vec<String> = sid_app
+            .app
+            .tabs()
+            .active()
+            .layout
+            .iter_widgets()
+            .next()
+            .and_then(|w| w.as_any().downcast_ref::<SystemWidget>())
+            .map(|s| {
+                s.pinned_configs()
+                    .items()
+                    .iter()
+                    .map(|p| p.label.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(widget_labels, vec!["zshrc".to_string()]);
+    }
+
+    /// `system.pin_config` with an empty path is rejected.
+    #[test]
+    fn system_pin_rejects_empty_path() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let id = ModalId("system.pin_config".to_string());
+        let values = vec![
+            ("path".to_string(), FieldValue::Picker(String::new())),
+            ("label".to_string(), FieldValue::Text(String::new())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("path"));
+    }
+
+    /// `system.pin_config` defaults the label to the path's basename when
+    /// none is supplied.
+    #[test]
+    fn system_pin_defaults_label_to_basename() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("nginx.conf");
+        std::fs::write(&target, "stub").unwrap();
+        let id = ModalId("system.pin_config".to_string());
+        let values = vec![
+            (
+                "path".to_string(),
+                FieldValue::Picker(target.to_string_lossy().into_owned()),
+            ),
+            ("label".to_string(), FieldValue::Text(String::new())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let pins = sid_app.store.list_pinned_configs().unwrap();
+        assert_eq!(pins[0].label, "nginx.conf");
+    }
+
+    /// "Yes, remove" on `system.remove_pin:<path>` deletes the pin.
+    #[test]
+    fn system_pin_remove_yes_deletes() {
+        use sid_store::{PinnedConfig, now_epoch};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+        sid_app
+            .store
+            .upsert_pinned_config(&PinnedConfig {
+                path: target.clone(),
+                label: "victim".into(),
+                opener_cmd: None,
+                created_at: now_epoch(),
+            })
+            .unwrap();
+
+        let id = ModalId(format!("system.remove_pin:{}", target.display()));
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("Yes, remove".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(sid_app.store.list_pinned_configs().unwrap().is_empty());
+    }
+
+    /// "No, cancel" on `system.remove_pin:<path>` keeps the pin.
+    #[test]
+    fn system_pin_remove_cancel_does_not_delete() {
+        use sid_store::{PinnedConfig, now_epoch};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+        sid_app
+            .store
+            .upsert_pinned_config(&PinnedConfig {
+                path: target.clone(),
+                label: "keep".into(),
+                opener_cmd: None,
+                created_at: now_epoch(),
+            })
+            .unwrap();
+        let id = ModalId(format!("system.remove_pin:{}", target.display()));
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("No, cancel".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.store.list_pinned_configs().unwrap().len(), 1);
+    }
+
+    /// `N` on the System tab with QuickActions focused opens the quick-action
+    /// modal.
+    #[test]
+    fn system_quick_action_modal_for_key_opens_when_focused() {
+        let mut sid_app = build_test_sid_app(Some("system"));
+        // Cycle focus forward twice: PinnedConfigs → Services → QuickActions.
+        if let Some(w) = sid_app
+            .app
+            .tabs_mut()
+            .active_mut()
+            .layout
+            .iter_widgets_mut()
+            .next()
+        {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(sw) = any_ref.downcast_mut::<SystemWidget>() {
+                sw.state_mut().cycle_focus_forward();
+                sw.state_mut().cycle_focus_forward();
+            }
+        }
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
+            .expect("N on system QuickActions opens add modal");
+        assert_eq!(modal.id.0, "system.quick_action.new");
+        assert_eq!(modal.fields.len(), 5);
+    }
+
+    /// `N` on the System tab with Services focused is a no-op (services are
+    /// not stored).
+    #[test]
+    fn system_modal_for_key_returns_none_when_services_focused() {
+        let mut sid_app = build_test_sid_app(Some("system"));
+        if let Some(w) = sid_app
+            .app
+            .tabs_mut()
+            .active_mut()
+            .layout
+            .iter_widgets_mut()
+            .next()
+        {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(sw) = any_ref.downcast_mut::<SystemWidget>() {
+                sw.state_mut().cycle_focus_forward(); // → Services
+            }
+        }
+        assert!(modal_for_active_tab_key(&sid_app, plain_chord('N')).is_none());
+    }
+
+    /// Submitting `system.quick_action.new` persists the action AND adds it
+    /// to the global palette when scope=Global.
+    #[test]
+    fn system_quick_action_new_submit_persists_and_rehydrates_palette() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let id = ModalId("system.quick_action.new".to_string());
+        let values = vec![
+            ("id".to_string(), FieldValue::Text("qa-reload".into())),
+            ("label".to_string(), FieldValue::Text("Reload".into())),
+            ("command".to_string(), FieldValue::Text("sid reload".into())),
+            ("scope".to_string(), FieldValue::Choice("Global".into())),
+            ("keybind".to_string(), FieldValue::Text(String::new())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let actions = sid_app.store.list_quick_actions().unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].id, "qa-reload");
+        // Palette contains the new entry.
+        assert!(!sid_app.app.actions().fuzzy("Reload").is_empty());
+    }
+
+    /// `system.quick_action.new` requires id, label, and command.
+    #[test]
+    fn system_quick_action_new_rejects_missing_fields() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        let id = ModalId("system.quick_action.new".to_string());
+        let values = vec![
+            ("id".to_string(), FieldValue::Text("qa-x".into())),
+            ("label".to_string(), FieldValue::Text(String::new())),
+            ("command".to_string(), FieldValue::Text("echo".into())),
+            ("scope".to_string(), FieldValue::Choice("Global".into())),
+            ("keybind".to_string(), FieldValue::Text(String::new())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("label"));
+    }
+
+    /// "Yes, remove" on `system.remove_quick_action:<id>` deletes the action.
+    #[test]
+    fn system_quick_action_remove_yes_deletes() {
+        use sid_store::{QuickAction, QuickActionScope};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        sid_app
+            .store
+            .upsert_quick_action(&QuickAction {
+                id: "qa-bye".into(),
+                label: "Goodbye".into(),
+                cmd: "echo bye".into(),
+                keybind: None,
+                scope: QuickActionScope::Global,
+            })
+            .unwrap();
+        let id = ModalId("system.remove_quick_action:qa-bye".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("Yes, remove".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(sid_app.store.list_quick_actions().unwrap().is_empty());
+    }
+
+    /// "No, cancel" on `system.remove_quick_action:<id>` keeps the action.
+    #[test]
+    fn system_quick_action_remove_cancel_does_not_delete() {
+        use sid_store::{QuickAction, QuickActionScope};
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("system"));
+        sid_app
+            .store
+            .upsert_quick_action(&QuickAction {
+                id: "qa-keep".into(),
+                label: "Keep".into(),
+                cmd: "echo keep".into(),
+                keybind: None,
+                scope: QuickActionScope::Global,
+            })
+            .unwrap();
+        let id = ModalId("system.remove_quick_action:qa-keep".to_string());
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("No, cancel".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.store.list_quick_actions().unwrap().len(), 1);
     }
 }
