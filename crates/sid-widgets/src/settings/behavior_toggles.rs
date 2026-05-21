@@ -1,0 +1,546 @@
+//! Behavior toggles sub-view.
+//!
+//! The right pane is a vertical (label, value) list. Each [`Toggle`] carries a
+//! canonical `key` (from `sid_store::settings_keys`) and a typed [`ToggleValue`]
+//! — bool, choice, u64, or string. The user moves up/down with the focus
+//! arrow keys and cycles the focused value with left/right.
+//!
+//! The view tracks a set of `dirty` keys so [`BehaviorTogglesView::flush_dirty`]
+//! can issue only the necessary `put_*` calls against a [`sid_store::Store`].
+//!
+//! # Examples
+//!
+//! ```
+//! use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
+//!
+//! let v = BehaviorTogglesView::defaults();
+//! assert_eq!(v.toggles().len(), 5);
+//! assert_eq!(v.focused_index(), 0);
+//! ```
+
+use std::collections::BTreeSet;
+
+use sid_core::SidError;
+use sid_store::{Store, TypedSettings};
+
+/// Typed value for a single [`Toggle`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToggleValue {
+    /// A two-state switch.
+    Bool(bool),
+    /// A pick-one-of-N option.
+    Choice {
+        /// All available options.
+        options: Vec<String>,
+        /// Currently selected index (always `< options.len()`).
+        selected: usize,
+    },
+    /// A bounded integer (clamps to `[min, max]`).
+    U64 {
+        /// Current value.
+        value: u64,
+        /// Minimum (inclusive).
+        min: u64,
+        /// Maximum (inclusive).
+        max: u64,
+        /// Step used by `cycle_focused_value`.
+        step: u64,
+    },
+    /// A free-form string.
+    String(String),
+}
+
+/// One row in the behavior toggles list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Toggle {
+    /// Canonical setting key (see `sid_store::settings_keys`).
+    pub key: &'static str,
+    /// Human-readable label.
+    pub label: &'static str,
+    /// Current value.
+    pub value: ToggleValue,
+}
+
+/// State for the behavior toggles sub-view.
+pub struct BehaviorTogglesView {
+    toggles: Vec<Toggle>,
+    focused: usize,
+    /// Set of keys modified since last `clear_dirty` / `flush_dirty`.
+    dirty: BTreeSet<&'static str>,
+}
+
+impl BehaviorTogglesView {
+    /// Build the canonical default toggle list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
+    /// let v = BehaviorTogglesView::defaults();
+    /// assert_eq!(v.toggles().len(), 5);
+    /// ```
+    pub fn defaults() -> Self {
+        use sid_store::settings_keys::*;
+        Self {
+            toggles: vec![
+                Toggle {
+                    key: AUTO_RESTORE_SESSION,
+                    label: "Auto-restore session",
+                    value: ToggleValue::Choice {
+                        options: vec!["yes".into(), "ask".into(), "no".into()],
+                        selected: 1,
+                    },
+                },
+                Toggle {
+                    key: AUTO_SCAN_WORKSPACES,
+                    label: "Auto-scan workspace roots on startup",
+                    value: ToggleValue::Bool(true),
+                },
+                Toggle {
+                    key: PERSIST_DEBOUNCE_MS,
+                    label: "State persist debounce (ms)",
+                    value: ToggleValue::U64 {
+                        value: 250,
+                        min: 50,
+                        max: 5000,
+                        step: 10,
+                    },
+                },
+                Toggle {
+                    key: HEARTBEAT_INTERVAL_SECS,
+                    label: "Session heartbeat interval (s)",
+                    value: ToggleValue::U64 {
+                        value: 5,
+                        min: 1,
+                        max: 300,
+                        step: 1,
+                    },
+                },
+                Toggle {
+                    key: DEFAULT_TAB,
+                    label: "Default tab on launch",
+                    value: ToggleValue::Choice {
+                        options: vec![
+                            "workspaces".into(),
+                            "ssh".into(),
+                            "database".into(),
+                            "network".into(),
+                            "system".into(),
+                            "settings".into(),
+                        ],
+                        selected: 0,
+                    },
+                },
+            ],
+            focused: 0,
+            dirty: BTreeSet::new(),
+        }
+    }
+
+    /// Borrow the toggle list.
+    pub fn toggles(&self) -> &[Toggle] {
+        &self.toggles
+    }
+
+    /// Focused row index.
+    pub fn focused_index(&self) -> usize {
+        self.focused
+    }
+
+    /// Focused toggle, if any.
+    pub fn focused(&self) -> Option<&Toggle> {
+        self.toggles.get(self.focused)
+    }
+
+    /// Move focus down (wraps).
+    pub fn next(&mut self) {
+        if !self.toggles.is_empty() {
+            self.focused = (self.focused + 1) % self.toggles.len();
+        }
+    }
+
+    /// Move focus up (wraps).
+    pub fn prev(&mut self) {
+        if !self.toggles.is_empty() {
+            self.focused = if self.focused == 0 {
+                self.toggles.len() - 1
+            } else {
+                self.focused - 1
+            };
+        }
+    }
+
+    /// Cycle the focused toggle's value. `dir` is `+1` to advance and `-1` to
+    /// reverse. Other values are treated as `+1`.
+    ///
+    /// - `Bool` flips.
+    /// - `Choice` advances (wraps).
+    /// - `U64` adds `dir * step`, clamped to `[min, max]`. If `max == min`,
+    ///   no change.
+    /// - `String` is left untouched (string toggles are edited via the input
+    ///   path, not cycling).
+    pub fn cycle_focused_value(&mut self, dir: i32) {
+        let step_dir: i64 = if dir < 0 { -1 } else { 1 };
+        let Some(t) = self.toggles.get_mut(self.focused) else {
+            return;
+        };
+        let key = t.key;
+        let changed = match &mut t.value {
+            ToggleValue::Bool(b) => {
+                *b = !*b;
+                true
+            }
+            ToggleValue::Choice { options, selected } => {
+                if options.is_empty() {
+                    false
+                } else {
+                    let len = options.len() as i64;
+                    let new = ((*selected as i64) + step_dir).rem_euclid(len);
+                    *selected = new as usize;
+                    true
+                }
+            }
+            ToggleValue::U64 {
+                value,
+                min,
+                max,
+                step,
+            } => {
+                if *max == *min {
+                    false
+                } else {
+                    let delta = (*step as i64) * step_dir;
+                    let raw = (*value as i64).saturating_add(delta);
+                    let clamped = raw.clamp(*min as i64, *max as i64);
+                    let new = clamped as u64;
+                    let did_change = new != *value;
+                    *value = new;
+                    did_change
+                }
+            }
+            ToggleValue::String(_) => false,
+        };
+        if changed {
+            self.dirty.insert(key);
+        }
+    }
+
+    /// Iterate over dirty keys.
+    pub fn dirty_keys(&self) -> impl Iterator<Item = &&'static str> {
+        self.dirty.iter()
+    }
+
+    /// Clear the dirty set without writing.
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
+    /// Load every toggle from `store`. Unknown / missing keys leave the value
+    /// at its current default. Invalid stored bytes propagate as
+    /// `SidError::Storage`.
+    pub fn load_from_store(&mut self, store: &dyn Store) -> Result<(), SidError> {
+        for t in self.toggles.iter_mut() {
+            match &mut t.value {
+                ToggleValue::Bool(b) => {
+                    if let Some(v) = store.get_bool(t.key)? {
+                        *b = v;
+                    }
+                }
+                ToggleValue::U64 {
+                    value, min, max, ..
+                } => {
+                    if let Some(v) = store.get_u64(t.key)? {
+                        // Clamp to validity on load; the stored value might
+                        // have been set when the bounds were different.
+                        *value = v.clamp(*min, *max);
+                    }
+                }
+                ToggleValue::Choice { options, selected } => {
+                    if let Some(s) = store.get_string(t.key)?
+                        && let Some(idx) = options.iter().position(|o| o == &s)
+                    {
+                        *selected = idx;
+                    }
+                }
+                ToggleValue::String(s) => {
+                    if let Some(v) = store.get_string(t.key)? {
+                        *s = v;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Write every dirty toggle to `store`. Returns the number of keys
+    /// written. Dirty set is cleared on success.
+    pub fn flush_dirty(&mut self, store: &dyn Store) -> Result<usize, SidError> {
+        let dirty: Vec<&'static str> = self.dirty.iter().copied().collect();
+        let mut wrote = 0;
+        for key in dirty {
+            let t = self
+                .toggles
+                .iter()
+                .find(|t| t.key == key)
+                .expect("dirty key must exist in toggles");
+            match &t.value {
+                ToggleValue::Bool(b) => store.put_bool(key, *b)?,
+                ToggleValue::U64 { value, .. } => store.put_u64(key, *value)?,
+                ToggleValue::Choice { options, selected } => {
+                    store.put_string(key, &options[*selected])?
+                }
+                ToggleValue::String(s) => store.put_string(key, s)?,
+            }
+            wrote += 1;
+        }
+        self.dirty.clear();
+        Ok(wrote)
+    }
+}
+
+impl Default for BehaviorTogglesView {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+    use sid_store::{OpenStore, RedbStore, SettingValue, settings_keys};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, RedbStore) {
+        let d = tempdir().unwrap();
+        let s = RedbStore::open(&d.path().join("s.redb")).unwrap();
+        (d, s)
+    }
+
+    #[test]
+    fn defaults_has_five_toggles() {
+        let v = BehaviorTogglesView::defaults();
+        assert_eq!(v.toggles().len(), 5);
+    }
+
+    #[test]
+    fn cycle_focused_bool_flips_and_marks_dirty() {
+        let mut v = BehaviorTogglesView::defaults();
+        // Index 1 is `auto_scan_workspaces: Bool(true)`.
+        v.next();
+        v.cycle_focused_value(1);
+        match &v.focused().unwrap().value {
+            ToggleValue::Bool(b) => assert!(!*b),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        assert!(v.dirty_keys().any(|k| *k == settings_keys::AUTO_SCAN_WORKSPACES));
+    }
+
+    #[test]
+    fn cycle_focused_choice_wraps() {
+        let mut v = BehaviorTogglesView::defaults();
+        // Index 0: auto_restore_session, options ["yes","ask","no"], selected = 1.
+        v.cycle_focused_value(1); // ask -> no
+        v.cycle_focused_value(1); // no -> yes (wrap)
+        match &v.focused().unwrap().value {
+            ToggleValue::Choice { selected, .. } => assert_eq!(*selected, 0),
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cycle_focused_choice_reverse_wraps_negative() {
+        let mut v = BehaviorTogglesView::defaults();
+        // Index 0: selected = 1; reverse cycle once -> 0; twice -> 2 (wrap).
+        v.cycle_focused_value(-1);
+        v.cycle_focused_value(-1);
+        match &v.focused().unwrap().value {
+            ToggleValue::Choice { selected, .. } => assert_eq!(*selected, 2),
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cycle_focused_u64_increments_clamped() {
+        let mut v = BehaviorTogglesView::defaults();
+        // Index 2: persist_debounce_ms = 250, max = 5000, step = 10.
+        v.next();
+        v.next();
+        for _ in 0..1000 {
+            v.cycle_focused_value(1);
+        }
+        match &v.focused().unwrap().value {
+            ToggleValue::U64 { value, .. } => assert_eq!(*value, 5000),
+            other => panic!("expected U64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cycle_focused_u64_decrements_clamped_at_min() {
+        let mut v = BehaviorTogglesView::defaults();
+        v.next();
+        v.next();
+        for _ in 0..1000 {
+            v.cycle_focused_value(-1);
+        }
+        match &v.focused().unwrap().value {
+            ToggleValue::U64 { value, min, .. } => assert_eq!(*value, *min),
+            other => panic!("expected U64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cycle_u64_with_equal_min_max_is_noop() {
+        let mut v = BehaviorTogglesView::defaults();
+        // Replace persist_debounce_ms with min == max.
+        v.next();
+        v.next();
+        if let Some(t) = v.toggles.get_mut(v.focused) {
+            t.value = ToggleValue::U64 {
+                value: 100,
+                min: 100,
+                max: 100,
+                step: 10,
+            };
+        }
+        v.cycle_focused_value(1);
+        v.cycle_focused_value(-1);
+        match &v.focused().unwrap().value {
+            ToggleValue::U64 { value, .. } => assert_eq!(*value, 100),
+            other => panic!("expected U64, got {other:?}"),
+        }
+        assert!(v.dirty_keys().count() == 0);
+    }
+
+    #[test]
+    fn dirty_keys_reflects_only_modified() {
+        let mut v = BehaviorTogglesView::defaults();
+        v.cycle_focused_value(1); // index 0 — choice
+        let dirty: Vec<_> = v.dirty_keys().copied().collect();
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0], settings_keys::AUTO_RESTORE_SESSION);
+    }
+
+    #[test]
+    fn clear_dirty_resets() {
+        let mut v = BehaviorTogglesView::defaults();
+        v.cycle_focused_value(1);
+        v.clear_dirty();
+        assert_eq!(v.dirty_keys().count(), 0);
+    }
+
+    #[test]
+    fn next_prev_keep_focused_in_bounds() {
+        let mut v = BehaviorTogglesView::defaults();
+        for _ in 0..1000 {
+            v.next();
+        }
+        assert!(v.focused_index() < v.toggles().len());
+        for _ in 0..1000 {
+            v.prev();
+        }
+        assert!(v.focused_index() < v.toggles().len());
+    }
+
+    #[test]
+    fn flush_dirty_round_trips_to_store() {
+        let (_d, store) = store();
+        let mut v = BehaviorTogglesView::defaults();
+        // Toggle bool (index 1).
+        v.next();
+        v.cycle_focused_value(1);
+        let wrote = v.flush_dirty(&store).unwrap();
+        assert_eq!(wrote, 1);
+        assert_eq!(v.dirty_keys().count(), 0);
+
+        let mut v2 = BehaviorTogglesView::defaults();
+        v2.load_from_store(&store).unwrap();
+        // index 1 should now be `false`.
+        match &v2.toggles()[1].value {
+            ToggleValue::Bool(b) => assert!(!*b),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flush_is_idempotent() {
+        let (_d, store) = store();
+        let mut v = BehaviorTogglesView::defaults();
+        v.cycle_focused_value(1);
+        v.flush_dirty(&store).unwrap();
+        let second = v.flush_dirty(&store).unwrap();
+        assert_eq!(second, 0);
+    }
+
+    #[test]
+    fn load_with_unknown_choice_keeps_default() {
+        let (_d, store) = store();
+        store
+            .put_setting(
+                settings_keys::AUTO_RESTORE_SESSION,
+                &SettingValue(b"banana".to_vec()),
+            )
+            .unwrap();
+        let mut v = BehaviorTogglesView::defaults();
+        v.load_from_store(&store).unwrap();
+        // Still on the default selected=1 ("ask").
+        match &v.toggles()[0].value {
+            ToggleValue::Choice { selected, .. } => assert_eq!(*selected, 1),
+            other => panic!("expected Choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_clamps_oob_u64() {
+        let (_d, store) = store();
+        store
+            .put_u64(settings_keys::PERSIST_DEBOUNCE_MS, u64::MAX)
+            .unwrap();
+        let mut v = BehaviorTogglesView::defaults();
+        v.load_from_store(&store).unwrap();
+        match &v.toggles()[2].value {
+            ToggleValue::U64 { value, max, .. } => {
+                assert_eq!(*value, *max, "expected clamped to max");
+            }
+            other => panic!("expected U64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_invalid_bool_returns_err() {
+        let (_d, store) = store();
+        store
+            .put_setting(
+                settings_keys::AUTO_SCAN_WORKSPACES,
+                &SettingValue(b"maybe".to_vec()),
+            )
+            .unwrap();
+        let mut v = BehaviorTogglesView::defaults();
+        assert!(v.load_from_store(&store).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn prop_focused_index_in_bounds(steps in 0usize..256) {
+            let mut v = BehaviorTogglesView::defaults();
+            for i in 0..steps {
+                if i % 2 == 0 { v.next() } else { v.prev() }
+                prop_assert!(v.focused_index() < v.toggles().len());
+            }
+        }
+
+        #[test]
+        fn prop_choice_selected_in_bounds(steps in 0usize..1024, dir in any::<i8>()) {
+            let mut v = BehaviorTogglesView::defaults();
+            // index 0 is a choice; stay focused there.
+            let dir_i32 = if dir < 0 { -1 } else { 1 };
+            for _ in 0..steps {
+                v.cycle_focused_value(dir_i32);
+                if let ToggleValue::Choice { options, selected } = &v.toggles()[0].value {
+                    prop_assert!(*selected < options.len());
+                }
+            }
+        }
+    }
+}
