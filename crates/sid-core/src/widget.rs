@@ -137,6 +137,59 @@ pub trait RenderTarget {
     fn height(&self) -> u16;
 }
 
+/// One footer hint: a single uppercase letter (or named chord) and its label.
+///
+/// Rendered as `[ N: new ]` in the per-tab footer of the active widget. Concrete
+/// widgets return a `Vec<FooterHint>` from [`Widget::footer_hint`] to advertise
+/// their CRUD verbs to the binary's render layer.
+///
+/// `chord` is the displayed key. It is usually a single uppercase letter
+/// (`"N"`, `"E"`, `"D"`) but may be a multi-character named chord such as
+/// `"Del"`, `"Enter"`, `"Tab"`, or `"Ctrl+R"`. `label` is a short verb describing
+/// the action (`"new"`, `"edit"`, `"remove"`).
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::widget::FooterHint;
+///
+/// let h = FooterHint::new("N", "new");
+/// assert_eq!(h.chord, "N");
+/// assert_eq!(h.label, "new");
+/// ```
+#[derive(Debug, Clone)]
+pub struct FooterHint {
+    /// Displayed text, usually one uppercase letter; can be `"Del"`, `"Enter"`, `"Tab"`.
+    pub chord: String,
+    /// Short description, e.g. `"new"` / `"edit"` / `"help"`.
+    pub label: String,
+}
+
+impl FooterHint {
+    /// Construct a `FooterHint` from any string-like values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::widget::FooterHint;
+    ///
+    /// let h = FooterHint::new("Enter", "promote");
+    /// assert_eq!(h.chord, "Enter");
+    /// assert_eq!(h.label, "promote");
+    ///
+    /// // Works with owned String too.
+    /// let h2 = FooterHint::new(String::from("?"), String::from("help"));
+    /// assert_eq!(h2.chord, "?");
+    /// assert_eq!(h2.label, "help");
+    /// ```
+    pub fn new(chord: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            chord: chord.into(),
+            label: label.into(),
+        }
+    }
+}
+
 /// A focused, self-contained UI module. In v1 each tab contains exactly one Widget.
 ///
 /// # Examples
@@ -161,6 +214,8 @@ pub trait RenderTarget {
 /// let w = MyWidget { id: WidgetId::new("my-widget") };
 /// assert_eq!(w.id().as_str(), "my-widget");
 /// assert_eq!(w.title(), "My Widget");
+/// // Default `footer_hint` is empty.
+/// assert!(w.footer_hint().is_empty());
 /// ```
 pub trait Widget: std::any::Any + Send + Sync {
     /// Stable identity for state restoration. Implementations store this in a field
@@ -175,6 +230,14 @@ pub trait Widget: std::any::Any + Send + Sync {
     }
     /// Restore widget UI state. Default: no-op.
     fn load_state(&mut self, _bytes: &[u8]) {}
+    /// Capital-letter / named-chord actions for the active tab footer.
+    ///
+    /// The binary's render layer queries this from the active widget and
+    /// renders each entry as `[ <chord>: <label> ]` in the footer strip.
+    /// Default: empty. Concrete widgets override to surface their CRUD verbs.
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        Vec::new()
+    }
     /// Downcasting hook so the binary's render layer can call concrete-type
     /// rendering helpers (which take ratatui types, not allowed in this crate).
     /// Each impl is one line: `fn as_any(&self) -> &dyn std::any::Any { self }`.

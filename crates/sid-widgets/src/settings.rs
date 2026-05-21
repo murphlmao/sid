@@ -30,7 +30,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use serde::{Deserialize, Serialize};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_ui::Theme;
 
 use crate::settings::behavior_toggles::BehaviorTogglesView;
@@ -343,6 +343,15 @@ impl Widget for SettingsWidget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("Tab", "next category"),
+            FooterHint::new("Enter", "apply"),
+            FooterHint::new("N", "import"),
+            FooterHint::new("?", "help"),
+        ]
     }
 
     fn render(&self, target: &mut dyn RenderTarget) {

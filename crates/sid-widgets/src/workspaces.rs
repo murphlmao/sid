@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use sid_core::adapters::git::{Branch, CommitInfo, DiffEntry, GitProvider, GitStatus};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_core::workspace_metadata::{WorkspaceAction, WorkspaceKind};
 use sid_store::Workspace;
 
@@ -1476,6 +1476,16 @@ impl Widget for WorkspacesWidget {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn footer_hint(&self) -> Vec<FooterHint> {
+        vec![
+            FooterHint::new("N", "new workspace"),
+            FooterHint::new("A", "add repo"),
+            FooterHint::new("R", "remove"),
+            FooterHint::new("Enter", "promote"),
+            FooterHint::new("?", "help"),
+        ]
     }
 
     fn render(&self, _target: &mut dyn RenderTarget) {
