@@ -3,6 +3,51 @@
 `sid` is a single Rust binary. There's no daemon, no system service,
 no package to install — you build it once and run it.
 
+## TLDR — spin it up locally in 60 seconds
+
+If you have Rust 1.85+ and cmake already:
+
+```sh
+git clone https://github.com/murphlmao/sid && cd sid
+cargo run -p sid
+```
+
+That's it. First build takes a few minutes (vendored libgit2 + Tokio/Ratatui).
+Subsequent runs are sub-second.
+
+**Inside the TUI:**
+
+| Key | What it does |
+|:---|:---|
+| `Ctrl+Q` | **Quit** (also shown in the help bar at the bottom of every frame) |
+| `Ctrl+F` | Open the command palette (fuzzy-search every action) |
+| `Ctrl+←` / `Ctrl+→` | Previous / next tab |
+| `Ctrl+1..6` | Jump directly to tab 1–6 |
+| `Ctrl+,` | Jump to the Settings tab |
+| `j / k` | Down / up in any list (Workspaces tree, etc.) |
+| `Enter` | Drill in / expand an umbrella workspace |
+
+**What you'll see on first launch:**
+
+- Top bar: six tab labels (`● Workspaces · SSH · Database · Network · System · Settings`)
+- Body: the active tab's content. Workspaces shows "no workspaces registered yet" with hints; the other five tabs honestly say "Plan 3/4/5/6/7 — not yet implemented."
+- Bottom bar: a one-line keybind hint, always visible. **This is your "how do I exit?" cheat sheet.**
+
+**Registering a workspace** (e.g., for the Workspaces tab to show something useful):
+
+```sh
+# In another terminal — these are CLI subcommands that exit immediately, no TUI:
+./target/release/sid workspace add ~/code/some-repo
+./target/release/sid workspace list
+./target/release/sid workspace remove ~/code/some-repo
+
+# Or: put your repos under ~/vcs/ and they auto-discover on every launch.
+```
+
+Now relaunch `sid` and the Workspaces tab will show your registered repos as a tree.
+
+---
+
 ## Prerequisites
 
 - **Rust 1.85 or newer** (edition 2024). Install via [rustup](https://rustup.rs):
@@ -81,15 +126,14 @@ sid [OPTIONS] [SUBCOMMAND]
 | `--db <PATH>` | Override the default redb file path. Useful for testing on a throwaway DB. |
 | `--start-tab <ID>` | Start in the given tab if found. IDs: `workspaces`, `ssh`, `database`, `network`, `system`, `settings`. |
 
-The following subcommands are planned for Plan 2 (workspace tab) and
-will be available once that plan lands:
+The following subcommands manage the workspace registry without launching the TUI — they mutate the redb store and exit:
 
 | Subcommand | Description |
 |:---|:---|
-| `sid workspace add <PATH>` | Register a workspace at the given path. |
-| `sid workspace remove <PATH>` | Unregister a workspace. |
-| `sid workspace list` | List registered workspaces. |
-| `sid --skip-discovery` | Skip the startup auto-scan of workspace roots. |
+| `sid workspace add <PATH>` | Register a workspace at the given path. Reads `<path>/.sid/_metadata.sid` if present; otherwise uses the directory name. |
+| `sid workspace remove <PATH>` | Unregister a workspace. Idempotent — removing a non-registered path is a no-op. |
+| `sid workspace list` | List registered workspaces with kind + path. |
+| `sid --skip-discovery` | Skip the startup auto-scan of `~/vcs/`. Useful in tests, CI, or for fast launches. |
 
 These subcommands operate against the same redb file. They do not start
 the TUI — they print to stdout and exit. This lets you script workspace
