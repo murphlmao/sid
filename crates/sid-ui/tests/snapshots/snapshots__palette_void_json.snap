@@ -1,0 +1,58 @@
+---
+source: crates/sid-ui/tests/snapshots.rs
+assertion_line: 62
+expression: json
+---
+{
+  "name": "void",
+  "background": {
+    "r": 0,
+    "g": 0,
+    "b": 0
+  },
+  "surface": {
+    "r": 10,
+    "g": 10,
+    "b": 10
+  },
+  "foreground": {
+    "r": 238,
+    "g": 238,
+    "b": 238
+  },
+  "muted": {
+    "r": 85,
+    "g": 85,
+    "b": 85
+  },
+  "accent_primary": {
+    "r": 212,
+    "g": 65,
+    "b": 65
+  },
+  "accent_success": {
+    "r": 192,
+    "g": 192,
+    "b": 192
+  },
+  "accent_warning": {
+    "r": 224,
+    "g": 160,
+    "b": 64
+  },
+  "accent_error": {
+    "r": 255,
+    "g": 51,
+    "b": 51
+  },
+  "border": {
+    "r": 34,
+    "g": 34,
+    "b": 34
+  },
+  "glyphs": {
+    "star": "★",
+    "small_star": "✦",
+    "dot": "·"
+  }
+}

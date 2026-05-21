@@ -1,0 +1,6 @@
+---
+source: crates/sid-ui/tests/snapshots.rs
+assertion_line: 182
+expression: row
+---
+ALERT

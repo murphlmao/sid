@@ -1,0 +1,58 @@
+---
+source: crates/sid-ui/tests/snapshots.rs
+assertion_line: 83
+expression: json
+---
+{
+  "name": "cosmos-light",
+  "background": {
+    "r": 244,
+    "g": 244,
+    "b": 248
+  },
+  "surface": {
+    "r": 234,
+    "g": 234,
+    "b": 242
+  },
+  "foreground": {
+    "r": 24,
+    "g": 24,
+    "b": 36
+  },
+  "muted": {
+    "r": 112,
+    "g": 112,
+    "b": 130
+  },
+  "accent_primary": {
+    "r": 176,
+    "g": 48,
+    "b": 48
+  },
+  "accent_success": {
+    "r": 64,
+    "g": 128,
+    "b": 144
+  },
+  "accent_warning": {
+    "r": 176,
+    "g": 128,
+    "b": 48
+  },
+  "accent_error": {
+    "r": 192,
+    "g": 48,
+    "b": 64
+  },
+  "border": {
+    "r": 208,
+    "g": 208,
+    "b": 220
+  },
+  "glyphs": {
+    "star": "★",
+    "small_star": "✦",
+    "dot": "·"
+  }
+}
