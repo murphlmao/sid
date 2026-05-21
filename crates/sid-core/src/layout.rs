@@ -1,8 +1,41 @@
 use crate::widget::Widget;
 
+/// Direction of a layout split.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::Dir;
+///
+/// let h = Dir::Horizontal;
+/// let v = Dir::Vertical;
+/// assert_ne!(h, v);
+/// assert_eq!(h, Dir::Horizontal);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Dir {
+    /// Children are placed side by side.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::Dir;
+    ///
+    /// let d = Dir::Horizontal;
+    /// assert_eq!(d, Dir::Horizontal);
+    /// ```
     Horizontal,
+
+    /// Children are stacked top-to-bottom.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::Dir;
+    ///
+    /// let d = Dir::Vertical;
+    /// assert_eq!(d, Dir::Vertical);
+    /// ```
     Vertical,
 }
 
@@ -22,11 +55,59 @@ pub enum Layout {
 
 impl Layout {
     /// In-order traversal of every widget in the layout.
+    ///
+    /// Visits leaves left-to-right (for `Split`, `a` before `b`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::layout::{Dir, Layout};
+    /// use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+    /// use sid_core::event::Event;
+    /// use sid_core::context::WidgetCtx;
+    ///
+    /// struct W { id: WidgetId, title: &'static str }
+    /// impl Widget for W {
+    ///     fn id(&self) -> &WidgetId { &self.id }
+    ///     fn title(&self) -> &str { self.title }
+    ///     fn render(&self, _: &mut dyn RenderTarget) {}
+    ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome {
+    ///         EventOutcome::Bubble
+    ///     }
+    /// }
+    ///
+    /// let layout = Layout::Single(Box::new(W { id: WidgetId::new("w"), title: "W" }));
+    /// assert_eq!(layout.iter_widgets().count(), 1);
+    /// ```
     pub fn iter_widgets(&self) -> WidgetIter<'_> {
         WidgetIter { stack: vec![self] }
     }
 
     /// In-order mutable traversal of every widget in the layout.
+    ///
+    /// Visits leaves left-to-right (for `Split`, `a` before `b`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::layout::{Dir, Layout};
+    /// use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+    /// use sid_core::event::Event;
+    /// use sid_core::context::WidgetCtx;
+    ///
+    /// struct W { id: WidgetId, title: &'static str }
+    /// impl Widget for W {
+    ///     fn id(&self) -> &WidgetId { &self.id }
+    ///     fn title(&self) -> &str { self.title }
+    ///     fn render(&self, _: &mut dyn RenderTarget) {}
+    ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome {
+    ///         EventOutcome::Bubble
+    ///     }
+    /// }
+    ///
+    /// let mut layout = Layout::Single(Box::new(W { id: WidgetId::new("w"), title: "W" }));
+    /// assert_eq!(layout.iter_widgets_mut().count(), 1);
+    /// ```
     pub fn iter_widgets_mut(&mut self) -> WidgetIterMut<'_> {
         WidgetIterMut { stack: vec![self] }
     }
