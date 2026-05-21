@@ -5,3 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+git2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+insta.workspace = true
+git2.workspace = true
