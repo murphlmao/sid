@@ -25,7 +25,9 @@ sid-job.workspace = true
 sid-widgets.workspace = true
 sid-git.workspace = true
 sid-sysinfo.workspace = true
+sid-system.workspace = true
 serde_json.workspace = true
+shell-words.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true
@@ -43,6 +45,7 @@ futures.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 criterion.workspace = true
+which.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "test-util"] }
 
 [[bench]]

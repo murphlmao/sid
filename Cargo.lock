@@ -2306,11 +2306,13 @@ dependencies = [
  "futures",
  "ratatui",
  "serde_json",
+ "shell-words",
  "sid-core",
  "sid-git",
  "sid-job",
  "sid-store",
  "sid-sysinfo",
+ "sid-system",
  "sid-ui",
  "sid-widgets",
  "tempfile",
@@ -2318,6 +2320,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "which 7.0.3",
 ]
 
 [[package]]
