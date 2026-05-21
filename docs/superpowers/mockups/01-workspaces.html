@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>sid — Workspaces mockup</title>
+<style>
+  :root {
+    --bg-deep: #07060f;
+    --bg-surface: rgba(15, 13, 28, 0.85);
+    --bg-dim-modal-backdrop: rgba(7, 6, 15, 0.78);
+    --border-dim: #4a3f6e;
+    --border-bright: #8a76c2;
+    --text-primary: #e0d8f5;
+    --text-muted: #7a6f9c;
+    --accent: #e85a87;
+    --star-cream: #e8d8b9;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Source Code Pro', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ---------- starfield ---------- */
+  .starfield {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    /* dimmed because a modal is open — motion paused */
+    opacity: 0.35;
+    transition: opacity 0.4s ease;
+  }
+  .starfield .layer {
+    position: absolute;
+    inset: -50%;
+    width: 200%;
+    height: 200%;
+  }
+  .starfield .star {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    background: var(--star-cream);
+    border-radius: 50%;
+    opacity: 0.55;
+    /* motion paused while modal is open */
+    animation-play-state: paused;
+  }
+  .starfield .star.dim   { opacity: 0.25; width: 1px; height: 1px; }
+  .starfield .star.bright{ opacity: 0.85; box-shadow: 0 0 4px var(--star-cream); }
+  .starfield .star.violet{ background: #b9a4ee; box-shadow: 0 0 3px #b9a4ee; opacity: 0.5; }
+  .starfield .star.rose  { background: var(--accent); box-shadow: 0 0 4px var(--accent); opacity: 0.45; }
+
+  @keyframes drift-slow {
+    from { transform: translate(0, 0); }
+    to   { transform: translate(-40px, 25px); }
+  }
+  @keyframes drift-fast {
+    from { transform: translate(0, 0); }
+    to   { transform: translate(-80px, -50px); }
+  }
+  .starfield .layer.slow .star { animation: drift-slow 90s linear infinite; }
+  .starfield .layer.fast .star { animation: drift-fast 45s linear infinite; }
+
+  /* ---------- terminal container ---------- */
+  .term {
+    position: relative;
+    z-index: 1;
+    max-width: 1180px;
+    margin: 36px auto;
+    background: var(--bg-surface);
+    backdrop-filter: blur(2px);
+    border: 1px solid var(--border-dim);
+    border-radius: 4px;
+    padding: 0;
+    box-shadow: 0 0 0 1px rgba(138, 118, 194, 0.08),
+                0 24px 80px -20px rgba(0, 0, 0, 0.7);
+  }
+
+  /* double-line border drawn with characters */
+  .term-frame {
+    padding: 0;
+  }
+
+  .term-title-row {
+    display: flex;
+    align-items: center;
+    padding: 6px 14px 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    border-bottom: 1px solid transparent;
+  }
+  .term-title {
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+  }
+  .term-title .glyph { color: var(--accent); margin-right: 6px; }
+
+  .double-border-top, .double-border-bot {
+    color: var(--border-bright);
+    font-size: 13px;
+    letter-spacing: 0;
+    padding: 0 8px;
+    white-space: pre;
+    overflow: hidden;
+    user-select: none;
+  }
+  .double-border-top  { padding-top: 6px; }
+  .double-border-bot  { padding-bottom: 6px; }
+
+  .term-inner {
+    padding: 4px 16px 8px;
+  }
+
+  /* ---------- tab strip ---------- */
+  .tabs {
+    display: flex;
+    gap: 0;
+    padding: 6px 0 10px;
+    border-bottom: 1px solid var(--border-dim);
+    margin-bottom: 12px;
+    font-size: 12px;
+  }
+  .tab {
+    padding: 4px 14px;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+  .tab.active {
+    color: var(--text-primary);
+    border-color: var(--border-bright);
+    background: rgba(138, 118, 194, 0.08);
+    position: relative;
+  }
+  .tab.active::before {
+    content: '● ';
+    color: var(--accent);
+  }
+  .tab .num {
+    color: var(--text-muted);
+    margin-right: 4px;
+    opacity: 0.7;
+  }
+
+  /* ---------- body two-pane (dimmed under modal) ---------- */
+  .body-wrap {
+    position: relative;
+    min-height: 460px;
+  }
+  .body-panes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border-dim);
+    /* dimmed because modal is open */
+    filter: saturate(0.55) brightness(0.6);
+    opacity: 0.85;
+  }
+
+  .pane {
+    padding: 10px 14px 14px;
+  }
+  .pane-left {
+    border-right: 1px solid var(--border-dim);
+  }
+
+  .pane-header {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px dashed var(--border-dim);
+  }
+  .pane-header .lead { color: var(--text-primary); }
+
+  /* tree */
+  .tree {
+    white-space: pre;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .tree .umb-dot    { color: var(--accent); }
+  .tree .repo-dot   { color: var(--border-bright); }
+  .tree .name       { color: var(--text-primary); }
+  .tree .meta       { color: var(--text-muted); }
+  .tree .branch     { color: #b9a4ee; }
+  .tree .clean      { color: #87c79a; }
+  .tree .dirty      { color: var(--accent); }
+  .tree .ahead      { color: #e8d8b9; }
+  .tree .selected   {
+    background: rgba(232, 90, 135, 0.10);
+    box-shadow: inset 2px 0 0 var(--accent);
+    padding-left: 4px;
+    margin-left: -4px;
+  }
+
+  .tree-section-sep {
+    color: var(--text-muted);
+    margin: 14px 0 6px;
+    white-space: pre;
+    font-size: 12px;
+  }
+  .auto-list {
+    white-space: pre;
+    color: var(--text-muted);
+    line-height: 1.6;
+    font-size: 13px;
+  }
+  .auto-list .path { color: var(--text-primary); opacity: 0.78; }
+
+  /* right pane detail */
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    row-gap: 4px;
+    column-gap: 12px;
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  .detail-grid .k { color: var(--text-muted); }
+  .detail-grid .v { color: var(--text-primary); }
+  .detail-grid .v .branch-tag { color: #b9a4ee; }
+  .detail-grid .v .num        { color: var(--accent); }
+  .detail-grid .v .modified   { color: var(--accent); }
+  .detail-grid .v .untracked  { color: #e8d8b9; }
+  .detail-grid .v .remote     { color: var(--text-muted); }
+
+  .recent-title {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin: 4px 0 4px;
+  }
+  .commits {
+    white-space: pre;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+  .commits .sha   { color: #e8d8b9; }
+  .commits .scope { color: var(--border-bright); }
+  .commits .msg   { color: var(--text-primary); }
+
+  .actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .action {
+    border: 1px solid var(--border-dim);
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: rgba(138, 118, 194, 0.04);
+    border-radius: 2px;
+  }
+  .action .key { color: var(--accent); }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-dim-modal-backdrop);
+    z-index: 5;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 56px;
+  }
+  .modal {
+    width: 60%;
+    min-width: 460px;
+    max-width: 640px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-bright);
+    border-radius: 3px;
+    box-shadow: 0 0 0 1px rgba(138, 118, 194, 0.25),
+                0 24px 60px -10px rgba(0, 0, 0, 0.8),
+                0 0 80px -20px rgba(232, 90, 135, 0.15);
+    padding: 0;
+  }
+  .modal-titlebar {
+    color: var(--border-bright);
+    white-space: pre;
+    padding: 8px 14px 4px;
+    font-size: 13px;
+    letter-spacing: 0;
+    user-select: none;
+  }
+  .modal-titlebar .label {
+    color: var(--text-primary);
+  }
+  .modal-body {
+    padding: 8px 18px 16px;
+  }
+  .form-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+  .form-row .lbl {
+    color: var(--text-muted);
+  }
+  .field {
+    border: 1px solid var(--border-dim);
+    background: rgba(7, 6, 15, 0.5);
+    padding: 5px 10px;
+    color: var(--text-primary);
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 26px;
+  }
+  .field.focused {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(232, 90, 135, 0.35),
+                0 0 18px -6px rgba(232, 90, 135, 0.6);
+  }
+  .field .caret {
+    color: var(--accent);
+    animation: blink 1.1s steps(2, start) infinite;
+  }
+  @keyframes blink {
+    to { visibility: hidden; }
+  }
+  .field .ghost {
+    color: var(--text-muted);
+    opacity: 0.7;
+  }
+  .field .browse-btn {
+    color: var(--text-muted);
+    border: 1px solid var(--border-dim);
+    padding: 0 8px;
+    font-size: 11px;
+    border-radius: 2px;
+    margin-left: 8px;
+  }
+
+  .radio-group {
+    display: flex;
+    gap: 26px;
+    align-items: center;
+    padding-left: 2px;
+  }
+  .radio {
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .radio .dot {
+    color: var(--text-muted);
+  }
+  .radio.selected {
+    color: var(--text-primary);
+  }
+  .radio.selected .dot {
+    color: var(--accent);
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 10px 18px 14px;
+    border-top: 1px dashed var(--border-dim);
+    margin-top: 4px;
+  }
+  .modal-btn {
+    border: 1px solid var(--border-dim);
+    padding: 4px 14px;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: rgba(138, 118, 194, 0.06);
+    border-radius: 2px;
+  }
+  .modal-btn.primary {
+    border-color: var(--accent);
+    color: var(--text-primary);
+    background: rgba(232, 90, 135, 0.10);
+  }
+  .modal-btn .key { color: var(--accent); }
+  .modal-btn.primary .key { color: var(--accent); }
+
+  /* ---------- status + footer ---------- */
+  .status-line {
+    margin-top: 10px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: 2px;
+    color: var(--text-muted);
+    font-size: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .status-line .sep { color: var(--border-dim); }
+  .status-line .num { color: var(--text-primary); }
+  .status-line .acc { color: var(--accent); }
+
+  .footer-hints {
+    margin-top: 8px;
+    padding: 6px 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+    border-top: 1px solid var(--border-dim);
+  }
+  .footer-hints .hint  { color: var(--text-muted); margin-right: 14px; }
+  .footer-hints .key   { color: var(--accent); }
+  .footer-hints .row2  { margin-top: 4px; opacity: 0.85; }
+
+  /* description below mockup */
+  .desc {
+    max-width: 1180px;
+    margin: 16px auto 60px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.55;
+    padding: 0 8px;
+  }
+  .desc pre {
+    background: rgba(15, 13, 28, 0.6);
+    border: 1px solid var(--border-dim);
+    padding: 10px 14px;
+    border-radius: 3px;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    margin: 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- starfield (dimmed because modal is open; animation paused) -->
+<div class="starfield" aria-hidden="true">
+  <div class="layer slow">
+    <span class="star"          style="top:8%;  left:12%;"></span>
+    <span class="star dim"      style="top:14%; left:32%;"></span>
+    <span class="star bright"   style="top:20%; left:74%;"></span>
+    <span class="star"          style="top:30%; left:5%;"></span>
+    <span class="star violet"   style="top:35%; left:48%;"></span>
+    <span class="star dim"      style="top:42%; left:88%;"></span>
+    <span class="star"          style="top:55%; left:18%;"></span>
+    <span class="star rose"     style="top:62%; left:68%;"></span>
+    <span class="star dim"      style="top:70%; left:36%;"></span>
+    <span class="star bright"   style="top:78%; left:84%;"></span>
+    <span class="star"          style="top:88%; left:22%;"></span>
+    <span class="star violet"   style="top:92%; left:58%;"></span>
+  </div>
+  <div class="layer fast">
+    <span class="star dim"      style="top:5%;  left:50%;"></span>
+    <span class="star"          style="top:18%; left:60%;"></span>
+    <span class="star dim"      style="top:25%; left:20%;"></span>
+    <span class="star bright"   style="top:38%; left:78%;"></span>
+    <span class="star"          style="top:50%; left:42%;"></span>
+    <span class="star dim"      style="top:60%; left:10%;"></span>
+    <span class="star violet"   style="top:72%; left:30%;"></span>
+    <span class="star"          style="top:82%; left:66%;"></span>
+    <span class="star rose"     style="top:94%; left:14%;"></span>
+  </div>
+</div>
+
+<!-- terminal frame -->
+<div class="term">
+  <div class="term-frame">
+
+    <!-- double-line top border with title baked in -->
+    <div class="double-border-top">╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗</div>
+
+    <div class="term-title-row">
+      <span class="term-title"><span class="glyph">✦</span>sid — Workspaces</span>
+    </div>
+
+    <div class="term-inner">
+
+      <!-- tabs -->
+      <div class="tabs">
+        <div class="tab active"><span class="num">1</span>Workspaces</div>
+        <div class="tab"><span class="num">2</span>Git</div>
+        <div class="tab"><span class="num">3</span>SSH</div>
+        <div class="tab"><span class="num">4</span>Database</div>
+        <div class="tab"><span class="num">5</span>System</div>
+        <div class="tab"><span class="num">6</span>Notes</div>
+      </div>
+
+      <!-- body region (dimmed) with modal overlay -->
+      <div class="body-wrap">
+        <div class="body-panes" aria-hidden="true">
+
+          <!-- LEFT: workspace tree + auto-detected -->
+          <div class="pane pane-left">
+            <div class="pane-header"><span class="lead">Workspaces</span> · umbrellas & repos</div>
+
+<div class="tree"><span class="umb-dot">●</span> <span class="name">~/vcs</span>              <span class="meta">(umbrella · 3 repos)</span>
+  ├─ <span class="selected"><span class="repo-dot">○</span> <span class="name">sid</span>           <span class="meta">(<span class="clean">clean</span> · <span class="branch">main</span>)</span></span>
+  ├─ <span class="repo-dot">○</span> <span class="name">dotfiles</span>      <span class="meta">(<span class="ahead">1↑</span> · <span class="branch">main</span>)</span>
+  └─ <span class="repo-dot">○</span> <span class="name">scratch</span>       <span class="meta">(<span class="dirty">dirty</span> · <span class="branch">feature/x</span>)</span>
+<span class="umb-dot">●</span> <span class="name">~/work</span>             <span class="meta">(umbrella · 1 repo)</span>
+  └─ <span class="repo-dot">○</span> <span class="name">acme-monorepo</span> <span class="meta">(<span class="clean">clean</span> · <span class="branch">main</span>)</span></div>
+
+            <div class="tree-section-sep">──── auto-detected (not yet workspaces) ────</div>
+
+<div class="auto-list">· <span class="path">~/code/old-experiment</span>
+· <span class="path">/tmp/cloned</span>
+· <span class="path">~/devscratch/notes</span></div>
+          </div>
+
+          <!-- RIGHT: selected detail -->
+          <div class="pane pane-right">
+            <div class="pane-header"><span class="lead">Selected:</span> ~/vcs/sid</div>
+
+            <div class="detail-grid">
+              <div class="k">branch:</div>   <div class="v"><span class="branch-tag">main</span></div>
+              <div class="k">ahead:</div>    <div class="v"><span class="num">8</span> commits</div>
+              <div class="k">status:</div>   <div class="v"><span class="modified">modified 3</span>, <span class="untracked">untracked 2</span></div>
+              <div class="k">remote:</div>   <div class="v"><span class="remote">git@github.com:murphlmao/sid.git</span></div>
+            </div>
+
+            <div class="recent-title">recent commits</div>
+<div class="commits">  <span class="sha">3da0503</span>  <span class="scope">feat(sysinfo)</span> <span class="msg">implement list_interfaces</span>
+  <span class="sha">540e976</span>  <span class="scope">test(sysinfo)</span> <span class="msg">replace absurd port-range proptest</span>
+  <span class="sha">24834fa</span>  <span class="scope">feat(sysinfo)</span> <span class="msg">implement list_listening_ports</span>
+  <span class="sha">6758552</span>  <span class="scope">feat(sysinfo)</span> <span class="msg">implement list_processes</span></div>
+
+            <div class="actions">
+              <div class="action">[ <span class="key">S</span>: status ]</div>
+              <div class="action">[ <span class="key">L</span>: log ]</div>
+              <div class="action">[ <span class="key">B</span>: branches ]</div>
+              <div class="action">[ <span class="key">C</span>: commit ]</div>
+              <div class="action">[ <span class="key">D</span>: diff ]</div>
+              <div class="action">[ <span class="key">E</span>: editor ]</div>
+            </div>
+          </div>
+
+        </div><!-- /body-panes -->
+
+        <!-- MODAL OVERLAY -->
+        <div class="modal-backdrop">
+          <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div class="modal-titlebar">── <span class="label">New Workspace</span> ─────────────────────────────────────</div>
+            <div class="modal-body">
+
+              <div class="form-row">
+                <div class="lbl">Name</div>
+                <div class="field focused">
+                  <span>my-new-workspace<span class="caret">▍</span></span>
+                  <span></span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="lbl">Path</div>
+                <div class="field">
+                  <span><span class="ghost">/home/murphy/code/</span>...</span>
+                  <span class="browse-btn">browse</span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="lbl">Kind</div>
+                <div class="radio-group">
+                  <span class="radio"><span class="dot">( )</span> Repo</span>
+                  <span class="radio selected"><span class="dot">(●)</span> Umbrella</span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="lbl">Description</div>
+                <div class="field">
+                  <span class="ghost">optional notes</span>
+                  <span></span>
+                </div>
+              </div>
+
+            </div>
+            <div class="modal-footer">
+              <div class="modal-btn primary">[ <span class="key">Enter</span>: Save ]</div>
+              <div class="modal-btn">[ <span class="key">Esc</span>: Cancel ]</div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /body-wrap -->
+
+      <!-- status line -->
+      <div class="status-line">
+        <span>disk: <span class="num">23.4 GB</span> free</span>
+        <span class="sep">·</span>
+        <span><span class="num">0</span> jobs</span>
+        <span class="sep">·</span>
+        <span>workspaces: <span class="num">2</span> umbrellas, <span class="num">4</span> repos</span>
+        <span class="sep">·</span>
+        <span><span class="acc">3</span> detected</span>
+      </div>
+
+      <!-- footer hints -->
+      <div class="footer-hints">
+        <div class="row1">
+          <span class="hint">[ <span class="key">N</span>: new workspace ]</span>
+          <span class="hint">[ <span class="key">A</span>: add repo ]</span>
+          <span class="hint">[ <span class="key">R</span>: remove ]</span>
+          <span class="hint">[ <span class="key">Enter</span>: promote ]</span>
+          <span class="hint">[ <span class="key">?</span> help ]</span>
+        </div>
+        <div class="row2">
+          <span class="key">Ctrl+Q</span> quit · <span class="key">Ctrl+F</span> palette · <span class="key">Ctrl+←/→</span> tabs · <span class="key">Ctrl+1..6</span> jump · <span class="key">Ctrl+,</span> settings
+        </div>
+      </div>
+
+    </div><!-- /term-inner -->
+
+    <div class="double-border-bot">╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝</div>
+
+  </div>
+</div>
+
+<!-- explainer -->
+<div class="desc">
+<pre>Workspaces tab: left rail shows an umbrella tree (~/vcs, ~/work) with their child repos and a separate "auto-detected" list of git dirs sid has noticed but you haven't yet adopted.
+Right pane shows live detail for the selected repo (~/vcs/sid) — branch, ahead-count, dirty status, remote, and recent commits — plus single-key shortcuts to drill into git actions.
+The "New Workspace" modal answers "how do I add a workspace?" directly: press N anywhere on this tab, fill in Name + Path, choose Repo or Umbrella, optionally describe it, Enter saves.
+While the modal is open the background panes are desaturated and the starfield motion is paused — visually signalling that all input is captured by the dialog until Esc cancels or Enter commits.</pre>
+</div>
+
+</body>
+</html>

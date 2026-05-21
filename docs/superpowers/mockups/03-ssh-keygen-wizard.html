@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sid — SSH key generation wizard</title>
+<style>
+  :root {
+    --bg-deep: #07060f;
+    --bg-surface: rgba(15, 13, 28, 0.85);
+    --border-dim: #4a3f6e;
+    --border-bright: #8a76c2;
+    --text-primary: #e0d8f5;
+    --text-muted: #7a6f9c;
+    --accent: #e85a87;
+    --accent-success: #8cdba0;
+    --accent-warning: #f5b48a;
+    --star-cream: #e8d8b9;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html, body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── starfield ───────────────────────────────────────────── */
+  .starfield {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .star {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    background: var(--star-cream);
+    border-radius: 50%;
+    opacity: 0.6;
+    animation: twinkle 4s ease-in-out infinite;
+  }
+
+  .star.dim {
+    opacity: 0.25;
+    animation-duration: 7s;
+  }
+
+  .star.bright {
+    width: 3px;
+    height: 3px;
+    opacity: 0.85;
+    box-shadow: 0 0 6px var(--star-cream);
+    animation-duration: 5s;
+  }
+
+  .accent-star {
+    position: absolute;
+    color: var(--accent);
+    font-size: 14px;
+    opacity: 0.7;
+    animation: twinkle 6s ease-in-out infinite;
+    text-shadow: 0 0 8px rgba(232, 90, 135, 0.4);
+  }
+
+  .supernova {
+    position: absolute;
+    top: 8%;
+    right: 6%;
+    width: 90px;
+    height: 90px;
+    background: radial-gradient(
+      circle,
+      rgba(232, 90, 135, 0.35) 0%,
+      rgba(138, 118, 194, 0.18) 30%,
+      rgba(15, 13, 28, 0) 70%
+    );
+    border-radius: 50%;
+    animation: pulse 7s ease-in-out infinite;
+    filter: blur(1px);
+  }
+
+  .supernova::after {
+    content: '✦';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--star-cream);
+    font-size: 18px;
+    text-shadow: 0 0 12px var(--accent);
+  }
+
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.15); opacity: 1; }
+  }
+
+  /* ── layout ──────────────────────────────────────────────── */
+  .page {
+    position: relative;
+    z-index: 1;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  .page-header {
+    text-align: center;
+    font-size: 17px;
+    color: var(--text-primary);
+    margin-bottom: 36px;
+    letter-spacing: 0.5px;
+    text-shadow: 0 0 12px rgba(138, 118, 194, 0.35);
+  }
+
+  .page-header .glyph {
+    color: var(--accent);
+  }
+
+  .page-header .sub {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 6px;
+  }
+
+  /* ── wizard card ─────────────────────────────────────────── */
+  .card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-dim);
+    border-radius: 4px;
+    padding: 16px 22px 18px;
+    box-shadow:
+      0 0 0 1px rgba(74, 63, 110, 0.3),
+      0 8px 24px rgba(0, 0, 0, 0.5),
+      0 0 40px rgba(74, 63, 110, 0.15);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    position: relative;
+  }
+
+  .card-title {
+    color: var(--border-bright);
+    font-size: 13px;
+    margin-bottom: 14px;
+    white-space: pre;
+    overflow: hidden;
+  }
+
+  .card-title .sep {
+    color: var(--border-dim);
+  }
+
+  .card-title .step-label {
+    color: var(--text-primary);
+  }
+
+  .card-title .step-desc {
+    color: var(--text-muted);
+  }
+
+  .card-body {
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+
+  .card-body .label {
+    color: var(--text-muted);
+  }
+
+  .card-body .selected-row {
+    color: var(--text-primary);
+  }
+
+  .card-body .unselected-row {
+    color: var(--text-muted);
+  }
+
+  .radio-on {
+    color: var(--accent);
+  }
+
+  .radio-off {
+    color: var(--text-muted);
+  }
+
+  .recommended-tag {
+    color: var(--accent-success);
+    opacity: 0.9;
+  }
+
+  .neutral-tag {
+    color: var(--text-muted);
+  }
+
+  .warning-tag {
+    color: var(--accent-warning);
+  }
+
+  .helper-text {
+    color: var(--text-muted);
+    font-style: normal;
+  }
+
+  .helper-text .accent {
+    color: var(--text-primary);
+  }
+
+  /* ── input row ───────────────────────────────────────────── */
+  .input-row {
+    display: inline-block;
+    border: 1px solid var(--border-dim);
+    background: rgba(7, 6, 15, 0.55);
+    padding: 2px 10px;
+    margin: 2px 0;
+    color: var(--text-primary);
+    min-width: 380px;
+  }
+
+  .input-row .placeholder {
+    color: var(--text-muted);
+  }
+
+  .input-row .browse {
+    color: var(--border-bright);
+    margin-left: 8px;
+  }
+
+  .input-row .dropdown {
+    color: var(--border-bright);
+    float: right;
+  }
+
+  .password-dots {
+    color: var(--accent);
+    letter-spacing: 1px;
+  }
+
+  /* ── public key box ──────────────────────────────────────── */
+  .pubkey-box {
+    border: 1px solid var(--border-bright);
+    background: rgba(7, 6, 15, 0.6);
+    margin: 12px 0;
+    padding: 0;
+    border-radius: 2px;
+  }
+
+  .pubkey-header {
+    color: var(--border-bright);
+    padding: 4px 10px 0;
+    font-size: 12px;
+  }
+
+  .pubkey-body {
+    padding: 6px 12px 10px;
+    color: var(--text-primary);
+    word-break: break-all;
+    line-height: 1.5;
+  }
+
+  .pubkey-body .key-text {
+    color: var(--text-primary);
+  }
+
+  .pubkey-body .key-comment {
+    color: var(--accent);
+  }
+
+  .pubkey-actions {
+    padding: 4px 12px 8px;
+    color: var(--accent-success);
+  }
+
+  /* ── footer keys ─────────────────────────────────────────── */
+  .keys-footer {
+    margin-top: 14px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .key-hint {
+    color: var(--text-muted);
+  }
+
+  .key-hint .keycap {
+    color: var(--border-bright);
+  }
+
+  .key-hint .keycap-primary {
+    color: var(--accent);
+  }
+
+  /* ── arrows between cards ───────────────────────────────── */
+  .step-arrow {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 22px;
+    line-height: 1;
+    padding: 14px 0;
+    opacity: 0.7;
+  }
+
+  /* ── hash chip ──────────────────────────────────────────── */
+  .hash-chip {
+    color: var(--accent-success);
+    font-size: 12px;
+    margin-bottom: 8px;
+    display: inline-block;
+  }
+
+  .hash-chip .label {
+    color: var(--text-muted);
+  }
+
+  /* ── plan list ──────────────────────────────────────────── */
+  .plan-list {
+    color: var(--text-muted);
+    padding: 6px 0 4px 4px;
+    line-height: 1.7;
+  }
+
+  .plan-list .step-num {
+    color: var(--border-bright);
+  }
+
+  .plan-list .step-text {
+    color: var(--text-primary);
+  }
+
+  /* ── success toast ──────────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    background: rgba(15, 13, 28, 0.95);
+    border: 1px solid var(--accent-success);
+    border-left: 3px solid var(--accent-success);
+    color: var(--text-primary);
+    padding: 12px 18px 12px 16px;
+    font-size: 13px;
+    border-radius: 3px;
+    box-shadow:
+      0 0 0 1px rgba(140, 219, 160, 0.15),
+      0 12px 32px rgba(0, 0, 0, 0.6),
+      0 0 24px rgba(140, 219, 160, 0.25);
+    z-index: 10;
+    animation: toastFloat 4s ease-in-out infinite;
+    max-width: 380px;
+  }
+
+  .toast .check {
+    color: var(--accent-success);
+    font-weight: bold;
+  }
+
+  .toast .toast-cmd {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  .toast .toast-cmd .cmd-emph {
+    color: var(--accent-success);
+  }
+
+  @keyframes toastFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+
+  /* ── caption pre ────────────────────────────────────────── */
+  .caption {
+    margin-top: 36px;
+    color: var(--text-muted);
+    font-size: 12px;
+    border-top: 1px dashed var(--border-dim);
+    padding-top: 20px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+
+  /* ── cursor indicator > ─────────────────────────────────── */
+  .cursor {
+    color: var(--accent);
+    margin-right: 4px;
+  }
+
+  /* responsive */
+  @media (max-width: 760px) {
+    .input-row {
+      min-width: 0;
+      width: 100%;
+      display: block;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── starfield ───────────────────────────────────────────── -->
+<div class="starfield" id="starfield"></div>
+<div class="supernova"></div>
+
+<div class="page">
+
+  <header class="page-header">
+    <div><span class="glyph">✦</span> sid — SSH key generation wizard <span style="color: var(--text-muted);">(3 steps)</span></div>
+    <div class="sub">Generate a keypair on this device · register it with a remote host · finish passwordless</div>
+  </header>
+
+  <!-- ── STEP 1 ─────────────────────────────────────────────── -->
+  <section class="card" aria-label="Step 1 of 3">
+    <div class="card-title">── <span class="step-label">Step 1 of 3</span> <span class="sep">·</span> <span class="step-desc">Choose algorithm</span> ─────────────────</div>
+
+    <div class="card-body"><span class="label">  Algorithm:</span>
+
+    <span class="cursor">&gt;</span><span class="radio-on">(●)</span> Ed25519       <span class="recommended-tag">(recommended · modern · short)</span>
+        <span class="radio-off">( )</span> <span class="unselected-row">RSA-4096    </span> <span class="neutral-tag">(older clients · longest support)</span>
+        <span class="radio-off">( )</span> <span class="unselected-row">ECDSA P-256 </span> <span class="neutral-tag">(mid-tier)</span>
+        <span class="radio-off">( )</span> <span class="unselected-row">RSA-2048    </span> <span class="warning-tag">⚠  legacy · avoid</span>
+
+  <span class="helper-text">Why Ed25519? Fast, small public keys, secure under
+  current threat models. <span class="accent">Default for new keys since 2024.</span></span></div>
+
+    <div class="keys-footer">
+      <span class="key-hint"><span class="keycap-primary">[ Enter</span>: continue <span class="keycap-primary">]</span>   <span class="keycap">[ Esc</span>: cancel <span class="keycap">]</span></span>
+    </div>
+  </section>
+
+  <div class="step-arrow">▼</div>
+
+  <!-- ── STEP 2 ─────────────────────────────────────────────── -->
+  <section class="card" aria-label="Step 2 of 3">
+    <div class="card-title">── <span class="step-label">Step 2 of 3</span> <span class="sep">·</span> <span class="step-desc">Output path &amp; passphrase</span> ─────────</div>
+
+    <div class="card-body"><span class="label">  Save key to:</span>
+  <span class="input-row">/home/murphy/.ssh/id_ed25519_prod   <span class="browse">[browse]</span></span>
+
+  <span class="helper-text">Public key will be saved alongside as <span class="accent">&lt;path&gt;.pub</span>
+  Permissions will be set to <span class="accent">0600</span> (read/write owner only).</span>
+
+  <span class="label">Passphrase (optional, leave blank to skip):</span>
+  <span class="input-row"><span class="password-dots">•••••••••</span>                                       </span>
+  <span class="label">Confirm:</span>
+  <span class="input-row"><span class="password-dots">•••••••••</span>                                       </span>
+
+  <span class="label">Comment:</span>
+  <span class="input-row">murphy@galaxy · prod-server · 2026-05-22         </span></div>
+
+    <div class="keys-footer">
+      <span class="key-hint"><span class="keycap-primary">[ Enter</span>: generate <span class="keycap-primary">]</span>   <span class="keycap">[ Esc</span>: cancel <span class="keycap">]</span></span>
+    </div>
+  </section>
+
+  <div class="step-arrow">▼</div>
+
+  <!-- ── STEP 3 ─────────────────────────────────────────────── -->
+  <section class="card" aria-label="Step 3 of 3">
+    <div class="card-title">── <span class="step-label">Step 3 of 3</span> <span class="sep">·</span> <span class="step-desc">Setup remote auth</span> ────────────────</div>
+
+    <div class="card-body"><span class="hash-chip"><span class="label">Key generated · </span>SHA256:AbCdEf...XyZ</span>
+
+      <div class="pubkey-box">
+        <div class="pubkey-header">┌─ Public key ──────────────────────────────────</div>
+        <div class="pubkey-body"><span class="key-text">ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI…</span> <span class="key-comment">murphy@galaxy</span></div>
+        <div class="pubkey-actions">[ <span style="color: var(--accent);">C</span>: copy to clipboard ]</div>
+      </div>
+
+  <span class="label">Copy this key to a remote host?</span>
+
+    <span class="cursor">&gt;</span><span class="radio-on">(●)</span> Yes — pick host below and run <span class="accent" style="color: var(--accent-success);">ssh-copy-id</span>
+        <span class="radio-off">( )</span> <span class="unselected-row">No — I'll copy it manually later</span>
+
+  <span class="label">Target host:</span>
+  <span class="input-row">my-prod-server                                <span class="dropdown">▼</span></span>
+
+  <span class="label">This will:</span>
+      <div class="plan-list">
+        <div><span class="step-num">1.</span> <span class="step-text">SSH into my-prod-server (using existing auth)</span></div>
+        <div><span class="step-num">2.</span> <span class="step-text">Append the new public key to <span style="color: var(--accent);">~/.ssh/authorized_keys</span></span></div>
+        <div><span class="step-num">3.</span> <span class="step-text">Verify by reconnecting with the new key</span></div>
+        <div><span class="step-num">4.</span> <span class="step-text">Persist <span style="color: var(--accent);">identity_file</span> on the host record</span></div>
+      </div></div>
+
+    <div class="keys-footer">
+      <span class="key-hint"><span class="keycap-primary">[ Enter</span>: run <span class="keycap-primary">]</span>   <span class="keycap">[ B</span>: back <span class="keycap">]</span>   <span class="keycap">[ Esc</span>: cancel <span class="keycap">]</span></span>
+    </div>
+  </section>
+
+  <pre class="caption">Shown: a 3-step modal wizard (Algorithm → Path/Passphrase → Remote setup) for generating an SSH keypair from inside sid.
+Step 1 picks Ed25519 by default and flags RSA-2048 as legacy; step 2 collects the output path, optional passphrase, and a comment;
+step 3 displays the generated public key, lets you copy it, and offers to ssh-copy-id it into a known host using existing auth.
+End state: keypair on disk at ~/.ssh/id_ed25519_prod, public key in the remote authorized_keys, host record updated — passwordless ssh.</pre>
+
+</div>
+
+<!-- ── success toast ─────────────────────────────────────── -->
+<div class="toast" role="status" aria-live="polite">
+  <div><span class="check">✓</span> Key generated and registered with my-prod-server</div>
+  <div class="toast-cmd">  <span class="cmd-emph">ssh murphy@prod.example.com</span>  (now passwordless)</div>
+</div>
+
+<script>
+  // ── generate starfield ────────────────────────────────────
+  (function () {
+    const sf = document.getElementById('starfield');
+    const vw = Math.max(window.innerWidth, 320);
+    const vh = Math.max(window.innerHeight, 320);
+
+    // ~30 regular dots
+    const dotCount = 30;
+    for (let i = 0; i < dotCount; i++) {
+      const s = document.createElement('div');
+      const r = Math.random();
+      s.className = 'star' + (r < 0.25 ? ' dim' : r > 0.85 ? ' bright' : '');
+      s.style.top = (Math.random() * 100) + 'vh';
+      s.style.left = (Math.random() * 100) + 'vw';
+      s.style.animationDelay = (Math.random() * 4) + 's';
+      sf.appendChild(s);
+    }
+
+    // ~3 ✦ accent stars
+    const accentPositions = [
+      { top: '14%', left: '8%' },
+      { top: '62%', left: '92%' },
+      { top: '78%', left: '12%' }
+    ];
+    accentPositions.forEach((p, i) => {
+      const a = document.createElement('div');
+      a.className = 'accent-star';
+      a.textContent = '✦';
+      a.style.top = p.top;
+      a.style.left = p.left;
+      a.style.animationDelay = (i * 1.4) + 's';
+      sf.appendChild(a);
+    });
+  })();
+</script>
+
+</body>
+</html>

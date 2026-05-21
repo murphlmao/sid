@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>sid — galaxy cockpit (shell mockup)</title>
+<style>
+  :root {
+    --bg-deep: #07060f;
+    --bg-surface: #0f0d1c;
+    --border-dim: #4a3f6e;
+    --border-bright: #8a76c2;
+    --text-primary: #e0d8f5;
+    --text-muted: #7a6f9c;
+    --accent: #e85a87;
+    --accent-warm: #f5b48a;
+    --star-cream: #e8d8b9;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', ui-monospace, monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    overflow: hidden;
+  }
+
+  /* Deep-space backdrop with subtle center glow */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 45%, #14112a 0%, #0a0817 45%, #07060f 100%);
+    z-index: -3;
+  }
+
+  /* Starfield container */
+  .starfield {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    overflow: hidden;
+  }
+
+  .star {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    background: #cfc6e8;
+    border-radius: 50%;
+    opacity: 0.4;
+    animation-name: twinkle;
+    animation-iteration-count: infinite;
+    animation-timing-function: ease-in-out;
+  }
+
+  .star.dim {
+    background: #9a8fc0;
+    width: 1px;
+    height: 1px;
+  }
+
+  .star.bright {
+    color: var(--star-cream);
+    background: transparent;
+    width: auto;
+    height: auto;
+    font-size: 14px;
+    text-shadow:
+      0 0 4px rgba(232, 216, 185, 0.85),
+      0 0 10px rgba(232, 216, 185, 0.45),
+      0 0 18px rgba(232, 216, 185, 0.2);
+    animation-name: twinkle-bright;
+    border-radius: 0;
+  }
+
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.2; }
+    50%      { opacity: 0.9; }
+  }
+
+  @keyframes twinkle-bright {
+    0%, 100% { opacity: 0.55; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.08); }
+  }
+
+  /* Supernova bloom — corner accent */
+  .supernova {
+    position: fixed;
+    top: 8vh;
+    right: 6vw;
+    width: 220px;
+    height: 220px;
+    pointer-events: none;
+    z-index: -1;
+    transform: translate(0, 0);
+  }
+
+  .supernova-core {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle at 50% 50%,
+      rgba(255, 220, 200, 0.95) 0%,
+      rgba(245, 180, 138, 0.75) 12%,
+      rgba(232, 90, 135, 0.55) 32%,
+      rgba(180, 60, 120, 0.25) 55%,
+      rgba(120, 40, 100, 0.08) 75%,
+      rgba(0, 0, 0, 0) 100%
+    );
+    transform: scale(0);
+    opacity: 0;
+    animation: supernova-bloom 6s ease-out infinite;
+    filter: blur(0.5px);
+  }
+
+  @keyframes supernova-bloom {
+    0%   { transform: scale(0);    opacity: 0; }
+    10%  { transform: scale(0.4);  opacity: 0.9; }
+    35%  { transform: scale(1.0);  opacity: 0.7; }
+    60%  { transform: scale(1.2);  opacity: 0.25; }
+    80%  { transform: scale(1.25); opacity: 0.05; }
+    100% { transform: scale(1.3);  opacity: 0; }
+  }
+
+  /* Main cockpit container — full viewport, ~2vw margin */
+  .cockpit {
+    position: relative;
+    width: calc(100vw - 4vw);
+    height: calc(100vh - 4vh);
+    margin: 2vh 2vw;
+    background: rgba(15, 13, 28, 0.78);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  /* Box-drawing border layout */
+  .border-row {
+    white-space: pre;
+    color: var(--border-bright);
+    line-height: 1;
+    user-select: none;
+    font-size: 13px;
+  }
+
+  .border-row.dim { color: var(--border-dim); }
+
+  /* Top border + title */
+  .title-bar {
+    display: flex;
+    align-items: baseline;
+    padding: 6px 14px 4px 14px;
+    color: var(--border-bright);
+    border-bottom: none;
+  }
+
+  .title-glyph {
+    color: var(--star-cream);
+    margin-right: 8px;
+    text-shadow:
+      0 0 6px rgba(232, 216, 185, 0.7),
+      0 0 14px rgba(232, 216, 185, 0.35);
+    font-size: 15px;
+  }
+
+  .title-text {
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+  }
+
+  .title-sep {
+    color: var(--text-muted);
+    margin: 0 6px;
+  }
+
+  .title-sub {
+    color: var(--text-muted);
+  }
+
+  /* Generic horizontal rule made of box-drawing chars */
+  .hr-double {
+    color: var(--border-bright);
+    white-space: pre;
+    line-height: 1;
+    user-select: none;
+    padding: 0 4px;
+  }
+
+  .hr-single {
+    color: var(--border-dim);
+    white-space: pre;
+    line-height: 1;
+    user-select: none;
+    padding: 0 4px;
+  }
+
+  /* Tab strip */
+  .tabs {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 6px 14px;
+    color: var(--text-muted);
+    border-top: 1px solid transparent;
+  }
+
+  .tab {
+    padding: 2px 12px;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tab .marker { color: var(--text-muted); }
+
+  .tab.active {
+    color: var(--text-primary);
+    text-shadow:
+      0 0 6px rgba(232, 90, 135, 0.45),
+      0 0 14px rgba(232, 90, 135, 0.2);
+  }
+
+  .tab.active .marker {
+    color: var(--accent);
+    text-shadow:
+      0 0 4px rgba(232, 90, 135, 0.9),
+      0 0 10px rgba(232, 90, 135, 0.5);
+  }
+
+  .tab-sep {
+    color: var(--border-dim);
+    margin: 0 2px;
+  }
+
+  /* Body region */
+  .body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    padding: 4px 14px;
+    gap: 0;
+  }
+
+  .pane {
+    background: rgba(10, 8, 22, 0.55);
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .pane-left {
+    width: 30%;
+    border: 1px solid var(--border-dim);
+    border-right: none;
+  }
+
+  .pane-right {
+    width: 70%;
+    border: 1px solid var(--border-dim);
+  }
+
+  .pane-header {
+    padding: 6px 12px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-dim);
+    letter-spacing: 0.06em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pane-header .glyph {
+    color: var(--accent);
+    text-shadow: 0 0 6px rgba(232, 90, 135, 0.5);
+  }
+
+  .pane-body {
+    padding: 8px 12px;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Left pane list rows */
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 4px;
+    color: var(--text-primary);
+  }
+
+  .list-row .marker {
+    color: var(--text-muted);
+    width: 1ch;
+    display: inline-block;
+    text-align: center;
+  }
+
+  .list-row.selected {
+    background: rgba(138, 118, 194, 0.12);
+    color: #f3ecff;
+    border-left: 2px solid var(--accent);
+    padding-left: 2px;
+  }
+
+  .list-row.selected .marker {
+    color: var(--accent);
+    text-shadow: 0 0 4px rgba(232, 90, 135, 0.8);
+  }
+
+  .list-row.muted { color: var(--text-muted); }
+
+  .list-row .meta {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .list-sep {
+    color: var(--border-dim);
+    margin: 6px 0;
+    white-space: pre;
+    line-height: 1;
+    user-select: none;
+  }
+
+  .list-new {
+    color: var(--accent-warm);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 4px;
+  }
+
+  .list-new .marker {
+    color: var(--accent-warm);
+    width: 1ch;
+    display: inline-block;
+    text-align: center;
+    text-shadow: 0 0 6px rgba(245, 180, 138, 0.55);
+  }
+
+  /* Right pane detail */
+  .detail-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .detail-title .branch {
+    color: var(--accent-warm);
+    font-size: 12px;
+  }
+
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 14ch 1fr;
+    row-gap: 3px;
+    column-gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .meta-key {
+    color: var(--text-muted);
+    text-align: right;
+  }
+
+  .meta-val {
+    color: var(--text-primary);
+  }
+
+  .meta-val .accent { color: var(--accent); }
+  .meta-val .warm   { color: var(--accent-warm); }
+  .meta-val .dim    { color: var(--text-muted); }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .action {
+    padding: 3px 10px;
+    border: 1px solid var(--border-dim);
+    color: var(--text-primary);
+    background: rgba(15, 13, 28, 0.65);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .action .key {
+    color: var(--accent);
+    font-weight: 600;
+    text-shadow: 0 0 4px rgba(232, 90, 135, 0.45);
+  }
+
+  /* Status line */
+  .status {
+    padding: 4px 16px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-dim);
+    border-bottom: 1px solid var(--border-dim);
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    background: rgba(10, 8, 22, 0.45);
+  }
+
+  .status .label { color: var(--text-muted); }
+  .status .val   { color: var(--text-primary); }
+  .status .ok    { color: #8fd6b3; }
+  .status .warn  { color: var(--accent-warm); }
+  .status .live  { color: var(--accent); }
+  .status .sep   { color: var(--border-dim); }
+
+  /* Footer hint strip */
+  .footer {
+    padding: 6px 16px 8px 16px;
+    color: var(--text-muted);
+    background: rgba(10, 8, 22, 0.55);
+    font-size: 12px;
+  }
+
+  .footer .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .footer .row + .row {
+    margin-top: 4px;
+  }
+
+  .footer .hint {
+    color: var(--text-muted);
+  }
+
+  .footer .hint .key {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .footer .global .key {
+    color: var(--accent-warm);
+  }
+
+  .footer .sep {
+    color: var(--border-dim);
+  }
+
+  /* Mockup description block at bottom */
+  .mockup-note {
+    position: fixed;
+    left: 50%;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 90vw;
+    background: rgba(7, 6, 15, 0.85);
+    border-top: 1px solid var(--border-dim);
+    border-left: 1px solid var(--border-dim);
+    border-right: 1px solid var(--border-dim);
+    color: var(--text-muted);
+    padding: 6px 14px;
+    font-size: 11px;
+    z-index: 10;
+    display: none;
+  }
+
+  .mockup-note pre {
+    margin: 0;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    white-space: pre;
+  }
+
+  .mockup-note pre .c { color: #6b6489; }
+
+  /* Make sure cockpit content stays readable on small viewports */
+  @media (max-width: 900px) {
+    html, body { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Starfield: 40 dim/regular stars + 4 bright accent ✦ stars -->
+<div class="starfield" aria-hidden="true">
+  <span class="star"      style="top:  3%; left:  7%; animation-duration: 4.2s; animation-delay: 0.1s;"></span>
+  <span class="star dim"  style="top:  6%; left: 22%; animation-duration: 6.8s; animation-delay: 1.3s;"></span>
+  <span class="star"      style="top:  9%; left: 41%; animation-duration: 3.1s; animation-delay: 0.7s;"></span>
+  <span class="star dim"  style="top:  4%; left: 58%; animation-duration: 5.4s; animation-delay: 2.0s;"></span>
+  <span class="star"      style="top: 11%; left: 73%; animation-duration: 7.2s; animation-delay: 0.4s;"></span>
+  <span class="star dim"  style="top:  8%; left: 88%; animation-duration: 4.8s; animation-delay: 1.7s;"></span>
+  <span class="star"      style="top: 15%; left:  4%; animation-duration: 3.6s; animation-delay: 2.4s;"></span>
+  <span class="star"      style="top: 18%; left: 17%; animation-duration: 5.9s; animation-delay: 0.9s;"></span>
+  <span class="star dim"  style="top: 21%; left: 33%; animation-duration: 6.3s; animation-delay: 3.1s;"></span>
+  <span class="star"      style="top: 19%; left: 49%; animation-duration: 2.8s; animation-delay: 1.5s;"></span>
+  <span class="star dim"  style="top: 23%; left: 64%; animation-duration: 7.8s; animation-delay: 0.2s;"></span>
+  <span class="star"      style="top: 17%; left: 81%; animation-duration: 4.1s; animation-delay: 2.7s;"></span>
+  <span class="star"      style="top: 27%; left: 11%; animation-duration: 5.2s; animation-delay: 0.6s;"></span>
+  <span class="star dim"  style="top: 31%; left: 26%; animation-duration: 6.7s; animation-delay: 1.9s;"></span>
+  <span class="star"      style="top: 29%; left: 44%; animation-duration: 3.4s; animation-delay: 2.3s;"></span>
+  <span class="star dim"  style="top: 33%; left: 57%; animation-duration: 5.6s; animation-delay: 0.8s;"></span>
+  <span class="star"      style="top: 36%; left: 69%; animation-duration: 4.5s; animation-delay: 3.4s;"></span>
+  <span class="star"      style="top: 30%; left: 84%; animation-duration: 7.1s; animation-delay: 1.1s;"></span>
+  <span class="star dim"  style="top: 39%; left:  6%; animation-duration: 6.0s; animation-delay: 2.8s;"></span>
+  <span class="star"      style="top: 42%; left: 19%; animation-duration: 3.9s; animation-delay: 0.3s;"></span>
+  <span class="star"      style="top: 45%; left: 35%; animation-duration: 5.7s; animation-delay: 1.6s;"></span>
+  <span class="star dim"  style="top: 48%; left: 51%; animation-duration: 7.5s; animation-delay: 2.1s;"></span>
+  <span class="star"      style="top: 44%; left: 67%; animation-duration: 4.3s; animation-delay: 0.5s;"></span>
+  <span class="star dim"  style="top: 47%; left: 78%; animation-duration: 6.5s; animation-delay: 3.2s;"></span>
+  <span class="star"      style="top: 53%; left: 13%; animation-duration: 2.9s; animation-delay: 1.4s;"></span>
+  <span class="star"      style="top: 56%; left: 29%; animation-duration: 5.1s; animation-delay: 2.6s;"></span>
+  <span class="star dim"  style="top: 59%; left: 45%; animation-duration: 7.4s; animation-delay: 0.9s;"></span>
+  <span class="star"      style="top: 54%; left: 61%; animation-duration: 3.7s; animation-delay: 2.2s;"></span>
+  <span class="star dim"  style="top: 61%; left: 74%; animation-duration: 6.2s; animation-delay: 1.0s;"></span>
+  <span class="star"      style="top: 58%; left: 91%; animation-duration: 4.7s; animation-delay: 3.5s;"></span>
+  <span class="star dim"  style="top: 67%; left:  9%; animation-duration: 5.8s; animation-delay: 1.8s;"></span>
+  <span class="star"      style="top: 71%; left: 24%; animation-duration: 7.0s; animation-delay: 0.4s;"></span>
+  <span class="star"      style="top: 68%; left: 39%; animation-duration: 3.3s; animation-delay: 2.5s;"></span>
+  <span class="star dim"  style="top: 73%; left: 55%; animation-duration: 6.6s; animation-delay: 0.7s;"></span>
+  <span class="star"      style="top: 76%; left: 70%; animation-duration: 4.6s; animation-delay: 3.0s;"></span>
+  <span class="star dim"  style="top: 70%; left: 85%; animation-duration: 5.5s; animation-delay: 1.2s;"></span>
+  <span class="star"      style="top: 81%; left: 15%; animation-duration: 3.8s; animation-delay: 2.9s;"></span>
+  <span class="star dim"  style="top: 84%; left: 31%; animation-duration: 7.6s; animation-delay: 0.6s;"></span>
+  <span class="star"      style="top: 87%; left: 48%; animation-duration: 4.4s; animation-delay: 1.5s;"></span>
+  <span class="star dim"  style="top: 82%; left: 63%; animation-duration: 6.4s; animation-delay: 2.0s;"></span>
+  <span class="star"      style="top: 89%; left: 77%; animation-duration: 5.3s; animation-delay: 0.8s;"></span>
+  <span class="star dim"  style="top: 91%; left: 93%; animation-duration: 3.5s; animation-delay: 3.3s;"></span>
+
+  <!-- Bright accent stars -->
+  <span class="star bright" style="top: 12%; left: 26%; animation-duration: 5.2s; animation-delay: 0.6s;">✦</span>
+  <span class="star bright" style="top: 38%; left: 86%; animation-duration: 6.8s; animation-delay: 2.1s;">✦</span>
+  <span class="star bright" style="top: 62%; left:  3%; animation-duration: 4.5s; animation-delay: 1.3s;">✦</span>
+  <span class="star bright" style="top: 78%; left: 42%; animation-duration: 5.9s; animation-delay: 3.0s;">✦</span>
+  <span class="star bright" style="top: 22%; left: 71%; animation-duration: 7.2s; animation-delay: 0.4s;">✦</span>
+</div>
+
+<!-- Supernova in upper-right area -->
+<div class="supernova" aria-hidden="true">
+  <div class="supernova-core"></div>
+</div>
+
+<!-- Cockpit -->
+<div class="cockpit" role="main">
+
+  <!-- Top border -->
+  <div class="border-row">╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗</div>
+
+  <!-- Title bar -->
+  <div class="title-bar">
+    <span class="border-row" style="color: var(--border-bright);">║</span>
+    <span class="title-glyph">✦</span>
+    <span class="title-text">sid</span>
+    <span class="title-sep">—</span>
+    <span class="title-sub">galaxy cockpit</span>
+    <span style="flex:1"></span>
+    <span class="title-sub">v0.1.0 · session: cosmos-7a</span>
+    <span class="border-row" style="color: var(--border-bright); margin-left: 8px;">║</span>
+  </div>
+
+  <!-- Separator -->
+  <div class="hr-double">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- Tab strip -->
+  <div class="tabs" role="tablist">
+    <span class="border-row" style="color: var(--border-bright); margin-right: 6px;">║</span>
+    <span class="tab active" role="tab" aria-selected="true">
+      <span class="marker">●</span>Workspaces
+    </span>
+    <span class="tab-sep">·</span>
+    <span class="tab" role="tab">
+      <span class="marker">·</span>SSH
+    </span>
+    <span class="tab-sep">·</span>
+    <span class="tab" role="tab">
+      <span class="marker">·</span>Database
+    </span>
+    <span class="tab-sep">·</span>
+    <span class="tab" role="tab">
+      <span class="marker">·</span>Network
+    </span>
+    <span class="tab-sep">·</span>
+    <span class="tab" role="tab">
+      <span class="marker">·</span>System
+    </span>
+    <span class="tab-sep">·</span>
+    <span class="tab" role="tab">
+      <span class="marker">·</span>Settings
+    </span>
+    <span style="flex:1"></span>
+    <span class="title-sub" style="font-size:11px;">Ctrl+1..6 to jump</span>
+    <span class="border-row" style="color: var(--border-bright); margin-left: 8px;">║</span>
+  </div>
+
+  <!-- Separator between tabs and body -->
+  <div class="hr-double">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- Body region -->
+  <div class="body">
+
+    <!-- Left rail -->
+    <div class="pane pane-left">
+      <div class="pane-header">
+        <span class="glyph">◆</span>
+        <span>Workspaces</span>
+        <span style="flex:1"></span>
+        <span class="title-sub" style="font-size:11px;">4</span>
+      </div>
+      <div class="pane-body">
+        <div class="list-row selected">
+          <span class="marker">●</span>
+          <span>sid</span>
+          <span class="meta">main</span>
+        </div>
+        <div class="list-row">
+          <span class="marker">○</span>
+          <span>halcyon-engine</span>
+          <span class="meta">dev</span>
+        </div>
+        <div class="list-row">
+          <span class="marker">○</span>
+          <span>pulsar-notes</span>
+          <span class="meta">main</span>
+        </div>
+        <div class="list-row muted">
+          <span class="marker">○</span>
+          <span>orbital-scratch</span>
+          <span class="meta">—</span>
+        </div>
+        <div class="list-sep">──────────────────────────</div>
+        <div class="list-new">
+          <span class="marker">＋</span>
+          <span>new workspace</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right pane -->
+    <div class="pane pane-right">
+      <div class="pane-header">
+        <span class="glyph">✦</span>
+        <span>Detail · sid</span>
+        <span style="flex:1"></span>
+        <span class="title-sub" style="font-size:11px;">~/vcs/sid</span>
+      </div>
+      <div class="pane-body">
+        <div class="detail-title">
+          <span>sid</span>
+          <span class="branch">⎇ main</span>
+        </div>
+
+        <div class="meta-grid">
+          <div class="meta-key">path</div>
+          <div class="meta-val"><span class="dim">~/vcs/</span>sid</div>
+
+          <div class="meta-key">branch</div>
+          <div class="meta-val">main <span class="dim">· clean</span></div>
+
+          <div class="meta-key">last commit</div>
+          <div class="meta-val">3da0503 <span class="dim">feat(sysinfo): implement list_interfaces</span></div>
+
+          <div class="meta-key">remote</div>
+          <div class="meta-val"><span class="warm">origin</span> <span class="dim">git@github.com:murphlmao/sid.git</span></div>
+
+          <div class="meta-key">jobs</div>
+          <div class="meta-val"><span class="accent">1 running</span> <span class="dim">· cargo test --all-features</span></div>
+        </div>
+
+        <div class="actions">
+          <span class="action"><span class="key">S</span><span>: status</span></span>
+          <span class="action"><span class="key">L</span><span>: log</span></span>
+          <span class="action"><span class="key">B</span><span>: branches</span></span>
+          <span class="action"><span class="key">D</span><span>: diff</span></span>
+          <span class="action"><span class="key">P</span><span>: pull</span></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Status line -->
+  <div class="status">
+    <span class="border-row" style="color: var(--border-bright);">║</span>
+    <span><span class="label">disk:</span> <span class="val">23.4 GB</span> <span class="ok">free</span></span>
+    <span class="sep">·</span>
+    <span><span class="label">jobs:</span> <span class="val">1</span> <span class="live">running</span></span>
+    <span class="sep">·</span>
+    <span><span class="label">ssh:</span> <span class="val">1</span> <span class="ok">active</span></span>
+    <span class="sep">·</span>
+    <span><span class="label">network:</span> <span class="warn">refreshing</span></span>
+    <span style="flex:1"></span>
+    <span class="dim">14:36 · cosmos theme</span>
+    <span class="border-row" style="color: var(--border-bright); margin-left: 8px;">║</span>
+  </div>
+
+  <!-- Footer hint strip -->
+  <div class="footer">
+    <div class="row">
+      <span class="border-row" style="color: var(--border-bright);">║</span>
+      <span class="hint"><span class="key">[ N: new ]</span></span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">[ A: add repo ]</span></span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">[ R: remove ]</span></span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">[ ? help ]</span></span>
+    </div>
+    <div class="row global">
+      <span class="border-row" style="color: var(--border-bright);">║</span>
+      <span class="hint"><span class="key">Ctrl+Q</span> quit</span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">Ctrl+F</span> palette</span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">Ctrl+←/→</span> tabs</span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">Ctrl+1..6</span> jump</span>
+      <span class="sep">·</span>
+      <span class="hint"><span class="key">Ctrl+,</span> settings</span>
+    </div>
+  </div>
+
+  <!-- Bottom border -->
+  <div class="border-row">╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝</div>
+
+</div>
+
+<!-- Mockup description / code-comment style -->
+<div class="mockup-note" id="mockup-note">
+  <pre><span class="c">// 00-shell.html — sid TUI chrome mockup
+// Outer cockpit: double-line border, title, six-tab strip (Workspaces active),
+// two-pane body (30/70), status line, two-row footer hint strip.
+// Tests cosmos palette legibility, starfield twinkle + supernova bloom over translucent chrome.</span></pre>
+</div>
+
+<script>
+  // Reveal the description block only after first render so it doesn't intercept layout measurement.
+  document.getElementById('mockup-note').style.display = 'block';
+</script>
+
+</body>
+</html>
