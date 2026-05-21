@@ -44,6 +44,48 @@ use crate::network::kill_modal::KillConfirmModalState;
 use crate::network::ports_table::{PortsSortBy, PortsTableState, SortDir};
 use crate::network::processes_table::{ProcessesSortBy, ProcessesTableState};
 
+// Re-export the KillOutcome type so the binary's JobQueue wiring (Task 24)
+// can feed completion results back into the widget without naming
+// sid_core::sys_probe::kill_job directly.
+pub use sid_core::sys_probe::kill_job::KillOutcome;
+
+/// Toast level for a kill outcome. The widget produces these; the binary's
+/// render code maps them to colours.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::network::{KillToast, ToastLevel};
+/// let t = KillToast { level: ToastLevel::Success, message: "killed".into() };
+/// assert_eq!(t.level, ToastLevel::Success);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToastLevel {
+    /// Successful, expected outcome (e.g., process exited on SIGTERM).
+    Success,
+    /// Worked, but louder than expected (e.g., SIGKILL escalation).
+    Warning,
+    /// Did not work (e.g., permission denied).
+    Error,
+}
+
+/// A toast queued by the widget after a kill action completes.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::network::{KillToast, ToastLevel};
+/// let t = KillToast { level: ToastLevel::Error, message: "boom".into() };
+/// assert_eq!(t.message, "boom");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KillToast {
+    /// Severity of the toast.
+    pub level: ToastLevel,
+    /// Human-readable message.
+    pub message: String,
+}
+
 /// Currently-focused pane. Cycled with Tab / Shift+Tab.
 ///
 /// # Examples
@@ -146,6 +188,10 @@ pub struct NetworkWidget {
     filter: FilterInputState,
     kill_modal: KillConfirmModalState,
     focus: Focus,
+    /// Toasts queued by kill-job completions, waiting to be drained by the
+    /// host's render code. Populated by [`Self::on_kill_outcome`]; consumed
+    /// by [`Self::take_toast`].
+    pending_toasts: std::collections::VecDeque<KillToast>,
 }
 
 impl NetworkWidget {
@@ -160,7 +206,48 @@ impl NetworkWidget {
             filter: FilterInputState::new(),
             kill_modal: KillConfirmModalState::new(),
             focus: Focus::default(),
+            pending_toasts: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Feed a `KillOutcome` completed by the JobQueue back into the widget.
+    /// Produces a toast and pushes it onto `pending_toasts`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::adapters::sys::Pid;
+    /// use sid_core::sys_probe::kill_job::KillOutcome;
+    /// use sid_widgets::network::ToastLevel;
+    /// use sid_widgets::NetworkWidget;
+    ///
+    /// let mut w = NetworkWidget::new();
+    /// w.on_kill_outcome(KillOutcome::Killed(Pid::from_u32(42)));
+    /// let t = w.take_toast().unwrap();
+    /// assert_eq!(t.level, ToastLevel::Success);
+    /// assert!(t.message.contains("42"));
+    /// ```
+    pub fn on_kill_outcome(&mut self, outcome: KillOutcome) {
+        let toast = match outcome {
+            KillOutcome::Killed(pid) => KillToast {
+                level: ToastLevel::Success,
+                message: format!("killed PID {}", pid.as_u32()),
+            },
+            KillOutcome::EscalatedToSigkill(pid) => KillToast {
+                level: ToastLevel::Warning,
+                message: format!("PID {} ignored SIGTERM; SIGKILL sent", pid.as_u32()),
+            },
+            KillOutcome::Failed(pid, msg) => KillToast {
+                level: ToastLevel::Error,
+                message: format!("kill PID {} failed: {msg}", pid.as_u32()),
+            },
+        };
+        self.pending_toasts.push_back(toast);
+    }
+
+    /// Pop the oldest queued toast, if any.
+    pub fn take_toast(&mut self) -> Option<KillToast> {
+        self.pending_toasts.pop_front()
     }
 
     /// Borrow the ports state. Tests use this to assert sort/select state
