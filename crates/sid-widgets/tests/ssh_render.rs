@@ -74,10 +74,7 @@ fn snapshot_three_hosts_second_selected() {
 
 #[test]
 fn snapshot_connecting_state() {
-    let state = SshState::new(
-        vec![host("my-prod-server", SshHostSource::Manual)],
-        vec![],
-    );
+    let state = SshState::new(vec![host("my-prod-server", SshHostSource::Manual)], vec![]);
     let mut w = SshWidget::with_state(state);
     w.connection_mut().begin_connecting("my-prod-server".into());
     let s = render_to_string(&w, 80, 16);
@@ -86,10 +83,7 @@ fn snapshot_connecting_state() {
 
 #[test]
 fn snapshot_connected_with_sftp_toggled() {
-    let state = SshState::new(
-        vec![host("my-prod-server", SshHostSource::Manual)],
-        vec![],
-    );
+    let state = SshState::new(vec![host("my-prod-server", SshHostSource::Manual)], vec![]);
     let mut w = SshWidget::with_state(state);
     w.connection_mut().begin_connecting("my-prod-server".into());
     w.connection_mut().mark_connected();

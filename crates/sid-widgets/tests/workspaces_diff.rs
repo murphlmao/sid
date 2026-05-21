@@ -19,7 +19,11 @@ struct DiffMockGit {
 
 impl DiffMockGit {
     fn new(staged: Vec<DiffEntry>, unstaged: Vec<DiffEntry>) -> Self {
-        Self { staged_diff: staged, unstaged_diff: unstaged, diff_should_err: false }
+        Self {
+            staged_diff: staged,
+            unstaged_diff: unstaged,
+            diff_should_err: false,
+        }
     }
 
     fn with_error(mut self) -> Self {
@@ -30,7 +34,10 @@ impl DiffMockGit {
 
 impl GitProvider for DiffMockGit {
     fn open(&self, _path: &Path) -> Result<Box<dyn GitProvider>, GitError> {
-        Ok(Box::new(DiffMockGit::new(self.staged_diff.clone(), self.unstaged_diff.clone())))
+        Ok(Box::new(DiffMockGit::new(
+            self.staged_diff.clone(),
+            self.unstaged_diff.clone(),
+        )))
     }
     fn list_branches(&self) -> Result<Vec<Branch>, GitError> {
         Ok(vec![])
@@ -39,7 +46,10 @@ impl GitProvider for DiffMockGit {
         Ok(None)
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
     fn commit_log(&self, _max: usize, _from: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
         Ok(vec![])
@@ -75,7 +85,9 @@ fn diff_entry(path: &str, patch: &str, added: usize, removed: usize) -> DiffEntr
 }
 
 fn multi_line_patch(n_lines: usize) -> String {
-    (0..n_lines).map(|i| format!("+line {i}\n")).collect::<String>()
+    (0..n_lines)
+        .map(|i| format!("+line {i}\n"))
+        .collect::<String>()
 }
 
 fn _ws(p: &str) -> Workspace {

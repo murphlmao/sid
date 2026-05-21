@@ -98,19 +98,11 @@ fn get_after_put_after_delete_pattern() {
     store
         .put_setting("key", &SettingValue(b"first".to_vec()))
         .unwrap();
-    assert_eq!(
-        store.get_setting("key").unwrap().unwrap().0,
-        b"first"
-    );
+    assert_eq!(store.get_setting("key").unwrap().unwrap().0, b"first");
 
     // Overwrite with empty value (equivalent to "delete" in simple stores).
-    store
-        .put_setting("key", &SettingValue(vec![]))
-        .unwrap();
-    assert_eq!(
-        store.get_setting("key").unwrap().unwrap().0,
-        b"" as &[u8]
-    );
+    store.put_setting("key", &SettingValue(vec![])).unwrap();
+    assert_eq!(store.get_setting("key").unwrap().unwrap().0, b"" as &[u8]);
 
     // A different key is still None.
     assert!(store.get_setting("other").unwrap().is_none());
@@ -159,14 +151,8 @@ fn multiple_distinct_keys_are_independent() {
     store
         .put_setting("b", &SettingValue(b"beta".to_vec()))
         .unwrap();
-    assert_eq!(
-        store.get_setting("a").unwrap().unwrap().0,
-        b"alpha"
-    );
-    assert_eq!(
-        store.get_setting("b").unwrap().unwrap().0,
-        b"beta"
-    );
+    assert_eq!(store.get_setting("a").unwrap().unwrap().0, b"alpha");
+    assert_eq!(store.get_setting("b").unwrap().unwrap().0, b"beta");
 }
 
 #[test]
@@ -174,9 +160,7 @@ fn empty_value_is_distinct_from_absent_key() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
     // Key "present" has an empty value — it IS present.
-    store
-        .put_setting("present", &SettingValue(vec![]))
-        .unwrap();
+    store.put_setting("present", &SettingValue(vec![])).unwrap();
     assert!(
         store.get_setting("present").unwrap().is_some(),
         "empty value key must be present"

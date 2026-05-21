@@ -10,7 +10,8 @@ fn commit_initial(repo: &git2::Repository) {
     let mut idx = repo.index().unwrap();
     let tree_id = idx.write_tree().unwrap();
     let tree = repo.find_tree(tree_id).unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
 }
 
 #[test]

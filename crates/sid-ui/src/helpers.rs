@@ -29,7 +29,11 @@ pub fn styled_block<'a>(theme: &Theme, title: &'a str) -> Block<'a> {
         .border_style(Style::default().fg(theme.border.into()))
         .title(title_text)
         .title_style(Style::default().fg(theme.foreground.into()).bold())
-        .style(Style::default().bg(theme.background.into()).fg(theme.foreground.into()))
+        .style(
+            Style::default()
+                .bg(theme.background.into())
+                .fg(theme.foreground.into()),
+        )
 }
 
 /// Return a [`Span`] styled with the theme's primary accent colour.

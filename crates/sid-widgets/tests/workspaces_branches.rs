@@ -22,7 +22,10 @@ struct MockGit {
 
 impl MockGit {
     fn new(branches: Vec<Branch>) -> Self {
-        let current = branches.iter().find(|b| b.is_current).map(|b| b.name.clone());
+        let current = branches
+            .iter()
+            .find(|b| b.is_current)
+            .map(|b| b.name.clone());
         Self {
             branches,
             current,
@@ -52,7 +55,10 @@ impl GitProvider for MockGit {
         Ok(self.branches.iter().find(|b| b.is_current).cloned())
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
     fn commit_log(&self, _max: usize, _from: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
         Ok(vec![])
@@ -125,8 +131,11 @@ fn branch_list_state_set_branches_clamps_selection() {
 
 #[test]
 fn branch_list_state_navigation_wraps() {
-    let mut s =
-        BranchListState::new(vec![branch("main", true), branch("dev", false), branch("feat", false)]);
+    let mut s = BranchListState::new(vec![
+        branch("main", true),
+        branch("dev", false),
+        branch("feat", false),
+    ]);
     s.select_next();
     assert_eq!(s.selected_branch().unwrap().name, "dev");
     s.select_next();
@@ -181,7 +190,11 @@ fn workspaces_state_starts_with_branches_pane() {
 fn right_pane_branches_population_and_navigation() {
     let mut s = WorkspacesState::new(vec![ws("/a", "a")]);
     if let RightPane::Branches(b) = s.right_pane_mut() {
-        b.set_branches(vec![branch("main", true), branch("dev", false), branch("feat", false)]);
+        b.set_branches(vec![
+            branch("main", true),
+            branch("dev", false),
+            branch("feat", false),
+        ]);
     }
     if let RightPane::Branches(b) = s.right_pane() {
         assert_eq!(b.branches().len(), 3);
@@ -200,7 +213,9 @@ fn branch_name_with_slashes_and_unicode() {
 
 #[test]
 fn very_long_branch_list_does_not_panic() {
-    let branches: Vec<Branch> = (0..500).map(|i| branch(&format!("branch-{i}"), i == 0)).collect();
+    let branches: Vec<Branch> = (0..500)
+        .map(|i| branch(&format!("branch-{i}"), i == 0))
+        .collect();
     let mut s = BranchListState::new(branches);
     for _ in 0..1000 {
         s.select_next();

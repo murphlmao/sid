@@ -2,9 +2,7 @@ use sid_core::adapters::sys::{ListeningPort, Pid, Protocol, SocketState, SysErro
 
 /// List sockets in LISTEN state via netstat2. PID → command lookup uses
 /// the cached sysinfo handle; no refresh is performed here.
-pub(crate) fn list_listening_ports(
-    sys: &sysinfo::System,
-) -> Result<Vec<ListeningPort>, SysError> {
+pub(crate) fn list_listening_ports(sys: &sysinfo::System) -> Result<Vec<ListeningPort>, SysError> {
     use netstat2::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
 
     let af = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;

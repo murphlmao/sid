@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState};
 use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
 use sid_widgets::system::{
-    JournalTailState, PinnedConfigsModal, PinnedConfigsState, QuickActionsModal,
-    QuickActionsState, ServicesAction, ServicesState, SystemPane, SystemState,
-    parse_quick_action_cmd,
+    JournalTailState, PinnedConfigsModal, PinnedConfigsState, QuickActionsModal, QuickActionsState,
+    ServicesAction, ServicesState, SystemPane, SystemState, parse_quick_action_cmd,
 };
 
 // ─── SystemState ────────────────────────────────────────────────────────────
@@ -322,7 +321,10 @@ fn stop_follow_clears_following_flag() {
 #[test]
 fn journal_tail_format_snapshot() {
     let mut s = JournalTailState::new("nginx.service".into(), UnitBus::System);
-    s.set_entries(vec![je(1_748_000_000, "starting"), je(1_748_000_005, "ready")]);
+    s.set_entries(vec![
+        je(1_748_000_000, "starting"),
+        je(1_748_000_005, "ready"),
+    ]);
     let rendered: Vec<String> = s
         .entries()
         .iter()
@@ -407,7 +409,11 @@ fn quick_actions_modal_begins_edit_of_selected() {
 #[test]
 fn quick_action_with_empty_cmd_can_be_added_but_parses_empty() {
     let s = QuickActionsState::new(vec![qa("noop", "")]);
-    assert!(parse_quick_action_cmd(&s.items()[0].cmd).unwrap().is_empty());
+    assert!(
+        parse_quick_action_cmd(&s.items()[0].cmd)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 use proptest::prelude::*;

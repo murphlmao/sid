@@ -22,9 +22,7 @@ fn apply_persists_theme_name_to_store() {
     let focused_name = view.focused().name.clone();
     let name = view.apply_focused().to_string();
     assert_eq!(name, focused_name);
-    store
-        .put_string(settings_keys::THEME_NAME, &name)
-        .unwrap();
+    store.put_string(settings_keys::THEME_NAME, &name).unwrap();
     assert_eq!(
         store
             .get_string(settings_keys::THEME_NAME)

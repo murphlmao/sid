@@ -36,9 +36,7 @@ fn kill_nonexistent_pid_returns_not_found() {
 #[test]
 fn kill_pid_zero_is_rejected() {
     let mut p = SysinfoProvider::new();
-    let err = p
-        .kill_process(Pid::from_u32(0), Signal::Term)
-        .unwrap_err();
+    let err = p.kill_process(Pid::from_u32(0), Signal::Term).unwrap_err();
     assert!(matches!(err, SysError::InvalidInput(_)), "got {err:?}");
 }
 

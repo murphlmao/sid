@@ -21,9 +21,16 @@ impl GitProvider for MockProvider {
         Ok(None)
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
-    fn commit_log(&self, _max: usize, _from_oid: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
+    fn commit_log(
+        &self,
+        _max: usize,
+        _from_oid: Option<&str>,
+    ) -> Result<Vec<CommitInfo>, GitError> {
         Ok(vec![])
     }
     fn diff(&self, _staged: bool) -> Result<Vec<DiffEntry>, GitError> {
@@ -88,6 +95,9 @@ fn git_error_display_non_empty_for_all_variants() {
     ];
     for v in variants {
         let msg = format!("{v}");
-        assert!(!msg.is_empty(), "GitError variant produced empty Display: {v:?}");
+        assert!(
+            !msg.is_empty(),
+            "GitError variant produced empty Display: {v:?}"
+        );
     }
 }

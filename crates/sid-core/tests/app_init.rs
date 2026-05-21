@@ -35,7 +35,10 @@ fn tab(id: &'static str, title: &'static str, w: &'static str) -> Tab {
     Tab {
         id: TabId::new(id),
         title: title.into(),
-        layout: Layout::Single(Box::new(W { id: WidgetId::new(w), title: w })),
+        layout: Layout::Single(Box::new(W {
+            id: WidgetId::new(w),
+            title: w,
+        })),
         hotkey: None,
     }
 }

@@ -4,7 +4,9 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use sid_core::action::ActionId;
 use sid_core::event::KeyChord;
 use sid_core::keybind::{KeyBinding, KeybindMap};
-use sid_core::keybind_profile::{ProfileEntry, chord_from_string, chord_to_string, from_map, to_map};
+use sid_core::keybind_profile::{
+    ProfileEntry, chord_from_string, chord_to_string, from_map, to_map,
+};
 
 #[test]
 fn empty_map_round_trips() {
@@ -43,10 +45,7 @@ fn single_custom_binding_round_trips() {
     });
     let entries = from_map(&m);
     let m2 = to_map(&entries);
-    assert_eq!(
-        m2.lookup(&chord).map(|a| a.as_str()),
-        Some("custom.action")
-    );
+    assert_eq!(m2.lookup(&chord).map(|a| a.as_str()), Some("custom.action"));
 }
 
 #[test]

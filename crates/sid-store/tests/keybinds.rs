@@ -50,7 +50,13 @@ fn upsert_replaces_existing() {
     let mut v2 = sample("p");
     v2.bindings.clear();
     s.upsert_keybind_profile(&v2).unwrap();
-    assert!(s.get_keybind_profile("p").unwrap().unwrap().bindings.is_empty());
+    assert!(
+        s.get_keybind_profile("p")
+            .unwrap()
+            .unwrap()
+            .bindings
+            .is_empty()
+    );
     assert_eq!(s.list_keybind_profiles().unwrap().len(), 1);
 }
 
@@ -101,7 +107,10 @@ fn long_name_round_trips() {
     let (_d, s) = store();
     let name = "k".repeat(4096);
     s.upsert_keybind_profile(&sample(&name)).unwrap();
-    assert_eq!(s.get_keybind_profile(&name).unwrap().unwrap().name.len(), 4096);
+    assert_eq!(
+        s.get_keybind_profile(&name).unwrap().unwrap().name.len(),
+        4096
+    );
 }
 
 #[test]
@@ -126,7 +135,13 @@ fn empty_bindings_round_trip() {
         bindings: vec![],
     };
     s.upsert_keybind_profile(&p).unwrap();
-    assert!(s.get_keybind_profile("empty").unwrap().unwrap().bindings.is_empty());
+    assert!(
+        s.get_keybind_profile("empty")
+            .unwrap()
+            .unwrap()
+            .bindings
+            .is_empty()
+    );
 }
 
 #[test]

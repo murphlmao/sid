@@ -51,7 +51,9 @@ impl GitProvider for Git2ProviderFactory {
     }
 
     fn list_branches(&self) -> Result<Vec<Branch>, GitError> {
-        Err(GitError::Other("factory has no repo; call open() first".into()))
+        Err(GitError::Other(
+            "factory has no repo; call open() first".into(),
+        ))
     }
     fn current_branch(&self) -> Result<Option<Branch>, GitError> {
         Err(GitError::Other("factory has no repo".into()))
@@ -115,7 +117,12 @@ impl GitProvider for Git2Provider {
                 .ok()
                 .and_then(|u| u.name().ok().flatten().map(String::from));
             let is_current = current_name.as_deref() == Some(name.as_str());
-            out.push(Branch { name, head_oid, upstream, is_current });
+            out.push(Branch {
+                name,
+                head_oid,
+                upstream,
+                is_current,
+            });
         }
         Ok(out)
     }
@@ -139,13 +146,21 @@ impl GitProvider for Git2Provider {
             .ok()
             .and_then(|b| b.upstream().ok())
             .and_then(|u| u.name().ok().flatten().map(String::from));
-        Ok(Some(Branch { name, head_oid, upstream, is_current: true }))
+        Ok(Some(Branch {
+            name,
+            head_oid,
+            upstream,
+            is_current: true,
+        }))
     }
 
     fn status(&self) -> Result<GitStatus, GitError> {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(true).recurse_untracked_dirs(true);
-        let statuses = self.repo.statuses(Some(&mut opts)).map_err(map_git2_error)?;
+        let statuses = self
+            .repo
+            .statuses(Some(&mut opts))
+            .map_err(map_git2_error)?;
         let mut entries = Vec::new();
         for entry in statuses.iter() {
             let path = entry.path().unwrap_or("").to_string();
@@ -186,7 +201,10 @@ impl GitProvider for Git2Provider {
                 });
             }
         }
-        Ok(GitStatus { is_clean: entries.is_empty(), entries })
+        Ok(GitStatus {
+            is_clean: entries.is_empty(),
+            entries,
+        })
     }
 
     fn commit_log(&self, max: usize, from_oid: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
@@ -308,8 +326,13 @@ impl GitProvider for Git2Provider {
             .name()
             .ok_or_else(|| GitError::InvalidRef(name.to_string()))?
             .to_string();
-        let obj = self.repo.revparse_single(&refname).map_err(map_git2_error)?;
-        self.repo.checkout_tree(&obj, None).map_err(map_git2_error)?;
+        let obj = self
+            .repo
+            .revparse_single(&refname)
+            .map_err(map_git2_error)?;
+        self.repo
+            .checkout_tree(&obj, None)
+            .map_err(map_git2_error)?;
         self.repo.set_head(&refname).map_err(map_git2_error)?;
         Ok(())
     }
@@ -324,9 +347,7 @@ impl GitProvider for Git2Provider {
         let tree_id = idx.write_tree().map_err(map_git2_error)?;
         let tree = self.repo.find_tree(tree_id).map_err(map_git2_error)?;
         let sig = match (new.author_name, new.author_email) {
-            (Some(n), Some(e)) => {
-                git2::Signature::now(n, e).map_err(map_git2_error)?
-            }
+            (Some(n), Some(e)) => git2::Signature::now(n, e).map_err(map_git2_error)?,
             _ => self.repo.signature().map_err(map_git2_error)?,
         };
         let parents: Vec<_> = self

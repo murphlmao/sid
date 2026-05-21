@@ -2,7 +2,7 @@
 //! `RedbStore`. Includes round-trip property tests and adversarial inputs.
 
 use proptest::prelude::*;
-use sid_store::{settings_keys, OpenStore, RedbStore, SettingValue, Store, TypedSettings};
+use sid_store::{OpenStore, RedbStore, SettingValue, Store, TypedSettings, settings_keys};
 use tempfile::tempdir;
 
 fn store() -> (tempfile::TempDir, RedbStore) {
@@ -33,7 +33,11 @@ fn string_overwrite() {
 #[test]
 fn u64_round_trip() {
     let (_d, s) = store();
-    assert!(s.get_u64(settings_keys::PERSIST_DEBOUNCE_MS).unwrap().is_none());
+    assert!(
+        s.get_u64(settings_keys::PERSIST_DEBOUNCE_MS)
+            .unwrap()
+            .is_none()
+    );
     s.put_u64(settings_keys::PERSIST_DEBOUNCE_MS, 250).unwrap();
     assert_eq!(
         s.get_u64(settings_keys::PERSIST_DEBOUNCE_MS).unwrap(),
@@ -58,12 +62,14 @@ fn u64_max_round_trips() {
 #[test]
 fn bool_round_trip() {
     let (_d, s) = store();
-    s.put_bool(settings_keys::AUTO_RESTORE_SESSION, true).unwrap();
+    s.put_bool(settings_keys::AUTO_RESTORE_SESSION, true)
+        .unwrap();
     assert_eq!(
         s.get_bool(settings_keys::AUTO_RESTORE_SESSION).unwrap(),
         Some(true)
     );
-    s.put_bool(settings_keys::AUTO_RESTORE_SESSION, false).unwrap();
+    s.put_bool(settings_keys::AUTO_RESTORE_SESSION, false)
+        .unwrap();
     assert_eq!(
         s.get_bool(settings_keys::AUTO_RESTORE_SESSION).unwrap(),
         Some(false)

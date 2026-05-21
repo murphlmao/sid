@@ -118,14 +118,11 @@ fn bench_concurrent_spawn(c: &mut Criterion) {
                 let queue: JobQueue<u32> = JobQueue::new();
 
                 // Launch all 100 jobs simultaneously.
-                let handles: Vec<_> = (0u32..100)
-                    .map(|i| queue.spawn(async move { i }))
-                    .collect();
+                let handles: Vec<_> = (0u32..100).map(|i| queue.spawn(async move { i })).collect();
 
                 // Wait for all of them concurrently.
                 let results =
-                    futures::future::join_all(handles.into_iter().map(|h| h.await_result()))
-                        .await;
+                    futures::future::join_all(handles.into_iter().map(|h| h.await_result())).await;
 
                 results.len()
             })

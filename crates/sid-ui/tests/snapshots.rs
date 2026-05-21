@@ -7,11 +7,7 @@
 ///
 /// All snapshots are stored in `tests/snapshots/` and are accepted on first run.
 /// Subsequent runs assert against the accepted snapshots.
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    widgets::Widget as RatatuiWidget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget as RatatuiWidget};
 use sid_ui::{
     helpers::{accent_text, muted_text, styled_block},
     themes::{cosmos, cosmos_light, dusk, void},
@@ -25,8 +21,9 @@ fn render_rows(area: Rect, render_fn: impl FnOnce(&mut Buffer)) -> Vec<String> {
     render_fn(&mut buf);
     (0..area.height)
         .map(|y| {
-            let row: String =
-                (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let row: String = (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
             row.trim_end().to_string()
         })
         .collect()
@@ -37,7 +34,9 @@ fn render_span_row(width: u16, render_fn: impl FnOnce(&mut Buffer)) -> String {
     let area = Rect::new(0, 0, width, 1);
     let mut buf = Buffer::empty(area);
     render_fn(&mut buf);
-    let row: String = (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+    let row: String = (0..width)
+        .map(|x| buf[(x, 0)].symbol().to_string())
+        .collect();
     row.trim_end().to_string()
 }
 
@@ -77,8 +76,7 @@ fn snapshot_dusk_json() {
 #[test]
 fn snapshot_cosmos_light_json() {
     let t = cosmos_light();
-    let json =
-        serde_json::to_string_pretty(&t).expect("cosmos_light serialization must succeed");
+    let json = serde_json::to_string_pretty(&t).expect("cosmos_light serialization must succeed");
     insta::with_settings!({ snapshot_path => "snapshots" }, {
         insta::assert_snapshot!("palette_cosmos_light_json", json);
     });
@@ -326,13 +324,21 @@ fn glyphs_are_non_nul_cosmos_light() {
 }
 
 fn glyphs_are_non_nul(t: &sid_ui::Theme) {
-    assert_ne!(t.glyphs.star, '\0', "theme '{}': star glyph must not be NUL", t.name);
+    assert_ne!(
+        t.glyphs.star, '\0',
+        "theme '{}': star glyph must not be NUL",
+        t.name
+    );
     assert_ne!(
         t.glyphs.small_star, '\0',
         "theme '{}': small_star glyph must not be NUL",
         t.name
     );
-    assert_ne!(t.glyphs.dot, '\0', "theme '{}': dot glyph must not be NUL", t.name);
+    assert_ne!(
+        t.glyphs.dot, '\0',
+        "theme '{}': dot glyph must not be NUL",
+        t.name
+    );
 }
 
 // ── Property tests: Color → ratatui round-trip via proptest ──────────────────
@@ -365,7 +371,10 @@ fn color_white_json_roundtrip_no_drift() {
     let c = Color::rgb(0xFF, 0xFF, 0xFF);
     let json = serde_json::to_string(&c).expect("serialize must succeed");
     let back: Color = serde_json::from_str(&json).expect("deserialize must succeed");
-    assert_eq!(back, c, "Color::rgb(255,255,255) JSON round-trip produced a different value");
+    assert_eq!(
+        back, c,
+        "Color::rgb(255,255,255) JSON round-trip produced a different value"
+    );
 }
 
 // ── Adversarial: styled_block edge cases ─────────────────────────────────────
@@ -425,8 +434,7 @@ fn accent_text_zero_width_chars_does_not_panic() {
 fn all_themes_json_roundtrip_intact() {
     for t in [cosmos(), void(), dusk(), cosmos_light()] {
         let json = serde_json::to_string(&t).expect("serialize must succeed");
-        let back: sid_ui::Theme =
-            serde_json::from_str(&json).expect("deserialize must succeed");
+        let back: sid_ui::Theme = serde_json::from_str(&json).expect("deserialize must succeed");
         assert_eq!(back.name, t.name);
         assert_eq!(back.background, t.background);
         assert_eq!(back.surface, t.surface);

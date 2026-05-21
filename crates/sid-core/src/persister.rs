@@ -48,7 +48,10 @@ impl StatePersister {
     /// assert!(!p.is_dirty());
     /// ```
     pub fn new(debounce: Duration) -> Self {
-        Self { debounce, dirty_since: None }
+        Self {
+            debounce,
+            dirty_since: None,
+        }
     }
 
     /// Mark application state as dirty. Only the first call after a flush

@@ -24,8 +24,14 @@ fn body_returns_title_and_subtitle() {
 
 #[test]
 fn body_subtitle_full_string() {
-    let b = ComingSoonBody::new("SSH", "SSH host list + embedded terminal + SFTP — coming in Plan 3");
-    assert_eq!(b.subtitle(), "SSH host list + embedded terminal + SFTP — coming in Plan 3");
+    let b = ComingSoonBody::new(
+        "SSH",
+        "SSH host list + embedded terminal + SFTP — coming in Plan 3",
+    );
+    assert_eq!(
+        b.subtitle(),
+        "SSH host list + embedded terminal + SFTP — coming in Plan 3"
+    );
 }
 
 #[test]

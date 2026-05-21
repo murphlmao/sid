@@ -114,9 +114,15 @@ impl PtyHandle for PortablePtyHandle {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let mut w = self.writer.lock().map_err(|_| PtyError::WriteFailed("poisoned".into()))?;
-        let n = w.write(bytes).map_err(|e| PtyError::WriteFailed(format!("{e}")))?;
-        w.flush().map_err(|e| PtyError::WriteFailed(format!("flush: {e}")))?;
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|_| PtyError::WriteFailed("poisoned".into()))?;
+        let n = w
+            .write(bytes)
+            .map_err(|e| PtyError::WriteFailed(format!("{e}")))?;
+        w.flush()
+            .map_err(|e| PtyError::WriteFailed(format!("flush: {e}")))?;
         Ok(n)
     }
 
@@ -156,7 +162,10 @@ impl PtyHandle for PortablePtyHandle {
     }
 
     fn kill(&mut self) -> Result<(), PtyError> {
-        let mut c = self.child.lock().map_err(|_| PtyError::Other("poisoned".into()))?;
+        let mut c = self
+            .child
+            .lock()
+            .map_err(|_| PtyError::Other("poisoned".into()))?;
         let _ = c.kill();
         Ok(())
     }

@@ -48,7 +48,10 @@ impl GitProvider for CommitMockGit {
         Ok(None)
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
     fn commit_log(&self, _max: usize, _from: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
         Ok(vec![])
@@ -63,7 +66,10 @@ impl GitProvider for CommitMockGit {
         if self.commit_should_fail {
             return Err(GitError::Other("commit failed".into()));
         }
-        self.committed.lock().unwrap().push((new.message.to_string(), new.stage_all));
+        self.committed
+            .lock()
+            .unwrap()
+            .push((new.message.to_string(), new.stage_all));
         Ok("a".repeat(40))
     }
 }
@@ -208,7 +214,12 @@ fn simulate_editor_to_commit_flow_via_mock() {
     // 4. Simulate git commit
     let mut git = CommitMockGit::new();
     let recorded = git.committed_messages();
-    let nc = NewCommit { message: draft.draft_message(), author_name: None, author_email: None, stage_all: true };
+    let nc = NewCommit {
+        message: draft.draft_message(),
+        author_name: None,
+        author_email: None,
+        stage_all: true,
+    };
     let oid = git.commit(nc).unwrap();
     assert_eq!(oid.len(), 40);
 
@@ -251,7 +262,12 @@ fn simulate_commit_failure_after_editor_success() {
     let msg = runner.run_editor().unwrap();
     draft.finish_editing(msg.clone());
 
-    let nc = NewCommit { message: &msg, author_name: None, author_email: None, stage_all: false };
+    let nc = NewCommit {
+        message: &msg,
+        author_name: None,
+        author_email: None,
+        stage_all: false,
+    };
     let result = git.commit(nc);
     assert!(result.is_err());
 
@@ -276,7 +292,9 @@ fn switching_to_commit_pane_works() {
 fn commit_pane_state_transitions_via_right_pane() {
     let mut s = WorkspacesState::new(vec![_ws("/a")]);
     // Navigate to commit pane
-    for _ in 0..4 { s.cycle_pane_next(); }
+    for _ in 0..4 {
+        s.cycle_pane_next();
+    }
     if let RightPane::Commit(draft) = s.right_pane_mut() {
         draft.start_editing();
         assert_eq!(draft.phase(), &CommitDraftPhase::EditingMessage);

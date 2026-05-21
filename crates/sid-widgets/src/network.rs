@@ -445,7 +445,10 @@ impl NetworkWidget {
             .enumerate()
             .filter(|(_, r)| q.is_empty() || match_listening_port(q, r))
             .map(|(i, r)| {
-                let pid_s = r.pid.map(|p| p.as_u32().to_string()).unwrap_or_else(|| "-".into());
+                let pid_s = r
+                    .pid
+                    .map(|p| p.as_u32().to_string())
+                    .unwrap_or_else(|| "-".into());
                 let proto = format!("{:?}", r.protocol).to_lowercase();
                 let style = if i == self.ports.selected_index() && self.focus == Focus::Ports {
                     Style::default()
@@ -513,8 +516,14 @@ impl NetworkWidget {
                 } else {
                     Style::default().fg(theme.foreground.into())
                 };
-                Row::new(vec![r.pid.as_u32().to_string(), r.name.clone(), cpu, rss, user])
-                    .style(style)
+                Row::new(vec![
+                    r.pid.as_u32().to_string(),
+                    r.name.clone(),
+                    cpu,
+                    rss,
+                    user,
+                ])
+                .style(style)
             })
             .collect();
         let title = if self.focus == Focus::Processes {
@@ -543,7 +552,11 @@ impl NetworkWidget {
     }
 
     fn render_kill_modal(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        let pid = self.kill_modal.target_pid().map(|p| p.as_u32()).unwrap_or(0);
+        let pid = self
+            .kill_modal
+            .target_pid()
+            .map(|p| p.as_u32())
+            .unwrap_or(0);
         let line = if self.kill_modal.is_confirm_sigterm() {
             format!("Kill PID {pid}? Send SIGTERM (y/n)")
         } else if self.kill_modal.is_awaiting_term() {

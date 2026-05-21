@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
-use sid_store::codec::{decode_versioned, encode_versioned};
 use sid_store::SessionRecord;
+use sid_store::codec::{decode_versioned, encode_versioned};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct ExampleV1 {
@@ -18,7 +18,10 @@ struct SimpleBytes {
 
 #[test]
 fn round_trip_postcard_with_version_prefix() {
-    let v = ExampleV1 { a: 42, b: "hi".into() };
+    let v = ExampleV1 {
+        a: 42,
+        b: "hi".into(),
+    };
     let bytes = encode_versioned(1, &v).unwrap();
     assert_eq!(bytes[0], 1, "first byte must be the version");
     let (version, decoded) = decode_versioned::<ExampleV1>(&bytes).unwrap();
@@ -29,7 +32,10 @@ fn round_trip_postcard_with_version_prefix() {
 #[test]
 fn version_byte_is_always_first() {
     for v in [0u8, 1, 127, 255] {
-        let val = ExampleV1 { a: 0, b: String::new() };
+        let val = ExampleV1 {
+            a: 0,
+            b: String::new(),
+        };
         let bytes = encode_versioned(v, &val).unwrap();
         assert_eq!(bytes[0], v);
         assert!(bytes.len() > 1, "must have at least version + payload");
@@ -40,7 +46,10 @@ fn version_byte_is_always_first() {
 fn unknown_version_still_decodes_if_payload_valid() {
     // Version byte 99 is just metadata — decode_versioned doesn't validate
     // the version, it just returns it; callers decide if version is known.
-    let v = ExampleV1 { a: 1, b: "x".into() };
+    let v = ExampleV1 {
+        a: 1,
+        b: "x".into(),
+    };
     let bytes = encode_versioned(99, &v).unwrap();
     let (ver, decoded) = decode_versioned::<ExampleV1>(&bytes).unwrap();
     assert_eq!(ver, 99);
@@ -65,7 +74,10 @@ fn single_byte_version_only_is_error_for_struct() {
 
 #[test]
 fn truncated_payload_returns_error() {
-    let v = ExampleV1 { a: 42, b: "hello world".into() };
+    let v = ExampleV1 {
+        a: 42,
+        b: "hello world".into(),
+    };
     let bytes = encode_versioned(1, &v).unwrap();
     assert!(bytes.len() > 3, "need enough bytes to truncate");
     // Truncate after the version byte to something very short
@@ -85,7 +97,9 @@ fn junk_payload_returns_error() {
 #[test]
 fn max_size_payload_round_trips() {
     // 1 MB payload
-    let big = SimpleBytes { data: vec![0xABu8; 1024 * 1024] };
+    let big = SimpleBytes {
+        data: vec![0xABu8; 1024 * 1024],
+    };
     let encoded = encode_versioned(1, &big).unwrap();
     assert_eq!(encoded[0], 1);
     let (_, decoded) = decode_versioned::<SimpleBytes>(&encoded).unwrap();
@@ -104,7 +118,10 @@ fn encode_version_zero_works() {
 
 #[test]
 fn encode_version_255_works() {
-    let v = ExampleV1 { a: 255, b: "max".into() };
+    let v = ExampleV1 {
+        a: 255,
+        b: "max".into(),
+    };
     let bytes = encode_versioned(255, &v).unwrap();
     assert_eq!(bytes[0], 255);
     let (ver, decoded) = decode_versioned::<ExampleV1>(&bytes).unwrap();
@@ -118,7 +135,10 @@ fn encode_version_255_works() {
 fn single_byte_session_record_returns_error() {
     // Just a version byte, no payload — must return Err, never panic.
     let r: Result<(u8, SessionRecord), _> = decode_versioned(&[1u8]);
-    assert!(r.is_err(), "single version byte must error for SessionRecord");
+    assert!(
+        r.is_err(),
+        "single version byte must error for SessionRecord"
+    );
 }
 
 #[test]

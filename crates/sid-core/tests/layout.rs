@@ -13,7 +13,10 @@ struct W {
 
 impl W {
     fn new(s: &'static str) -> Self {
-        Self { id: WidgetId::new(s), title: s }
+        Self {
+            id: WidgetId::new(s),
+            title: s,
+        }
     }
 }
 
@@ -35,8 +38,10 @@ impl Widget for W {
 #[test]
 fn single_layout_holds_one_widget() {
     let layout: Layout = Layout::Single(Box::new(W::new("only")));
-    let titles: Vec<String> =
-        layout.iter_widgets().map(|w| w.title().to_string()).collect();
+    let titles: Vec<String> = layout
+        .iter_widgets()
+        .map(|w| w.title().to_string())
+        .collect();
     assert_eq!(titles, vec!["only".to_string()]);
 }
 
@@ -48,8 +53,10 @@ fn split_layout_iterates_in_order() {
         a: Box::new(Layout::Single(Box::new(W::new("a")))),
         b: Box::new(Layout::Single(Box::new(W::new("b")))),
     };
-    let titles: Vec<String> =
-        layout.iter_widgets().map(|w| w.title().to_string()).collect();
+    let titles: Vec<String> = layout
+        .iter_widgets()
+        .map(|w| w.title().to_string())
+        .collect();
     assert_eq!(titles, vec!["a".to_string(), "b".to_string()]);
 }
 
@@ -141,8 +148,7 @@ fn iter_widgets_mut_count_matches_immutable() {
 /// Build a balanced binary split tree of the given depth.
 /// At depth 0 returns a Single. Returns `(layout, expected_leaf_count)`.
 fn build_balanced(depth: u32) -> (Layout, usize) {
-    static COUNTER: std::sync::atomic::AtomicU32 =
-        std::sync::atomic::AtomicU32::new(0);
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     fn go(depth: u32) -> (Layout, usize) {
         if depth == 0 {
             let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -184,8 +190,7 @@ fn deeply_nested_split_10_levels_mut_correct_leaf_count() {
 
 #[test]
 fn layout_with_100_widgets_linear_chain() {
-    static LCOUNT: std::sync::atomic::AtomicU32 =
-        std::sync::atomic::AtomicU32::new(10000);
+    static LCOUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(10000);
 
     fn next_leaf() -> Layout {
         let id = LCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

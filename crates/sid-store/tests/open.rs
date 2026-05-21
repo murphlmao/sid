@@ -114,8 +114,8 @@ fn schema_migration_safety_future_version_byte_errors_gracefully() {
     //   - Store the bytes as-is (settings are raw bytes in SETTINGS table).
     //   - Return them unchanged on read.
     //   - Not panic at any point.
-    use sid_store::codec::{decode_versioned, encode_versioned};
     use sid_store::SessionRecord;
+    use sid_store::codec::{decode_versioned, encode_versioned};
 
     let dir = tempdir().unwrap();
     let path = dir.path().join("sid.redb");

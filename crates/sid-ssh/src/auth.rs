@@ -56,10 +56,8 @@ async fn auth_key(
 ) -> Result<(), SshError> {
     let key = russh::keys::load_secret_key(path, passphrase)
         .map_err(|e| SshError::AuthFailed(format!("load key {path:?}: {e}")))?;
-    let key_with_hash = PrivateKeyWithHashAlg::new(
-        Arc::new(key),
-        Some(russh::keys::HashAlg::Sha512),
-    );
+    let key_with_hash =
+        PrivateKeyWithHashAlg::new(Arc::new(key), Some(russh::keys::HashAlg::Sha512));
     let r = handle
         .authenticate_publickey(user, key_with_hash)
         .await
@@ -70,10 +68,7 @@ async fn auth_key(
     Ok(())
 }
 
-async fn auth_agent(
-    handle: &mut Handle<ClientHandler>,
-    user: &str,
-) -> Result<(), SshError> {
+async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<(), SshError> {
     let sock = std::env::var("SSH_AUTH_SOCK")
         .map_err(|_| SshError::AuthFailed("SSH_AUTH_SOCK not set".into()))?;
     let mut agent = russh::keys::agent::client::AgentClient::connect_uds(&sock)

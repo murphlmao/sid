@@ -19,7 +19,14 @@ fn ssh_add_list_remove() {
         bin,
         db_s,
         &[
-            "ssh", "add", "jp46-dev", "10.1.40.102", "--user", "pi", "--port", "2222",
+            "ssh",
+            "add",
+            "jp46-dev",
+            "10.1.40.102",
+            "--user",
+            "pi",
+            "--port",
+            "2222",
         ],
     );
     assert!(
@@ -50,7 +57,11 @@ fn ssh_add_minimal_args_defaults_to_root_22() {
     let db_s = db.to_str().unwrap();
 
     let r = run(bin, db_s, &["ssh", "add", "x", "example.com"]);
-    assert!(r.status.success(), "stderr: {}", String::from_utf8_lossy(&r.stderr));
+    assert!(
+        r.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
     let list = run(bin, db_s, &["ssh", "list"]);
     let out = String::from_utf8_lossy(&list.stdout);
     assert!(out.contains("root@example.com:22"), "list: {out}");

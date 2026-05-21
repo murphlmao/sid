@@ -124,7 +124,10 @@ fn opener_cmd_round_trip() {
         .get_pinned_config(Path::new("/etc/x.conf"))
         .unwrap()
         .unwrap();
-    assert_eq!(got.opener_cmd.as_deref(), Some("zellij action edit /etc/x.conf"));
+    assert_eq!(
+        got.opener_cmd.as_deref(),
+        Some("zellij action edit /etc/x.conf")
+    );
 }
 
 use proptest::prelude::*;

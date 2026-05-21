@@ -399,9 +399,9 @@ async fn main() -> Result<()> {
                 alias: e.host.clone(),
                 host: e.hostname.unwrap_or(e.host),
                 port: e.port.unwrap_or(22),
-                user: e.user.unwrap_or_else(|| {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
-                }),
+                user: e
+                    .user
+                    .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".into())),
                 identity_file: e.identity_file,
             })
             .collect();
@@ -758,10 +758,7 @@ fn handle_ssh_cmd(store: &dyn Store, op: SshOp) -> Result<()> {
         }
         SshOp::List => {
             for h in store.list_ssh_hosts().unwrap_or_default() {
-                println!(
-                    "{:<20} {}@{}:{} [Manual]",
-                    h.alias, h.user, h.host, h.port
-                );
+                println!("{:<20} {}@{}:{} [Manual]", h.alias, h.user, h.host, h.port);
             }
             let cfg_path = directories::UserDirs::new()
                 .map(|d| d.home_dir().join(".ssh/config"))

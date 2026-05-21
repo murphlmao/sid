@@ -67,12 +67,7 @@ impl SystemctlCmdClient {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    fn run_action(
-        &self,
-        bus: UnitBus,
-        unit: &str,
-        action: &str,
-    ) -> Result<(), SystemctlError> {
+    fn run_action(&self, bus: UnitBus, unit: &str, action: &str) -> Result<(), SystemctlError> {
         let bus_flag = bus_flag(bus);
         let out = Command::new(&self.systemctl_path)
             .args([bus_flag, "--no-pager", action, unit])
@@ -119,7 +114,14 @@ impl SystemctlCmdClient {
 
         let bus_flag = bus_flag(bus);
         let mut child = TokioCommand::new(&self.journalctl_path)
-            .args([bus_flag, "--no-pager", "--output=short-iso", "-f", "-u", unit])
+            .args([
+                bus_flag,
+                "--no-pager",
+                "--output=short-iso",
+                "-f",
+                "-u",
+                unit,
+            ])
             .stdout(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()

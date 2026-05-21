@@ -36,7 +36,11 @@ pub struct CommandPalette {
 impl CommandPalette {
     /// Create a new, closed command palette.
     pub fn new() -> Self {
-        Self { open: false, query: String::new(), selected: 0 }
+        Self {
+            open: false,
+            query: String::new(),
+            selected: 0,
+        }
     }
 
     /// Open the palette, clearing any previous query and selection.

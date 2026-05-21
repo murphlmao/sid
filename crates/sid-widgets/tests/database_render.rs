@@ -83,8 +83,7 @@ fn snapshot_three_connections_editor_focused() {
 #[test]
 fn snapshot_active_connection_with_multiline_sql() {
     let mut w = DatabaseWidget::new(fixture_three_conns());
-    w.state_mut()
-        .set_active_conn_id_for_tests("prod-db".into());
+    w.state_mut().set_active_conn_id_for_tests("prod-db".into());
     // Multi-line query: SELECT … \n WHERE …;
     for c in "SELECT * FROM users".chars() {
         w.state_mut().editor.insert_char(c);
@@ -101,8 +100,7 @@ fn snapshot_active_connection_with_multiline_sql() {
 #[test]
 fn snapshot_results_pane_focused_with_rows() {
     let mut w = DatabaseWidget::new(fixture_three_conns());
-    w.state_mut()
-        .set_active_conn_id_for_tests("prod-db".into());
+    w.state_mut().set_active_conn_id_for_tests("prod-db".into());
     w.set_results_for_tests(sample_page());
     w.state_mut().set_right_pane(RightPane::Results);
     w.state_mut().results.select_next_row(); // highlight row 2
@@ -113,8 +111,7 @@ fn snapshot_results_pane_focused_with_rows() {
 #[test]
 fn snapshot_history_pane_focused() {
     let mut w = DatabaseWidget::new(fixture_three_conns());
-    w.state_mut()
-        .set_active_conn_id_for_tests("prod-db".into());
+    w.state_mut().set_active_conn_id_for_tests("prod-db".into());
     let records = (0u64..5)
         .map(|i| QueryRecord {
             conn_id: "prod-db".into(),

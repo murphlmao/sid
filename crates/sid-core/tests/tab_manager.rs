@@ -17,7 +17,10 @@ struct W {
 
 impl W {
     fn new(s: &'static str) -> Self {
-        Self { id: WidgetId::new(s), title: s }
+        Self {
+            id: WidgetId::new(s),
+            title: s,
+        }
     }
 }
 

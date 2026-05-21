@@ -77,7 +77,9 @@ impl SecretStore for PlainStore {
     }
 
     fn get(&self, id: &SecretId) -> Result<Option<Vec<u8>>, SecretError> {
-        self.inner.secret_get(id.as_str()).map_err(sid_to_secret_err)
+        self.inner
+            .secret_get(id.as_str())
+            .map_err(sid_to_secret_err)
     }
 
     fn delete(&self, id: &SecretId) -> Result<(), SecretError> {

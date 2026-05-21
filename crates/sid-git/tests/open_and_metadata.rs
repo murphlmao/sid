@@ -28,9 +28,15 @@ fn open_succeeds_on_initialized_repo() {
 fn open_fails_on_non_repo_directory() {
     let dir = tempdir().unwrap();
     let factory = Git2ProviderFactory::new();
-    let err = expect_err(factory.open(dir.path()), "expected error opening non-repo directory");
+    let err = expect_err(
+        factory.open(dir.path()),
+        "expected error opening non-repo directory",
+    );
     let msg = format!("{err}");
-    assert!(msg.contains("repository not found") || msg.contains("not"), "msg was: {msg}");
+    assert!(
+        msg.contains("repository not found") || msg.contains("not"),
+        "msg was: {msg}"
+    );
 }
 
 #[test]
@@ -55,7 +61,9 @@ fn open_succeeds_via_symlink_to_repo() {
     let link = dir.path().join("link_to_repo");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     let factory = Git2ProviderFactory::new();
-    let _provider = factory.open(&link).expect("open via symlink should succeed");
+    let _provider = factory
+        .open(&link)
+        .expect("open via symlink should succeed");
 }
 
 // Adversarial: open at a path that is a regular file, not a directory (should error gracefully)

@@ -54,7 +54,10 @@ fn upsert_replaces_existing() {
     let mut v2 = sample("t");
     v2.palette.accent_primary = 0xABCDEF;
     s.upsert_theme(&v2).unwrap();
-    assert_eq!(s.get_theme("t").unwrap().unwrap().palette.accent_primary, 0xABCDEF);
+    assert_eq!(
+        s.get_theme("t").unwrap().unwrap().palette.accent_primary,
+        0xABCDEF
+    );
     assert_eq!(s.list_themes().unwrap().len(), 1);
 }
 
@@ -64,7 +67,12 @@ fn list_returns_all_in_lexicographic_order() {
     for name in &["bb", "aa", "cc"] {
         s.upsert_theme(&sample(name)).unwrap();
     }
-    let names: Vec<_> = s.list_themes().unwrap().into_iter().map(|t| t.name).collect();
+    let names: Vec<_> = s
+        .list_themes()
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
     assert_eq!(names, vec!["aa", "bb", "cc"]);
 }
 

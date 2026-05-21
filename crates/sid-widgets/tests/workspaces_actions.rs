@@ -11,7 +11,11 @@ use sid_widgets::workspaces::{
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn action(label: &str, cmd: &str, key: Option<char>) -> WorkspaceAction {
-    WorkspaceAction { label: label.into(), cmd: cmd.into(), key }
+    WorkspaceAction {
+        label: label.into(),
+        cmd: cmd.into(),
+        key,
+    }
 }
 
 fn _ws(p: &str) -> Workspace {
@@ -81,7 +85,9 @@ fn action_list_single_element_wraps_to_self() {
 #[test]
 fn mock_action_runner_success() {
     let runner = MockActionRunner::new(0, "hello from action\n".into());
-    let result = runner.run_action(Path::new("/tmp"), "echo hello from action").unwrap();
+    let result = runner
+        .run_action(Path::new("/tmp"), "echo hello from action")
+        .unwrap();
     assert!(result.success());
     assert_eq!(result.stdout, "hello from action\n");
     assert_eq!(result.exit_code, 0);
@@ -98,7 +104,9 @@ fn mock_action_runner_failure_exit_code() {
 #[test]
 fn mock_action_runner_spawn_error() {
     let runner = MockActionRunner::failing("command not found".into());
-    let err = runner.run_action(Path::new("/tmp"), "nonexistent-cmd").unwrap_err();
+    let err = runner
+        .run_action(Path::new("/tmp"), "nonexistent-cmd")
+        .unwrap_err();
     assert_eq!(err, "command not found");
 }
 
@@ -116,8 +124,12 @@ fn mock_action_runner_records_cwd_correctly() {
 #[test]
 fn mock_action_runner_records_cmd_correctly() {
     let runner = MockActionRunner::new(0, String::new());
-    runner.run_action(Path::new("/tmp"), "./clone-repos.sh").unwrap();
-    runner.run_action(Path::new("/tmp"), "cargo test --all").unwrap();
+    runner
+        .run_action(Path::new("/tmp"), "./clone-repos.sh")
+        .unwrap();
+    runner
+        .run_action(Path::new("/tmp"), "cargo test --all")
+        .unwrap();
     let calls = runner.calls();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].1, "./clone-repos.sh");
@@ -135,13 +147,21 @@ fn action_runner_is_dyn_compatible() {
 
 #[test]
 fn action_result_success_on_zero_exit() {
-    let r = ActionResult { stdout: "ok\n".into(), stderr: String::new(), exit_code: 0 };
+    let r = ActionResult {
+        stdout: "ok\n".into(),
+        stderr: String::new(),
+        exit_code: 0,
+    };
     assert!(r.success());
 }
 
 #[test]
 fn action_result_failure_on_nonzero_exit() {
-    let r = ActionResult { stdout: String::new(), stderr: "err\n".into(), exit_code: 1 };
+    let r = ActionResult {
+        stdout: String::new(),
+        stderr: "err\n".into(),
+        exit_code: 1,
+    };
     assert!(!r.success());
 }
 
@@ -199,14 +219,18 @@ fn action_failure_result_propagates_stderr() {
 #[test]
 fn switching_to_actions_pane_works() {
     let mut s = WorkspacesState::new(vec![_ws("/a")]);
-    for _ in 0..5 { s.cycle_pane_next(); } // Branches -> Status -> Log -> Diff -> Commit -> Actions
+    for _ in 0..5 {
+        s.cycle_pane_next();
+    } // Branches -> Status -> Log -> Diff -> Commit -> Actions
     assert!(matches!(s.right_pane(), RightPane::Actions(_)));
 }
 
 #[test]
 fn actions_pane_can_receive_workspace_actions() {
     let mut s = WorkspacesState::new(vec![_ws("/a")]);
-    for _ in 0..5 { s.cycle_pane_next(); } // -> Actions
+    for _ in 0..5 {
+        s.cycle_pane_next();
+    } // -> Actions
     if let RightPane::Actions(al) = s.right_pane_mut() {
         al.select_next(); // noop on empty
         // Populate actions
@@ -245,7 +269,9 @@ fn r_key_in_any_sub_view_opens_actions_pane_via_widget() {
 fn action_cmd_with_unicode_runs_correctly() {
     let runner = MockActionRunner::new(0, "done".into());
     // Command with unicode (real shell would handle this)
-    let result = runner.run_action(Path::new("/工作区"), "./build-🐕.sh").unwrap();
+    let result = runner
+        .run_action(Path::new("/工作区"), "./build-🐕.sh")
+        .unwrap();
     assert!(result.success());
     let calls = runner.calls();
     assert_eq!(calls[0].1, "./build-🐕.sh");
@@ -277,7 +303,9 @@ fn very_many_actions_does_not_panic() {
 fn multiple_calls_all_recorded() {
     let runner = MockActionRunner::new(0, String::new());
     for i in 0..100 {
-        runner.run_action(Path::new("/tmp"), &format!("cmd-{i}")).unwrap();
+        runner
+            .run_action(Path::new("/tmp"), &format!("cmd-{i}"))
+            .unwrap();
     }
     let calls = runner.calls();
     assert_eq!(calls.len(), 100);

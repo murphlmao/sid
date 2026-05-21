@@ -9,8 +9,8 @@
 pub mod auth;
 pub mod client;
 pub mod config;
-pub mod shell;
 pub mod sftp;
+pub mod shell;
 
 pub use client::{RusshClient, RusshClientFactory};
 pub use config::{SshConfigEntry, read_ssh_config};
