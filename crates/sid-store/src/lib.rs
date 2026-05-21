@@ -417,7 +417,7 @@ pub trait Store: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use sid_store::{OpenStore, RedbStore, Store};
     /// use tempfile::tempdir;
     ///
@@ -433,7 +433,7 @@ pub trait Store: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use std::path::PathBuf;
     /// use sid_store::{now_epoch, OpenStore, RedbStore, Store, Workspace, WorkspaceKind};
     /// use tempfile::tempdir;
@@ -457,7 +457,7 @@ pub trait Store: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use std::path::PathBuf;
     /// use sid_store::{now_epoch, OpenStore, RedbStore, Store, Workspace, WorkspaceKind};
     /// use tempfile::tempdir;
@@ -472,7 +472,7 @@ pub trait Store: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// use std::path::PathBuf;
     /// use sid_store::{OpenStore, RedbStore, Store};
     /// use tempfile::tempdir;

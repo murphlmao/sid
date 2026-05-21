@@ -255,20 +255,82 @@ impl Store for RedbStore {
         }
     }
 
-    // Workspace registry methods — stubs; full impl in Task 18.
     fn list_workspaces(&self) -> Result<Vec<Workspace>, SidError> {
-        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(WORKSPACES)
+            .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter workspaces: {e}")))?;
+        for entry in iter {
+            let (_k, v) =
+                entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_ver, w) = crate::codec::decode_versioned::<Workspace>(v.value())?;
+            out.push(w);
+        }
+        Ok(out)
     }
 
-    fn upsert_workspace(&self, _w: &Workspace) -> Result<(), SidError> {
-        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    fn upsert_workspace(&self, w: &Workspace) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, w)?;
+        let key = w.path.to_string_lossy().to_string();
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(WORKSPACES)
+                .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
+            tbl.insert(key.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert workspace: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit workspace: {e}")))?;
+        Ok(())
     }
 
-    fn get_workspace(&self, _path: &std::path::Path) -> Result<Option<Workspace>, SidError> {
-        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    fn get_workspace(&self, path: &std::path::Path) -> Result<Option<Workspace>, SidError> {
+        let key = path.to_string_lossy().to_string();
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(WORKSPACES)
+            .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
+        let got = tbl
+            .get(key.as_str())
+            .map_err(|e| SidError::Storage(format!("get workspace: {e}")))?;
+        match got {
+            Some(v) => {
+                let (_ver, w) = crate::codec::decode_versioned::<Workspace>(v.value())?;
+                Ok(Some(w))
+            }
+            None => Ok(None),
+        }
     }
 
-    fn remove_workspace(&self, _path: &std::path::Path) -> Result<(), SidError> {
-        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    fn remove_workspace(&self, path: &std::path::Path) -> Result<(), SidError> {
+        let key = path.to_string_lossy().to_string();
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(WORKSPACES)
+                .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
+            tbl.remove(key.as_str())
+                .map_err(|e| SidError::Storage(format!("remove workspace: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove: {e}")))?;
+        Ok(())
     }
 }
