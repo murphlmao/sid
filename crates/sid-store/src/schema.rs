@@ -10,18 +10,20 @@
 //! | `sessions` | session id string | versioned-postcard `SessionRecord` |
 //! | `session_meta` | `"current"` | raw UTF-8 session id bytes |
 //! | `widget_state` | `"tab_id\0widget_id"` | raw widget blob bytes |
+//! | `workspaces` | absolute path string | versioned-postcard `Workspace` |
 //!
 //! # Examples
 //!
 //! ```
 //! use redb::TableHandle;
-//! use sid_store::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE};
+//! use sid_store::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
 //!
 //! // The table names are stable constants.
 //! assert_eq!(SETTINGS.name(), "settings");
 //! assert_eq!(SESSIONS.name(), "sessions");
 //! assert_eq!(SESSION_META.name(), "session_meta");
 //! assert_eq!(WIDGET_STATE.name(), "widget_state");
+//! assert_eq!(WORKSPACES.name(), "workspaces");
 //! ```
 
 use redb::TableDefinition;
@@ -42,6 +44,19 @@ pub const SESSION_META: TableDefinition<&str, &[u8]> = TableDefinition::new("ses
 /// widget blob bytes as returned by `Widget::save_state`.
 pub const WIDGET_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("widget_state");
 
+/// Workspace registry table. Key: absolute path string (the workspace's
+/// primary key). Value: versioned-postcard `Workspace`.
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::WORKSPACES;
+///
+/// assert_eq!(WORKSPACES.name(), "workspaces");
+/// ```
+pub const WORKSPACES: TableDefinition<&str, &[u8]> = TableDefinition::new("workspaces");
+
 #[cfg(test)]
 mod tests {
     use redb::TableHandle;
@@ -54,5 +69,6 @@ mod tests {
         assert_eq!(SESSIONS.name(), "sessions");
         assert_eq!(SESSION_META.name(), "session_meta");
         assert_eq!(WIDGET_STATE.name(), "widget_state");
+        assert_eq!(WORKSPACES.name(), "workspaces");
     }
 }
