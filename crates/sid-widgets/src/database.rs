@@ -881,6 +881,10 @@ impl Widget for DatabaseWidget {
         "Database"
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn render(&self, target: &mut dyn RenderTarget) {
         // Full ratatui-driven layout (left pane + editor/results/history) is a
         // follow-up wire-layer task. For now use the shared "coming soon"

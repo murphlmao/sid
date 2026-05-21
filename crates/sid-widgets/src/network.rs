@@ -603,6 +603,10 @@ impl Widget for NetworkWidget {
         "Network"
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn render(&self, _target: &mut dyn RenderTarget) {
         // Text-mode rendering goes through the binary's draw fn for now.
         // The ratatui-aware `render_into_frame` is the canonical path; the

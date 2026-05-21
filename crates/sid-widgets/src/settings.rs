@@ -341,6 +341,10 @@ impl Widget for SettingsWidget {
         "Settings"
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn render(&self, target: &mut dyn RenderTarget) {
         // RenderTarget is intentionally minimal in Plan 1; the actual draw
         // happens via ratatui-aware paths in the binary. Keep this method as
