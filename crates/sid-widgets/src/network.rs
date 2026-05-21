@@ -1,4 +1,13 @@
-//! Network tab widget — stub for Plan 1; full implementation in Plan 5.
+//! Network tab widget. Plan 5 builds out the full functionality
+//! incrementally: each pane (ports table, processes table, interfaces
+//! sidebar, filter input, kill modal) is implemented as a self-contained
+//! state type in its own submodule before being assembled into the
+//! top-level [`NetworkWidget`].
+//!
+//! Until [`NetworkWidget`] is rebuilt to consume those pieces (Plan 5
+//! Task 17), the widget itself remains the Plan 1 "coming soon" stub.
+
+pub mod ports_table;
 
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
