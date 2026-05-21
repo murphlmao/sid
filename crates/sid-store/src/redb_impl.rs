@@ -11,7 +11,7 @@ use sid_core::tab::TabId;
 use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
-use crate::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE};
+use crate::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
 use crate::{OpenStore, SessionRecord, SettingValue, Store, WidgetState};
 
 /// redb-backed implementation of [`crate::Store`].
@@ -50,6 +50,9 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(WIDGET_STATE)
                 .map_err(|e| SidError::Storage(format!("open widget_state: {e}")))?;
+            let _ = txn
+                .open_table(WORKSPACES)
+                .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
