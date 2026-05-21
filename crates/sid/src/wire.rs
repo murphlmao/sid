@@ -2,11 +2,11 @@
 //! keybind map and action registry — into a running [`App`], and contains the
 //! Ratatui render loop.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use directories::ProjectDirs;
+use directories::{ProjectDirs, UserDirs};
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
@@ -19,7 +19,10 @@ use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
 use sid_core::tab::{Tab, TabId, TabManager};
 use sid_core::widget::Widget;
-use sid_store::{RedbStore, SessionRecord, Store, now_epoch};
+use sid_core::workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root};
+use sid_core::workspace_metadata::WorkspaceKind;
+use sid_git::Git2ProviderFactory;
+use sid_store::{RedbStore, SessionRecord, Store, Workspace, now_epoch};
 use sid_ui::helpers::styled_block;
 use sid_ui::themes::cosmos;
 use sid_widgets::{
@@ -42,7 +45,7 @@ use tokio::sync::mpsc::Receiver;
 /// use sid_store::{OpenStore, RedbStore};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
-/// let app = build_app(None);
+/// let app = build_app(None, vec![]);
 /// let sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
 /// ```
 pub struct SidApp {
@@ -85,6 +88,9 @@ pub fn db_path(override_path: Option<PathBuf>) -> PathBuf {
 
 /// Build an [`App`] with the six Plan-1 tabs pre-wired.
 ///
+/// Injects the real [`Git2ProviderFactory`] into the [`WorkspacesWidget`] and
+/// pre-populates it with `workspaces` loaded from the store.
+///
 /// Optionally switches to `start_tab` if a matching tab id is found.
 ///
 /// # Examples
@@ -92,16 +98,17 @@ pub fn db_path(override_path: Option<PathBuf>) -> PathBuf {
 /// ```
 /// use sid::wire::build_app;
 ///
-/// let app = build_app(None);
+/// let app = build_app(None, vec![]);
 /// assert_eq!(app.tabs().tabs().len(), 6);
 /// assert_eq!(app.tabs().active().id.as_str(), "workspaces");
 /// ```
-pub fn build_app(start_tab: Option<&str>) -> App {
+pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
+    let git_factory = Arc::new(Git2ProviderFactory::new());
     let tabs = TabManager::new(vec![
         tab(
             "workspaces",
             "Workspaces",
-            Box::new(WorkspacesWidget::new(vec![], None)),
+            Box::new(WorkspacesWidget::new(workspaces, Some(git_factory))),
             Some('1'),
         ),
         tab("ssh", "SSH", Box::new(SshWidget::new()), Some('2')),
@@ -206,7 +213,7 @@ pub fn pretty_label(action_id: &str) -> String {
 /// use sid_store::{OpenStore, RedbStore};
 ///
 /// let store = RedbStore::open(Path::new("/tmp/test.redb")).unwrap();
-/// let app = build_app(Some("ssh"));
+/// let app = build_app(Some("ssh"), vec![]);
 /// save_active_tab(&store, "sess-1", &app).unwrap();
 /// // The session record is now persisted; open the store again to verify.
 /// ```
@@ -235,7 +242,7 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 /// use ratatui::backend::TestBackend;
 /// use sid::wire::{build_app, draw};
 ///
-/// let app = build_app(None);
+/// let app = build_app(None, vec![]);
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
 /// terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -342,6 +349,92 @@ pub fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
     }
 }
 
+/// Return the default workspace discovery roots.
+///
+/// Scans `~/vcs/` if `$HOME` resolves via [`directories::UserDirs`], otherwise
+/// returns an empty list (discovery is a best-effort operation).
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::default_discovery_roots;
+///
+/// let roots = default_discovery_roots();
+/// // May be empty when $HOME is unset; never panics.
+/// assert!(roots.len() <= 1);
+/// ```
+pub fn default_discovery_roots() -> Vec<PathBuf> {
+    UserDirs::new()
+        .map(|u| u.home_dir().join("vcs"))
+        .into_iter()
+        .collect()
+}
+
+/// Scan each root for workspaces and merge discoveries into the store.
+///
+/// Uses [`scan_workspace_root`] with a max depth of 2, then calls
+/// [`merge_discoveries_into`] with a [`WorkspaceUpserter`] adapter that
+/// delegates to the store.  Discovery is best-effort: errors from scanning an
+/// individual root are propagated to the caller; errors from a single upsert
+/// are surfaced as `Err(String)` from [`merge_discoveries_into`].
+///
+/// Returns the total number of workspaces upserted across all roots.
+///
+/// # Errors
+///
+/// Returns `anyhow::Error` if any scan or upsert fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::PathBuf;
+/// use sid::wire::startup_discover;
+/// use sid_store::{OpenStore, RedbStore};
+///
+/// let store = RedbStore::open(std::path::Path::new("/tmp/discover_test.redb")).unwrap();
+/// let roots = vec![PathBuf::from("/tmp/vcs-roots")];
+/// let count = startup_discover(&store, &roots).unwrap_or(0);
+/// // count is how many workspaces were upserted.
+/// let _ = count;
+/// ```
+pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<usize> {
+    struct Bridge<'a> {
+        store: &'a dyn Store,
+    }
+
+    impl<'a> WorkspaceUpserter for Bridge<'a> {
+        fn upsert(
+            &self,
+            path: &Path,
+            kind: WorkspaceKind,
+            name: &str,
+        ) -> Result<(), String> {
+            let w = Workspace {
+                path: path.to_path_buf(),
+                name: name.to_string(),
+                kind,
+                manifest_hash: 0,
+                last_seen: now_epoch(),
+                parent: None,
+            };
+            self.store.upsert_workspace(&w).map_err(|e| format!("{e}"))
+        }
+    }
+
+    let mut total = 0usize;
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        let discovered = scan_workspace_root(root, 2)
+            .map_err(|e| anyhow::anyhow!("scan {:?}: {e}", root))?;
+        let n = merge_discoveries_into(&Bridge { store }, &discovered)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        total += n;
+    }
+    Ok(total)
+}
+
 /// Run the main render + event loop until the app requests to quit.
 ///
 /// Draws each frame, waits for the next event, dispatches it through the
@@ -368,7 +461,7 @@ pub fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
 ///     let backend = TestBackend::new(120, 40);
 ///     let mut terminal = Terminal::new(backend).unwrap();
 ///     let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
-///     let app = build_app(None);
+///     let app = build_app(None, vec![]);
 ///     let mut sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -419,7 +512,7 @@ mod tests {
     /// `build_app` creates a TabManager with exactly 6 tabs in the correct order.
     #[test]
     fn build_app_has_six_tabs_in_order() {
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         let ids: Vec<&str> = app.tabs().tabs().iter().map(|t| t.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -437,21 +530,21 @@ mod tests {
     /// `build_app` defaults to the first tab (workspaces).
     #[test]
     fn build_app_defaults_to_workspaces() {
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         assert_eq!(app.tabs().active().id.as_str(), "workspaces");
     }
 
     /// `build_app` with a valid start_tab switches to that tab.
     #[test]
     fn build_app_start_tab_switches() {
-        let app = build_app(Some("settings"));
+        let app = build_app(Some("settings"), vec![]);
         assert_eq!(app.tabs().active().id.as_str(), "settings");
     }
 
     /// `build_app` with an unknown start_tab falls back to the first tab.
     #[test]
     fn build_app_unknown_start_tab_falls_back() {
-        let app = build_app(Some("does-not-exist"));
+        let app = build_app(Some("does-not-exist"), vec![]);
         // switch_to returns false but doesn't panic; active stays at 0.
         assert_eq!(app.tabs().active_index(), 0);
     }
@@ -594,7 +687,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_file = dir.path().join("test.redb");
         let store = RedbStore::open(&db_file).unwrap();
-        let app = build_app(Some("ssh"));
+        let app = build_app(Some("ssh"), vec![]);
 
         save_active_tab(&store, "sess-1", &app).unwrap();
 
@@ -609,7 +702,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_file = dir.path().join("test.redb");
         let store = RedbStore::open(&db_file).unwrap();
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
 
         save_active_tab(&store, "sess-2", &app).unwrap();
 
@@ -623,8 +716,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_file = dir.path().join("test.redb");
         let store = RedbStore::open(&db_file).unwrap();
-        let app1 = build_app(Some("ssh"));
-        let app2 = build_app(Some("database"));
+        let app1 = build_app(Some("ssh"), vec![]);
+        let app2 = build_app(Some("database"), vec![]);
 
         save_active_tab(&store, "sess-3", &app1).unwrap();
         save_active_tab(&store, "sess-3", &app2).unwrap();
@@ -639,7 +732,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_file = dir.path().join("test.redb");
         let store = RedbStore::open(&db_file).unwrap();
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
 
         save_active_tab(&store, "sess-A", &app).unwrap();
         save_active_tab(&store, "sess-B", &app).unwrap();
@@ -656,7 +749,7 @@ mod tests {
 
     #[test]
     fn build_app_all_tabs_have_titles() {
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         let expected_titles = [
             "Workspaces",
             "SSH",
@@ -673,7 +766,7 @@ mod tests {
     /// `build_app` registers 14 actions (8 named + 6 jump).
     #[test]
     fn build_app_registers_expected_actions() {
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         // 8 named + 6 jump actions
         let all: Vec<_> = app.actions().all().collect();
         assert_eq!(all.len(), 14, "expected 14 actions, got {}", all.len());
@@ -682,7 +775,7 @@ mod tests {
     /// start_tab with "workspaces" ID stays at index 0.
     #[test]
     fn build_app_start_tab_workspaces_is_index_0() {
-        let app = build_app(Some("workspaces"));
+        let app = build_app(Some("workspaces"), vec![]);
         assert_eq!(app.tabs().active_index(), 0);
     }
 
@@ -698,7 +791,7 @@ mod tests {
             ("settings", 5),
         ];
         for (id, idx) in expected {
-            let app = build_app(Some(id));
+            let app = build_app(Some(id), vec![]);
             assert_eq!(app.tabs().active_index(), idx, "for tab id={id}");
         }
     }
@@ -737,7 +830,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_file = dir.path().join("test.redb");
         let store = RedbStore::open(&db_file).unwrap();
-        let app = build_app(Some("network"));
+        let app = build_app(Some("network"), vec![]);
 
         save_active_tab(&store, "sess-net", &app).unwrap();
         let loaded = store.current_session().unwrap().unwrap();
@@ -753,7 +846,7 @@ mod tests {
     /// the default tab (no match for " " as a tab id).
     #[test]
     fn build_app_start_tab_whitespace_falls_back_to_default() {
-        let app = build_app(Some("   "));
+        let app = build_app(Some("   "), vec![]);
         assert_eq!(
             app.tabs().active_index(),
             0,
@@ -765,7 +858,7 @@ mod tests {
     /// to the default tab — tab ids never contain newlines.
     #[test]
     fn build_app_start_tab_with_newline_falls_back_to_default() {
-        let app = build_app(Some("settings\n"));
+        let app = build_app(Some("settings\n"), vec![]);
         // "settings\n" is not a valid tab id; active index stays at 0.
         assert_eq!(
             app.tabs().active_index(),
@@ -778,7 +871,7 @@ mod tests {
     #[test]
     fn build_app_start_tab_very_long_does_not_panic() {
         let long = "x".repeat(100_000);
-        let app = build_app(Some(&long));
+        let app = build_app(Some(&long), vec![]);
         // No known tab id matches; falls back to default.
         assert_eq!(app.tabs().active_index(), 0);
     }
@@ -787,7 +880,7 @@ mod tests {
     /// falls back to the default (dots are not part of any tab id).
     #[test]
     fn build_app_start_tab_with_dot_falls_back() {
-        let app = build_app(Some("settings.extra"));
+        let app = build_app(Some("settings.extra"), vec![]);
         assert_eq!(app.tabs().active_index(), 0);
     }
 
@@ -956,7 +1049,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -968,7 +1061,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         let backend = TestBackend::new(1, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &app)).unwrap();
@@ -981,7 +1074,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None);
+        let app = build_app(None, vec![]);
         // Height 2 < bar height 3; body_rect will have saturating_sub(3) = 0 height.
         let backend = TestBackend::new(80, 2);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1002,7 +1095,7 @@ mod tests {
             "system",
             "settings",
         ] {
-            let app = build_app(Some(tab_id));
+            let app = build_app(Some(tab_id), vec![]);
             let backend = TestBackend::new(120, 40);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal

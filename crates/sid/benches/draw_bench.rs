@@ -10,7 +10,7 @@ use sid::wire::{build_app, draw};
 
 fn bench_draw_loop(c: &mut Criterion) {
     // Build a minimal SidApp with all six tabs wired up.
-    let app = build_app(None);
+    let app = build_app(None, vec![]);
 
     // A fake 120×40 terminal — large enough for the tab bar + body.
     let backend = TestBackend::new(120, 40);
@@ -26,7 +26,7 @@ fn bench_draw_loop(c: &mut Criterion) {
 }
 
 fn bench_draw_small_terminal(c: &mut Criterion) {
-    let app = build_app(None);
+    let app = build_app(None, vec![]);
     let backend = TestBackend::new(40, 10);
     let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
 
@@ -41,7 +41,7 @@ fn bench_draw_small_terminal(c: &mut Criterion) {
 
 fn bench_draw_with_start_tab(c: &mut Criterion) {
     // Bench with a non-default starting tab to catch any tab-specific overhead.
-    let app = build_app(Some("settings"));
+    let app = build_app(Some("settings"), vec![]);
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
 
