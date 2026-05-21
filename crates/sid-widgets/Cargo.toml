@@ -1,7 +1,15 @@
-# minimal stub — will be replaced in later tasks
 [package]
 name = "sid-widgets"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+sid-core.workspace = true
+sid-ui.workspace = true
+ratatui.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
