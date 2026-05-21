@@ -93,31 +93,131 @@ impl DbClient for PostgresClient {
         Ok(())
     }
 
-    async fn execute(&self, _sql: &str) -> Result<ExecResult, DbError> {
-        Err(DbError::Other(
-            "execute: not yet implemented — Task 10".into(),
-        ))
+    async fn execute(&self, sql: &str) -> Result<ExecResult, DbError> {
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        let start = std::time::Instant::now();
+        let guard = inner.lock().await;
+        let rows_affected = guard
+            .client
+            .execute(sql, &[])
+            .await
+            .map_err(map_pg_error)?;
+        Ok(ExecResult {
+            rows_affected,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     async fn query_paged(
         &self,
-        _sql: &str,
-        _cursor: Option<PageCursor>,
-        _page_size: u32,
+        sql: &str,
+        cursor: Option<PageCursor>,
+        page_size: u32,
     ) -> Result<QueryPage, DbError> {
-        Err(DbError::Other(
-            "query_paged: not yet implemented — Task 11".into(),
-        ))
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        let offset = cursor.map(|c| c.offset).unwrap_or(0);
+        let page_size = page_size.max(1) as u64;
+        let trimmed = sql.trim().trim_end_matches(';');
+        let wrapped = format!(
+            "SELECT * FROM ( {trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}"
+        );
+        let start = std::time::Instant::now();
+        let guard = inner.lock().await;
+        let rows = guard
+            .client
+            .query(&wrapped, &[])
+            .await
+            .map_err(map_pg_error)?;
+        let columns: Vec<Column> = if let Some(r) = rows.first() {
+            r.columns()
+                .iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    ty: pg_type_to_column_type(c.type_()),
+                })
+                .collect()
+        } else {
+            let stmt = guard.client.prepare(&wrapped).await.map_err(map_pg_error)?;
+            stmt.columns()
+                .iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    ty: pg_type_to_column_type(c.type_()),
+                })
+                .collect()
+        };
+        let mut rows_out: Vec<Row> = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let values: Vec<String> =
+                (0..r.columns().len()).map(|i| render_pg_value(r, i)).collect();
+            rows_out.push(Row { values });
+        }
+        let fetched = rows_out.len() as u64;
+        let next_cursor = if fetched < page_size {
+            None
+        } else {
+            Some(PageCursor {
+                offset: offset + fetched,
+            })
+        };
+        Ok(QueryPage {
+            columns,
+            rows: rows_out,
+            next_cursor,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
-        Err(DbError::Other(
-            "schema_introspect: not yet implemented — Task 12".into(),
-        ))
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        let guard = inner.lock().await;
+        let sql = "
+            SELECT table_schema, table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY table_schema, table_name, ordinal_position
+        ";
+        let rows = guard.client.query(sql, &[]).await.map_err(map_pg_error)?;
+        let mut tables: std::collections::BTreeMap<(String, String), Vec<Column>> =
+            Default::default();
+        for r in rows {
+            let schema: String = r.get(0);
+            let name: String = r.get(1);
+            let col: String = r.get(2);
+            let dtype: String = r.get(3);
+            let ct = match dtype.as_str() {
+                "boolean" => ColumnType::Bool,
+                "smallint" | "integer" | "bigint" => ColumnType::Integer,
+                "real" | "double precision" | "numeric" => ColumnType::Float,
+                "text" | "character varying" | "character" | "name" => ColumnType::Text,
+                "bytea" => ColumnType::Bytes,
+                other => ColumnType::Other(other.to_string()),
+            };
+            tables
+                .entry((schema, name))
+                .or_default()
+                .push(Column { name: col, ty: ct });
+        }
+        Ok(SchemaInfo {
+            tables: tables
+                .into_iter()
+                .map(|((schema, name), columns)| TableInfo {
+                    schema: Some(schema),
+                    name,
+                    columns,
+                })
+                .collect(),
+        })
     }
 
     async fn cancel(&self) -> Result<(), DbError> {
-        Err(DbError::Other("cancel: not yet implemented — Task 13".into()))
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        let guard = inner.lock().await;
+        guard
+            .cancel_token
+            .cancel_query(tokio_postgres::NoTls)
+            .await
+            .map_err(|e| DbError::Other(e.to_string()))
     }
 
     fn kind(&self) -> DbKind {
