@@ -43,12 +43,13 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn prop_returned_ports_are_in_range(_seed in 0u32..1) {
+    fn prop_returned_entries_have_valid_protocol(_seed in 0u32..1) {
         let _ = _seed;
         let mut p = SysinfoProvider::new();
         let ports = p.list_listening_ports().unwrap();
         for entry in &ports {
-            prop_assert!(entry.port <= u16::MAX);
+            // port is u16 by type; verify protocol is one of the two variants.
+            prop_assert!(matches!(entry.protocol, Protocol::Tcp | Protocol::Udp));
         }
     }
 }
