@@ -6,18 +6,22 @@ use anyhow::Result;
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use sid_store::{now_epoch, OpenStore, RedbStore, Store};
+use ratatui::backend::CrosstermBackend;
+use sid_store::{OpenStore, RedbStore, Store, now_epoch};
 use tracing_subscriber::EnvFilter;
 
 mod runtime;
 mod wire;
 
 #[derive(Parser, Debug)]
-#[command(name = "sid", version, about = "a fast, focused TUI cockpit for developer workflow")]
+#[command(
+    name = "sid",
+    version,
+    about = "a fast, focused TUI cockpit for developer workflow"
+)]
 struct Cli {
     /// Override the default redb file path.
     #[arg(long)]
@@ -48,7 +52,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut sid_app = wire::SidApp { app, store: Arc::clone(&store), session_id: session_id.clone() };
+    let mut sid_app = wire::SidApp {
+        app,
+        store: Arc::clone(&store),
+        session_id: session_id.clone(),
+    };
 
     // Set up terminal.
     enable_raw_mode()?;

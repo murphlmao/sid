@@ -11,6 +11,7 @@ use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
+use sid_core::Result as SidResult;
 use sid_core::action::{Action, ActionRegistry};
 use sid_core::app::{App, Dispatch};
 use sid_core::event::Event as SidEvent;
@@ -18,8 +19,7 @@ use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
 use sid_core::tab::{Tab, TabId, TabManager};
 use sid_core::widget::Widget;
-use sid_core::Result as SidResult;
-use sid_store::{now_epoch, RedbStore, SessionRecord, Store};
+use sid_store::{RedbStore, SessionRecord, Store, now_epoch};
 use sid_ui::helpers::styled_block;
 use sid_ui::themes::cosmos;
 use sid_widgets::{
@@ -81,12 +81,32 @@ pub fn db_path(override_path: Option<PathBuf>) -> PathBuf {
 /// ```
 pub fn build_app(start_tab: Option<&str>) -> App {
     let tabs = TabManager::new(vec![
-        tab("workspaces", "Workspaces", Box::new(WorkspacesWidget::new()), Some('1')),
+        tab(
+            "workspaces",
+            "Workspaces",
+            Box::new(WorkspacesWidget::new()),
+            Some('1'),
+        ),
         tab("ssh", "SSH", Box::new(SshWidget::new()), Some('2')),
-        tab("database", "Database", Box::new(DatabaseWidget::new()), Some('3')),
-        tab("network", "Network", Box::new(NetworkWidget::new()), Some('4')),
+        tab(
+            "database",
+            "Database",
+            Box::new(DatabaseWidget::new()),
+            Some('3'),
+        ),
+        tab(
+            "network",
+            "Network",
+            Box::new(NetworkWidget::new()),
+            Some('4'),
+        ),
         tab("system", "System", Box::new(SystemWidget::new()), Some('5')),
-        tab("settings", "Settings", Box::new(SettingsWidget::new()), Some('6')),
+        tab(
+            "settings",
+            "Settings",
+            Box::new(SettingsWidget::new()),
+            Some('6'),
+        ),
     ]);
     let kb = KeybindMap::cosmos_default();
     let mut reg = ActionRegistry::new();
@@ -103,7 +123,10 @@ pub fn build_app(start_tab: Option<&str>) -> App {
         reg.register(Action::new(a, pretty_label(a)));
     }
     for i in 1..=6 {
-        reg.register(Action::new(format!("tabs.jump.{i}"), format!("Jump to tab {i}")));
+        reg.register(Action::new(
+            format!("tabs.jump.{i}"),
+            format!("Jump to tab {i}"),
+        ));
     }
     let mut app = App::new(tabs, kb, reg);
     if let Some(id) = start_tab {
@@ -182,17 +205,30 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let marker = if i == app.tabs().active_index() { '●' } else { '·' };
+            let marker = if i == app.tabs().active_index() {
+                '●'
+            } else {
+                '·'
+            };
             format!("{marker} {} ", t.title)
         })
         .collect();
     let bar = Paragraph::new(labels).block(styled_block(&theme, "sid"));
-    let bar_rect = Rect { x: 0, y: 0, width: size.width, height: 3 };
+    let bar_rect = Rect {
+        x: 0,
+        y: 0,
+        width: size.width,
+        height: 3,
+    };
     frame.render_widget(bar, bar_rect);
 
     // Active widget body — stubs render a centred placeholder.
-    let body_rect =
-        Rect { x: 0, y: 3, width: size.width, height: size.height.saturating_sub(3) };
+    let body_rect = Rect {
+        x: 0,
+        y: 3,
+        width: size.width,
+        height: size.height.saturating_sub(3),
+    };
     let title = app.tabs().active().title.clone();
     let body =
         Paragraph::new(format!("{title}\n\n(coming soon)")).block(styled_block(&theme, "panel"));
@@ -203,11 +239,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         let overlay_rect = centered(size, 60, 40);
         let mut lines = vec![format!("> {}", app.palette().query())];
         for (i, a) in app.palette().matches(app.actions()).into_iter().enumerate() {
-            let prefix = if i == app.palette().selected_index() { ">" } else { " " };
+            let prefix = if i == app.palette().selected_index() {
+                ">"
+            } else {
+                " "
+            };
             lines.push(format!("{prefix} {} ({})", a.label, a.id));
         }
-        let p =
-            Paragraph::new(lines.join("\n")).block(styled_block(&theme, "command palette"));
+        let p = Paragraph::new(lines.join("\n")).block(styled_block(&theme, "command palette"));
         frame.render_widget(p, overlay_rect);
     }
 }
@@ -249,7 +288,12 @@ pub fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
     }
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 /// Run the main render + event loop until the app requests to quit.
@@ -301,7 +345,17 @@ mod tests {
     fn build_app_has_six_tabs_in_order() {
         let app = build_app(None);
         let ids: Vec<&str> = app.tabs().tabs().iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, &["workspaces", "ssh", "database", "network", "system", "settings"]);
+        assert_eq!(
+            ids,
+            &[
+                "workspaces",
+                "ssh",
+                "database",
+                "network",
+                "system",
+                "settings"
+            ]
+        );
     }
 
     /// `build_app` defaults to the first tab (workspaces).
@@ -346,7 +400,10 @@ mod tests {
     fn pretty_label_unknown_returns_action_id() {
         assert_eq!(pretty_label("unknown.action"), "unknown.action");
         assert_eq!(pretty_label(""), "");
-        assert_eq!(pretty_label("some.deeply.nested.action.id"), "some.deeply.nested.action.id");
+        assert_eq!(
+            pretty_label("some.deeply.nested.action.id"),
+            "some.deeply.nested.action.id"
+        );
     }
 
     // ---- centered ----
@@ -354,14 +411,24 @@ mod tests {
     /// `centered(area, 100, 100)` returns the original area.
     #[test]
     fn centered_100pct_returns_original() {
-        let area = Rect { x: 0, y: 0, width: 80, height: 24 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
         assert_eq!(centered(area, 100, 100), area);
     }
 
     /// `centered(area, 0, 0)` returns a zero-size rect.
     #[test]
     fn centered_0pct_returns_zero_size() {
-        let area = Rect { x: 0, y: 0, width: 80, height: 24 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        };
         let z = centered(area, 0, 0);
         assert_eq!(z.width, 0);
         assert_eq!(z.height, 0);
@@ -370,7 +437,12 @@ mod tests {
     /// `centered` on a normal area returns something smaller than the area.
     #[test]
     fn centered_normal_is_smaller() {
-        let area = Rect { x: 0, y: 0, width: 100, height: 50 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
         let c = centered(area, 60, 40);
         assert!(c.width < area.width);
         assert!(c.height < area.height);
@@ -384,7 +456,12 @@ mod tests {
     /// A small area with large pct still returns the area (not a zero-size rect).
     #[test]
     fn centered_small_area_large_pct_returns_area() {
-        let area = Rect { x: 0, y: 0, width: 5, height: 3 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 3,
+        };
         let c = centered(area, 100, 100);
         assert_eq!(c, area);
     }
@@ -392,7 +469,12 @@ mod tests {
     /// `centered` with a 1×1 area and 50% returns a zero-size rect.
     #[test]
     fn centered_1x1_50pct() {
-        let area = Rect { x: 0, y: 0, width: 1, height: 1 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        };
         let c = centered(area, 50, 50);
         // 1 * 50 / 100 = 0; so width and height are 0
         assert_eq!(c.width, 0);
@@ -499,7 +581,14 @@ mod tests {
     #[test]
     fn build_app_all_tabs_have_titles() {
         let app = build_app(None);
-        let expected_titles = ["Workspaces", "SSH", "Database", "Network", "System", "Settings"];
+        let expected_titles = [
+            "Workspaces",
+            "SSH",
+            "Database",
+            "Network",
+            "System",
+            "Settings",
+        ];
         for (tab, expected) in app.tabs().tabs().iter().zip(expected_titles.iter()) {
             assert_eq!(tab.title, *expected);
         }
@@ -551,7 +640,12 @@ mod tests {
 
     #[test]
     fn centered_handles_non_zero_origin() {
-        let area = Rect { x: 10, y: 5, width: 80, height: 40 };
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 80,
+            height: 40,
+        };
         let c = centered(area, 50, 50);
         // Result must be within the area bounds.
         assert!(c.x >= area.x);
