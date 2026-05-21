@@ -1,0 +1,25 @@
+[package]
+name = "sid-system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+which.workspace = true
+shell-words.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "rt", "macros", "time", "sync"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+insta.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "list_units"
+harness = false
