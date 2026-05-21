@@ -12,7 +12,7 @@ use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
 use crate::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
-use crate::{OpenStore, SessionRecord, SettingValue, Store, WidgetState};
+use crate::{OpenStore, SessionRecord, SettingValue, Store, Workspace, WidgetState};
 
 /// redb-backed implementation of [`crate::Store`].
 ///
@@ -253,5 +253,22 @@ impl Store for RedbStore {
             None => Ok(None),
             Some(guard) => Ok(Some(guard.value().to_vec())),
         }
+    }
+
+    // Workspace registry methods — stubs; full impl in Task 18.
+    fn list_workspaces(&self) -> Result<Vec<Workspace>, SidError> {
+        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    }
+
+    fn upsert_workspace(&self, _w: &Workspace) -> Result<(), SidError> {
+        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    }
+
+    fn get_workspace(&self, _path: &std::path::Path) -> Result<Option<Workspace>, SidError> {
+        Err(SidError::Storage("workspace registry: not yet implemented".into()))
+    }
+
+    fn remove_workspace(&self, _path: &std::path::Path) -> Result<(), SidError> {
+        Err(SidError::Storage("workspace registry: not yet implemented".into()))
     }
 }

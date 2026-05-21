@@ -185,11 +185,12 @@ pub struct Workspace {
 ///
 /// ```
 /// use std::collections::HashMap;
+/// use std::path::Path;
 /// use std::sync::Mutex;
 /// use sid_core::SidError;
 /// use sid_core::tab::TabId;
 /// use sid_core::widget::WidgetId;
-/// use sid_store::{Epoch, SessionRecord, SettingValue, Store, WidgetState};
+/// use sid_store::{Epoch, SessionRecord, SettingValue, Store, Workspace, WidgetState};
 ///
 /// struct MemStore {
 ///     settings: Mutex<HashMap<String, SettingValue>>,
@@ -209,6 +210,10 @@ pub struct Workspace {
 ///     fn list_sessions(&self) -> Result<Vec<SessionRecord>, SidError> { Ok(vec![]) }
 ///     fn save_widget_state(&self, _: &WidgetState) -> Result<(), SidError> { Ok(()) }
 ///     fn load_widget_state(&self, _: &TabId, _: &WidgetId) -> Result<Option<Vec<u8>>, SidError> { Ok(None) }
+///     fn list_workspaces(&self) -> Result<Vec<Workspace>, SidError> { Ok(vec![]) }
+///     fn upsert_workspace(&self, _: &Workspace) -> Result<(), SidError> { Ok(()) }
+///     fn get_workspace(&self, _: &Path) -> Result<Option<Workspace>, SidError> { Ok(None) }
+///     fn remove_workspace(&self, _: &Path) -> Result<(), SidError> { Ok(()) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -405,6 +410,79 @@ pub trait Store: Send + Sync {
         tab: &TabId,
         widget: &WidgetId,
     ) -> Result<Option<Vec<u8>>, SidError>;
+
+    /// Return all registered workspaces.
+    ///
+    /// Order is implementation-defined (redb returns keys in lexicographic order).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_workspaces().unwrap().is_empty());
+    /// ```
+    fn list_workspaces(&self) -> Result<Vec<Workspace>, SidError>;
+
+    /// Insert or replace the workspace record keyed by `w.path`.
+    ///
+    /// If a workspace with the same path already exists it is fully replaced.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, Store, Workspace, WorkspaceKind};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// let w = Workspace {
+    ///     path: PathBuf::from("/tmp/myrepo"),
+    ///     name: "myrepo".into(),
+    ///     kind: WorkspaceKind::Repo,
+    ///     manifest_hash: 0,
+    ///     last_seen: now_epoch(),
+    ///     parent: None,
+    /// };
+    /// store.upsert_workspace(&w).unwrap();
+    /// assert_eq!(store.list_workspaces().unwrap().len(), 1);
+    /// ```
+    fn upsert_workspace(&self, w: &Workspace) -> Result<(), SidError>;
+
+    /// Retrieve a workspace by its absolute path. Returns `None` if not registered.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, Store, Workspace, WorkspaceKind};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.get_workspace(&PathBuf::from("/missing")).unwrap().is_none());
+    /// ```
+    fn get_workspace(&self, path: &Path) -> Result<Option<Workspace>, SidError>;
+
+    /// Remove the workspace at `path`. No-op if not registered.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// // Removing a nonexistent path is always a no-op.
+    /// store.remove_workspace(&PathBuf::from("/not-there")).unwrap();
+    /// ```
+    fn remove_workspace(&self, path: &Path) -> Result<(), SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -559,6 +637,18 @@ mod tests {
                 _: &WidgetId,
             ) -> Result<Option<Vec<u8>>, SidError> {
                 Ok(None)
+            }
+            fn list_workspaces(&self) -> Result<Vec<Workspace>, SidError> {
+                Ok(vec![])
+            }
+            fn upsert_workspace(&self, _: &Workspace) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn get_workspace(&self, _: &Path) -> Result<Option<Workspace>, SidError> {
+                Ok(None)
+            }
+            fn remove_workspace(&self, _: &Path) -> Result<(), SidError> {
+                Ok(())
             }
         }
 
