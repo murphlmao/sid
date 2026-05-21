@@ -15,6 +15,10 @@ use ratatui::{Frame, Terminal};
 use sid_core::Result as SidResult;
 use sid_core::action::{Action, ActionRegistry};
 use sid_core::adapters::sys::SysProvider;
+use sid_core::adapters::systemctl::{
+    JournalEntry, SystemUnit, SystemctlClient, SystemctlError, UnitBus, UnitFilter,
+};
+use sid_core::adapters::terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner};
 use sid_core::app::{App, Dispatch};
 use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
@@ -48,12 +52,19 @@ use tokio::sync::mpsc::Receiver;
 /// ```no_run
 /// use std::path::Path;
 /// use std::sync::Arc;
-/// use sid::wire::{SidApp, build_app};
+/// use sid::wire::{build_app, NoopSystemctlClient, NoopTerminalSpawner, SidApp};
 /// use sid_store::{OpenStore, RedbStore};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 /// let app = build_app(None, vec![]);
-/// let sid_app = SidApp { app, store, session_id: "sess-1".to_string(), sys_probe: None };
+/// let sid_app = SidApp {
+///     app,
+///     store,
+///     session_id: "sess-1".to_string(),
+///     sys_probe: None,
+///     systemctl: Arc::new(NoopSystemctlClient),
+///     spawner: Arc::new(NoopTerminalSpawner),
+/// };
 /// ```
 pub struct SidApp {
     pub app: App,
@@ -67,6 +78,90 @@ pub struct SidApp {
     /// the render loop.
     #[allow(dead_code)]
     pub sys_probe: Option<Arc<SysProbe>>,
+    /// Adapter for `systemctl` operations (Plan 6 / System tab). Degrades to
+    /// [`NoopSystemctlClient`] when `systemctl` or `journalctl` are missing,
+    /// so the App is constructible on macOS / stripped Docker images.
+    #[allow(dead_code)]
+    pub systemctl: Arc<dyn SystemctlClient>,
+    /// Adapter for spawning external terminal windows (Plan 6 / pinned
+    /// configs). Degrades to [`NoopTerminalSpawner`] when `kitty` is missing.
+    #[allow(dead_code)]
+    pub spawner: Arc<dyn TerminalSpawner>,
+}
+
+/// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
+/// reachable on PATH. Every method returns
+/// [`SystemctlError::SystemctlMissing`] so the widget can surface a single
+/// consistent error → toast mapping.
+#[derive(Debug, Default)]
+pub struct NoopSystemctlClient;
+
+impl SystemctlClient for NoopSystemctlClient {
+    fn list_units(&self, _f: UnitFilter) -> Result<Vec<SystemUnit>, SystemctlError> {
+        Err(SystemctlError::SystemctlMissing)
+    }
+    fn status(&self, _b: UnitBus, _u: &str) -> Result<SystemUnit, SystemctlError> {
+        Err(SystemctlError::SystemctlMissing)
+    }
+    fn start(&self, _b: UnitBus, _u: &str) -> Result<(), SystemctlError> {
+        Err(SystemctlError::SystemctlMissing)
+    }
+    fn stop(&self, _b: UnitBus, _u: &str) -> Result<(), SystemctlError> {
+        Err(SystemctlError::SystemctlMissing)
+    }
+    fn restart(&self, _b: UnitBus, _u: &str) -> Result<(), SystemctlError> {
+        Err(SystemctlError::SystemctlMissing)
+    }
+    fn journal_tail(
+        &self,
+        _b: UnitBus,
+        _u: &str,
+        _n: usize,
+    ) -> Result<Vec<JournalEntry>, SystemctlError> {
+        Err(SystemctlError::JournalctlMissing)
+    }
+}
+
+/// Fallback [`TerminalSpawner`] used when `kitty` is missing. `spawn` returns
+/// [`SpawnerError::TerminalMissing`].
+#[derive(Debug, Default)]
+pub struct NoopTerminalSpawner;
+
+impl TerminalSpawner for NoopTerminalSpawner {
+    fn spawn(&self, _req: SpawnRequest) -> Result<(), SpawnerError> {
+        Err(SpawnerError::TerminalMissing("kitty".into()))
+    }
+    fn name(&self) -> &'static str {
+        "noop"
+    }
+}
+
+/// Resolve the systemctl adapter. Logs and falls back to
+/// [`NoopSystemctlClient`] if the system lacks systemd.
+pub fn build_systemctl_client() -> Arc<dyn SystemctlClient> {
+    match sid_system::SystemctlCmdClient::new() {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            tracing::warn!(
+                "systemctl unavailable: {e}; System tab services pane will show empty"
+            );
+            Arc::new(NoopSystemctlClient)
+        }
+    }
+}
+
+/// Resolve the terminal spawner. Logs and falls back to
+/// [`NoopTerminalSpawner`] if `kitty` is missing.
+pub fn build_terminal_spawner() -> Arc<dyn TerminalSpawner> {
+    match sid_system::KittyTerminalSpawner::new() {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            tracing::warn!(
+                "kitty unavailable: {e}; pinned configs will surface 'kitty missing' toasts"
+            );
+            Arc::new(NoopTerminalSpawner)
+        }
+    }
 }
 
 impl SidApp {
@@ -431,7 +526,7 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 /// use std::sync::Arc;
 /// use ratatui::Terminal;
 /// use ratatui::backend::TestBackend;
-/// use sid::wire::{SidApp, build_app, draw};
+/// use sid::wire::{NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
 /// use sid_store::{OpenStore, RedbStore};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/draw_test.redb")).unwrap());
@@ -440,6 +535,8 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     store,
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
+///     systemctl: Arc::new(NoopSystemctlClient),
+///     spawner: Arc::new(NoopTerminalSpawner),
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -764,7 +861,14 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///     let mut terminal = Terminal::new(backend).unwrap();
 ///     let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 ///     let app = build_app(None, vec![]);
-///     let mut sid_app = SidApp { app, store, session_id: "sess-1".to_string(), sys_probe: None };
+///     let mut sid_app = SidApp {
+///         app,
+///         store,
+///         session_id: "sess-1".to_string(),
+///         sys_probe: None,
+///         systemctl: Arc::new(sid::wire::NoopSystemctlClient),
+///         spawner: Arc::new(sid::wire::NoopTerminalSpawner),
+///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
 ///     drop(tx);
@@ -1465,6 +1569,8 @@ mod tests {
             store,
             session_id: "draw-test-sess".into(),
             sys_probe: None,
+            systemctl: Arc::new(NoopSystemctlClient),
+            spawner: Arc::new(NoopTerminalSpawner),
         }
     }
 
@@ -1640,5 +1746,62 @@ mod tests {
         reg.register(Action::new("app.quit", "Quit"));
         super::rehydrate_global_quick_actions(&store, &mut reg).unwrap();
         assert!(reg.get(&"app.quit".into()).is_some());
+    }
+
+    #[test]
+    fn noop_systemctl_client_returns_missing_for_every_method() {
+        use sid_core::adapters::systemctl::{
+            SystemctlClient, SystemctlError, UnitBus, UnitFilter,
+        };
+        let c = super::NoopSystemctlClient;
+        assert!(matches!(
+            c.list_units(UnitFilter::default()).unwrap_err(),
+            SystemctlError::SystemctlMissing
+        ));
+        assert!(matches!(
+            c.status(UnitBus::User, "x").unwrap_err(),
+            SystemctlError::SystemctlMissing
+        ));
+        assert!(matches!(
+            c.start(UnitBus::User, "x").unwrap_err(),
+            SystemctlError::SystemctlMissing
+        ));
+        assert!(matches!(
+            c.stop(UnitBus::User, "x").unwrap_err(),
+            SystemctlError::SystemctlMissing
+        ));
+        assert!(matches!(
+            c.restart(UnitBus::User, "x").unwrap_err(),
+            SystemctlError::SystemctlMissing
+        ));
+        assert!(matches!(
+            c.journal_tail(UnitBus::User, "x", 10).unwrap_err(),
+            SystemctlError::JournalctlMissing
+        ));
+    }
+
+    #[test]
+    fn noop_terminal_spawner_reports_terminal_missing() {
+        use sid_core::adapters::terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner};
+        let s = super::NoopTerminalSpawner;
+        assert_eq!(s.name(), "noop");
+        let err = s
+            .spawn(SpawnRequest {
+                cwd: std::path::PathBuf::from("/"),
+                cmd: "echo".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, SpawnerError::TerminalMissing(_)));
+    }
+
+    #[test]
+    fn build_systemctl_client_does_not_panic() {
+        // On a systemd host this returns SystemctlCmdClient; on others, NoopSystemctlClient.
+        let _ = super::build_systemctl_client();
+    }
+
+    #[test]
+    fn build_terminal_spawner_does_not_panic() {
+        let _ = super::build_terminal_spawner();
     }
 }
