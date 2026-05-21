@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_store::sid_toml::{SidToml, SidTomlError, read_sid_toml, write_sid_toml};
@@ -134,9 +134,13 @@ impl DbPathView {
     pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.accent_primary.into()))
             .title(" DB path ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {

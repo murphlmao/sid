@@ -2,10 +2,10 @@
 source: crates/sid-widgets/tests/ssh_render.rs
 expression: s
 ---
-┌ Hosts (j/k Enter) ───────────┐┌ Status ──────────────────────────────────────┐
+┌ Hosts ───────────────────────┐┌ Status ──────────────────────────────────────┐
 │  (no hosts configured)       ││● Disconnected                                │
 │                              │└──────────────────────────────────────────────┘
-│                              │┌ Session ─────────────────────────────────────┐
+│                              │┌ (no host selected) ──────────────────────────┐
 │                              ││Select a host with j/k, Enter to connect.     │
 │                              ││Tab toggles SFTP panel.                       │
 │                              ││                                              │

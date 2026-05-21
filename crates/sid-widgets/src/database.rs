@@ -586,7 +586,7 @@ impl DatabaseWidget {
     fn render_connection_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.muted.into()))
             .title(" Connections ")
             .title_style(Style::default().fg(theme.foreground.into()));
 
@@ -640,14 +640,17 @@ impl DatabaseWidget {
         let border_color = if focused {
             theme.accent_primary
         } else {
-            theme.border
+            theme.muted
         };
-        let title = if focused { " * SQL " } else { "   SQL " };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color.into()))
-            .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title(" SQL ")
+            .title_style(title_style);
 
         let cursor_line = self.state.editor.cursor_line;
         let cursor_col = self.state.editor.cursor_col;
@@ -697,7 +700,7 @@ impl DatabaseWidget {
         let border_color = if focused {
             theme.accent_primary
         } else {
-            theme.border
+            theme.muted
         };
 
         let (rows_len, page_title) = match self.state.results.page.as_ref() {
@@ -711,16 +714,16 @@ impl DatabaseWidget {
             }
             None => (0, " no results yet ".to_string()),
         };
-        let title = if focused {
-            format!(" * Results ·{page_title}")
-        } else {
-            format!("   Results ·{page_title}")
-        };
+        let title = format!(" Results ·{page_title}");
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color.into()))
             .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
 
         let Some(page) = self.state.results.page.as_ref() else {
             frame.render_widget(
@@ -771,18 +774,17 @@ impl DatabaseWidget {
         let border_color = if focused {
             theme.accent_primary
         } else {
-            theme.border
+            theme.muted
         };
-        let title = if focused {
-            " * Query history "
-        } else {
-            "   Query history "
-        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color.into()))
-            .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title(" Query history ")
+            .title_style(title_style);
 
         if self.state.history.records.is_empty() {
             frame.render_widget(

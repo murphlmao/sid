@@ -2,14 +2,14 @@
 source: crates/sid-widgets/tests/database_render.rs
 expression: s
 ---
-┌ Connections ───────────────┐┌ * SQL ─────────────────────────────────────────────────────────────┐
+┌ Connections ───────────────┐┌ SQL ───────────────────────────────────────────────────────────────┐
 │(no connections — `sid db ad││                                                                    │
 │                            ││                                                                    │
 │                            ││                                                                    │
 │                            ││                                                                    │
 │                            ││                                                                    │
 │                            │└────────────────────────────────────────────────────────────────────┘
-│                            │┌   Results · no results yet ────────────────────────────────────────┐
+│                            │┌ Results · no results yet ──────────────────────────────────────────┐
 │                            ││(no query has run yet — Ctrl+R to execute)                          │
 │                            ││                                                                    │
 │                            ││                                                                    │

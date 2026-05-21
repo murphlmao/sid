@@ -318,9 +318,13 @@ impl ThemePickerView {
     pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.accent_primary.into()))
             .title(" Theme ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {

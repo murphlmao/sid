@@ -2,14 +2,14 @@
 source: crates/sid-widgets/tests/database_render.rs
 expression: s
 ---
-┌ Connections ───────────────┐┌   SQL ─────────────────────────────────────────────────────────────┐
+┌ Connections ───────────────┐┌ SQL ───────────────────────────────────────────────────────────────┐
 │> * prod-db (postgres)      ││                                                                    │
 │  o analytics (sqlite)      ││                                                                    │
 │  o scratch (sqlite)        ││                                                                    │
 │                            ││                                                                    │
 │                            ││                                                                    │
 │                            │└────────────────────────────────────────────────────────────────────┘
-│                            │┌ * Query history ───────────────────────────────────────────────────┐
+│                            │┌ Query history ─────────────────────────────────────────────────────┐
 │                            ││SELECT 0 FROM t WHERE id = 0;                                       │
 │                            ││SELECT 1 FROM t WHERE id = 1;                                       │
 │                            ││SELECT 2 FROM t WHERE id = 2;                                       │

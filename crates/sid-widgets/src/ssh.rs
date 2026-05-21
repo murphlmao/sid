@@ -99,6 +99,7 @@ impl SshState {
                     source: SshHostSource::SshConfig,
                     last_connected: 0,
                     command_history: Vec::new(),
+                    last_sftp_path: None,
                 },
             );
         }
@@ -649,9 +650,13 @@ impl SshWidget {
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(" Hosts (j/k Enter) ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .title(" Hosts ")
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
 
@@ -680,7 +685,7 @@ impl SshWidget {
         ]);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.muted.into()))
             .title(" Status ")
             .title_style(Style::default().fg(theme.foreground.into()));
         frame.render_widget(Paragraph::new(line).block(block), rect);
@@ -730,10 +735,14 @@ impl SshWidget {
                 )),
             ],
         };
+        let session_title = match self.state.selected_alias() {
+            Some(alias) => format!(" {alias} "),
+            None => " (no host selected) ".to_string(),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(" Session ")
+            .border_style(Style::default().fg(theme.muted.into()))
+            .title(session_title)
             .title_style(Style::default().fg(theme.foreground.into()));
         frame.render_widget(Paragraph::new(body).block(block), rect);
     }
@@ -763,10 +772,14 @@ impl SshWidget {
                 )));
             }
         }
+        let sftp_title = match self.state.selected_alias() {
+            Some(alias) => format!(" SFTP · {alias} "),
+            None => " SFTP ".to_string(),
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(" SFTP ")
+            .border_style(Style::default().fg(theme.muted.into()))
+            .title(sftp_title)
             .title_style(Style::default().fg(theme.foreground.into()));
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }

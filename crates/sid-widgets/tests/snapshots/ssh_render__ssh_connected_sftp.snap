@@ -2,10 +2,10 @@
 source: crates/sid-widgets/tests/ssh_render.rs
 expression: s
 ---
-┌ Hosts (j/k Enter) ───────────┐┌ Status ──────────────────────────────────────┐
+┌ Hosts ───────────────────────┐┌ Status ──────────────────────────────────────┐
 │> ● my-prod-server            ││● Connected to my-prod-server                 │
 │                              │└──────────────────────────────────────────────┘
-│                              │┌ SFTP ────────────────────────────────────────┐
+│                              │┌ SFTP · my-prod-server ───────────────────────┐
 │                              ││cwd: /var/log                                 │
 │                              ││    syslog                                    │
 │                              ││  / nginx                                     │

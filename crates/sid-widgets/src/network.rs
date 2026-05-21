@@ -418,16 +418,21 @@ impl NetworkWidget {
             let label = format!("{marker} {glyph} {}", ifc.name);
             rows.push(Line::from(label));
         }
-        let title = if self.focus == Focus::Interfaces {
-            " * Interfaces "
+        let focused = self.focus == Focus::Interfaces;
+        let border_color = if focused {
+            theme.accent_primary
         } else {
-            "   Interfaces "
+            theme.muted
         };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .border_style(Style::default().fg(border_color.into()))
+            .title(" Interfaces ")
+            .title_style(title_style);
         frame.render_widget(Paragraph::new(rows).block(block), rect);
     }
 
@@ -467,16 +472,21 @@ impl NetworkWidget {
                 .style(style)
             })
             .collect();
-        let title = if self.focus == Focus::Ports {
-            " * Listening ports "
+        let focused = self.focus == Focus::Ports;
+        let border_color = if focused {
+            theme.accent_primary
         } else {
-            "   Listening ports "
+            theme.muted
         };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .border_style(Style::default().fg(border_color.into()))
+            .title(" Listening ports ")
+            .title_style(title_style);
         let table = Table::new(
             body,
             [
@@ -526,16 +536,21 @@ impl NetworkWidget {
                 .style(style)
             })
             .collect();
-        let title = if self.focus == Focus::Processes {
-            " * Processes "
+        let focused = self.focus == Focus::Processes;
+        let border_color = if focused {
+            theme.accent_primary
         } else {
-            "   Processes "
+            theme.muted
         };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
-            .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .border_style(Style::default().fg(border_color.into()))
+            .title(" Processes ")
+            .title_style(title_style);
         let table = Table::new(
             body,
             [

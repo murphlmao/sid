@@ -2,10 +2,10 @@
 source: crates/sid-widgets/tests/ssh_render.rs
 expression: s
 ---
-┌ Hosts (j/k Enter) ───────────┐┌ Status ──────────────────────────────────────┐
+┌ Hosts ───────────────────────┐┌ Status ──────────────────────────────────────┐
 │  ○ github.com (cfg)          ││● Disconnected                                │
 │> ● my-prod-server            │└──────────────────────────────────────────────┘
-│  ○ staging-bastion           │┌ Session ─────────────────────────────────────┐
+│  ○ staging-bastion           │┌ my-prod-server ──────────────────────────────┐
 │                              ││Select a host with j/k, Enter to connect.     │
 │                              ││Tab toggles SFTP panel.                       │
 │                              ││                                              │
