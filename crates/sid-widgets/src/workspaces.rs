@@ -221,6 +221,194 @@ fn uuid_simple() -> String {
     format!("{t:032x}")
 }
 
+// ─── ActionRunner trait ──────────────────────────────────────────────────────
+
+/// Result of a workspace action run.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspaces::ActionResult;
+///
+/// let r = ActionResult { stdout: "ok\n".into(), stderr: String::new(), exit_code: 0 };
+/// assert!(r.success());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ActionResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+impl ActionResult {
+    /// Whether the action exited with code 0.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::workspaces::ActionResult;
+    ///
+    /// let ok = ActionResult { stdout: "ok".into(), stderr: String::new(), exit_code: 0 };
+    /// assert!(ok.success());
+    ///
+    /// let fail = ActionResult { stdout: String::new(), stderr: "err".into(), exit_code: 1 };
+    /// assert!(!fail.success());
+    /// ```
+    pub fn success(&self) -> bool {
+        self.exit_code == 0
+    }
+}
+
+/// Abstraction over spawning a workspace action command.
+///
+/// The real implementation uses `tokio::process::Command` to run the action's
+/// `cmd` string with `sh -c` in the workspace's cwd.
+///
+/// Tests inject a [`MockActionRunner`] that returns pre-canned results without
+/// actually spawning any process.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use sid_widgets::workspaces::{ActionRunner, ActionResult};
+///
+/// struct AlwaysOk;
+///
+/// impl ActionRunner for AlwaysOk {
+///     fn run_action(&self, cwd: &Path, cmd: &str) -> Result<ActionResult, String> {
+///         Ok(ActionResult { stdout: format!("ran: {cmd}"), stderr: String::new(), exit_code: 0 })
+///     }
+/// }
+///
+/// let r = AlwaysOk.run_action(Path::new("/tmp"), "echo hi").unwrap();
+/// assert!(r.success());
+/// assert!(r.stdout.contains("echo hi"));
+/// ```
+pub trait ActionRunner: Send + Sync {
+    /// Run `cmd` via `sh -c` in `cwd`. Returns stdout/stderr/exit code.
+    fn run_action(&self, cwd: &Path, cmd: &str) -> Result<ActionResult, String>;
+}
+
+/// A mock `ActionRunner` for tests.
+///
+/// Records each invocation for assertions.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use sid_widgets::workspaces::{ActionRunner, MockActionRunner};
+///
+/// let runner = MockActionRunner::new(0, "output from action".into());
+/// let result = runner.run_action(Path::new("/tmp"), "echo hi").unwrap();
+/// assert!(result.success());
+///
+/// let calls = runner.calls();
+/// assert_eq!(calls.len(), 1);
+/// assert_eq!(calls[0].1, "echo hi");
+/// ```
+pub struct MockActionRunner {
+    exit_code: i32,
+    stdout: String,
+    should_fail: bool,
+    calls: Arc<Mutex<Vec<(PathBuf, String)>>>,
+}
+
+impl MockActionRunner {
+    /// Create a runner that will return `exit_code` + `stdout` on each invocation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use sid_widgets::workspaces::{ActionRunner, MockActionRunner};
+    ///
+    /// let r = MockActionRunner::new(0, "ok".into());
+    /// assert!(r.run_action(Path::new("/tmp"), "cmd").unwrap().success());
+    /// ```
+    pub fn new(exit_code: i32, stdout: String) -> Self {
+        Self {
+            exit_code,
+            stdout,
+            should_fail: false,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Create a runner that always returns `Err`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use sid_widgets::workspaces::{ActionRunner, MockActionRunner};
+    ///
+    /// let r = MockActionRunner::failing("spawn error".into());
+    /// assert!(r.run_action(Path::new("/tmp"), "cmd").is_err());
+    /// ```
+    pub fn failing(error: String) -> Self {
+        Self {
+            exit_code: -1,
+            stdout: error,
+            should_fail: true,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// All recorded `(cwd, cmd)` calls so far.
+    pub fn calls(&self) -> Vec<(PathBuf, String)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl ActionRunner for MockActionRunner {
+    fn run_action(&self, cwd: &Path, cmd: &str) -> Result<ActionResult, String> {
+        self.calls.lock().unwrap().push((cwd.to_path_buf(), cmd.to_string()));
+        if self.should_fail {
+            return Err(self.stdout.clone());
+        }
+        Ok(ActionResult {
+            stdout: self.stdout.clone(),
+            stderr: String::new(),
+            exit_code: self.exit_code,
+        })
+    }
+}
+
+/// The real action runner — spawns via `sh -c` in the workspace cwd.
+///
+/// This is a synchronous wrapper; for async use, call from within a
+/// `JobQueue::spawn` future.
+pub struct SystemActionRunner;
+
+impl ActionRunner for SystemActionRunner {
+    /// Run `cmd` in `cwd` via `sh -c`. Captures stdout + stderr.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use sid_widgets::workspaces::{ActionRunner, SystemActionRunner};
+    ///
+    /// let result = SystemActionRunner.run_action(Path::new("/tmp"), "echo hello");
+    /// assert!(result.is_ok());
+    /// ```
+    fn run_action(&self, cwd: &Path, cmd: &str) -> Result<ActionResult, String> {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| format!("spawn action: {e}"))?;
+        Ok(ActionResult {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
+}
+
 // ─── Right-pane sub-view state structs ───────────────────────────────────────
 
 /// State for the Branches sub-view.
