@@ -156,22 +156,193 @@ pub struct WidgetState {
 /// ```
 pub trait Store: Send + Sync {
     /// Retrieve a setting value by key. Returns `None` if not set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, SettingValue, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// // Missing key returns None.
+    /// assert!(store.get_setting("theme").unwrap().is_none());
+    /// // After a put, the value is returned.
+    /// store.put_setting("theme", &SettingValue(b"cosmos".to_vec())).unwrap();
+    /// assert_eq!(store.get_setting("theme").unwrap().unwrap().0, b"cosmos");
+    /// ```
     fn get_setting(&self, key: &str) -> Result<Option<SettingValue>, SidError>;
+
     /// Persist a setting value. Overwrites any existing value for the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, SettingValue, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_setting("key", &SettingValue(b"v1".to_vec())).unwrap();
+    /// // Overwrite with a new value.
+    /// store.put_setting("key", &SettingValue(b"v2".to_vec())).unwrap();
+    /// assert_eq!(store.get_setting("key").unwrap().unwrap().0, b"v2");
+    /// ```
     fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError>;
 
     /// Retrieve the most recently active session, if any.
+    ///
+    /// Returns `None` if no session has ever been upserted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.current_session().unwrap().is_none());
+    ///
+    /// let s = SessionRecord {
+    ///     id: "s1".into(),
+    ///     started_at: now_epoch(),
+    ///     last_active: now_epoch(),
+    ///     ended_at: None,
+    ///     active_tab: None,
+    ///     open_tabs: vec![],
+    /// };
+    /// store.upsert_session(&s).unwrap();
+    /// assert_eq!(store.current_session().unwrap().unwrap().id, "s1");
+    /// ```
     fn current_session(&self) -> Result<Option<SessionRecord>, SidError>;
+
     /// Create or update a session record. Also updates the "current" pointer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// let s = SessionRecord {
+    ///     id: "sess".into(),
+    ///     started_at: now_epoch(),
+    ///     last_active: now_epoch(),
+    ///     ended_at: None,
+    ///     active_tab: None,
+    ///     open_tabs: vec![],
+    /// };
+    /// store.upsert_session(&s).unwrap();
+    /// assert_eq!(store.list_sessions().unwrap().len(), 1);
+    /// ```
     fn upsert_session(&self, s: &SessionRecord) -> Result<(), SidError>;
+
     /// Mark a session as ended at the given epoch timestamp.
+    ///
+    /// No-op if the session id does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// let s = SessionRecord {
+    ///     id: "s".into(),
+    ///     started_at: 1,
+    ///     last_active: 2,
+    ///     ended_at: None,
+    ///     active_tab: None,
+    ///     open_tabs: vec![],
+    /// };
+    /// store.upsert_session(&s).unwrap();
+    /// store.end_session("s", 999).unwrap();
+    /// let sessions = store.list_sessions().unwrap();
+    /// assert_eq!(sessions[0].ended_at, Some(999));
+    /// // Calling on a nonexistent id is a no-op.
+    /// store.end_session("no-such-id", 0).unwrap();
+    /// ```
     fn end_session(&self, id: &str, ended_at: Epoch) -> Result<(), SidError>;
+
     /// Return all stored sessions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_sessions().unwrap().is_empty());
+    ///
+    /// for id in &["a", "b", "c"] {
+    ///     store.upsert_session(&SessionRecord {
+    ///         id: id.to_string(),
+    ///         started_at: 0,
+    ///         last_active: 0,
+    ///         ended_at: None,
+    ///         active_tab: None,
+    ///         open_tabs: vec![],
+    ///     }).unwrap();
+    /// }
+    /// assert_eq!(store.list_sessions().unwrap().len(), 3);
+    /// ```
     fn list_sessions(&self) -> Result<Vec<SessionRecord>, SidError>;
 
     /// Persist widget UI state blob for the given `(tab_id, widget_id)` pair.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::tab::TabId;
+    /// use sid_core::widget::WidgetId;
+    /// use sid_store::{OpenStore, RedbStore, Store, WidgetState};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// let state = WidgetState {
+    ///     tab_id: TabId::new("workspaces"),
+    ///     widget_id: WidgetId::new("workspaces.root"),
+    ///     blob: vec![1, 2, 3],
+    /// };
+    /// store.save_widget_state(&state).unwrap();
+    /// ```
     fn save_widget_state(&self, s: &WidgetState) -> Result<(), SidError>;
+
     /// Load widget UI state blob. Returns `None` if never saved.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::tab::TabId;
+    /// use sid_core::widget::WidgetId;
+    /// use sid_store::{OpenStore, RedbStore, Store, WidgetState};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// let tab = TabId::new("ssh");
+    /// let widget = WidgetId::new("ssh.root");
+    /// // No state saved yet.
+    /// assert!(store.load_widget_state(&tab, &widget).unwrap().is_none());
+    ///
+    /// store.save_widget_state(&WidgetState {
+    ///     tab_id: tab.clone(),
+    ///     widget_id: widget.clone(),
+    ///     blob: vec![42, 43],
+    /// }).unwrap();
+    /// assert_eq!(
+    ///     store.load_widget_state(&tab, &widget).unwrap().unwrap(),
+    ///     vec![42, 43]
+    /// );
+    /// ```
     fn load_widget_state(
         &self,
         tab: &TabId,
@@ -183,8 +354,37 @@ pub trait Store: Send + Sync {
 ///
 /// Separate from `Store` so the open path (which creates/migrates the DB) is
 /// not confused with the read/write operations.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use sid_store::{OpenStore, RedbStore};
+///
+/// // Open (or create) the store at a filesystem path.
+/// let store = RedbStore::open(Path::new("/tmp/sid-example.redb")).unwrap();
+/// ```
 pub trait OpenStore {
     /// Open (or create) the store at the given path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SidError::Storage` if the path cannot be created or opened
+    /// (e.g. the parent directory does not exist, permissions are denied, or
+    /// the file is corrupted).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let path = dir.path().join("sid.redb");
+    /// let store = RedbStore::open(&path).unwrap();
+    /// // The file is created on disk.
+    /// assert!(path.exists());
+    /// ```
     fn open(path: &Path) -> Result<Self, SidError>
     where
         Self: Sized;

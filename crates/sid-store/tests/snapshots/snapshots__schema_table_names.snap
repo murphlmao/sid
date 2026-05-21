@@ -1,0 +1,8 @@
+---
+source: crates/sid-store/tests/snapshots.rs
+expression: dump
+---
+settings
+sessions
+session_meta
+widget_state

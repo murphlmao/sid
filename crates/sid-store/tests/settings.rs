@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use sid_store::{OpenStore, RedbStore, SettingValue, Store};
 use tempfile::tempdir;
 
@@ -113,6 +114,39 @@ fn get_after_put_after_delete_pattern() {
 
     // A different key is still None.
     assert!(store.get_setting("other").unwrap().is_none());
+}
+
+// ── Property tests: relational invariants ─────────────────────────────────────
+
+proptest! {
+    /// put_setting then get_setting round-trip for arbitrary (key, value) pairs.
+    #[test]
+    fn proptest_put_get_round_trip(
+        key in "[a-z.]{1,32}",
+        value in proptest::collection::vec(0u8..=255u8, 0..=1024),
+    ) {
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        let val = SettingValue(value.clone());
+        store.put_setting(&key, &val).unwrap();
+        let got = store.get_setting(&key).unwrap().unwrap();
+        prop_assert_eq!(got.0, value);
+    }
+
+    /// put is idempotent: last write wins.
+    #[test]
+    fn proptest_put_idempotent_last_write_wins(
+        key in "[a-z]{1,16}",
+        v1 in proptest::collection::vec(0u8..=255u8, 1..=64),
+        v2 in proptest::collection::vec(0u8..=255u8, 1..=64),
+    ) {
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        store.put_setting(&key, &SettingValue(v1)).unwrap();
+        store.put_setting(&key, &SettingValue(v2.clone())).unwrap();
+        let got = store.get_setting(&key).unwrap().unwrap();
+        prop_assert_eq!(got.0, v2);
+    }
 }
 
 #[test]
