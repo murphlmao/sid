@@ -80,8 +80,8 @@ mod unix {
     /// Skipped when not running in a TTY for the same reason as `sid_starts_and_exits_on_ctrl_q`.
     #[test]
     fn sid_redb_file_is_parseable_after_launch() {
-        use std::io::IsTerminal;
         use sid_store::{OpenStore, RedbStore, Store};
+        use std::io::IsTerminal;
 
         if !std::io::stdout().is_terminal() {
             eprintln!("SKIP: not a TTY — sid requires a terminal for raw mode");
@@ -126,14 +126,30 @@ mod unix {
         let store = RedbStore::open(&db).expect("should open redb after sid ran");
 
         // A session should have been created.
-        let session = store.current_session().expect("should read current session");
-        assert!(session.is_some(), "a session record should exist after sid ran");
+        let session = store
+            .current_session()
+            .expect("should read current session");
+        assert!(
+            session.is_some(),
+            "a session record should exist after sid ran"
+        );
 
         let sess = session.unwrap();
-        assert!(sess.id.starts_with("sess-"), "session id should start with 'sess-': {}", sess.id);
+        assert!(
+            sess.id.starts_with("sess-"),
+            "session id should start with 'sess-': {}",
+            sess.id
+        );
         // Active tab should be one of the 6 known tabs.
         if let Some(tab_id) = sess.active_tab {
-            let valid = ["workspaces", "ssh", "database", "network", "system", "settings"];
+            let valid = [
+                "workspaces",
+                "ssh",
+                "database",
+                "network",
+                "system",
+                "settings",
+            ];
             assert!(
                 valid.contains(&tab_id.as_str()),
                 "active_tab should be a known tab id, got: {}",
@@ -149,7 +165,11 @@ mod unix {
             .arg("--help")
             .output()
             .expect("run sid --help");
-        assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// `sid --version` exits 0 cleanly (no TTY required).
@@ -161,7 +181,10 @@ mod unix {
             .expect("run sid --version");
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("0.0.1"), "expected version in output: {stdout}");
+        assert!(
+            stdout.contains("0.0.1"),
+            "expected version in output: {stdout}"
+        );
     }
 
     /// `sid --db` with a path in a nonexistent parent directory should fail fast

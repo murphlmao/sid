@@ -7,10 +7,20 @@ fn sid_help_runs() {
         .arg("--help")
         .output()
         .expect("run sid --help");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("sid"), "stdout should contain 'sid': {stdout}");
-    assert!(stdout.contains("--db"), "stdout should contain '--db': {stdout}");
+    assert!(
+        stdout.contains("sid"),
+        "stdout should contain 'sid': {stdout}"
+    );
+    assert!(
+        stdout.contains("--db"),
+        "stdout should contain '--db': {stdout}"
+    );
 }
 
 /// `sid --version` exits 0.
@@ -20,7 +30,11 @@ fn sid_version_runs() {
         .arg("--version")
         .output()
         .expect("run sid --version");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// `sid --version` output contains the crate version string.
@@ -43,7 +57,11 @@ fn unknown_flag_exits_nonzero() {
         .arg("--definitely-not-a-real-flag")
         .output()
         .expect("run sid with unknown flag");
-    assert!(!out.status.success(), "should have failed; stdout: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(
+        !out.status.success(),
+        "should have failed; stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// `sid --help` output contains `--start-tab` for tab override.
@@ -55,6 +73,8 @@ fn sid_help_mentions_start_tab() {
         .expect("run sid --help");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("start-tab") || stdout.contains("start_tab"),
-        "should mention start-tab; stdout: {stdout}");
+    assert!(
+        stdout.contains("start-tab") || stdout.contains("start_tab"),
+        "should mention start-tab; stdout: {stdout}"
+    );
 }

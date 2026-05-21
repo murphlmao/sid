@@ -94,7 +94,9 @@ pub fn make_channel() -> (Sender<SidEvent>, Receiver<SidEvent>) {
 // Used by tests and one-shot drivers; not called from the main binary loop.
 #[allow(dead_code)]
 pub async fn next_event(rx: &mut Receiver<SidEvent>) -> Result<SidEvent> {
-    rx.recv().await.ok_or_else(|| anyhow::anyhow!("event stream closed"))
+    rx.recv()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("event stream closed"))
 }
 
 // ---------------------------------------------------------------------------
@@ -117,10 +119,14 @@ mod tests {
         let (tx, _rx) = make_channel();
         // Fill exactly 64 slots; each try_send succeeds without blocking.
         for _ in 0..64 {
-            tx.try_send(SidEvent::Tick).expect("should not be full at capacity");
+            tx.try_send(SidEvent::Tick)
+                .expect("should not be full at capacity");
         }
         // 65th would overflow the buffer.
-        assert!(tx.try_send(SidEvent::Tick).is_err(), "channel should be full at 65");
+        assert!(
+            tx.try_send(SidEvent::Tick).is_err(),
+            "channel should be full at 65"
+        );
     }
 
     /// `next_event` returns `Ok` when there is an event available.
@@ -140,7 +146,10 @@ mod tests {
         let result = next_event(&mut rx).await;
         assert!(result.is_err(), "should fail on closed channel");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("closed"), "error message should mention closed: {msg}");
+        assert!(
+            msg.contains("closed"),
+            "error message should mention closed: {msg}"
+        );
     }
 
     /// If the receiver is dropped while the pump is running the pump should
@@ -197,7 +206,10 @@ mod tests {
                 break;
             }
         }
-        assert!(got_tick, "should have received a Tick event after advancing the clock");
+        assert!(
+            got_tick,
+            "should have received a Tick event after advancing the clock"
+        );
     }
 
     /// A sub-millisecond tick rate must not crash or panic.
