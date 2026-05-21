@@ -617,6 +617,88 @@ pub enum QuickActionScope {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A saved database connection (Plan 4 / Database tab).
+///
+/// The DSN excludes the password; the password (if any) lives in the secrets
+/// table via `secret_ref`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::adapters::db_client::DbKind;
+/// use sid_core::adapters::secrets::SecretId;
+/// use sid_store::{DbConnection, now_epoch};
+/// let c = DbConnection {
+///     id: "local-pg".into(),
+///     kind: DbKind::Postgres,
+///     name: "local postgres".into(),
+///     dsn: "postgres://user@localhost/db".into(),
+///     secret_ref: Some(SecretId::new("db.local-pg.password")),
+///     created_at: now_epoch(),
+/// };
+/// assert_eq!(c.kind, DbKind::Postgres);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DbConnection {
+    /// Stable id; used as the redb key and as the CLI selector.
+    pub id: String,
+    /// Database kind discriminator (Postgres vs SQLite).
+    pub kind: sid_core::adapters::db_client::DbKind,
+    /// User-facing label.
+    pub name: String,
+    /// DSN minus password. Password lives behind `secret_ref`.
+    pub dsn: String,
+    /// Optional pointer into the secrets table for the password.
+    pub secret_ref: Option<sid_core::adapters::secrets::SecretId>,
+    /// Epoch timestamp at creation.
+    pub created_at: Epoch,
+}
+
+/// One row of the per-connection query history.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::QueryRecord;
+/// let r = QueryRecord {
+///     conn_id: "local-pg".into(),
+///     sql: "SELECT 1".into(),
+///     duration_ms: 12,
+///     row_count: 1,
+///     ts_ns: 1,
+/// };
+/// assert_eq!(r.row_count, 1);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct QueryRecord {
+    /// Connection id this query ran against.
+    pub conn_id: String,
+    /// Verbatim SQL text.
+    pub sql: String,
+    /// Wall-clock duration of the query in milliseconds.
+    pub duration_ms: u64,
+    /// Approximate row count (0 for DDL/DML rather than SELECT).
+    pub row_count: u64,
+    /// Wall-clock nanoseconds since epoch — also the first half of the key.
+    pub ts_ns: u128,
+}
+
+/// A plaintext secret (Plan 4). Stored versioned in the `secrets` table when
+/// using [`crate::Store::put_secret`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::PlainSecret;
+/// let s = PlainSecret { value: "shh".into() };
+/// assert_eq!(s.value, "shh");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PlainSecret {
+    /// Secret value as a UTF-8 string.
+    pub value: String,
+}
+
 /// The domain storage trait. `sid-store` is the only crate that provides an
 /// implementation (`RedbStore`); other crates depend on this trait only.
 ///
