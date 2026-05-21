@@ -7,6 +7,7 @@
 //! Until [`NetworkWidget`] is rebuilt to consume those pieces (Plan 5
 //! Task 17), the widget itself remains the Plan 1 "coming soon" stub.
 
+pub mod filter_input;
 pub mod interfaces_sidebar;
 pub mod ports_table;
 pub mod processes_table;
