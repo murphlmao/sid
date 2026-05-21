@@ -10,10 +10,16 @@ fn commit(repo: &git2::Repository, msg: &str) -> git2::Oid {
     let mut idx = repo.index().unwrap();
     let tree_id = idx.write_tree().unwrap();
     let tree = repo.find_tree(tree_id).unwrap();
-    let parents: Vec<_> =
-        repo.head().ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+    let parents: Vec<_> = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .into_iter()
+        .collect();
     let parent_refs: Vec<_> = parents.iter().collect();
-    let oid = repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parent_refs).unwrap();
+    let oid = repo
+        .commit(Some("HEAD"), &sig, &sig, msg, &tree, &parent_refs)
+        .unwrap();
     drop(tree);
     oid
 }
@@ -112,7 +118,8 @@ fn commit_log_fields_are_populated() {
     };
     {
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "feat: hello world", &tree, &[]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "feat: hello world", &tree, &[])
+            .unwrap();
     }
     let provider = Git2ProviderFactory::new().open(dir.path()).unwrap();
     let log = provider.commit_log(1, None).unwrap();

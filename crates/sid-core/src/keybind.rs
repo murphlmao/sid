@@ -100,7 +100,8 @@ impl KeybindMap {
     /// assert!(map.lookup(&chord).is_some());
     /// ```
     pub fn bind(&mut self, b: KeyBinding) {
-        self.by_chord.insert(chord_key(&b.chord), (b.chord, b.action));
+        self.by_chord
+            .insert(chord_key(&b.chord), (b.chord, b.action));
     }
 
     /// Look up the action bound to a chord.
@@ -151,7 +152,9 @@ impl KeybindMap {
     /// assert_eq!(pairs.len(), 1);
     /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&KeyChord, &ActionId)> {
-        self.by_chord.values().map(|(chord, action)| (chord, action))
+        self.by_chord
+            .values()
+            .map(|(chord, action)| (chord, action))
     }
 
     /// Find the first chord currently bound to `action`, if any.
@@ -176,7 +179,8 @@ impl KeybindMap {
     /// assert_eq!(map.chord_for_action(&ActionId::new("unbound")), None);
     /// ```
     pub fn chord_for_action(&self, action: &ActionId) -> Option<&KeyChord> {
-        self.iter().find_map(|(c, a)| if a == action { Some(c) } else { None })
+        self.iter()
+            .find_map(|(c, a)| if a == action { Some(c) } else { None })
     }
 
     /// Remove the binding for `chord`. Idempotent — unbinding a chord that
@@ -228,20 +232,58 @@ impl KeybindMap {
     pub fn cosmos_default() -> Self {
         let mut m = Self::new();
         let bind = |m: &mut Self, code: KeyCode, mods: KeyModifiers, action: &str| {
-            m.bind(KeyBinding { chord: KeyChord::new(code, mods), action: ActionId::new(action) });
+            m.bind(KeyBinding {
+                chord: KeyChord::new(code, mods),
+                action: ActionId::new(action),
+            });
         };
         bind(&mut m, KeyCode::Left, KeyModifiers::CONTROL, "tabs.prev");
         bind(&mut m, KeyCode::Right, KeyModifiers::CONTROL, "tabs.next");
         for i in 1..=6 {
             let c = char::from_digit(i, 10).unwrap();
-            bind(&mut m, KeyCode::Char(c), KeyModifiers::CONTROL, &format!("tabs.jump.{i}"));
+            bind(
+                &mut m,
+                KeyCode::Char(c),
+                KeyModifiers::CONTROL,
+                &format!("tabs.jump.{i}"),
+            );
         }
-        bind(&mut m, KeyCode::Char('f'), KeyModifiers::CONTROL, "palette.open");
-        bind(&mut m, KeyCode::Char('q'), KeyModifiers::CONTROL, "app.quit");
-        bind(&mut m, KeyCode::Char(','), KeyModifiers::CONTROL, "app.open_settings");
-        bind(&mut m, KeyCode::Char('d'), KeyModifiers::CONTROL, "tab.detach");
-        bind(&mut m, KeyCode::Char('a'), KeyModifiers::CONTROL, "tab.attach");
-        bind(&mut m, KeyCode::Char('r'), KeyModifiers::CONTROL, "tab.reload");
+        bind(
+            &mut m,
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL,
+            "palette.open",
+        );
+        bind(
+            &mut m,
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL,
+            "app.quit",
+        );
+        bind(
+            &mut m,
+            KeyCode::Char(','),
+            KeyModifiers::CONTROL,
+            "app.open_settings",
+        );
+        bind(
+            &mut m,
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+            "tab.detach",
+        );
+        bind(
+            &mut m,
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+            "tab.attach",
+        );
+        bind(
+            &mut m,
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+            "tab.reload",
+        );
         m
     }
 }

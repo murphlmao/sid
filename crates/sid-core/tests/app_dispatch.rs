@@ -36,7 +36,9 @@ fn t(id: &'static str) -> Tab {
     Tab {
         id: TabId::new(id),
         title: id.into(),
-        layout: Layout::Single(Box::new(W { id: WidgetId::new(id) })),
+        layout: Layout::Single(Box::new(W {
+            id: WidgetId::new(id),
+        })),
         hotkey: None,
     }
 }
@@ -73,7 +75,10 @@ fn ctrl_right_advances_tab() {
 #[test]
 fn ctrl_q_sets_quit_flag() {
     let mut app = two_tab_app();
-    let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL)));
+    let dispatch = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('q'),
+        KeyModifiers::CONTROL,
+    )));
     assert!(app.is_quitting());
     assert_eq!(dispatch, Dispatch::Quit);
 }
@@ -82,7 +87,10 @@ fn ctrl_q_sets_quit_flag() {
 fn ctrl_f_opens_palette() {
     let mut app = two_tab_app();
     assert!(!app.palette().is_open());
-    let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('f'), KeyModifiers::CONTROL)));
+    let dispatch = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL,
+    )));
     assert!(app.palette().is_open());
     assert_eq!(dispatch, Dispatch::Continue);
 }
@@ -90,7 +98,10 @@ fn ctrl_f_opens_palette() {
 #[test]
 fn ctrl_2_jumps_to_second_tab() {
     let mut app = three_tab_app();
-    let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('2'), KeyModifiers::CONTROL)));
+    let dispatch = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('2'),
+        KeyModifiers::CONTROL,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), "b");
     assert_eq!(dispatch, Dispatch::Continue);
 }
@@ -104,7 +115,10 @@ fn ctrl_2_jumps_to_second_tab() {
 fn unbound_keystroke_is_noop() {
     let mut app = two_tab_app();
     let starting_tab = app.tabs().active().id.as_str().to_string();
-    let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::NONE)));
+    let dispatch = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('z'),
+        KeyModifiers::NONE,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), starting_tab);
     assert!(!app.is_quitting());
     assert!(!app.palette().is_open());
@@ -116,7 +130,10 @@ fn unbound_keystroke_is_noop() {
 fn palette_open_then_esc_closes() {
     let mut app = two_tab_app();
     // Open the palette.
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('f'), KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL,
+    )));
     assert!(app.palette().is_open());
     // Esc should close it.
     let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -135,12 +152,11 @@ fn unknown_action_id_is_warn_and_continue() {
         chord: KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
         action: sid_core::action::ActionId::new("totally.unknown.action"),
     });
-    let mut app = App::new(
-        TabManager::new(vec![t("a")]),
-        kb,
-        ActionRegistry::new(),
-    );
-    let dispatch = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL)));
+    let mut app = App::new(TabManager::new(vec![t("a")]), kb, ActionRegistry::new());
+    let dispatch = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL,
+    )));
     // Must not panic; must continue.
     assert_eq!(dispatch, Dispatch::Continue);
     assert!(!app.is_quitting());
@@ -157,8 +173,15 @@ fn tabs_jump_999_clamps_to_last() {
         chord: KeyChord::new(KeyCode::Char('9'), KeyModifiers::CONTROL),
         action: sid_core::action::ActionId::new("tabs.jump.999"),
     });
-    let mut app2 = App::new(TabManager::new(vec![t("a"), t("b"), t("c")]), kb, ActionRegistry::new());
-    let dispatch = app2.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('9'), KeyModifiers::CONTROL)));
+    let mut app2 = App::new(
+        TabManager::new(vec![t("a"), t("b"), t("c")]),
+        kb,
+        ActionRegistry::new(),
+    );
+    let dispatch = app2.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('9'),
+        KeyModifiers::CONTROL,
+    )));
     // Should clamp to last tab (index 2 → "c").
     assert_eq!(app2.tabs().active().id.as_str(), "c");
     assert_eq!(dispatch, Dispatch::Continue);
@@ -175,10 +198,16 @@ fn tabs_jump_999_clamps_to_last() {
 fn ctrl_left_goes_to_prev_tab() {
     let mut app = three_tab_app();
     // First advance to tab "b".
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Right, KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Right,
+        KeyModifiers::CONTROL,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), "b");
     // Now go prev.
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Left, KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), "a");
 }
 
@@ -187,10 +216,16 @@ fn ctrl_left_goes_to_prev_tab() {
 fn ctrl_1_jumps_to_first_tab() {
     let mut app = three_tab_app();
     // Move to tab "c" first.
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('3'), KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('3'),
+        KeyModifiers::CONTROL,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), "c");
     // Jump back.
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('1'), KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('1'),
+        KeyModifiers::CONTROL,
+    )));
     assert_eq!(app.tabs().active().id.as_str(), "a");
 }
 
@@ -199,22 +234,45 @@ fn ctrl_1_jumps_to_first_tab() {
 fn typing_in_palette_updates_query() {
     let mut reg = ActionRegistry::new();
     reg.register(Action::new("app.quit", "Quit"));
-    let mut app = App::new(TabManager::new(vec![t("a")]), KeybindMap::cosmos_default(), reg);
+    let mut app = App::new(
+        TabManager::new(vec![t("a")]),
+        KeybindMap::cosmos_default(),
+        reg,
+    );
     // Open palette.
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('f'), KeyModifiers::CONTROL)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL,
+    )));
     // Type "q".
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )));
     assert_eq!(app.palette().query(), "q");
 }
 
 /// Backspace in an open palette removes the last character.
 #[test]
 fn backspace_in_palette_removes_char() {
-    let mut app = App::new(TabManager::new(vec![t("a")]), KeybindMap::cosmos_default(), ActionRegistry::new());
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('f'), KeyModifiers::CONTROL)));
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+    let mut app = App::new(
+        TabManager::new(vec![t("a")]),
+        KeybindMap::cosmos_default(),
+        ActionRegistry::new(),
+    );
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('f'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Char('q'),
+        KeyModifiers::NONE,
+    )));
     assert_eq!(app.palette().query(), "q");
-    app.handle_event(&Event::Key(KeyChord::new(KeyCode::Backspace, KeyModifiers::NONE)));
+    app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+    )));
     assert_eq!(app.palette().query(), "");
 }
 
@@ -224,7 +282,10 @@ fn non_key_events_do_not_panic() {
     let mut app = two_tab_app();
     let dispatch = app.handle_event(&Event::Tick);
     assert_eq!(dispatch, Dispatch::Continue);
-    let dispatch = app.handle_event(&Event::Resize { width: 80, height: 24 });
+    let dispatch = app.handle_event(&Event::Resize {
+        width: 80,
+        height: 24,
+    });
     assert_eq!(dispatch, Dispatch::Continue);
 }
 

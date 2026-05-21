@@ -117,10 +117,7 @@ fn distinct_tab_and_widget_combos_are_independent() {
             .unwrap();
     }
     for (tab, widget, expected) in &pairs {
-        let got = store
-            .load_widget_state(tab, widget)
-            .unwrap()
-            .unwrap();
+        let got = store.load_widget_state(tab, widget).unwrap().unwrap();
         assert_eq!(&got, expected, "mismatch for {tab}/{widget}");
     }
 }

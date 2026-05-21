@@ -98,7 +98,9 @@ impl<T: Send + Clone + 'static> JobQueue<T> {
     /// let queue: JobQueue<i32> = JobQueue::new();
     /// ```
     pub fn new() -> Self {
-        Self { completions: Arc::new(Mutex::new(Vec::new())) }
+        Self {
+            completions: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     /// Spawn a future as a job. Returns a [`JobHandle`] that resolves to the
@@ -131,7 +133,10 @@ impl<T: Send + Clone + 'static> JobQueue<T> {
             completions.lock().unwrap().push(ok.clone());
             let _ = tx.send(ok);
         });
-        JobHandle { rx: Some(rx), _join: join }
+        JobHandle {
+            rx: Some(rx),
+            _join: join,
+        }
     }
 
     /// Drain all results that have completed since the last call. Non-blocking.

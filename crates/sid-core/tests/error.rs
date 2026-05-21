@@ -25,10 +25,16 @@ fn storage_display_contains_prefix_and_message() {
 #[test]
 fn io_display_contains_path_and_kind() {
     let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
-    let e = SidError::Io { path: PathBuf::from("/etc/secret"), source: inner };
+    let e = SidError::Io {
+        path: PathBuf::from("/etc/secret"),
+        source: inner,
+    };
     let msg = format!("{e}");
     assert!(msg.contains("io error reading"), "msg: {msg}");
-    assert!(msg.contains("/etc/secret") || msg.contains("secret"), "msg: {msg}");
+    assert!(
+        msg.contains("/etc/secret") || msg.contains("secret"),
+        "msg: {msg}"
+    );
 }
 
 #[test]
@@ -68,13 +74,19 @@ fn other_display_is_bare_message() {
 #[test]
 fn io_variant_source_chains_inner_io_error() {
     let inner = std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out");
-    let e = SidError::Io { path: PathBuf::from("/tmp/sock"), source: inner };
+    let e = SidError::Io {
+        path: PathBuf::from("/tmp/sock"),
+        source: inner,
+    };
     // The `#[source]` attribute means `std::error::Error::source()` should
     // return `Some(inner_io_error)`.
     let src = StdError::source(&e);
     assert!(src.is_some(), "expected Io source to be chained");
     let src_msg = format!("{}", src.unwrap());
-    assert!(src_msg.contains("timed out") || src_msg.contains("connection"), "src_msg: {src_msg}");
+    assert!(
+        src_msg.contains("timed out") || src_msg.contains("connection"),
+        "src_msg: {src_msg}"
+    );
 }
 
 #[test]
@@ -150,7 +162,10 @@ fn newlines_and_control_chars_in_message() {
 #[test]
 fn io_error_with_empty_path_still_displays() {
     let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
-    let e = SidError::Io { path: PathBuf::from(""), source: inner };
+    let e = SidError::Io {
+        path: PathBuf::from(""),
+        source: inner,
+    };
     let msg = format!("{e}");
     // Must format without panicking.
     assert!(msg.contains("io error reading"), "msg: {msg}");

@@ -91,7 +91,11 @@ fn no_two_themes_are_palette_identical() {
     let fps: Vec<_> = themes.iter().map(palette_fingerprint).collect();
     for i in 0..fps.len() {
         for j in (i + 1)..fps.len() {
-            assert_ne!(fps[i], fps[j], "themes {} and {} have identical palette fingerprint", themes[i].name, themes[j].name);
+            assert_ne!(
+                fps[i], fps[j],
+                "themes {} and {} have identical palette fingerprint",
+                themes[i].name, themes[j].name
+            );
         }
     }
 }

@@ -1,13 +1,16 @@
 //! Tests for `decide()` — pure session-restore decision helper.
 
-use sid_core::restore::{decide, RestoreDecision, SessionView};
+use sid_core::restore::{RestoreDecision, SessionView, decide};
 
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
 fn s(last_active_secs_ago: u64, cleanly_ended: bool) -> SessionView {
-    SessionView { last_active_secs_ago, cleanly_ended }
+    SessionView {
+        last_active_secs_ago,
+        cleanly_ended,
+    }
 }
 
 // ---------------------------------------------------------------------------

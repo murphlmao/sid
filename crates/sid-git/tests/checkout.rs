@@ -15,7 +15,9 @@ fn setup_two_branches(path: &Path) -> git2::Repository {
     let tree_id = idx.write_tree().unwrap();
     {
         let tree = repo.find_tree(tree_id).unwrap();
-        let init = repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let init = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
         let head = repo.find_commit(init).unwrap();
         repo.branch("feature", &head, false).unwrap();
         drop(head);
@@ -74,7 +76,10 @@ fn checkout_round_trip_between_branches() {
     provider.checkout_branch("feature").unwrap();
     assert_eq!(provider.current_branch().unwrap().unwrap().name, "feature");
     provider.checkout_branch(&initial_name).unwrap();
-    assert_eq!(provider.current_branch().unwrap().unwrap().name, initial_name);
+    assert_eq!(
+        provider.current_branch().unwrap().unwrap().name,
+        initial_name
+    );
 }
 
 // Adversarial: dirty guard counts the entries

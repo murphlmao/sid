@@ -21,7 +21,10 @@ impl WidgetCtx {
     /// assert!(!ctx.needs_redraw());
     /// ```
     pub fn new(action_tx: Sender<String>) -> Self {
-        Self { action_tx, redraw: false }
+        Self {
+            action_tx,
+            redraw: false,
+        }
     }
 
     /// Emit an action by ID. The App will dispatch it via its ActionRegistry.

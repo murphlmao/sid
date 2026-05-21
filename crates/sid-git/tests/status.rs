@@ -15,7 +15,8 @@ fn init_repo_with_initial_commit(path: &Path) -> git2::Repository {
     };
     {
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
     }
     repo
 }
@@ -71,7 +72,8 @@ fn modified_unstaged_file_reports_modified_unstaged() {
     let tree = repo.find_tree(tree_id).unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();
     let parent = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "add a", &tree, &[&parent]).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "add a", &tree, &[&parent])
+        .unwrap();
     fs::write(dir.path().join("a.txt"), b"v2").unwrap();
     let provider = Git2ProviderFactory::new().open(dir.path()).unwrap();
     let s = provider.status().unwrap();
@@ -117,7 +119,8 @@ fn deleted_tracked_file_shows_as_deleted() {
     let tree = repo.find_tree(tree_id).unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();
     let parent = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "add d", &tree, &[&parent]).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "add d", &tree, &[&parent])
+        .unwrap();
     // Now delete it
     fs::remove_file(dir.path().join("d.txt")).unwrap();
     let provider = Git2ProviderFactory::new().open(dir.path()).unwrap();
@@ -140,14 +143,19 @@ fn staged_deletion_shows_staged() {
     let tree = repo.find_tree(tree_id).unwrap();
     let sig = git2::Signature::now("t", "t@t").unwrap();
     let parent = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "add s", &tree, &[&parent]).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "add s", &tree, &[&parent])
+        .unwrap();
     // Stage the deletion
     idx.remove_path(Path::new("s.txt")).unwrap();
     idx.write().unwrap();
     fs::remove_file(dir.path().join("s.txt")).unwrap();
     let provider = Git2ProviderFactory::new().open(dir.path()).unwrap();
     let s = provider.status().unwrap();
-    let staged_del = s.entries.iter().find(|e| e.path == "s.txt" && e.staged).unwrap();
+    let staged_del = s
+        .entries
+        .iter()
+        .find(|e| e.path == "s.txt" && e.staged)
+        .unwrap();
     assert_eq!(staged_del.kind, StatusKind::Deleted);
 }
 

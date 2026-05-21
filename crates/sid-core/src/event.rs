@@ -43,9 +43,14 @@ impl Event {
     /// ```
     pub fn from_crossterm(ev: CtEvent) -> Self {
         match ev {
-            CtEvent::Key(KeyEvent { code, modifiers, .. }) => Event::Key(KeyChord::new(code, modifiers)),
+            CtEvent::Key(KeyEvent {
+                code, modifiers, ..
+            }) => Event::Key(KeyChord::new(code, modifiers)),
             CtEvent::Mouse(m) => Event::Mouse(m),
-            CtEvent::Resize(w, h) => Event::Resize { width: w, height: h },
+            CtEvent::Resize(w, h) => Event::Resize {
+                width: w,
+                height: h,
+            },
             CtEvent::FocusGained => Event::Focus(true),
             CtEvent::FocusLost => Event::Focus(false),
             CtEvent::Paste(_) => Event::Custom("paste".into()),

@@ -157,10 +157,7 @@ fn snapshot_modal_awaiting_term() {
     // transition to AwaitingTerm depends only on prior state, not the
     // wall-clock value.
     w.handle_event(&key(KeyCode::Char('y')), &mut c);
-    insta::assert_snapshot!(
-        "network_modal_awaiting_term",
-        render_to_string(&w, 80, 24)
-    );
+    insta::assert_snapshot!("network_modal_awaiting_term", render_to_string(&w, 80, 24));
 }
 
 #[test]

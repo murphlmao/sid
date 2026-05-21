@@ -43,9 +43,7 @@ async fn poll_returns_completed_results() {
 async fn concurrent_burst_all_complete() {
     let queue: JobQueue<u32> = JobQueue::new();
 
-    let handles: Vec<JobHandle<u32>> = (0u32..100)
-        .map(|i| queue.spawn(async move { i }))
-        .collect();
+    let handles: Vec<JobHandle<u32>> = (0u32..100).map(|i| queue.spawn(async move { i })).collect();
 
     // Await all handles to ensure every job finishes.
     for h in handles {
@@ -88,7 +86,10 @@ async fn drain_collects_all_completed_jobs() {
 
     // Second drain should be empty — no duplicates.
     let second = queue.drain_completed();
-    assert!(second.is_empty(), "drain_completed must not return duplicates");
+    assert!(
+        second.is_empty(),
+        "drain_completed must not return duplicates"
+    );
 }
 
 // ── Adversarial: drain_completed never duplicates ──────────────────────────
@@ -108,7 +109,10 @@ async fn drain_completed_no_duplicates() {
     // Total results across both drains: exactly the jobs that finished.
     assert!(first.len() + second.len() <= 2);
     // The second drain should be empty because the first drained everything.
-    assert!(second.is_empty(), "second drain must be empty — no duplicates allowed");
+    assert!(
+        second.is_empty(),
+        "second drain must be empty — no duplicates allowed"
+    );
 }
 
 // ── Adversarial: drop handle before await (cancellation) ───────────────────

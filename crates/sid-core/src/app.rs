@@ -1,7 +1,7 @@
 //! The `App` struct: the top-level owner of all sid state, minus the runtime
 //! (Tokio) and the terminal backend (Ratatui). Those are wired in the binary.
 
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::action::{ActionId, ActionRegistry};
 use crate::keybind::KeybindMap;
@@ -335,8 +335,8 @@ impl App {
     /// assert!(app.is_quitting());
     /// ```
     pub fn handle_event(&mut self, ev: &crate::event::Event) -> Dispatch {
-        use crossterm::event::{KeyCode, KeyModifiers};
         use crate::event::Event;
+        use crossterm::event::{KeyCode, KeyModifiers};
 
         // ---- 1. Palette intercept ----
         if self.palette.is_open() {

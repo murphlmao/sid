@@ -75,9 +75,11 @@ fn ratcolor(c: Color) -> RatColor {
 
 fn draw(f: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
     // Background fill via a block that owns the whole area.
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(ratcolor(theme.background)).fg(ratcolor(theme.border)));
+    let outer = Block::default().borders(Borders::ALL).style(
+        Style::default()
+            .bg(ratcolor(theme.background))
+            .fg(ratcolor(theme.border)),
+    );
     let inner = outer.inner(area);
     f.render_widget(outer, area);
     if inner.width == 0 || inner.height == 0 {

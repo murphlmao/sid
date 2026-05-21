@@ -156,7 +156,10 @@ fn fuzzy_prefix_ranks_first() {
     assert!(!hits.is_empty());
     // The top-ranked result must be one of the "Open …" labels
     let top = hits[0].label.to_lowercase();
-    assert!(top.starts_with('o'), "expected top hit to start with 'o', got: {top}");
+    assert!(
+        top.starts_with('o'),
+        "expected top hit to start with 'o', got: {top}"
+    );
 }
 
 #[test]

@@ -18,7 +18,10 @@ fn bare(code: KeyCode) -> KeyChord {
 }
 
 fn bind_chord(map: &mut KeybindMap, chord: KeyChord, action: &str) {
-    map.bind(KeyBinding { chord, action: ActionId::new(action) });
+    map.bind(KeyBinding {
+        chord,
+        action: ActionId::new(action),
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +49,10 @@ fn rebind_overwrites_previous_action() {
     let chord = ctrl(KeyCode::Char('q'));
     bind_chord(&mut map, chord, "first.action");
     bind_chord(&mut map, chord, "second.action");
-    assert_eq!(map.lookup(&chord).map(|a| a.as_str()), Some("second.action"));
+    assert_eq!(
+        map.lookup(&chord).map(|a| a.as_str()),
+        Some("second.action")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +298,10 @@ fn iter_returns_all_bound_chords() {
 fn iter_yields_original_chord_not_a_synthetic_one() {
     let mut map = KeybindMap::new();
     let chord = KeyChord::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
-    map.bind(KeyBinding { chord, action: ActionId::new("palette.open") });
+    map.bind(KeyBinding {
+        chord,
+        action: ActionId::new("palette.open"),
+    });
     let pairs: Vec<_> = map.iter().collect();
     assert_eq!(pairs.len(), 1);
     let (got_chord, _) = pairs[0];
@@ -310,7 +319,10 @@ fn iter_on_empty_map_yields_nothing() {
 fn chord_for_action_finds_binding() {
     let mut map = KeybindMap::new();
     let chord = ctrl(KeyCode::Char('q'));
-    map.bind(KeyBinding { chord, action: ActionId::new("app.quit") });
+    map.bind(KeyBinding {
+        chord,
+        action: ActionId::new("app.quit"),
+    });
     let got = map.chord_for_action(&ActionId::new("app.quit"));
     assert_eq!(got, Some(&chord));
 }

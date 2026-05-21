@@ -57,8 +57,7 @@ async fn full_edit_in_place_flow_round_trips_modified_bytes() {
 
     let tmp = tempdir().unwrap();
     let local = tmp.path().join("foo.txt");
-    let editor: Box<dyn EditorRunner> =
-        Box::new(MockEditorRunner::new("modified content".into()));
+    let editor: Box<dyn EditorRunner> = Box::new(MockEditorRunner::new("modified content".into()));
 
     let mut state = SftpEditState::default();
 

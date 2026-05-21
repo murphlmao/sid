@@ -1,5 +1,5 @@
-use std::fs;
 use sid_ssh::read_ssh_config;
+use std::fs;
 use tempfile::tempdir;
 
 #[test]
@@ -25,7 +25,11 @@ fn parses_simple_host_block() {
 fn parses_multiple_host_blocks() {
     let dir = tempdir().unwrap();
     let p = dir.path().join("config");
-    fs::write(&p, "Host a\n    HostName ahost\n\nHost b\n    HostName bhost\n").unwrap();
+    fs::write(
+        &p,
+        "Host a\n    HostName ahost\n\nHost b\n    HostName bhost\n",
+    )
+    .unwrap();
     let entries = read_ssh_config(&p).unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].host, "a");
@@ -36,7 +40,11 @@ fn parses_multiple_host_blocks() {
 fn parses_proxy_jump() {
     let dir = tempdir().unwrap();
     let p = dir.path().join("config");
-    fs::write(&p, "Host internal\n    HostName 10.0.0.5\n    ProxyJump bastion\n").unwrap();
+    fs::write(
+        &p,
+        "Host internal\n    HostName 10.0.0.5\n    ProxyJump bastion\n",
+    )
+    .unwrap();
     let entries = read_ssh_config(&p).unwrap();
     assert_eq!(entries[0].proxy_jump.as_deref(), Some("bastion"));
 }
@@ -51,7 +59,11 @@ fn missing_file_returns_empty() {
 fn skips_comments_and_blank_lines() {
     let dir = tempdir().unwrap();
     let p = dir.path().join("config");
-    fs::write(&p, "# top comment\n\nHost real\n    # inline comment\n    HostName r\n").unwrap();
+    fs::write(
+        &p,
+        "# top comment\n\nHost real\n    # inline comment\n    HostName r\n",
+    )
+    .unwrap();
     let entries = read_ssh_config(&p).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].host, "real");

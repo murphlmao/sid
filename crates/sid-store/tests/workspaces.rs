@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use sid_store::{now_epoch, OpenStore, RedbStore, Store, Workspace, WorkspaceKind};
+use sid_store::{OpenStore, RedbStore, Store, Workspace, WorkspaceKind, now_epoch};
 use tempfile::tempdir;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -113,7 +113,12 @@ fn get_workspace_returns_existing_and_none_for_missing() {
     let w = ws("/a", "alpha", WorkspaceKind::Repo, None);
     store.upsert_workspace(&w).unwrap();
     assert!(store.get_workspace(&PathBuf::from("/a")).unwrap().is_some());
-    assert!(store.get_workspace(&PathBuf::from("/missing")).unwrap().is_none());
+    assert!(
+        store
+            .get_workspace(&PathBuf::from("/missing"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -130,8 +135,12 @@ fn remove_workspace_drops_it() {
 fn upsert_replaces_existing_record() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    store.upsert_workspace(&ws("/a", "v1", WorkspaceKind::Repo, None)).unwrap();
-    store.upsert_workspace(&ws("/a", "v2", WorkspaceKind::Repo, None)).unwrap();
+    store
+        .upsert_workspace(&ws("/a", "v1", WorkspaceKind::Repo, None))
+        .unwrap();
+    store
+        .upsert_workspace(&ws("/a", "v2", WorkspaceKind::Repo, None))
+        .unwrap();
     let found = store.get_workspace(&PathBuf::from("/a")).unwrap().unwrap();
     assert_eq!(found.name, "v2");
 }
@@ -153,7 +162,9 @@ fn remove_nonexistent_workspace_is_noop() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
     // Removing a path never added should succeed silently.
-    store.remove_workspace(&PathBuf::from("/never-added")).unwrap();
+    store
+        .remove_workspace(&PathBuf::from("/never-added"))
+        .unwrap();
 }
 
 #[test]
@@ -183,7 +194,10 @@ fn very_long_path_is_stored_and_retrieved() {
     let long_path = format!("/home/user/{segment}");
     let w = ws(&long_path, "long", WorkspaceKind::Repo, None);
     store.upsert_workspace(&w).unwrap();
-    let back = store.get_workspace(&PathBuf::from(&long_path)).unwrap().unwrap();
+    let back = store
+        .get_workspace(&PathBuf::from(&long_path))
+        .unwrap()
+        .unwrap();
     assert_eq!(back.path, PathBuf::from(&long_path));
 }
 
@@ -194,7 +208,10 @@ fn very_long_name_roundtrips() {
     let long_name = "x".repeat(10_000);
     let w = ws("/tmp/named", &long_name, WorkspaceKind::Repo, None);
     store.upsert_workspace(&w).unwrap();
-    let back = store.get_workspace(&PathBuf::from("/tmp/named")).unwrap().unwrap();
+    let back = store
+        .get_workspace(&PathBuf::from("/tmp/named"))
+        .unwrap()
+        .unwrap();
     assert_eq!(back.name.len(), 10_000);
 }
 
@@ -202,7 +219,12 @@ fn very_long_name_roundtrips() {
 fn workspace_with_spaces_in_path_roundtrips() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    let w = ws("/home/user/my projects/with spaces", "spaces", WorkspaceKind::Repo, None);
+    let w = ws(
+        "/home/user/my projects/with spaces",
+        "spaces",
+        WorkspaceKind::Repo,
+        None,
+    );
     store.upsert_workspace(&w).unwrap();
     let back = store
         .get_workspace(&PathBuf::from("/home/user/my projects/with spaces"))
@@ -225,10 +247,16 @@ fn umbrella_and_children_roundtrip() {
     let all = store.list_workspaces().unwrap();
     assert_eq!(all.len(), 3);
 
-    let got_umbrella = store.get_workspace(&PathBuf::from("/stack")).unwrap().unwrap();
+    let got_umbrella = store
+        .get_workspace(&PathBuf::from("/stack"))
+        .unwrap()
+        .unwrap();
     assert_eq!(got_umbrella.kind, WorkspaceKind::Umbrella);
 
-    let got_child = store.get_workspace(&PathBuf::from("/stack/a")).unwrap().unwrap();
+    let got_child = store
+        .get_workspace(&PathBuf::from("/stack/a"))
+        .unwrap()
+        .unwrap();
     assert_eq!(got_child.parent, Some(PathBuf::from("/stack")));
 }
 

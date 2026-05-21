@@ -1,9 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use proptest::prelude::*;
 use sid_core::event::{Event, KeyChord};
 
@@ -16,7 +14,10 @@ fn from_crossterm_key_extracts_chord() {
     let ev = Event::from_crossterm(crossterm_ev);
     match ev {
         Event::Key(chord) => {
-            assert_eq!(chord, KeyChord::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+            assert_eq!(
+                chord,
+                KeyChord::new(KeyCode::Char('a'), KeyModifiers::CONTROL)
+            );
         }
         other => panic!("expected Key, got {other:?}"),
     }
@@ -63,13 +64,25 @@ fn from_crossterm_resize_maps_width_and_height() {
 #[test]
 fn from_crossterm_resize_zero_dimensions() {
     let ev = Event::from_crossterm(crossterm::event::Event::Resize(0, 0));
-    assert_eq!(ev, Event::Resize { width: 0, height: 0 });
+    assert_eq!(
+        ev,
+        Event::Resize {
+            width: 0,
+            height: 0
+        }
+    );
 }
 
 #[test]
 fn from_crossterm_resize_max_dimensions() {
     let ev = Event::from_crossterm(crossterm::event::Event::Resize(u16::MAX, u16::MAX));
-    assert_eq!(ev, Event::Resize { width: u16::MAX, height: u16::MAX });
+    assert_eq!(
+        ev,
+        Event::Resize {
+            width: u16::MAX,
+            height: u16::MAX
+        }
+    );
 }
 
 #[test]
@@ -150,7 +163,7 @@ fn keychord_hash_is_deterministic() {
 #[test]
 fn keychord_hash_consistent_across_clones() {
     let c = KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
-    let cl = c;  // Copy
+    let cl = c; // Copy
     assert_eq!(hash_chord(&c), hash_chord(&cl));
 }
 
@@ -168,10 +181,8 @@ fn keychord_equal_values_have_equal_hashes() {
 #[test]
 fn keychord_all_modifiers_simultaneously() {
     // Ctrl+Shift+Alt+Super all set at once
-    let all_mods = KeyModifiers::CONTROL
-        | KeyModifiers::SHIFT
-        | KeyModifiers::ALT
-        | KeyModifiers::SUPER;
+    let all_mods =
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER;
     let chord = KeyChord::new(KeyCode::Char('a'), all_mods);
     assert!(chord.mods.contains(KeyModifiers::CONTROL));
     assert!(chord.mods.contains(KeyModifiers::SHIFT));
@@ -191,10 +202,8 @@ fn keychord_no_modifiers_is_empty() {
 
 #[test]
 fn from_crossterm_key_with_all_modifiers() {
-    let all_mods = KeyModifiers::CONTROL
-        | KeyModifiers::SHIFT
-        | KeyModifiers::ALT
-        | KeyModifiers::SUPER;
+    let all_mods =
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER;
     let ct = crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('a'), all_mods));
     let ev = Event::from_crossterm(ct);
     match ev {

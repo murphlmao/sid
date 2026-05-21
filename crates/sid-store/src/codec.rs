@@ -107,7 +107,10 @@ mod tests {
 
     #[test]
     fn encode_produces_version_first_byte() {
-        let s = S { n: 1, s: "a".into() };
+        let s = S {
+            n: 1,
+            s: "a".into(),
+        };
         let b = encode_versioned(7, &s).unwrap();
         assert_eq!(b[0], 7);
     }
@@ -120,7 +123,10 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_all_fields() {
-        let orig = S { n: 9999, s: "codec test".into() };
+        let orig = S {
+            n: 9999,
+            s: "codec test".into(),
+        };
         let bytes = encode_versioned(1, &orig).unwrap();
         let (v, decoded) = decode_versioned::<S>(&bytes).unwrap();
         assert_eq!(v, 1);
@@ -129,7 +135,10 @@ mod tests {
 
     #[test]
     fn empty_string_payload_round_trips() {
-        let orig = S { n: 0, s: String::new() };
+        let orig = S {
+            n: 0,
+            s: String::new(),
+        };
         let bytes = encode_versioned(0, &orig).unwrap();
         let (v, decoded) = decode_versioned::<S>(&bytes).unwrap();
         assert_eq!(v, 0);

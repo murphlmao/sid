@@ -32,8 +32,16 @@ fn rx_tx_monotonic_over_two_polls() {
     let b = p.list_interfaces().unwrap();
     for ai in &a {
         if let Some(bi) = b.iter().find(|x| x.name == ai.name) {
-            assert!(bi.rx_bytes >= ai.rx_bytes, "rx went backwards on {}", ai.name);
-            assert!(bi.tx_bytes >= ai.tx_bytes, "tx went backwards on {}", ai.name);
+            assert!(
+                bi.rx_bytes >= ai.rx_bytes,
+                "rx went backwards on {}",
+                ai.name
+            );
+            assert!(
+                bi.tx_bytes >= ai.tx_bytes,
+                "tx went backwards on {}",
+                ai.name
+            );
         }
     }
 }

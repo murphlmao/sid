@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use sid_store::sid_toml::{read_sid_toml, write_sid_toml, SidToml};
+use sid_store::sid_toml::{SidToml, read_sid_toml, write_sid_toml};
 use tempfile::tempdir;
 
 #[test]

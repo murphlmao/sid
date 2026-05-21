@@ -25,7 +25,10 @@ impl ComingSoonBody {
     /// assert_eq!(body.title(), "Workspaces");
     /// ```
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>) -> Self {
-        Self { title: title.into(), subtitle: subtitle.into() }
+        Self {
+            title: title.into(),
+            subtitle: subtitle.into(),
+        }
     }
 
     /// Returns the widget title string.

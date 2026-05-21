@@ -662,14 +662,8 @@ impl SshWidget {
             ConnectionPhase::Idle | ConnectionPhase::Disconnected => {
                 (theme.muted, "Disconnected".to_string())
             }
-            ConnectionPhase::Connecting => (
-                theme.accent_warning,
-                format!("Connecting to {alias}"),
-            ),
-            ConnectionPhase::Connected => (
-                theme.accent_success,
-                format!("Connected to {alias}"),
-            ),
+            ConnectionPhase::Connecting => (theme.accent_warning, format!("Connecting to {alias}")),
+            ConnectionPhase::Connected => (theme.accent_success, format!("Connected to {alias}")),
             ConnectionPhase::Failed => {
                 let err = self.connection.error_message().unwrap_or("unknown error");
                 (theme.accent_error, format!("Failed: {err}"))

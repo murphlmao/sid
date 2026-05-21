@@ -15,7 +15,11 @@ fn iface(name: &str, up: bool) -> NetInterface {
 }
 
 fn sample() -> Vec<NetInterface> {
-    vec![iface("eth0", true), iface("lo", true), iface("wlan0", false)]
+    vec![
+        iface("eth0", true),
+        iface("lo", true),
+        iface("wlan0", false),
+    ]
 }
 
 #[test]

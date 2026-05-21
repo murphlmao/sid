@@ -444,9 +444,7 @@ pub fn build_app_full(
             for _ in 0..idx {
                 ssh_widget.state_mut().select_next();
             }
-            ssh_widget
-                .connection_mut()
-                .begin_connecting(alias.clone());
+            ssh_widget.connection_mut().begin_connecting(alias.clone());
         }
     }
 

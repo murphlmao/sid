@@ -21,7 +21,11 @@ struct StatusMockGit {
 
 impl StatusMockGit {
     fn new(status: GitStatus) -> Self {
-        Self { status, status_calls: Arc::new(Mutex::new(0)), status_should_err: false }
+        Self {
+            status,
+            status_calls: Arc::new(Mutex::new(0)),
+            status_should_err: false,
+        }
     }
 
     fn with_error(mut self) -> Self {
@@ -68,15 +72,26 @@ impl GitProvider for StatusMockGit {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn entry(path: &str, kind: StatusKind, staged: bool) -> StatusEntry {
-    StatusEntry { path: path.into(), kind, staged, old_path: None }
+    StatusEntry {
+        path: path.into(),
+        kind,
+        staged,
+        old_path: None,
+    }
 }
 
 fn dirty_status(entries: Vec<StatusEntry>) -> GitStatus {
-    GitStatus { entries, is_clean: false }
+    GitStatus {
+        entries,
+        is_clean: false,
+    }
 }
 
 fn clean_status() -> GitStatus {
-    GitStatus { entries: vec![], is_clean: true }
+    GitStatus {
+        entries: vec![],
+        is_clean: true,
+    }
 }
 
 fn _ws(p: &str) -> Workspace {
@@ -138,16 +153,20 @@ fn status_list_state_empty_navigation_is_safe() {
 #[test]
 fn status_list_set_status_clamps_selection_on_shorter_list() {
     let mut s = StatusListState::new(dirty_status(
-        (0..5).map(|i| entry(&format!("f{i}.rs"), StatusKind::Modified, false)).collect(),
+        (0..5)
+            .map(|i| entry(&format!("f{i}.rs"), StatusKind::Modified, false))
+            .collect(),
     ));
     s.select_next();
     s.select_next();
     s.select_next(); // idx = 3
     assert_eq!(s.selected_idx(), 3);
 
-    s.set_status(dirty_status(vec![
-        entry("only.rs", StatusKind::Modified, false),
-    ]));
+    s.set_status(dirty_status(vec![entry(
+        "only.rs",
+        StatusKind::Modified,
+        false,
+    )]));
     assert_eq!(s.selected_idx(), 0);
 }
 
@@ -204,9 +223,11 @@ fn status_pane_can_receive_refreshed_data() {
     let mut s = WorkspacesState::new(vec![_ws("/a")]);
     s.cycle_pane_next(); // Status pane
     if let RightPane::Status(st) = s.right_pane_mut() {
-        st.set_status(dirty_status(vec![
-            entry("a.rs", StatusKind::Modified, false),
-        ]));
+        st.set_status(dirty_status(vec![entry(
+            "a.rs",
+            StatusKind::Modified,
+            false,
+        )]));
         assert!(!st.status().is_clean);
         assert_eq!(st.status().entries.len(), 1);
     }
@@ -259,9 +280,9 @@ fn all_status_kinds_are_constructible() {
 #[test]
 fn staged_and_unstaged_mixed_status() {
     let s = StatusListState::new(dirty_status(vec![
-        entry("a.rs", StatusKind::Modified, true),   // staged
-        entry("a.rs", StatusKind::Modified, false),  // also unstaged (both staged and wt changes)
-        entry("b.rs", StatusKind::Added, true),      // staged only
+        entry("a.rs", StatusKind::Modified, true),  // staged
+        entry("a.rs", StatusKind::Modified, false), // also unstaged (both staged and wt changes)
+        entry("b.rs", StatusKind::Added, true),     // staged only
     ]));
     let staged: Vec<_> = s.status().entries.iter().filter(|e| e.staged).collect();
     let unstaged: Vec<_> = s.status().entries.iter().filter(|e| !e.staged).collect();

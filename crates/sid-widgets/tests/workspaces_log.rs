@@ -32,24 +32,31 @@ impl GitProvider for LogMockGit {
         Ok(None)
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
     fn commit_log(&self, max: usize, from_oid: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
         if max == 0 {
             return Ok(vec![]);
         }
         let start_idx = match from_oid {
-            Some(oid) => {
-                match self.commits.iter().position(|c| c.oid == oid) {
-                    Some(idx) => idx,
-                    None => {
-                        return Err(GitError::InvalidRef(format!("oid not found: {oid}")));
-                    }
+            Some(oid) => match self.commits.iter().position(|c| c.oid == oid) {
+                Some(idx) => idx,
+                None => {
+                    return Err(GitError::InvalidRef(format!("oid not found: {oid}")));
                 }
-            }
+            },
             None => 0,
         };
-        Ok(self.commits.iter().skip(start_idx).take(max).cloned().collect())
+        Ok(self
+            .commits
+            .iter()
+            .skip(start_idx)
+            .take(max)
+            .cloned()
+            .collect())
     }
     fn diff(&self, _staged: bool) -> Result<Vec<DiffEntry>, GitError> {
         Ok(vec![])

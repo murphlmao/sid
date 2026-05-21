@@ -87,8 +87,7 @@ pub fn chord_from_string(s: &str) -> Result<KeyChord, String> {
         .ok_or_else(|| format!("missing '|' in {s:?}"))?;
     let bits: u8 = mods_s.parse().map_err(|e| format!("bad mods bits: {e}"))?;
     let code = parse_keycode(code_s)?;
-    let mods = KeyModifiers::from_bits(bits)
-        .ok_or_else(|| format!("invalid mod bits {bits}"))?;
+    let mods = KeyModifiers::from_bits(bits).ok_or_else(|| format!("invalid mod bits {bits}"))?;
     Ok(KeyChord::new(code, mods))
 }
 
@@ -251,9 +250,10 @@ mod tests {
         let entries = from_map(&m);
         assert!(entries.is_empty());
         let m2 = to_map(&entries);
-        assert!(m2
-            .lookup(&KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL))
-            .is_none());
+        assert!(
+            m2.lookup(&KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL))
+                .is_none()
+        );
     }
 
     #[test]
@@ -289,9 +289,10 @@ mod tests {
             },
         ];
         let m = to_map(&entries);
-        assert!(m
-            .lookup(&KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL))
-            .is_some());
+        assert!(
+            m.lookup(&KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL))
+                .is_some()
+        );
     }
 
     proptest! {

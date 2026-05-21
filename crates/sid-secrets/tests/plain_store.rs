@@ -69,8 +69,12 @@ fn list_ids_returns_all_keys() {
     for k in &["a", "b", "c"] {
         s.put(&SecretId::new(*k), b"v").unwrap();
     }
-    let mut ids: Vec<String> =
-        s.list_ids().unwrap().into_iter().map(|i| i.as_str().to_string()).collect();
+    let mut ids: Vec<String> = s
+        .list_ids()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.as_str().to_string())
+        .collect();
     ids.sort();
     assert_eq!(ids, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
 }
@@ -81,8 +85,12 @@ fn list_ids_excludes_deleted_keys() {
     s.put(&SecretId::new("a"), b"1").unwrap();
     s.put(&SecretId::new("b"), b"2").unwrap();
     s.delete(&SecretId::new("a")).unwrap();
-    let ids: Vec<String> =
-        s.list_ids().unwrap().into_iter().map(|i| i.as_str().to_string()).collect();
+    let ids: Vec<String> = s
+        .list_ids()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.as_str().to_string())
+        .collect();
     assert_eq!(ids, vec!["b".to_string()]);
 }
 

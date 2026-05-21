@@ -12,7 +12,11 @@ pub(crate) fn list_interfaces(_sys: &mut sysinfo::System) -> Result<Vec<NetInter
 
     let mut out = Vec::with_capacity(nets.len());
     for (name, data) in nets.iter() {
-        let addrs: Vec<String> = data.ip_networks().iter().map(|n| n.addr.to_string()).collect();
+        let addrs: Vec<String> = data
+            .ip_networks()
+            .iter()
+            .map(|n| n.addr.to_string())
+            .collect();
         let has_addrs = !addrs.is_empty();
         let rx = data.total_received();
         let tx = data.total_transmitted();

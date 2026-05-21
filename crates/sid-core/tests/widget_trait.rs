@@ -21,11 +21,7 @@ impl Widget for Dummy {
         self.title
     }
     fn render(&self, _: &mut dyn RenderTarget) {}
-    fn handle_event(
-        &mut self,
-        _ev: &Event,
-        _ctx: &mut WidgetCtx,
-    ) -> EventOutcome {
+    fn handle_event(&mut self, _ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
         EventOutcome::Consumed
     }
     fn save_state(&self) -> Vec<u8> {
@@ -181,7 +177,10 @@ fn render_target_zero_dimensions() {
 
 #[test]
 fn render_target_max_dimensions() {
-    let area = FixedArea { w: u16::MAX, h: u16::MAX };
+    let area = FixedArea {
+        w: u16::MAX,
+        h: u16::MAX,
+    };
     assert_eq!(area.width(), u16::MAX);
     assert_eq!(area.height(), u16::MAX);
 }
@@ -190,13 +189,19 @@ fn render_target_max_dimensions() {
 
 #[test]
 fn widget_save_state_default_is_empty() {
-    let d = Dummy { id: WidgetId::new("x"), title: "X" };
+    let d = Dummy {
+        id: WidgetId::new("x"),
+        title: "X",
+    };
     assert!(d.save_state().is_empty());
 }
 
 #[test]
 fn widget_load_state_default_is_noop() {
-    let mut d = Dummy { id: WidgetId::new("x"), title: "X" };
+    let mut d = Dummy {
+        id: WidgetId::new("x"),
+        title: "X",
+    };
     // Should not panic with arbitrary bytes
     d.load_state(&[0x00, 0x01, 0xFF]);
 }

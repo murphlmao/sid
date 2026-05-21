@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use sid_core::tab::TabId;
-use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
+use sid_store::{OpenStore, RedbStore, SessionRecord, Store, now_epoch};
 use tempfile::tempdir;
 
 fn make_session(id: &str, active_tab: &str) -> SessionRecord {
@@ -42,7 +42,9 @@ fn upsert_and_current_session() {
 fn list_sessions_returns_all() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    store.upsert_session(&make_session("a", "workspaces")).unwrap();
+    store
+        .upsert_session(&make_session("a", "workspaces"))
+        .unwrap();
     store.upsert_session(&make_session("b", "ssh")).unwrap();
     let all = store.list_sessions().unwrap();
     assert_eq!(all.len(), 2);
@@ -52,7 +54,9 @@ fn list_sessions_returns_all() {
 fn end_session_marks_ended_at() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    store.upsert_session(&make_session("a", "workspaces")).unwrap();
+    store
+        .upsert_session(&make_session("a", "workspaces"))
+        .unwrap();
     store.end_session("a", 12345).unwrap();
     let got = store.list_sessions().unwrap();
     let session = got.iter().find(|s| s.id == "a").unwrap();
@@ -75,16 +79,14 @@ fn upsert_overwrites_current_session_pointer() {
     // Each upsert updates the "current" pointer to the new session id.
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    store.upsert_session(&make_session("first", "workspaces")).unwrap();
-    assert_eq!(
-        store.current_session().unwrap().unwrap().id,
-        "first"
-    );
-    store.upsert_session(&make_session("second", "ssh")).unwrap();
-    assert_eq!(
-        store.current_session().unwrap().unwrap().id,
-        "second"
-    );
+    store
+        .upsert_session(&make_session("first", "workspaces"))
+        .unwrap();
+    assert_eq!(store.current_session().unwrap().unwrap().id, "first");
+    store
+        .upsert_session(&make_session("second", "ssh"))
+        .unwrap();
+    assert_eq!(store.current_session().unwrap().unwrap().id, "second");
 }
 
 #[test]
@@ -166,7 +168,9 @@ fn many_sessions_all_listed() {
 fn end_session_does_not_affect_other_sessions() {
     let dir = tempdir().unwrap();
     let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
-    store.upsert_session(&make_session("alpha", "workspaces")).unwrap();
+    store
+        .upsert_session(&make_session("alpha", "workspaces"))
+        .unwrap();
     store.upsert_session(&make_session("beta", "ssh")).unwrap();
     store.end_session("alpha", 42).unwrap();
 

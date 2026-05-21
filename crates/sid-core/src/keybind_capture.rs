@@ -144,16 +144,13 @@ impl CaptureState {
             (Waiting { .. }, Cancel) => Idle,
 
             (Captured { for_action, chord }, NoConflict) => Apply { for_action, chord },
-            (
-                Captured { for_action, chord },
-                ConflictResolved {
+            (Captured { for_action, chord }, ConflictResolved { conflicting_action }) => {
+                ConfirmOverwrite {
+                    for_action,
+                    chord,
                     conflicting_action,
-                },
-            ) => ConfirmOverwrite {
-                for_action,
-                chord,
-                conflicting_action,
-            },
+                }
+            }
             (Captured { .. }, Cancel) => Idle,
 
             (
@@ -335,7 +332,10 @@ mod tests {
             for_action: action(),
             chord: chord(),
         };
-        assert_eq!(s.step(CaptureInput::ChordPressed(chord())), CaptureState::Idle);
+        assert_eq!(
+            s.step(CaptureInput::ChordPressed(chord())),
+            CaptureState::Idle
+        );
     }
 
     proptest! {

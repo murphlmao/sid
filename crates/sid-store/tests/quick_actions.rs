@@ -55,7 +55,13 @@ fn no_keybind_round_trips() {
     let mut a = sample("qa.nk");
     a.keybind = None;
     s.upsert_quick_action(&a).unwrap();
-    assert!(s.get_quick_action("qa.nk").unwrap().unwrap().keybind.is_none());
+    assert!(
+        s.get_quick_action("qa.nk")
+            .unwrap()
+            .unwrap()
+            .keybind
+            .is_none()
+    );
 }
 
 #[test]
@@ -64,7 +70,12 @@ fn list_returns_lexicographic_order() {
     for id in &["zz", "aa", "mm"] {
         s.upsert_quick_action(&sample(id)).unwrap();
     }
-    let ids: Vec<_> = s.list_quick_actions().unwrap().into_iter().map(|a| a.id).collect();
+    let ids: Vec<_> = s
+        .list_quick_actions()
+        .unwrap()
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
     assert_eq!(ids, vec!["aa", "mm", "zz"]);
 }
 

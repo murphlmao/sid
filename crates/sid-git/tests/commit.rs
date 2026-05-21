@@ -15,7 +15,8 @@ fn init_repo_with_initial_commit(path: &Path) -> git2::Repository {
     };
     {
         let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
     }
     repo
 }
@@ -51,7 +52,12 @@ fn commit_without_stage_all_uses_existing_index() {
     fs::write(dir.path().join("c.txt"), b"three\n").unwrap(); // unstaged
     let mut provider = Git2ProviderFactory::new().open(dir.path()).unwrap();
     let _oid = provider
-        .commit(NewCommit { message: "just b", author_name: None, author_email: None, stage_all: false })
+        .commit(NewCommit {
+            message: "just b",
+            author_name: None,
+            author_email: None,
+            stage_all: false,
+        })
         .unwrap();
     let log = provider.commit_log(1, None).unwrap();
     assert_eq!(log[0].summary, "just b");

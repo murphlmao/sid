@@ -102,7 +102,10 @@ impl MockEditorRunner {
     /// assert!(!r.will_fail());
     /// ```
     pub fn new(message: String) -> Self {
-        Self { message, should_fail: false }
+        Self {
+            message,
+            should_fail: false,
+        }
     }
 
     /// Create a runner that fails on `run_editor`.
@@ -116,7 +119,10 @@ impl MockEditorRunner {
     /// assert!(r.run_editor().is_err());
     /// ```
     pub fn failing(error: String) -> Self {
-        Self { message: error, should_fail: true }
+        Self {
+            message: error,
+            should_fail: true,
+        }
     }
 
     /// Whether this runner is configured to fail.
@@ -168,20 +174,16 @@ impl EditorRunner for SystemEditorRunner {
         use std::process::Command;
 
         // 1. Create a temp file for the commit message
-        let tmp_path = std::env::temp_dir()
-            .join(format!("sid-COMMIT_EDITMSG-{}", uuid_simple()));
+        let tmp_path = std::env::temp_dir().join(format!("sid-COMMIT_EDITMSG-{}", uuid_simple()));
         {
-            let mut f = std::fs::File::create(&tmp_path)
-                .map_err(|e| format!("create temp file: {e}"))?;
+            let mut f =
+                std::fs::File::create(&tmp_path).map_err(|e| format!("create temp file: {e}"))?;
             writeln!(f).map_err(|e| format!("write temp file: {e}"))?;
         }
 
         // 2. Suspend TUI
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen
-        );
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
 
         // 3. Spawn $EDITOR
         let editor = std::env::var("VISUAL")
@@ -194,18 +196,15 @@ impl EditorRunner for SystemEditorRunner {
 
         // 4. Re-enter TUI
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::EnterAlternateScreen
-        );
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
 
         if !status.success() {
             return Err(format!("editor exited with status: {status}"));
         }
 
         // 5. Read back the message
-        let message = std::fs::read_to_string(&tmp_path)
-            .map_err(|e| format!("read temp file: {e}"))?;
+        let message =
+            std::fs::read_to_string(&tmp_path).map_err(|e| format!("read temp file: {e}"))?;
         let _ = std::fs::remove_file(&tmp_path);
         Ok(message)
     }
@@ -364,7 +363,10 @@ impl MockActionRunner {
 
 impl ActionRunner for MockActionRunner {
     fn run_action(&self, cwd: &Path, cmd: &str) -> Result<ActionResult, String> {
-        self.calls.lock().unwrap().push((cwd.to_path_buf(), cmd.to_string()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((cwd.to_path_buf(), cmd.to_string()));
         if self.should_fail {
             return Err(self.stdout.clone());
         }
@@ -442,7 +444,10 @@ impl BranchListState {
     /// assert_eq!(s.branches()[0].name, "main");
     /// ```
     pub fn new(branches: Vec<Branch>) -> Self {
-        Self { branches, selected: 0 }
+        Self {
+            branches,
+            selected: 0,
+        }
     }
 
     /// The loaded branch list.
@@ -505,7 +510,13 @@ pub struct StatusListState {
 
 impl Default for StatusListState {
     fn default() -> Self {
-        Self { status: GitStatus { entries: vec![], is_clean: true }, selected: 0 }
+        Self {
+            status: GitStatus {
+                entries: vec![],
+                is_clean: true,
+            },
+            selected: 0,
+        }
     }
 }
 
@@ -522,7 +533,10 @@ impl StatusListState {
     /// assert!(st.status().is_clean);
     /// ```
     pub fn new(status: GitStatus) -> Self {
-        Self { status, selected: 0 }
+        Self {
+            status,
+            selected: 0,
+        }
     }
 
     /// The current status snapshot.
@@ -699,7 +713,12 @@ impl DiffViewState {
     /// assert!(s.staged());
     /// ```
     pub fn new(entries: Vec<DiffEntry>, staged: bool) -> Self {
-        Self { entries, selected_file: 0, scroll_offset: 0, staged }
+        Self {
+            entries,
+            selected_file: 0,
+            scroll_offset: 0,
+            staged,
+        }
     }
 
     /// Whether we're viewing staged (index-vs-HEAD) or unstaged (workdir-vs-index) diffs.
@@ -774,7 +793,12 @@ impl DiffViewState {
             Some(e) => e,
             None => return Vec::new(),
         };
-        entry.patch.lines().skip(self.scroll_offset).take(MAX_LINES).collect()
+        entry
+            .patch
+            .lines()
+            .skip(self.scroll_offset)
+            .take(MAX_LINES)
+            .collect()
     }
 }
 
@@ -908,7 +932,10 @@ impl ActionListState {
     /// assert_eq!(s.actions().len(), 1);
     /// ```
     pub fn new(actions: Vec<WorkspaceAction>) -> Self {
-        Self { actions, selected: 0 }
+        Self {
+            actions,
+            selected: 0,
+        }
     }
 
     /// The action list.
@@ -1122,12 +1149,16 @@ impl WorkspacesState {
 
     /// Path of the currently selected workspace, or `None` if the list is empty.
     pub fn selected_path(&self) -> Option<&Path> {
-        self.visible_workspaces().get(self.selected_visible_idx).map(|w| w.path.as_path())
+        self.visible_workspaces()
+            .get(self.selected_visible_idx)
+            .map(|w| w.path.as_path())
     }
 
     /// The currently selected workspace record, or `None`.
     pub fn selected_workspace(&self) -> Option<&Workspace> {
-        self.visible_workspaces().get(self.selected_visible_idx).copied()
+        self.visible_workspaces()
+            .get(self.selected_visible_idx)
+            .copied()
     }
 
     /// Move selection to the next visible item (wraps).
@@ -1253,10 +1284,7 @@ impl WorkspacesWidget {
     /// Open (or return cached) a git provider for the given path.
     ///
     /// Returns `None` if no factory was set or opening fails.
-    pub fn get_or_open_repo(
-        &mut self,
-        path: &Path,
-    ) -> Option<Arc<Mutex<Box<dyn GitProvider>>>> {
+    pub fn get_or_open_repo(&mut self, path: &Path) -> Option<Arc<Mutex<Box<dyn GitProvider>>>> {
         if self.open_repos.contains_key(path) {
             return Some(Arc::clone(self.open_repos.get(path).unwrap()));
         }
@@ -1589,12 +1617,24 @@ mod tests {
 
     #[test]
     fn right_pane_label_matches_variant() {
-        assert_eq!(RightPane::Branches(BranchListState::default()).label(), "Branches");
-        assert_eq!(RightPane::Status(StatusListState::default()).label(), "Status");
+        assert_eq!(
+            RightPane::Branches(BranchListState::default()).label(),
+            "Branches"
+        );
+        assert_eq!(
+            RightPane::Status(StatusListState::default()).label(),
+            "Status"
+        );
         assert_eq!(RightPane::Log(LogListState::default()).label(), "Log");
         assert_eq!(RightPane::Diff(DiffViewState::default()).label(), "Diff");
-        assert_eq!(RightPane::Commit(CommitDraftState::default()).label(), "Commit");
-        assert_eq!(RightPane::Actions(ActionListState::default()).label(), "Actions");
+        assert_eq!(
+            RightPane::Commit(CommitDraftState::default()).label(),
+            "Commit"
+        );
+        assert_eq!(
+            RightPane::Actions(ActionListState::default()).label(),
+            "Actions"
+        );
     }
 
     #[test]
@@ -1627,8 +1667,18 @@ mod tests {
     fn branch_list_state_navigation() {
         use sid_core::adapters::git::Branch;
         let branches = vec![
-            Branch { name: "main".into(), head_oid: "a".repeat(40), upstream: None, is_current: true },
-            Branch { name: "dev".into(), head_oid: "b".repeat(40), upstream: None, is_current: false },
+            Branch {
+                name: "main".into(),
+                head_oid: "a".repeat(40),
+                upstream: None,
+                is_current: true,
+            },
+            Branch {
+                name: "dev".into(),
+                head_oid: "b".repeat(40),
+                upstream: None,
+                is_current: false,
+            },
         ];
         let mut s = BranchListState::new(branches);
         assert_eq!(s.selected_branch().unwrap().name, "main");
@@ -1718,8 +1768,16 @@ mod tests {
     fn action_list_state_navigation() {
         use sid_core::workspace_metadata::WorkspaceAction;
         let actions = vec![
-            WorkspaceAction { label: "Build".into(), cmd: "cargo build".into(), key: Some('b') },
-            WorkspaceAction { label: "Test".into(), cmd: "cargo test".into(), key: Some('t') },
+            WorkspaceAction {
+                label: "Build".into(),
+                cmd: "cargo build".into(),
+                key: Some('b'),
+            },
+            WorkspaceAction {
+                label: "Test".into(),
+                cmd: "cargo test".into(),
+                key: Some('t'),
+            },
         ];
         let mut s = ActionListState::new(actions);
         assert_eq!(s.selected_action().unwrap().label, "Build");

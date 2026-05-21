@@ -102,7 +102,10 @@ impl TabManager {
     /// Panics if `tabs` is empty — a cockpit with no tabs is invalid.
     pub fn new(tabs: Vec<Tab>) -> Self {
         assert!(!tabs.is_empty(), "TabManager requires at least one tab");
-        Self { tabs, active_idx: 0 }
+        Self {
+            tabs,
+            active_idx: 0,
+        }
     }
 
     /// Return a reference to the currently active tab.

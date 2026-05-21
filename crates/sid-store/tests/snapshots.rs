@@ -5,9 +5,9 @@
 //! are always intentional and reviewed.
 
 use redb::TableHandle;
+use sid_store::SessionRecord;
 use sid_store::codec::encode_versioned;
 use sid_store::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE};
-use sid_store::SessionRecord;
 
 /// A deterministic `SessionRecord` with fixed timestamps for snapshot stability.
 fn canonical_session() -> SessionRecord {
@@ -30,7 +30,11 @@ fn snapshot_session_record_postcard_hex() {
     let record = canonical_session();
     let bytes = encode_versioned(1, &record).unwrap();
     // Represent as uppercase hex for readability.
-    let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+    let hex: String = bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     insta::assert_snapshot!("session_record_postcard_hex", hex);
 }
 

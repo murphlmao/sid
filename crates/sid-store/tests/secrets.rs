@@ -19,7 +19,10 @@ fn fresh() -> (tempfile::TempDir, RedbStore) {
 fn secret_put_then_get_returns_value() {
     let (_d, s) = fresh();
     s.secret_put("ssh.key.foo", b"phrase").unwrap();
-    assert_eq!(s.secret_get("ssh.key.foo").unwrap().unwrap(), b"phrase".to_vec());
+    assert_eq!(
+        s.secret_get("ssh.key.foo").unwrap().unwrap(),
+        b"phrase".to_vec()
+    );
 }
 
 #[test]

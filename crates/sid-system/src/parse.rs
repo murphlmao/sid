@@ -3,9 +3,7 @@
 //! These never panic, even on adversarial input — invariant verified by
 //! the proptest harness in `tests/parse_fuzz.rs`.
 
-use sid_core::adapters::systemctl::{
-    JournalEntry, SystemUnit, SystemctlError, UnitBus, UnitState,
-};
+use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, SystemctlError, UnitBus, UnitState};
 
 /// Parse the output of `systemctl --no-pager --plain --no-legend list-units --type=service`.
 ///
@@ -221,8 +219,7 @@ fn parse_iso8601_to_epoch(s: &str) -> Option<i64> {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days_from_epoch = era * 146_097 + doe as i64 - 719_468;
-    let total =
-        days_from_epoch * 86_400 + hour as i64 * 3_600 + min as i64 * 60 + sec as i64;
+    let total = days_from_epoch * 86_400 + hour as i64 * 3_600 + min as i64 * 60 + sec as i64;
     Some(total)
 }
 

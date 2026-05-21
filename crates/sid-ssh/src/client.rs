@@ -126,9 +126,7 @@ impl SshClient for RusshClient {
         while let Some(msg) = channel.wait().await {
             match msg {
                 ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, ext: 1 } => {
-                    stderr.extend_from_slice(&data)
-                }
+                ChannelMsg::ExtendedData { data, ext: 1 } => stderr.extend_from_slice(&data),
                 ChannelMsg::ExtendedData { .. } => {}
                 ChannelMsg::ExitStatus { exit_status } => {
                     exit_code = Some(exit_status as i32);
@@ -159,10 +157,7 @@ impl SshClient for RusshClient {
             .request_pty(true, term, cols as u32, rows as u32, 0, 0, &[])
             .await
             .map_err(map_russh_error)?;
-        channel
-            .request_shell(true)
-            .await
-            .map_err(map_russh_error)?;
+        channel.request_shell(true).await.map_err(map_russh_error)?;
         Ok(Box::new(crate::shell::RusshShell::new(channel)))
     }
 

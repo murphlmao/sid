@@ -84,7 +84,11 @@ pub struct GlyphSet {
 
 impl Default for GlyphSet {
     fn default() -> Self {
-        Self { star: '★', small_star: '✦', dot: '·' }
+        Self {
+            star: '★',
+            small_star: '✦',
+            dot: '·',
+        }
     }
 }
 

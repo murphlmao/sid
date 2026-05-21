@@ -69,7 +69,11 @@ fn concurrent_push_drain_no_lost_items() {
         let drained = drain(&completions);
 
         // Under no interleaving should any item be lost.
-        assert_eq!(drained.len(), 2, "both pushed items must be drained exactly once");
+        assert_eq!(
+            drained.len(),
+            2,
+            "both pushed items must be drained exactly once"
+        );
         // Values must be the two we pushed (order undefined).
         let mut vals: Vec<i32> = drained.into_iter().filter_map(|r| r.ok()).collect();
         vals.sort_unstable();
@@ -164,7 +168,11 @@ fn push_then_multi_drain() {
         all.sort_unstable();
 
         // Total must be exactly 3 with no duplicates.
-        assert_eq!(all.len(), 3, "all 3 items must be drained exactly once; got {all:?}");
+        assert_eq!(
+            all.len(),
+            3,
+            "all 3 items must be drained exactly once; got {all:?}"
+        );
         assert_eq!(all, [10, 20, 30]);
     });
 }
