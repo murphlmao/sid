@@ -1,0 +1,58 @@
+---
+source: crates/sid-ui/tests/snapshots.rs
+assertion_line: 72
+expression: json
+---
+{
+  "name": "dusk",
+  "background": {
+    "r": 20,
+    "g": 16,
+    "b": 12
+  },
+  "surface": {
+    "r": 28,
+    "g": 24,
+    "b": 18
+  },
+  "foreground": {
+    "r": 240,
+    "g": 229,
+    "b": 208
+  },
+  "muted": {
+    "r": 96,
+    "g": 85,
+    "b": 72
+  },
+  "accent_primary": {
+    "r": 232,
+    "g": 112,
+    "b": 64
+  },
+  "accent_success": {
+    "r": 168,
+    "g": 216,
+    "b": 144
+  },
+  "accent_warning": {
+    "r": 232,
+    "g": 176,
+    "b": 74
+  },
+  "accent_error": {
+    "r": 208,
+    "g": 74,
+    "b": 74
+  },
+  "border": {
+    "r": 42,
+    "g": 34,
+    "b": 26
+  },
+  "glyphs": {
+    "star": "★",
+    "small_star": "✦",
+    "dot": "·"
+  }
+}

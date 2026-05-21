@@ -1,0 +1,11 @@
+---
+source: crates/sid-ui/tests/snapshots.rs
+assertion_line: 124
+expression: rows
+---
+- ┌ ✦   example   ───────────────────────┐
+- │                                      │
+- │                                      │
+- │                                      │
+- │                                      │
+- └──────────────────────────────────────┘
