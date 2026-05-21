@@ -43,6 +43,7 @@ futures.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 criterion.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "test-util"] }
 
 [[bench]]
 name = "draw_bench"
