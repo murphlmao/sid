@@ -23,3 +23,12 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "test-util"] }
+loom = { workspace = true }
+
+[features]
+# Enables `loom` model-check tests. Run with:
+#   RUSTFLAGS='--cfg loom' cargo test -p sid-core --test sys_probe_loom --release
+loom = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
