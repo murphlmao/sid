@@ -8,7 +8,7 @@ use std::sync::Arc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use sid::wire::{SidApp, build_app, draw};
+use sid::wire::{NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
 use sid_store::{OpenStore, RedbStore};
 use tempfile::tempdir;
 
@@ -23,6 +23,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         store,
         session_id: "bench-sess".into(),
         sys_probe: None,
+        systemctl: Arc::new(NoopSystemctlClient),
+        spawner: Arc::new(NoopTerminalSpawner),
     }
 }
 

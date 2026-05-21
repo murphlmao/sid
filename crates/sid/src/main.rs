@@ -309,11 +309,16 @@ async fn main() -> Result<()> {
         })
     };
 
+    let systemctl = wire::build_systemctl_client();
+    let spawner = wire::build_terminal_spawner();
+
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
         session_id: session_id.clone(),
         sys_probe: Some(Arc::clone(&sys_probe)),
+        systemctl,
+        spawner,
     };
 
     // Set up terminal.
