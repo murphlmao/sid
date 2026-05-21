@@ -1,6 +1,7 @@
 //! `Vt100Screen` — wraps `vt100::Parser` and exposes a snapshot suitable for
 //! ratatui rendering.
 
+use sid_core::adapters::pty::TerminalScreen;
 use vt100::Parser;
 
 /// VT100 screen state.
@@ -119,5 +120,23 @@ impl Vt100Screen {
             out.push(s);
         }
         out
+    }
+}
+
+impl TerminalScreen for Vt100Screen {
+    fn feed(&mut self, bytes: &[u8]) {
+        Vt100Screen::feed(self, bytes);
+    }
+    fn resize(&mut self, rows: u16, cols: u16) {
+        Vt100Screen::resize(self, rows, cols);
+    }
+    fn size(&self) -> (u16, u16) {
+        Vt100Screen::size(self)
+    }
+    fn cursor_position(&self) -> (u16, u16) {
+        Vt100Screen::cursor_position(self)
+    }
+    fn lines(&self) -> Vec<String> {
+        Vt100Screen::lines(self)
     }
 }
