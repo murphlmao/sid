@@ -8,6 +8,7 @@
 //! Task 17), the widget itself remains the Plan 1 "coming soon" stub.
 
 pub mod ports_table;
+pub mod processes_table;
 
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
