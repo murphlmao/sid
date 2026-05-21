@@ -9,7 +9,12 @@ repository.workspace = true
 [dependencies]
 sid-core.workspace = true
 sid-ui.workspace = true
+sid-store.workspace = true
+sid-job.workspace = true
 ratatui.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true
