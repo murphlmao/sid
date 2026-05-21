@@ -78,6 +78,7 @@ pub struct Tab {
 /// #     fn title(&self) -> &str { "t" }
 /// #     fn render(&self, _: &mut dyn RenderTarget) {}
 /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
+/// #     fn as_any(&self) -> &dyn std::any::Any { self }
 /// # }
 ///
 /// let tabs = vec![
@@ -142,6 +143,7 @@ impl TabManager {
     /// #     fn title(&self) -> &str { "t" }
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
+    /// #     fn as_any(&self) -> &dyn std::any::Any { self }
     /// # }
     /// # fn make_tab(s: &'static str) -> Tab {
     /// #     Tab { id: TabId::new(s), title: s.into(), layout: Layout::Single(Box::new(W { id: WidgetId::new(s) })), hotkey: None }
@@ -180,6 +182,7 @@ impl TabManager {
     /// #     fn title(&self) -> &str { "t" }
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
+    /// #     fn as_any(&self) -> &dyn std::any::Any { self }
     /// # }
     /// # fn make_tab(s: &'static str) -> Tab {
     /// #     Tab { id: TabId::new(s), title: s.into(), layout: Layout::Single(Box::new(W { id: WidgetId::new(s) })), hotkey: None }

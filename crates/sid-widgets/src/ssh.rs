@@ -802,6 +802,9 @@ impl Widget for SshWidget {
     fn title(&self) -> &str {
         "SSH"
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn render(&self, _target: &mut dyn RenderTarget) {
         // Rendering deferred to the binary's draw() function.
     }

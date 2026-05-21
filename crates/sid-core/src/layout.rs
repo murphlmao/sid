@@ -74,6 +74,7 @@ impl Layout {
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome {
     ///         EventOutcome::Bubble
     ///     }
+    ///     fn as_any(&self) -> &dyn std::any::Any { self }
     /// }
     ///
     /// let layout = Layout::Single(Box::new(W { id: WidgetId::new("w"), title: "W" }));
@@ -103,6 +104,7 @@ impl Layout {
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome {
     ///         EventOutcome::Bubble
     ///     }
+    ///     fn as_any(&self) -> &dyn std::any::Any { self }
     /// }
     ///
     /// let mut layout = Layout::Single(Box::new(W { id: WidgetId::new("w"), title: "W" }));

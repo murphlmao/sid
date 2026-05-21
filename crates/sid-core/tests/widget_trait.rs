@@ -28,6 +28,9 @@ impl Widget for Dummy {
         Vec::new()
     }
     fn load_state(&mut self, _: &[u8]) {}
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ── existing test ─────────────────────────────────────────────────────────────

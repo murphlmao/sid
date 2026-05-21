@@ -155,13 +155,14 @@ pub trait RenderTarget {
 ///     fn handle_event(&mut self, _ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
 ///         EventOutcome::Bubble
 ///     }
+///     fn as_any(&self) -> &dyn std::any::Any { self }
 /// }
 ///
 /// let w = MyWidget { id: WidgetId::new("my-widget") };
 /// assert_eq!(w.id().as_str(), "my-widget");
 /// assert_eq!(w.title(), "My Widget");
 /// ```
-pub trait Widget: Send + Sync {
+pub trait Widget: std::any::Any + Send + Sync {
     /// Stable identity for state restoration. Implementations store this in a field
     /// and return a borrow to avoid per-call allocation.
     fn id(&self) -> &WidgetId;
@@ -174,4 +175,8 @@ pub trait Widget: Send + Sync {
     }
     /// Restore widget UI state. Default: no-op.
     fn load_state(&mut self, _bytes: &[u8]) {}
+    /// Downcasting hook so the binary's render layer can call concrete-type
+    /// rendering helpers (which take ratatui types, not allowed in this crate).
+    /// Each impl is one line: `fn as_any(&self) -> &dyn std::any::Any { self }`.
+    fn as_any(&self) -> &dyn std::any::Any;
 }

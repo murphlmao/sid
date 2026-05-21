@@ -30,6 +30,9 @@ impl Widget for W {
     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome {
         EventOutcome::Bubble
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 fn t(id: &'static str) -> Tab {

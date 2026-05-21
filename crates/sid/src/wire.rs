@@ -651,33 +651,68 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     };
     let active_id = app.tabs().active().id.as_str().to_string();
     let active_title = app.tabs().active().title.clone();
-    let block = styled_block(&theme, &active_title);
-    let body_text = match active_id.as_str() {
-        "workspaces" => render_workspaces_body(&*sid_app.store),
-        "ssh" => stub_panel(
-            "SSH",
-            "Plan 3 — host list (from ~/.ssh/config + custom), embedded PTY, SFTP browser",
-        ),
-        "database" => stub_panel(
-            "Database",
-            "Plan 4 — Postgres + SQLite query runner with paginated results & history",
-        ),
-        "network" => stub_panel(
-            "Network",
-            "Plan 5 — listening ports, processes, interfaces (k to kill PID, / to filter)",
-        ),
-        "system" => stub_panel(
-            "System",
-            "Plan 6 — pinned configs, systemctl services, custom quick-actions",
-        ),
-        "settings" => stub_panel(
-            "Settings",
-            "Plan 7 — theme picker, keybind editor, behavior toggles (all in-app)",
-        ),
-        other => stub_panel(other, "(unknown tab)"),
+    let active_layout = &app.tabs().active().layout;
+    let widget = active_layout.iter_widgets().next();
+
+    // Each concrete widget exposes a ratatui-aware `render_into_frame` that the
+    // Widget trait cannot — sid-core must not depend on ratatui. Downcast
+    // through `Widget::as_any` to call the right one, falling back to a text
+    // panel only for tabs whose widget isn't recognised.
+    let rendered_via_widget = match (active_id.as_str(), widget) {
+        ("workspaces", _) => {
+            let block = styled_block(&theme, &active_title);
+            let body = Paragraph::new(render_workspaces_body(&*sid_app.store)).block(block);
+            frame.render_widget(body, body_rect);
+            true
+        }
+        ("ssh", Some(w)) => {
+            if let Some(s) = w.as_any().downcast_ref::<SshWidget>() {
+                s.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                false
+            }
+        }
+        ("database", Some(w)) => {
+            if let Some(d) = w.as_any().downcast_ref::<DatabaseWidget>() {
+                d.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                false
+            }
+        }
+        ("network", Some(w)) => {
+            if let Some(n) = w.as_any().downcast_ref::<NetworkWidget>() {
+                n.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                false
+            }
+        }
+        ("system", Some(w)) => {
+            if let Some(s) = w.as_any().downcast_ref::<SystemWidget>() {
+                s.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                false
+            }
+        }
+        ("settings", Some(w)) => {
+            if let Some(s) = w.as_any().downcast_ref::<SettingsWidget>() {
+                s.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
     };
-    let body = Paragraph::new(body_text).block(block);
-    frame.render_widget(body, body_rect);
+
+    if !rendered_via_widget {
+        let block = styled_block(&theme, &active_title);
+        let body = Paragraph::new(stub_panel(&active_title, "(unknown tab)")).block(block);
+        frame.render_widget(body, body_rect);
+    }
 
     // ─── Help bar (bottom row, always visible) ────────────────────────────
     let help_rect = Rect {

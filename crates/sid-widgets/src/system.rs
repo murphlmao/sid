@@ -964,6 +964,10 @@ impl Widget for SystemWidget {
         self.body.title()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn render(&self, target: &mut dyn RenderTarget) {
         self.body.render(target);
     }

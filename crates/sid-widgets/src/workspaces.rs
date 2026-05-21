@@ -1474,6 +1474,10 @@ impl Widget for WorkspacesWidget {
         "Workspaces"
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn render(&self, _target: &mut dyn RenderTarget) {
         // Real rendering happens in the binary's draw() function via match-on-tab-id.
         // The widget keeps its state pure; rendering is a TUI-layer concern.
