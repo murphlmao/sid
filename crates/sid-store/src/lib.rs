@@ -769,6 +769,12 @@ pub struct PlainSecret {
 ///     fn upsert_pinned_config(&self, _: &sid_store::PinnedConfig) -> Result<(), SidError> { Ok(()) }
 ///     fn get_pinned_config(&self, _: &Path) -> Result<Option<sid_store::PinnedConfig>, SidError> { Ok(None) }
 ///     fn remove_pinned_config(&self, _: &Path) -> Result<(), SidError> { Ok(()) }
+///     fn list_db_connections(&self) -> Result<Vec<sid_store::DbConnection>, SidError> { Ok(vec![]) }
+///     fn upsert_db_connection(&self, _: &sid_store::DbConnection) -> Result<(), SidError> { Ok(()) }
+///     fn get_db_connection(&self, _: &str) -> Result<Option<sid_store::DbConnection>, SidError> { Ok(None) }
+///     fn remove_db_connection(&self, _: &str) -> Result<(), SidError> { Ok(()) }
+///     fn append_query_record(&self, _: &sid_store::QueryRecord) -> Result<(), SidError> { Ok(()) }
+///     fn recent_queries(&self, _: &str, _: usize) -> Result<Vec<sid_store::QueryRecord>, SidError> { Ok(vec![]) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -1358,6 +1364,27 @@ pub trait Store: Send + Sync {
 
     /// Remove a pinned config by absolute path. No-op if absent.
     fn remove_pinned_config(&self, path: &Path) -> Result<(), SidError>;
+
+    /// List all saved DB connections (Plan 4 / Database tab).
+    ///
+    /// Returns an empty vector if none are present.
+    fn list_db_connections(&self) -> Result<Vec<DbConnection>, SidError>;
+
+    /// Insert or replace a saved DB connection (keyed by `c.id`).
+    fn upsert_db_connection(&self, c: &DbConnection) -> Result<(), SidError>;
+
+    /// Look up a saved DB connection by id. Returns `None` if absent.
+    fn get_db_connection(&self, id: &str) -> Result<Option<DbConnection>, SidError>;
+
+    /// Remove a saved DB connection by id. No-op if absent.
+    fn remove_db_connection(&self, id: &str) -> Result<(), SidError>;
+
+    /// Append a row to the per-connection query history. (Plan 4.)
+    fn append_query_record(&self, r: &QueryRecord) -> Result<(), SidError>;
+
+    /// Return the most recent `limit` query records for the given connection,
+    /// newest first. (Plan 4.)
+    fn recent_queries(&self, conn_id: &str, limit: usize) -> Result<Vec<QueryRecord>, SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -1593,6 +1620,24 @@ mod tests {
             }
             fn remove_pinned_config(&self, _: &Path) -> Result<(), SidError> {
                 Ok(())
+            }
+            fn list_db_connections(&self) -> Result<Vec<DbConnection>, SidError> {
+                Ok(vec![])
+            }
+            fn upsert_db_connection(&self, _: &DbConnection) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn get_db_connection(&self, _: &str) -> Result<Option<DbConnection>, SidError> {
+                Ok(None)
+            }
+            fn remove_db_connection(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn append_query_record(&self, _: &QueryRecord) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn recent_queries(&self, _: &str, _: usize) -> Result<Vec<QueryRecord>, SidError> {
+                Ok(vec![])
             }
         }
 

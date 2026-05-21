@@ -16,8 +16,8 @@ use crate::schema::{
     SESSIONS, SETTINGS, THEMES, WIDGET_STATE, WORKSPACES,
 };
 use crate::{
-    KeybindProfile, OpenStore, PinnedConfig, QuickAction, SessionRecord, SettingValue, Store,
-    ThemeSpec, Workspace, WidgetState,
+    DbConnection, KeybindProfile, OpenStore, PinnedConfig, QueryRecord, QuickAction,
+    SessionRecord, SettingValue, Store, ThemeSpec, Workspace, WidgetState,
 };
 
 /// redb-backed implementation of [`crate::Store`].
@@ -771,5 +771,135 @@ impl Store for RedbStore {
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit remove pinned_config: {e}")))?;
         Ok(())
+    }
+
+    fn list_db_connections(&self) -> Result<Vec<DbConnection>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(DB_CONNECTIONS)
+            .map_err(|e| SidError::Storage(format!("open db_connections: {e}")))?;
+        let mut out = Vec::new();
+        for entry in tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter: {e}")))?
+        {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_v, c) = crate::codec::decode_versioned::<DbConnection>(v.value())?;
+            out.push(c);
+        }
+        Ok(out)
+    }
+
+    fn upsert_db_connection(&self, c: &DbConnection) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, c)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(DB_CONNECTIONS)
+                .map_err(|e| SidError::Storage(format!("open db_connections: {e}")))?;
+            tbl.insert(c.id.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert db_connection: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit upsert db_connection: {e}")))?;
+        Ok(())
+    }
+
+    fn get_db_connection(&self, id: &str) -> Result<Option<DbConnection>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(DB_CONNECTIONS)
+            .map_err(|e| SidError::Storage(format!("open db_connections: {e}")))?;
+        match tbl
+            .get(id)
+            .map_err(|e| SidError::Storage(format!("get db_connection: {e}")))?
+        {
+            Some(v) => {
+                let (_v, c) = crate::codec::decode_versioned::<DbConnection>(v.value())?;
+                Ok(Some(c))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn remove_db_connection(&self, id: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(DB_CONNECTIONS)
+                .map_err(|e| SidError::Storage(format!("open db_connections: {e}")))?;
+            tbl.remove(id)
+                .map_err(|e| SidError::Storage(format!("remove db_connection: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove db_connection: {e}")))?;
+        Ok(())
+    }
+
+    fn append_query_record(&self, r: &QueryRecord) -> Result<(), SidError> {
+        // Compose a 24-byte big-endian key: u128 ts_ns followed by u64 seq.
+        // For v1 we use a process-local atomic counter for seq.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut key = [0u8; 24];
+        key[..16].copy_from_slice(&r.ts_ns.to_be_bytes());
+        key[16..].copy_from_slice(&seq.to_be_bytes());
+        let bytes = crate::codec::encode_versioned(1, r)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(QUERY_HISTORY)
+                .map_err(|e| SidError::Storage(format!("open query_history: {e}")))?;
+            tbl.insert(&key[..], &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert query_record: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit append_query_record: {e}")))?;
+        Ok(())
+    }
+
+    fn recent_queries(&self, conn_id: &str, limit: usize) -> Result<Vec<QueryRecord>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(QUERY_HISTORY)
+            .map_err(|e| SidError::Storage(format!("open query_history: {e}")))?;
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter query_history: {e}")))?;
+        let mut all: Vec<QueryRecord> = Vec::new();
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_v, r) = crate::codec::decode_versioned::<QueryRecord>(v.value())?;
+            if r.conn_id == conn_id {
+                all.push(r);
+            }
+        }
+        // all is ascending by key — reverse for recency.
+        let mut out: Vec<QueryRecord> = Vec::with_capacity(limit.min(all.len()));
+        while let Some(r) = all.pop() {
+            out.push(r);
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
