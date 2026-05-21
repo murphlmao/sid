@@ -35,6 +35,192 @@ use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
 use sid_core::workspace_metadata::{WorkspaceAction, WorkspaceKind};
 use sid_store::Workspace;
 
+// ─── EditorRunner trait ───────────────────────────────────────────────────────
+
+/// Abstraction over spawning an external editor to write a commit message.
+///
+/// The real implementation:
+/// 1. Saves and exits the alternate screen.
+/// 2. Disables raw mode.
+/// 3. Spawns `$EDITOR <tmp_file>` with inherited stdin/stdout.
+/// 4. Waits for editor exit.
+/// 5. Reads the file content.
+/// 6. Re-enters alternate screen + enables raw mode.
+///
+/// Tests inject a [`MockEditorRunner`] that simulates a pre-written message
+/// without actually spawning any process.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspaces::EditorRunner;
+///
+/// struct AlwaysEmpty;
+///
+/// impl EditorRunner for AlwaysEmpty {
+///     fn run_editor(&self) -> Result<String, String> {
+///         Ok(String::new())
+///     }
+/// }
+///
+/// let runner = AlwaysEmpty;
+/// assert_eq!(runner.run_editor().unwrap(), "");
+/// ```
+pub trait EditorRunner: Send + Sync {
+    /// Launch the editor and return the content written to the temp file.
+    ///
+    /// Returns `Err(String)` if the editor could not be started, the user
+    /// discarded the message, or the temp file could not be read.
+    fn run_editor(&self) -> Result<String, String>;
+}
+
+/// A mock `EditorRunner` for tests that returns a pre-set message.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspaces::{EditorRunner, MockEditorRunner};
+///
+/// let runner = MockEditorRunner::new("feat: add thing".into());
+/// let msg = runner.run_editor().unwrap();
+/// assert_eq!(msg, "feat: add thing");
+/// ```
+pub struct MockEditorRunner {
+    message: String,
+    should_fail: bool,
+}
+
+impl MockEditorRunner {
+    /// Create a runner that returns `message` on `run_editor`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::workspaces::MockEditorRunner;
+    ///
+    /// let r = MockEditorRunner::new("fix: correct thing".into());
+    /// assert!(!r.will_fail());
+    /// ```
+    pub fn new(message: String) -> Self {
+        Self { message, should_fail: false }
+    }
+
+    /// Create a runner that fails on `run_editor`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::workspaces::{EditorRunner, MockEditorRunner};
+    ///
+    /// let r = MockEditorRunner::failing("editor not found".into());
+    /// assert!(r.run_editor().is_err());
+    /// ```
+    pub fn failing(error: String) -> Self {
+        Self { message: error, should_fail: true }
+    }
+
+    /// Whether this runner is configured to fail.
+    pub fn will_fail(&self) -> bool {
+        self.should_fail
+    }
+}
+
+impl EditorRunner for MockEditorRunner {
+    fn run_editor(&self) -> Result<String, String> {
+        if self.should_fail {
+            Err(self.message.clone())
+        } else {
+            Ok(self.message.clone())
+        }
+    }
+}
+
+/// The real editor runner — suspends TUI, spawns `$EDITOR`, restores TUI.
+///
+/// Only available in non-test code; tests use [`MockEditorRunner`].
+pub struct SystemEditorRunner;
+
+impl EditorRunner for SystemEditorRunner {
+    /// Launch `$EDITOR` (or `$VISUAL`, or `vi` as fallback) with a temp file,
+    /// suspend the TUI, wait for exit, and return the file's contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(String)` if:
+    /// - The temp file cannot be created.
+    /// - The editor binary cannot be spawned.
+    /// - Restoring the terminal fails (logged but not fatal).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use sid_widgets::workspaces::{EditorRunner, SystemEditorRunner};
+    ///
+    /// // This would actually launch $EDITOR in a terminal:
+    /// let result = SystemEditorRunner.run_editor();
+    /// match result {
+    ///     Ok(msg) => println!("message: {msg}"),
+    ///     Err(e) => eprintln!("editor error: {e}"),
+    /// }
+    /// ```
+    fn run_editor(&self) -> Result<String, String> {
+        use std::io::Write;
+        use std::process::Command;
+
+        // 1. Create a temp file for the commit message
+        let tmp_path = std::env::temp_dir()
+            .join(format!("sid-COMMIT_EDITMSG-{}", uuid_simple()));
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .map_err(|e| format!("create temp file: {e}"))?;
+            writeln!(f).map_err(|e| format!("write temp file: {e}"))?;
+        }
+
+        // 2. Suspend TUI
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen
+        );
+
+        // 3. Spawn $EDITOR
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".into());
+        let status = Command::new(&editor)
+            .arg(&tmp_path)
+            .status()
+            .map_err(|e| format!("spawn editor '{editor}': {e}"))?;
+
+        // 4. Re-enter TUI
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EnterAlternateScreen
+        );
+
+        if !status.success() {
+            return Err(format!("editor exited with status: {status}"));
+        }
+
+        // 5. Read back the message
+        let message = std::fs::read_to_string(&tmp_path)
+            .map_err(|e| format!("read temp file: {e}"))?;
+        let _ = std::fs::remove_file(&tmp_path);
+        Ok(message)
+    }
+}
+
+/// Generate a simple pseudo-unique string for temp file naming.
+fn uuid_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{t:032x}")
+}
+
 // ─── Right-pane sub-view state structs ───────────────────────────────────────
 
 /// State for the Branches sub-view.
