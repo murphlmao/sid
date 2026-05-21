@@ -13,6 +13,7 @@ pub mod persister;
 pub mod restore;
 pub mod tab;
 pub mod widget;
+pub mod workspace_discovery;
 pub mod workspace_metadata;
 
 pub use action::{Action, ActionId, ActionRegistry, ActionScope};
