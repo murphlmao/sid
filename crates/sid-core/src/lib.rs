@@ -10,6 +10,7 @@ pub mod keybind;
 pub mod layout;
 pub mod palette;
 pub mod persister;
+pub mod restore;
 pub mod tab;
 pub mod widget;
 
@@ -20,5 +21,6 @@ pub use keybind::{KeyBinding, KeybindMap};
 pub use layout::{Dir, Layout};
 pub use palette::CommandPalette;
 pub use persister::StatePersister;
+pub use restore::{decide, RestoreDecision, SessionView};
 pub use tab::{Tab, TabId, TabManager};
 pub use widget::{EventOutcome, RenderTarget, Widget, WidgetId};
