@@ -14,6 +14,8 @@
 //! This module only contains the skeleton in this task; the polling loop
 //! and broadcast channel are added in the next plan step.
 
+pub mod kill_job;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
