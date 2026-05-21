@@ -102,13 +102,67 @@ impl DbClient for SqliteClient {
 
     async fn query_paged(
         &self,
-        _sql: &str,
-        _cursor: Option<PageCursor>,
-        _page_size: u32,
+        sql: &str,
+        cursor: Option<PageCursor>,
+        page_size: u32,
     ) -> Result<QueryPage, DbError> {
-        Err(DbError::Other(
-            "query_paged: not yet implemented — Task 7".into(),
-        ))
+        let conn = self.inner.clone().ok_or(DbError::NotConnected)?;
+        let sql = sql.to_string();
+        let offset = cursor.map(|c| c.offset).unwrap_or(0);
+        let page_size = page_size.max(1) as u64;
+        let start = std::time::Instant::now();
+        let (columns, rows, fetched) = tokio::task::spawn_blocking(
+            move || -> Result<(Vec<Column>, Vec<Row>, u64), DbError> {
+                let guard = conn
+                    .lock()
+                    .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
+                let trimmed = sql.trim().trim_end_matches(';');
+                let wrapped = format!(
+                    "SELECT * FROM ( {trimmed} ) LIMIT {page_size} OFFSET {offset}"
+                );
+                let mut stmt = guard.prepare(&wrapped).map_err(map_rusqlite_error)?;
+                let columns: Vec<Column> = stmt
+                    .columns()
+                    .iter()
+                    .map(|c| Column {
+                        name: c.name().to_string(),
+                        ty: rusqlite_type_to_column_type(
+                            c.decl_type(),
+                            rusqlite::types::Type::Null,
+                        ),
+                    })
+                    .collect();
+                let col_count = columns.len();
+                let mut rows_out: Vec<Row> = Vec::with_capacity(page_size as usize);
+                let mut rs = stmt.query([]).map_err(map_rusqlite_error)?;
+                while let Some(row) = rs.next().map_err(map_rusqlite_error)? {
+                    let mut values = Vec::with_capacity(col_count);
+                    for i in 0..col_count {
+                        let v: rusqlite::types::Value =
+                            row.get(i).map_err(map_rusqlite_error)?;
+                        values.push(render_sqlite_value(&v));
+                    }
+                    rows_out.push(Row { values });
+                }
+                let fetched = rows_out.len() as u64;
+                Ok((columns, rows_out, fetched))
+            },
+        )
+        .await
+        .map_err(|e| DbError::Other(format!("join: {e}")))??;
+        let next_cursor = if fetched < page_size {
+            None
+        } else {
+            Some(PageCursor {
+                offset: offset + fetched,
+            })
+        };
+        Ok(QueryPage {
+            columns,
+            rows,
+            next_cursor,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
@@ -175,3 +229,22 @@ fn rusqlite_type_to_column_type(
 
 #[allow(dead_code)]
 fn _unused_silencer(_: TableInfo, _: Row, _: Column) {}
+
+fn render_sqlite_value(v: &rusqlite::types::Value) -> String {
+    use rusqlite::types::Value;
+    match v {
+        Value::Null => "NULL".to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Real(f) => f.to_string(),
+        Value::Text(s) => s.clone(),
+        Value::Blob(b) => {
+            let mut s = String::with_capacity(2 + b.len() * 2);
+            s.push_str("0x");
+            for byte in b {
+                use std::fmt::Write;
+                write!(&mut s, "{byte:02x}").ok();
+            }
+            s
+        }
+    }
+}
