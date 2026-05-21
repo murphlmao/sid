@@ -7,6 +7,7 @@
 pub mod behavior_toggles;
 pub mod keybind_editor;
 pub mod live_preview;
+pub mod quick_actions;
 pub mod theme_picker;
 pub mod workspace_roots;
 
