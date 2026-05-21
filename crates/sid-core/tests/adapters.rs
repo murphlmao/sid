@@ -2,9 +2,13 @@
 //! unit struct. These tests act as compile-time verification that the trait
 //! signatures are well-formed and usable by external code.
 
+use std::path::Path;
+
 use sid_core::adapters::clipboard::Clipboard;
 use sid_core::adapters::db_client::DbClient;
-use sid_core::adapters::git::GitProvider;
+use sid_core::adapters::git::{
+    Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
+};
 use sid_core::adapters::notifier::{NotifyLevel, Notifier};
 use sid_core::adapters::pty::PtyProvider;
 use sid_core::adapters::ssh::SshClient;
@@ -15,7 +19,32 @@ use sid_core::adapters::sys::SysProvider;
 // ---------------------------------------------------------------------------
 
 struct NoopGit;
-impl GitProvider for NoopGit {}
+impl GitProvider for NoopGit {
+    fn open(&self, _path: &Path) -> Result<Box<dyn GitProvider>, GitError> {
+        Ok(Box::new(NoopGit))
+    }
+    fn list_branches(&self) -> Result<Vec<Branch>, GitError> {
+        Ok(vec![])
+    }
+    fn current_branch(&self) -> Result<Option<Branch>, GitError> {
+        Ok(None)
+    }
+    fn status(&self) -> Result<GitStatus, GitError> {
+        Ok(GitStatus { entries: vec![], is_clean: true })
+    }
+    fn commit_log(&self, _max: usize, _from_oid: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
+        Ok(vec![])
+    }
+    fn diff(&self, _staged: bool) -> Result<Vec<DiffEntry>, GitError> {
+        Ok(vec![])
+    }
+    fn checkout_branch(&mut self, _name: &str) -> Result<(), GitError> {
+        Ok(())
+    }
+    fn commit(&mut self, _new: NewCommit<'_>) -> Result<String, GitError> {
+        Ok("0".repeat(40))
+    }
+}
 
 struct NoopSsh;
 impl SshClient for NoopSsh {}
