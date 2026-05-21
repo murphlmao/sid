@@ -13,6 +13,7 @@
 //! category across launches when the surrounding state machinery restores
 //! widget state.
 
+pub mod animation;
 pub mod behavior_toggles;
 pub mod db_path;
 pub mod keybind_editor;
@@ -33,6 +34,7 @@ use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_ui::Theme;
 
+use crate::settings::animation::AnimationView;
 use crate::settings::behavior_toggles::BehaviorTogglesView;
 use crate::settings::db_path::DbPathView;
 use crate::settings::keybind_editor::KeybindEditorView;
@@ -58,6 +60,8 @@ pub enum SettingsCategory {
     DbPath(DbPathView),
     /// Reset to defaults modal.
     Reset(ResetView),
+    /// Cosmic background animation tuner (density, FPS, supernova rate, glyphs).
+    Animation(AnimationView),
 }
 
 impl SettingsCategory {
@@ -71,6 +75,7 @@ impl SettingsCategory {
             Self::QuickActions(_) => "Quick actions",
             Self::DbPath(_) => "DB path",
             Self::Reset(_) => "Reset to defaults",
+            Self::Animation(_) => "Animation",
         }
     }
 }
@@ -283,6 +288,7 @@ impl SettingsWidget {
             Some(SettingsCategory::QuickActions(v)) => v.render_into_frame(frame, right, theme),
             Some(SettingsCategory::DbPath(v)) => v.render_into_frame(frame, right, theme),
             Some(SettingsCategory::Reset(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::Animation(v)) => v.render_into_frame(frame, right, theme),
             None => {
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -388,6 +394,29 @@ impl Widget for SettingsWidget {
                     SettingsCategory::Theme(v) => match v.handle_event(ev) {
                         ThemePickerOutcome::None => {}
                         _ => return EventOutcome::Consumed,
+                    },
+                    SettingsCategory::Animation(v) => match k.code {
+                        KeyCode::Up => {
+                            v.focus_prev();
+                            return EventOutcome::Consumed;
+                        }
+                        KeyCode::Down => {
+                            v.focus_next();
+                            return EventOutcome::Consumed;
+                        }
+                        KeyCode::Left => {
+                            v.adjust_focused(-1);
+                            return EventOutcome::Consumed;
+                        }
+                        KeyCode::Right => {
+                            v.adjust_focused(1);
+                            return EventOutcome::Consumed;
+                        }
+                        KeyCode::Char(' ') | KeyCode::Enter => {
+                            v.adjust_focused(0);
+                            return EventOutcome::Consumed;
+                        }
+                        _ => {}
                     },
                     SettingsCategory::Keybinds(_)
                     | SettingsCategory::Behavior(_)
