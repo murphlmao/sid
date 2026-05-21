@@ -11,6 +11,7 @@ sid-core.workspace = true
 sid-ui.workspace = true
 sid-store.workspace = true
 sid-job.workspace = true
+sid-db-clients.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
@@ -18,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 postcard.workspace = true
 shell-words.workspace = true
+csv.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

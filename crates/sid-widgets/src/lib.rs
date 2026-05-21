@@ -6,6 +6,7 @@
 //! The Workspaces widget is fully implemented in Plan 2; see [`workspaces`]
 //! for the full tree view and git sub-view details.
 
+pub mod csv_export;
 pub mod database;
 pub mod network;
 pub mod settings;
