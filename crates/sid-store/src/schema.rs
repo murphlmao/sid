@@ -15,14 +15,15 @@
 //! | `themes` | theme name | versioned-postcard `ThemeSpec` |
 //! | `keybinds` | profile name | versioned-postcard `KeybindProfile` |
 //! | `quick_actions` | action id | versioned-postcard `QuickAction` |
+//! | `pinned_configs` | absolute path | versioned-postcard `PinnedConfig` |
 //!
 //! # Examples
 //!
 //! ```
 //! use redb::TableHandle;
 //! use sid_store::schema::{
-//!     KEYBINDS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES,
-//!     WIDGET_STATE, WORKSPACES,
+//!     KEYBINDS, PINNED_CONFIGS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS,
+//!     THEMES, WIDGET_STATE, WORKSPACES,
 //! };
 //!
 //! // The table names are stable constants.
@@ -35,6 +36,7 @@
 //! assert_eq!(THEMES.name(), "themes");
 //! assert_eq!(KEYBINDS.name(), "keybinds");
 //! assert_eq!(QUICK_ACTIONS.name(), "quick_actions");
+//! assert_eq!(PINNED_CONFIGS.name(), "pinned_configs");
 //! ```
 
 use redb::TableDefinition;
@@ -120,6 +122,19 @@ pub const KEYBINDS: TableDefinition<&str, &[u8]> = TableDefinition::new("keybind
 /// ```
 pub const QUICK_ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("quick_actions");
 
+/// Pinned configuration files (Plan 6 / System tab). Key: absolute path string.
+/// Value: versioned-postcard [`crate::PinnedConfig`].
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::PINNED_CONFIGS;
+/// assert_eq!(PINNED_CONFIGS.name(), "pinned_configs");
+/// ```
+pub const PINNED_CONFIGS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("pinned_configs");
+
 #[cfg(test)]
 mod tests {
     use redb::TableHandle;
@@ -137,5 +152,6 @@ mod tests {
         assert_eq!(THEMES.name(), "themes");
         assert_eq!(KEYBINDS.name(), "keybinds");
         assert_eq!(QUICK_ACTIONS.name(), "quick_actions");
+        assert_eq!(PINNED_CONFIGS.name(), "pinned_configs");
     }
 }
