@@ -1,0 +1,8 @@
+---
+source: crates/sid-widgets/tests/system_state.rs
+expression: rendered
+---
+[
+    "1748000000  starting",
+    "1748000005  ready",
+]

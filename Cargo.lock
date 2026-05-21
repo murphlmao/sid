@@ -2449,6 +2449,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "shell-words",
  "sid-core",
  "sid-job",
  "sid-store",
