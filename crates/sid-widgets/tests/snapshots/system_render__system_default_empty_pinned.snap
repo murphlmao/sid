@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/tests/system_render.rs
+expression: s
+---
+● Pinned configs · ○ Services · ○ Quick actions   (Tab cycles)                  
+┌ Pinned configs ──────────────────────────────────────────────────────────────┐
+│  (no pinned configs)                                                         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Tab: switch pane · /: filter · Enter: action

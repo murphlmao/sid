@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/tests/system_render.rs
+expression: s
+---
+○ Pinned configs · ● Services · ○ Quick actions   (Tab cycles)                  
+┌ Services ────────────────────────────────────────────────────────────────────┐
+│UNIT                                                 STATE        SUB         │
+│nginx.service                                        active       running     │
+│docker.service                                       inactive     dead        │
+│postgres.service                                     failed       failed      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Tab: switch pane · /: filter · Enter: action
