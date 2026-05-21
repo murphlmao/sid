@@ -85,6 +85,12 @@ Every dependency in this list is behind an internal trait, so any of them can be
 
 [GNU GPL v3](LICENSE).
 
+## about sid &nbsp;🐕
+
+The app is named after my dog — a fat little black shih tzu terrier who passed away. He was the best.
+
+When he passed, I wanted to name something I'd touch every day after him. So the cockpit I live in between edits and shells got his name. Every launch is a small hello.
+
 ---
 
 <div align="center">

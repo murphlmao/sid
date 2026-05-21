@@ -6,7 +6,7 @@
 
 ## What sid is
 
-`sid` is a fast, focused TUI cockpit for personal developer workflow. It's named after my dog.
+`sid` is a fast, focused TUI cockpit for personal developer workflow. It's named after my dog 🐕 — a fat little black shih tzu terrier.
 
 It is **tabs-first**: one focused module fills the screen at a time, with `Ctrl+←/→` (or `Ctrl+1..6`) to switch. Each tab is one of six things: your code workspaces, your SSH/SFTP hosts, your databases, your machine's network/process state, your machine's system configuration, or sid's own settings.
 
