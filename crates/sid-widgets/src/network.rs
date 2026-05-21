@@ -9,6 +9,7 @@
 
 pub mod filter_input;
 pub mod interfaces_sidebar;
+pub mod kill_modal;
 pub mod ports_table;
 pub mod processes_table;
 
