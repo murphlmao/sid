@@ -1,0 +1,28 @@
+---
+source: crates/sid-widgets/tests/settings_render.rs
+expression: s
+---
+┌ Categories ──────┐┌ Theme ───────────────────────────────────────────────────┐
+│> * Theme         ││> * cosmos                                                │
+│  o Reset to defau││  o cosmos-light                                          │
+│                  ││  o dusk                                                  │
+│                  ││  o void                                                  │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││                                                          │
+│                  ││┌────────────────────────────────────────────────────────┐│
+│                  │││✦ cosmos ✦                                              ││
+│                  │││  primary accent row                                    ││
+│                  │││  muted secondary text                                  ││
+│                  │││  success ok                                            ││
+│                  │││                                                        ││
+│                  │││                                                        ││
+│                  │││                                                        ││
+│                  │││                                                        ││
+│                  │││                                                        ││
+│                  │││Enter to apply  ·  Esc to cancel                        ││
+│                  ││└────────────────────────────────────────────────────────┘│
+└──────────────────┘└──────────────────────────────────────────────────────────┘

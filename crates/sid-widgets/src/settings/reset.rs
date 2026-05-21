@@ -13,8 +13,14 @@
 //! assert!(!view.is_confirming());
 //! ```
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::SidError;
 use sid_store::{Store, settings_keys};
+use sid_ui::Theme;
 
 /// Setting keys cleared by [`ResetView::confirm`].
 pub const FACTORY_KEYS: &[&str] = &[
@@ -56,6 +62,39 @@ impl ResetView {
     /// Dismiss the modal without writing.
     pub fn cancel(&mut self) {
         self.confirm_open = false;
+    }
+
+    /// Render the reset confirm stub into `area`.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Reset to defaults ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let lines: Vec<Line> = if self.confirm_open {
+            vec![
+                Line::from("Reset every setting key to its compiled-in default?")
+                    .style(Style::default().fg(theme.foreground.into())),
+                Line::from("(y)es   (n)o").style(
+                    Style::default()
+                        .fg(theme.accent_warning.into())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        } else {
+            vec![
+                Line::from("Press Enter to open the reset confirm modal.")
+                    .style(Style::default().fg(theme.foreground.into())),
+                Line::from("This clears settings only — themes, keybinds, quick actions and workspaces survive.")
+                    .style(Style::default().fg(theme.muted.into())),
+            ]
+        };
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     /// Execute the reset if the confirm modal is open. Returns the number of
@@ -129,9 +168,7 @@ mod tests {
     fn confirm_clears_factory_keys() {
         let (_d, store) = store();
         for k in FACTORY_KEYS {
-            store
-                .put_setting(k, &SettingValue(b"v".to_vec()))
-                .unwrap();
+            store.put_setting(k, &SettingValue(b"v".to_vec())).unwrap();
         }
         let mut v = ResetView::new();
         v.open_confirm();
@@ -147,9 +184,7 @@ mod tests {
     fn confirm_is_idempotent() {
         let (_d, store) = store();
         for k in FACTORY_KEYS {
-            store
-                .put_setting(k, &SettingValue(b"v".to_vec()))
-                .unwrap();
+            store.put_setting(k, &SettingValue(b"v".to_vec())).unwrap();
         }
         let mut v = ResetView::new();
         v.open_confirm();
@@ -172,15 +207,16 @@ mod tests {
         v.confirm(&store).unwrap();
         // Custom key survives.
         assert_eq!(
-            store
-                .get_setting("custom.user.key")
-                .unwrap()
-                .unwrap()
-                .0,
+            store.get_setting("custom.user.key").unwrap().unwrap().0,
             b"keep-me".to_vec()
         );
         // Factory key is gone.
-        assert!(store.get_setting(settings_keys::THEME_NAME).unwrap().is_none());
+        assert!(
+            store
+                .get_setting(settings_keys::THEME_NAME)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

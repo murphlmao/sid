@@ -20,8 +20,14 @@
 
 use std::collections::BTreeSet;
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::SidError;
 use sid_store::{Store, TypedSettings};
+use sid_ui::Theme;
 
 /// Typed value for a single [`Toggle`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +278,51 @@ impl BehaviorTogglesView {
         Ok(())
     }
 
+    /// Render the toggles list into `area`.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Behavior ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let mut rows: Vec<Line> = Vec::with_capacity(self.toggles.len());
+        for (i, t) in self.toggles.iter().enumerate() {
+            let cursor = if i == self.focused { '>' } else { ' ' };
+            let value = match &t.value {
+                ToggleValue::Bool(b) => {
+                    if *b {
+                        "on".to_string()
+                    } else {
+                        "off".to_string()
+                    }
+                }
+                ToggleValue::Choice { options, selected } => options
+                    .get(*selected)
+                    .cloned()
+                    .unwrap_or_else(|| "?".into()),
+                ToggleValue::U64 { value, .. } => value.to_string(),
+                ToggleValue::String(s) => s.clone(),
+            };
+            let line = Line::from(format!("{cursor} {:<36} {}", t.label, value));
+            let line = if i == self.focused {
+                line.style(
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                line.style(Style::default().fg(theme.foreground.into()))
+            };
+            rows.push(line);
+        }
+        frame.render_widget(Paragraph::new(rows), inner);
+    }
+
     /// Write every dirty toggle to `store`. Returns the number of keys
     /// written. Dirty set is cleared on success.
     pub fn flush_dirty(&mut self, store: &dyn Store) -> Result<usize, SidError> {
@@ -334,7 +385,10 @@ mod tests {
             ToggleValue::Bool(b) => assert!(!*b),
             other => panic!("expected Bool, got {other:?}"),
         }
-        assert!(v.dirty_keys().any(|k| *k == settings_keys::AUTO_SCAN_WORKSPACES));
+        assert!(
+            v.dirty_keys()
+                .any(|k| *k == settings_keys::AUTO_SCAN_WORKSPACES)
+        );
     }
 
     #[test]
