@@ -1,0 +1,16 @@
+{
+  "name": "sid-testing",
+  "version": "0.1.0",
+  "description": "Rigor-bar testing skills for the sid project: MC/DC decision coverage audit and cargo-mutants survivor killing. Project-local; enforces CLAUDE.md standards.",
+  "author": {
+    "name": "Murphy Malcolm"
+  },
+  "keywords": [
+    "testing",
+    "rust",
+    "mc-dc",
+    "mutation-testing",
+    "cargo-mutants",
+    "coverage"
+  ]
+}
