@@ -1,0 +1,57 @@
+name: Bench
+
+# Runs Criterion benchmarks on every PR.
+#
+# Status: **baseline establishment phase.**
+# First run on any crate produces a Criterion `target/criterion/<bench>/base/`
+# baseline. Subsequent PRs can compare against that baseline manually by
+# downloading the artifact, but automated regression detection is deferred
+# until we land a dedicated comparison job (see follow-up).
+#
+# Benches currently in the workspace:
+#   - crates/sid-job/benches/job_bench.rs
+#   - crates/sid-store/benches/store_bench.rs
+#   - crates/sid/benches/draw_bench.rs
+#
+# We do NOT run this on push-to-main (benchmarks are slow and noisy).
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: cargo bench
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo bench --workspace (save baseline "ci")
+        run: |
+          cargo bench --workspace --all-features --locked -- \
+            --save-baseline ci
+
+      - name: Upload Criterion output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.run_id }}
+          path: target/criterion/
+          retention-days: 30
