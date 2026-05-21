@@ -448,6 +448,12 @@ async fn main() -> Result<()> {
         let _ = behavior.load_from_store(&*store);
         settings_categories.push(sid_widgets::SettingsCategory::Behavior(behavior));
     }
+    {
+        let animation_cfg = wire::load_animation_config(&*store);
+        settings_categories.push(sid_widgets::SettingsCategory::Animation(
+            sid_widgets::settings::animation::AnimationView::new(animation_cfg),
+        ));
+    }
     settings_categories.push(sid_widgets::SettingsCategory::WorkspaceRoots(
         sid_widgets::settings::workspace_roots::WorkspaceRootsView::new(workspace_roots_paths),
     ));

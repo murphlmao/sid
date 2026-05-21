@@ -1,0 +1,17 @@
+---
+source: crates/sid-widgets/tests/animation_view.rs
+assertion_line: 193
+expression: s
+---
+Animation                                                   
+-----------------------------------------                   
+> * Enabled                  [on]                           
+  o Density                  30 / 100                       
+  o FPS                      8 / 30                         
+  o Supernova idle (secs)    90                             
+  o Supernova on event       [on]                           
+  o Glyph set                Cosmos                         
+                                                            
+[ Space/Enter: toggle/cycle ]                               
+[ Left/Right: decrement/increment ]                         
+[ S: save ]
