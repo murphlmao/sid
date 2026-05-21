@@ -214,6 +214,10 @@ pub struct Workspace {
 ///     fn upsert_workspace(&self, _: &Workspace) -> Result<(), SidError> { Ok(()) }
 ///     fn get_workspace(&self, _: &Path) -> Result<Option<Workspace>, SidError> { Ok(None) }
 ///     fn remove_workspace(&self, _: &Path) -> Result<(), SidError> { Ok(()) }
+///     fn secret_put(&self, _: &str, _: &[u8]) -> Result<(), SidError> { Ok(()) }
+///     fn secret_get(&self, _: &str) -> Result<Option<Vec<u8>>, SidError> { Ok(None) }
+///     fn secret_delete(&self, _: &str) -> Result<(), SidError> { Ok(()) }
+///     fn list_secret_ids(&self) -> Result<Vec<String>, SidError> { Ok(vec![]) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -483,6 +487,78 @@ pub trait Store: Send + Sync {
     /// store.remove_workspace(&PathBuf::from("/not-there")).unwrap();
     /// ```
     fn remove_workspace(&self, path: &Path) -> Result<(), SidError>;
+
+    /// Insert or replace the secret bytes under `id`. Empty values are valid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.secret_put("ssh.key.foo", b"passphrase").unwrap();
+    /// assert_eq!(
+    ///     store.secret_get("ssh.key.foo").unwrap().unwrap(),
+    ///     b"passphrase".to_vec()
+    /// );
+    /// ```
+    fn secret_put(&self, id: &str, value: &[u8]) -> Result<(), SidError>;
+
+    /// Retrieve the secret bytes stored under `id`. Returns `None` if absent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.secret_get("missing.id").unwrap().is_none());
+    /// ```
+    fn secret_get(&self, id: &str) -> Result<Option<Vec<u8>>, SidError>;
+
+    /// Remove the secret stored under `id`. Idempotent — removing a missing
+    /// id returns `Ok(())`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.secret_put("api.token", b"hunter2").unwrap();
+    /// store.secret_delete("api.token").unwrap();
+    /// assert!(store.secret_get("api.token").unwrap().is_none());
+    /// // Removing a nonexistent id is always a no-op.
+    /// store.secret_delete("never.was").unwrap();
+    /// ```
+    fn secret_delete(&self, id: &str) -> Result<(), SidError>;
+
+    /// List every secret id currently stored.
+    ///
+    /// Order is implementation-defined (redb returns keys in lexicographic
+    /// order).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_secret_ids().unwrap().is_empty());
+    /// store.secret_put("a", b"1").unwrap();
+    /// store.secret_put("b", b"2").unwrap();
+    /// let ids = store.list_secret_ids().unwrap();
+    /// assert_eq!(ids.len(), 2);
+    /// ```
+    fn list_secret_ids(&self) -> Result<Vec<String>, SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -649,6 +725,18 @@ mod tests {
             }
             fn remove_workspace(&self, _: &Path) -> Result<(), SidError> {
                 Ok(())
+            }
+            fn secret_put(&self, _: &str, _: &[u8]) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn secret_get(&self, _: &str) -> Result<Option<Vec<u8>>, SidError> {
+                Ok(None)
+            }
+            fn secret_delete(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn list_secret_ids(&self) -> Result<Vec<String>, SidError> {
+                Ok(vec![])
             }
         }
 

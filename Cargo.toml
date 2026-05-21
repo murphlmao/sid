@@ -8,6 +8,7 @@ members = [
     "crates/sid-job",
     "crates/sid-widgets",
     "crates/sid-git",
+    "crates/sid-secrets",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ sid-store = { path = "crates/sid-store" }
 sid-job = { path = "crates/sid-job" }
 sid-widgets = { path = "crates/sid-widgets" }
 sid-git = { path = "crates/sid-git" }
+sid-secrets = { path = "crates/sid-secrets" }
 
 # TUI
 ratatui = "0.30"

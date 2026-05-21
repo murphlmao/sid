@@ -11,12 +11,13 @@
 //! | `session_meta` | `"current"` | raw UTF-8 session id bytes |
 //! | `widget_state` | `"tab_id\0widget_id"` | raw widget blob bytes |
 //! | `workspaces` | absolute path string | versioned-postcard `Workspace` |
+//! | `secrets` | secret id string | raw secret bytes |
 //!
 //! # Examples
 //!
 //! ```
 //! use redb::TableHandle;
-//! use sid_store::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
+//! use sid_store::schema::{SECRETS, SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
 //!
 //! // The table names are stable constants.
 //! assert_eq!(SETTINGS.name(), "settings");
@@ -24,6 +25,7 @@
 //! assert_eq!(SESSION_META.name(), "session_meta");
 //! assert_eq!(WIDGET_STATE.name(), "widget_state");
 //! assert_eq!(WORKSPACES.name(), "workspaces");
+//! assert_eq!(SECRETS.name(), "secrets");
 //! ```
 
 use redb::TableDefinition;
@@ -57,6 +59,20 @@ pub const WIDGET_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("wid
 /// ```
 pub const WORKSPACES: TableDefinition<&str, &[u8]> = TableDefinition::new("workspaces");
 
+/// Secrets table. Key: secret id string (caller-defined, e.g.
+/// `"ssh.key.id_ed25519"`). Value: raw secret bytes — no codec wrapping, since
+/// the bytes are opaque to the store.
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::SECRETS;
+///
+/// assert_eq!(SECRETS.name(), "secrets");
+/// ```
+pub const SECRETS: TableDefinition<&str, &[u8]> = TableDefinition::new("secrets");
+
 #[cfg(test)]
 mod tests {
     use redb::TableHandle;
@@ -70,5 +86,6 @@ mod tests {
         assert_eq!(SESSION_META.name(), "session_meta");
         assert_eq!(WIDGET_STATE.name(), "widget_state");
         assert_eq!(WORKSPACES.name(), "workspaces");
+        assert_eq!(SECRETS.name(), "secrets");
     }
 }
