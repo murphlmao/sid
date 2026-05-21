@@ -17,6 +17,7 @@ use sid_core::SidError;
 pub mod codec;
 pub mod redb_impl;
 pub mod schema;
+pub mod sid_toml;
 
 pub use redb_impl::RedbStore;
 
@@ -377,6 +378,182 @@ pub struct Workspace {
     pub parent: Option<PathBuf>,
 }
 
+// ─── Theme / keybind / quick-action domain types ─────────────────────────────
+
+/// A theme stored in the `themes` table.
+///
+/// The palette + glyphs are the same shape `sid_ui::theme::Theme` carries; we
+/// redeclare here to avoid making `sid-store` depend on `sid-ui` (adapter
+/// pattern: `sid-store` owns the on-disk shape only).
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{ThemeGlyphs, ThemePalette, ThemeSpec};
+/// let spec = ThemeSpec {
+///     name: "cosmos".into(),
+///     palette: ThemePalette {
+///         background: 0x0F1020, surface: 0x1A1B2E, foreground: 0xE3E4F1,
+///         muted: 0x6E7090, accent_primary: 0x8F9CFF, accent_success: 0x6FCF97,
+///         accent_warning: 0xE0C46C, accent_error: 0xE07A7A, border: 0x2D2E4A,
+///     },
+///     glyphs: ThemeGlyphs { star: '★', small_star: '·', dot: '•' },
+/// };
+/// assert_eq!(spec.name, "cosmos");
+/// assert_eq!(spec.glyphs.star, '★');
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThemeSpec {
+    /// Theme name (also acts as primary key in the `themes` table).
+    pub name: String,
+    /// RGB palette as packed `u32`s (`0x00RRGGBB`).
+    pub palette: ThemePalette,
+    /// Decorative glyphs (stars, dots) used in the cosmos aesthetic.
+    pub glyphs: ThemeGlyphs,
+}
+
+/// RGB palette for a theme. Each colour is a packed `0x00RRGGBB` `u32`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::ThemePalette;
+/// let p = ThemePalette {
+///     background: 0x0F1020, surface: 0x1A1B2E, foreground: 0xE3E4F1,
+///     muted: 0x6E7090, accent_primary: 0x8F9CFF, accent_success: 0x6FCF97,
+///     accent_warning: 0xE0C46C, accent_error: 0xE07A7A, border: 0x2D2E4A,
+/// };
+/// assert_eq!(p.accent_primary, 0x8F9CFF);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThemePalette {
+    /// Window background.
+    pub background: u32,
+    /// Surface / panel fill.
+    pub surface: u32,
+    /// Default foreground text colour.
+    pub foreground: u32,
+    /// Muted / secondary text colour.
+    pub muted: u32,
+    /// Primary accent (titles, focused borders).
+    pub accent_primary: u32,
+    /// Success accent (green-ish).
+    pub accent_success: u32,
+    /// Warning accent (amber).
+    pub accent_warning: u32,
+    /// Error accent (red).
+    pub accent_error: u32,
+    /// Border colour.
+    pub border: u32,
+}
+
+/// Decorative glyphs for a theme.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::ThemeGlyphs;
+/// let g = ThemeGlyphs { star: '★', small_star: '·', dot: '•' };
+/// assert_eq!(g.star, '★');
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ThemeGlyphs {
+    /// Large decorative star.
+    pub star: char,
+    /// Small star / dust speck.
+    pub small_star: char,
+    /// Bullet-point dot.
+    pub dot: char,
+}
+
+/// A keybind profile stored in the `keybinds` table.
+///
+/// A profile is a vector of (chord-string, action-id) pairs. The chord string
+/// format mirrors the `KeyChord` debug shape from `sid-core` so that any
+/// crate can stringify/parse a chord without depending on a richer type here.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{KeybindEntry, KeybindProfile};
+/// let p = KeybindProfile {
+///     name: "default".into(),
+///     bindings: vec![KeybindEntry { chord: "Char('q')|0".into(), action: "app.quit".into() }],
+/// };
+/// assert_eq!(p.bindings.len(), 1);
+/// assert_eq!(p.bindings[0].action, "app.quit");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeybindProfile {
+    /// Profile name (primary key in the `keybinds` table).
+    pub name: String,
+    /// Chord → action bindings, in user-presentation order.
+    pub bindings: Vec<KeybindEntry>,
+}
+
+/// One row in a [`KeybindProfile`]: a chord string and the action id it fires.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::KeybindEntry;
+/// let e = KeybindEntry { chord: "Char('?')|0".into(), action: "app.help".into() };
+/// assert_eq!(e.action, "app.help");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeybindEntry {
+    /// Stringified chord (e.g. `"Char('q')|0"`).
+    pub chord: String,
+    /// Action id (e.g. `"app.quit"`).
+    pub action: String,
+}
+
+/// A global quick-action. Shared between Plan 6 (System tab) and Plan 7
+/// (Settings tab editor).
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{QuickAction, QuickActionScope};
+/// let a = QuickAction {
+///     id: "qa.reload".into(),
+///     label: "Reload".into(),
+///     cmd: "sid reload".into(),
+///     keybind: Some("Char('r')|2".into()),
+///     scope: QuickActionScope::Global,
+/// };
+/// assert_eq!(a.scope, QuickActionScope::Global);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct QuickAction {
+    /// Stable id (primary key).
+    pub id: String,
+    /// Human-readable label.
+    pub label: String,
+    /// Shell command (or `sid` subcommand) to run.
+    pub cmd: String,
+    /// Optional chord (string format matches [`KeybindEntry::chord`]).
+    pub keybind: Option<String>,
+    /// Scope of this action.
+    pub scope: QuickActionScope,
+}
+
+/// Scope a [`QuickAction`] applies to.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::QuickActionScope;
+/// assert_ne!(QuickActionScope::Global, QuickActionScope::Workspace);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum QuickActionScope {
+    /// Visible everywhere.
+    Global,
+    /// Visible only when a workspace is active.
+    Workspace,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The domain storage trait. `sid-store` is the only crate that provides an
@@ -396,7 +573,10 @@ pub struct Workspace {
 /// use sid_core::SidError;
 /// use sid_core::tab::TabId;
 /// use sid_core::widget::WidgetId;
-/// use sid_store::{Epoch, SessionRecord, SettingValue, Store, Workspace, WidgetState};
+/// use sid_store::{
+///     Epoch, KeybindProfile, QuickAction, SessionRecord, SettingValue, Store, ThemeSpec,
+///     Workspace, WidgetState,
+/// };
 ///
 /// struct MemStore {
 ///     settings: Mutex<HashMap<String, SettingValue>>,
@@ -424,6 +604,18 @@ pub struct Workspace {
 ///     fn secret_get(&self, _: &str) -> Result<Option<Vec<u8>>, SidError> { Ok(None) }
 ///     fn secret_delete(&self, _: &str) -> Result<(), SidError> { Ok(()) }
 ///     fn list_secret_ids(&self) -> Result<Vec<String>, SidError> { Ok(vec![]) }
+///     fn list_themes(&self) -> Result<Vec<ThemeSpec>, SidError> { Ok(vec![]) }
+///     fn get_theme(&self, _: &str) -> Result<Option<ThemeSpec>, SidError> { Ok(None) }
+///     fn upsert_theme(&self, _: &ThemeSpec) -> Result<(), SidError> { Ok(()) }
+///     fn remove_theme(&self, _: &str) -> Result<(), SidError> { Ok(()) }
+///     fn list_keybind_profiles(&self) -> Result<Vec<KeybindProfile>, SidError> { Ok(vec![]) }
+///     fn get_keybind_profile(&self, _: &str) -> Result<Option<KeybindProfile>, SidError> { Ok(None) }
+///     fn upsert_keybind_profile(&self, _: &KeybindProfile) -> Result<(), SidError> { Ok(()) }
+///     fn remove_keybind_profile(&self, _: &str) -> Result<(), SidError> { Ok(()) }
+///     fn list_quick_actions(&self) -> Result<Vec<QuickAction>, SidError> { Ok(vec![]) }
+///     fn get_quick_action(&self, _: &str) -> Result<Option<QuickAction>, SidError> { Ok(None) }
+///     fn upsert_quick_action(&self, _: &QuickAction) -> Result<(), SidError> { Ok(()) }
+///     fn remove_quick_action(&self, _: &str) -> Result<(), SidError> { Ok(()) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -765,6 +957,191 @@ pub trait Store: Send + Sync {
     /// assert_eq!(ids.len(), 2);
     /// ```
     fn list_secret_ids(&self) -> Result<Vec<String>, SidError>;
+
+    /// Return all stored themes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_themes().unwrap().is_empty());
+    /// ```
+    fn list_themes(&self) -> Result<Vec<ThemeSpec>, SidError>;
+
+    /// Get a stored theme by name. Returns `None` if not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.get_theme("missing").unwrap().is_none());
+    /// ```
+    fn get_theme(&self, name: &str) -> Result<Option<ThemeSpec>, SidError>;
+
+    /// Insert or replace a theme keyed by its `name`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store, ThemeGlyphs, ThemePalette, ThemeSpec};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.upsert_theme(&ThemeSpec {
+    ///     name: "t1".into(),
+    ///     palette: ThemePalette {
+    ///         background: 0, surface: 0, foreground: 0, muted: 0,
+    ///         accent_primary: 0, accent_success: 0, accent_warning: 0,
+    ///         accent_error: 0, border: 0,
+    ///     },
+    ///     glyphs: ThemeGlyphs { star: '*', small_star: '.', dot: '.' },
+    /// }).unwrap();
+    /// assert_eq!(store.list_themes().unwrap().len(), 1);
+    /// ```
+    fn upsert_theme(&self, t: &ThemeSpec) -> Result<(), SidError>;
+
+    /// Remove a theme by name. Idempotent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.remove_theme("never-existed").unwrap();
+    /// ```
+    fn remove_theme(&self, name: &str) -> Result<(), SidError>;
+
+    /// Return all stored keybind profiles.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_keybind_profiles().unwrap().is_empty());
+    /// ```
+    fn list_keybind_profiles(&self) -> Result<Vec<KeybindProfile>, SidError>;
+
+    /// Get a keybind profile by name. Returns `None` if not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.get_keybind_profile("default").unwrap().is_none());
+    /// ```
+    fn get_keybind_profile(&self, name: &str) -> Result<Option<KeybindProfile>, SidError>;
+
+    /// Insert or replace a keybind profile keyed by its `name`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{KeybindEntry, KeybindProfile, OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.upsert_keybind_profile(&KeybindProfile {
+    ///     name: "default".into(),
+    ///     bindings: vec![KeybindEntry { chord: "Char('q')|0".into(), action: "app.quit".into() }],
+    /// }).unwrap();
+    /// assert_eq!(store.list_keybind_profiles().unwrap().len(), 1);
+    /// ```
+    fn upsert_keybind_profile(&self, p: &KeybindProfile) -> Result<(), SidError>;
+
+    /// Remove a keybind profile by name. Idempotent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.remove_keybind_profile("never").unwrap();
+    /// ```
+    fn remove_keybind_profile(&self, name: &str) -> Result<(), SidError>;
+
+    /// Return all stored quick actions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_quick_actions().unwrap().is_empty());
+    /// ```
+    fn list_quick_actions(&self) -> Result<Vec<QuickAction>, SidError>;
+
+    /// Get a quick action by id. Returns `None` if not present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.get_quick_action("qa.missing").unwrap().is_none());
+    /// ```
+    fn get_quick_action(&self, id: &str) -> Result<Option<QuickAction>, SidError>;
+
+    /// Insert or replace a quick action keyed by its `id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, QuickAction, QuickActionScope, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.upsert_quick_action(&QuickAction {
+    ///     id: "qa.x".into(), label: "X".into(), cmd: "echo x".into(),
+    ///     keybind: None, scope: QuickActionScope::Global,
+    /// }).unwrap();
+    /// assert_eq!(store.list_quick_actions().unwrap().len(), 1);
+    /// ```
+    fn upsert_quick_action(&self, a: &QuickAction) -> Result<(), SidError>;
+
+    /// Remove a quick action by id. Idempotent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.remove_quick_action("never").unwrap();
+    /// ```
+    fn remove_quick_action(&self, id: &str) -> Result<(), SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -943,6 +1320,45 @@ mod tests {
             }
             fn list_secret_ids(&self) -> Result<Vec<String>, SidError> {
                 Ok(vec![])
+            }
+            fn list_themes(&self) -> Result<Vec<ThemeSpec>, SidError> {
+                Ok(vec![])
+            }
+            fn get_theme(&self, _: &str) -> Result<Option<ThemeSpec>, SidError> {
+                Ok(None)
+            }
+            fn upsert_theme(&self, _: &ThemeSpec) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn remove_theme(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn list_keybind_profiles(&self) -> Result<Vec<KeybindProfile>, SidError> {
+                Ok(vec![])
+            }
+            fn get_keybind_profile(
+                &self,
+                _: &str,
+            ) -> Result<Option<KeybindProfile>, SidError> {
+                Ok(None)
+            }
+            fn upsert_keybind_profile(&self, _: &KeybindProfile) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn remove_keybind_profile(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn list_quick_actions(&self) -> Result<Vec<QuickAction>, SidError> {
+                Ok(vec![])
+            }
+            fn get_quick_action(&self, _: &str) -> Result<Option<QuickAction>, SidError> {
+                Ok(None)
+            }
+            fn upsert_quick_action(&self, _: &QuickAction) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn remove_quick_action(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
             }
         }
 

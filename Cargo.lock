@@ -2376,6 +2376,7 @@ dependencies = [
  "sid-core",
  "tempfile",
  "thiserror 2.0.18",
+ "toml",
  "tracing",
 ]
 

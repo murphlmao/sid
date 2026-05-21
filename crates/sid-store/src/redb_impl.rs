@@ -11,8 +11,14 @@ use sid_core::tab::TabId;
 use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
-use crate::schema::{SECRETS, SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
-use crate::{OpenStore, SessionRecord, SettingValue, Store, Workspace, WidgetState};
+use crate::schema::{
+    KEYBINDS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES, WIDGET_STATE,
+    WORKSPACES,
+};
+use crate::{
+    KeybindProfile, OpenStore, QuickAction, SessionRecord, SettingValue, Store, ThemeSpec,
+    Workspace, WidgetState,
+};
 
 /// redb-backed implementation of [`crate::Store`].
 ///
@@ -56,6 +62,15 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(SECRETS)
                 .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
+            let _ = txn
+                .open_table(THEMES)
+                .map_err(|e| SidError::Storage(format!("open themes: {e}")))?;
+            let _ = txn
+                .open_table(KEYBINDS)
+                .map_err(|e| SidError::Storage(format!("open keybinds: {e}")))?;
+            let _ = txn
+                .open_table(QUICK_ACTIONS)
+                .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
@@ -406,5 +421,230 @@ impl Store for RedbStore {
             out.push(k.value().to_string());
         }
         Ok(out)
+    }
+
+    fn list_themes(&self) -> Result<Vec<ThemeSpec>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(THEMES)
+            .map_err(|e| SidError::Storage(format!("open themes: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter themes: {e}")))?;
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_ver, t) = crate::codec::decode_versioned::<ThemeSpec>(v.value())?;
+            out.push(t);
+        }
+        Ok(out)
+    }
+
+    fn get_theme(&self, name: &str) -> Result<Option<ThemeSpec>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(THEMES)
+            .map_err(|e| SidError::Storage(format!("open themes: {e}")))?;
+        let got = tbl
+            .get(name)
+            .map_err(|e| SidError::Storage(format!("get theme: {e}")))?;
+        match got {
+            None => Ok(None),
+            Some(v) => {
+                let (_ver, t) = crate::codec::decode_versioned::<ThemeSpec>(v.value())?;
+                Ok(Some(t))
+            }
+        }
+    }
+
+    fn upsert_theme(&self, t: &ThemeSpec) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, t)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(THEMES)
+                .map_err(|e| SidError::Storage(format!("open themes: {e}")))?;
+            tbl.insert(t.name.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert theme: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit theme: {e}")))?;
+        Ok(())
+    }
+
+    fn remove_theme(&self, name: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(THEMES)
+                .map_err(|e| SidError::Storage(format!("open themes: {e}")))?;
+            tbl.remove(name)
+                .map_err(|e| SidError::Storage(format!("remove theme: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove theme: {e}")))?;
+        Ok(())
+    }
+
+    fn list_keybind_profiles(&self) -> Result<Vec<KeybindProfile>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(KEYBINDS)
+            .map_err(|e| SidError::Storage(format!("open keybinds: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter keybinds: {e}")))?;
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_ver, p) = crate::codec::decode_versioned::<KeybindProfile>(v.value())?;
+            out.push(p);
+        }
+        Ok(out)
+    }
+
+    fn get_keybind_profile(&self, name: &str) -> Result<Option<KeybindProfile>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(KEYBINDS)
+            .map_err(|e| SidError::Storage(format!("open keybinds: {e}")))?;
+        let got = tbl
+            .get(name)
+            .map_err(|e| SidError::Storage(format!("get keybind: {e}")))?;
+        match got {
+            None => Ok(None),
+            Some(v) => {
+                let (_ver, p) = crate::codec::decode_versioned::<KeybindProfile>(v.value())?;
+                Ok(Some(p))
+            }
+        }
+    }
+
+    fn upsert_keybind_profile(&self, p: &KeybindProfile) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, p)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(KEYBINDS)
+                .map_err(|e| SidError::Storage(format!("open keybinds: {e}")))?;
+            tbl.insert(p.name.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert keybind: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit keybind: {e}")))?;
+        Ok(())
+    }
+
+    fn remove_keybind_profile(&self, name: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(KEYBINDS)
+                .map_err(|e| SidError::Storage(format!("open keybinds: {e}")))?;
+            tbl.remove(name)
+                .map_err(|e| SidError::Storage(format!("remove keybind: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove keybind: {e}")))?;
+        Ok(())
+    }
+
+    fn list_quick_actions(&self) -> Result<Vec<QuickAction>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(QUICK_ACTIONS)
+            .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter quick_actions: {e}")))?;
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_ver, a) = crate::codec::decode_versioned::<QuickAction>(v.value())?;
+            out.push(a);
+        }
+        Ok(out)
+    }
+
+    fn get_quick_action(&self, id: &str) -> Result<Option<QuickAction>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(QUICK_ACTIONS)
+            .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
+        let got = tbl
+            .get(id)
+            .map_err(|e| SidError::Storage(format!("get quick_action: {e}")))?;
+        match got {
+            None => Ok(None),
+            Some(v) => {
+                let (_ver, a) = crate::codec::decode_versioned::<QuickAction>(v.value())?;
+                Ok(Some(a))
+            }
+        }
+    }
+
+    fn upsert_quick_action(&self, a: &QuickAction) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, a)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(QUICK_ACTIONS)
+                .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
+            tbl.insert(a.id.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert quick_action: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit quick_action: {e}")))?;
+        Ok(())
+    }
+
+    fn remove_quick_action(&self, id: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(QUICK_ACTIONS)
+                .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
+            tbl.remove(id)
+                .map_err(|e| SidError::Storage(format!("remove quick_action: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove quick_action: {e}")))?;
+        Ok(())
     }
 }

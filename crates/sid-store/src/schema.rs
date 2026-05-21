@@ -12,12 +12,18 @@
 //! | `widget_state` | `"tab_id\0widget_id"` | raw widget blob bytes |
 //! | `workspaces` | absolute path string | versioned-postcard `Workspace` |
 //! | `secrets` | secret id string | raw secret bytes |
+//! | `themes` | theme name | versioned-postcard `ThemeSpec` |
+//! | `keybinds` | profile name | versioned-postcard `KeybindProfile` |
+//! | `quick_actions` | action id | versioned-postcard `QuickAction` |
 //!
 //! # Examples
 //!
 //! ```
 //! use redb::TableHandle;
-//! use sid_store::schema::{SECRETS, SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
+//! use sid_store::schema::{
+//!     KEYBINDS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES,
+//!     WIDGET_STATE, WORKSPACES,
+//! };
 //!
 //! // The table names are stable constants.
 //! assert_eq!(SETTINGS.name(), "settings");
@@ -26,6 +32,9 @@
 //! assert_eq!(WIDGET_STATE.name(), "widget_state");
 //! assert_eq!(WORKSPACES.name(), "workspaces");
 //! assert_eq!(SECRETS.name(), "secrets");
+//! assert_eq!(THEMES.name(), "themes");
+//! assert_eq!(KEYBINDS.name(), "keybinds");
+//! assert_eq!(QUICK_ACTIONS.name(), "quick_actions");
 //! ```
 
 use redb::TableDefinition;
@@ -73,6 +82,44 @@ pub const WORKSPACES: TableDefinition<&str, &[u8]> = TableDefinition::new("works
 /// ```
 pub const SECRETS: TableDefinition<&str, &[u8]> = TableDefinition::new("secrets");
 
+/// User-saved themes. Key: theme name. Value: versioned-postcard `ThemeSpec`.
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::THEMES;
+///
+/// assert_eq!(THEMES.name(), "themes");
+/// ```
+pub const THEMES: TableDefinition<&str, &[u8]> = TableDefinition::new("themes");
+
+/// Keybind profiles. Key: profile name. Value: versioned-postcard
+/// `KeybindProfile`.
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::KEYBINDS;
+///
+/// assert_eq!(KEYBINDS.name(), "keybinds");
+/// ```
+pub const KEYBINDS: TableDefinition<&str, &[u8]> = TableDefinition::new("keybinds");
+
+/// Global quick-actions (System tab + Settings tab share this table). Key:
+/// action id string. Value: versioned-postcard `QuickAction`.
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::QUICK_ACTIONS;
+///
+/// assert_eq!(QUICK_ACTIONS.name(), "quick_actions");
+/// ```
+pub const QUICK_ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("quick_actions");
+
 #[cfg(test)]
 mod tests {
     use redb::TableHandle;
@@ -87,5 +134,8 @@ mod tests {
         assert_eq!(WIDGET_STATE.name(), "widget_state");
         assert_eq!(WORKSPACES.name(), "workspaces");
         assert_eq!(SECRETS.name(), "secrets");
+        assert_eq!(THEMES.name(), "themes");
+        assert_eq!(KEYBINDS.name(), "keybinds");
+        assert_eq!(QUICK_ACTIONS.name(), "quick_actions");
     }
 }
