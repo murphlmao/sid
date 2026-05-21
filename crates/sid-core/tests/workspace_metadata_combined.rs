@@ -3,7 +3,7 @@
 use std::fs;
 
 use proptest::prelude::*;
-use sid_core::workspace_metadata::{read_workspace_metadata, WorkspaceKind};
+use sid_core::workspace_metadata::{WorkspaceKind, read_workspace_metadata};
 use tempfile::tempdir;
 
 #[test]
@@ -56,7 +56,11 @@ members = ["crates/x", "crates/y", "crates/z"]
     let m = read_workspace_metadata(dir.path()).unwrap();
     assert_eq!(m.kind, WorkspaceKind::Umbrella);
     assert_eq!(m.children.len(), 3);
-    let paths: Vec<_> = m.children.iter().map(|c| c.to_string_lossy().to_string()).collect();
+    let paths: Vec<_> = m
+        .children
+        .iter()
+        .map(|c| c.to_string_lossy().to_string())
+        .collect();
     assert!(paths.contains(&"crates/x".to_string()));
 }
 

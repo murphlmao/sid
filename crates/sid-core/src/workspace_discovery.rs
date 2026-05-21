@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::workspace_metadata::{read_workspace_metadata, WorkspaceKind, WorkspaceMetadata};
+use crate::workspace_metadata::{WorkspaceKind, WorkspaceMetadata, read_workspace_metadata};
 
 /// A workspace found during a filesystem scan.
 ///
@@ -35,14 +35,7 @@ pub struct DiscoveredWorkspace {
 }
 
 /// Directory names that are never meaningful workspaces and should be skipped.
-const SKIP_DIRS: &[&str] = &[
-    "target",
-    "node_modules",
-    "vendor",
-    "build",
-    "dist",
-    ".git",
-];
+const SKIP_DIRS: &[&str] = &["target", "node_modules", "vendor", "build", "dist", ".git"];
 
 /// Scan `root` for git repositories up to `max_depth` levels deep.
 ///
@@ -93,9 +86,8 @@ pub fn scan_workspace_root(
         // Detect git repo: .git directory or .git file (for worktrees)
         let git_marker = path.join(".git");
         if git_marker.exists() {
-            let metadata = read_workspace_metadata(path).unwrap_or_else(|_| {
-                WorkspaceMetadata::from_basename(path, WorkspaceKind::Repo)
-            });
+            let metadata = read_workspace_metadata(path)
+                .unwrap_or_else(|_| WorkspaceMetadata::from_basename(path, WorkspaceKind::Repo));
             repos.push(DiscoveredWorkspace {
                 path: path.to_path_buf(),
                 kind: WorkspaceKind::Repo,
@@ -118,10 +110,9 @@ pub fn scan_workspace_root(
             .map(|r| r.path.clone())
             .collect();
         if !children.is_empty() {
-            let mut meta =
-                read_workspace_metadata(umbrella_path).unwrap_or_else(|_| {
-                    WorkspaceMetadata::from_basename(umbrella_path, WorkspaceKind::Umbrella)
-                });
+            let mut meta = read_workspace_metadata(umbrella_path).unwrap_or_else(|_| {
+                WorkspaceMetadata::from_basename(umbrella_path, WorkspaceKind::Umbrella)
+            });
             meta.kind = WorkspaceKind::Umbrella;
             meta.children = children;
             out.push(DiscoveredWorkspace {

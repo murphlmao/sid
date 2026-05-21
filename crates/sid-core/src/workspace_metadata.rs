@@ -110,7 +110,12 @@ impl WorkspaceMetadata {
             .and_then(|n| n.to_str())
             .unwrap_or("workspace")
             .to_string();
-        Self { name, kind, actions: Vec::new(), children: Vec::new() }
+        Self {
+            name,
+            kind,
+            actions: Vec::new(),
+            children: Vec::new(),
+        }
     }
 }
 
@@ -214,7 +219,9 @@ pub fn sniff_claude_md(path: &Path) -> Result<Option<ClaudeMdSnippet>, MetadataE
             if first_col.starts_with('`') && first_col.ends_with('`') && first_col.len() > 2 {
                 let alias = first_col.trim_matches('`').to_string();
                 // Filter obvious non-alias values (e.g., header dividers, numbers).
-                if !alias.chars().all(|c| c == '-' || c == ':' || c.is_whitespace())
+                if !alias
+                    .chars()
+                    .all(|c| c == '-' || c == ':' || c.is_whitespace())
                     && alias.parse::<f64>().is_err()
                 {
                     snippet.ssh_aliases.push(alias);
@@ -253,8 +260,10 @@ pub fn sniff_cargo_workspace(path: &Path) -> Result<Option<Vec<String>>, Metadat
     let Some(arr) = members else {
         return Ok(None);
     };
-    let out: Vec<String> =
-        arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    let out: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
     Ok(Some(out))
 }
 
@@ -270,9 +279,7 @@ pub fn sniff_cargo_workspace(path: &Path) -> Result<Option<Vec<String>>, Metadat
 ///
 /// let ws = sniff_package_json_workspaces(Path::new("/home/user/vcs/my-app")).unwrap();
 /// ```
-pub fn sniff_package_json_workspaces(
-    path: &Path,
-) -> Result<Option<Vec<String>>, MetadataError> {
+pub fn sniff_package_json_workspaces(path: &Path) -> Result<Option<Vec<String>>, MetadataError> {
     let f = path.join("package.json");
     if !f.exists() {
         return Ok(None);
@@ -289,7 +296,10 @@ pub fn sniff_package_json_workspaces(
         },
         _ => return Ok(None),
     };
-    let out = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    let out = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
     Ok(Some(out))
 }
 

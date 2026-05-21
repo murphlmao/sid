@@ -27,7 +27,9 @@ fn nested_umbrella_inside_another_umbrella() {
     // Inner umbrella should be detected
     let inner_path = inner.to_string_lossy().to_string();
     assert!(
-        found.iter().any(|w| w.path.to_string_lossy() == inner_path && w.kind == WorkspaceKind::Umbrella),
+        found
+            .iter()
+            .any(|w| w.path.to_string_lossy() == inner_path && w.kind == WorkspaceKind::Umbrella),
         "inner umbrella not detected\nfound: {found:?}",
     );
 }
@@ -43,7 +45,9 @@ fn workspace_deps_yaml_triggers_umbrella() {
     let found = scan_workspace_root(root.path(), 4).unwrap();
     let stack_path = stack.to_string_lossy().to_string();
     assert!(
-        found.iter().any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
+        found
+            .iter()
+            .any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
         "workspace.deps.yaml did not trigger umbrella\nfound: {found:?}",
     );
 }
@@ -57,9 +61,15 @@ fn umbrella_metadata_children_match_sub_repo_paths() {
     init_git_at(&umbrella.join("alpha"));
     init_git_at(&umbrella.join("beta"));
     let found = scan_workspace_root(root.path(), 4).unwrap();
-    let umb = found.iter().find(|w| w.kind == WorkspaceKind::Umbrella && w.path.ends_with("mono")).unwrap();
+    let umb = found
+        .iter()
+        .find(|w| w.kind == WorkspaceKind::Umbrella && w.path.ends_with("mono"))
+        .unwrap();
     assert_eq!(umb.metadata.children.len(), 2);
-    let child_names: Vec<_> = umb.metadata.children.iter()
+    let child_names: Vec<_> = umb
+        .metadata
+        .children
+        .iter()
         .filter_map(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .collect();
@@ -77,7 +87,9 @@ fn umbrella_with_single_subrepo_is_still_umbrella() {
     let found = scan_workspace_root(root.path(), 4).unwrap();
     let stack_path = stack.to_string_lossy().to_string();
     assert!(
-        found.iter().any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
+        found
+            .iter()
+            .any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
     );
 }
 
@@ -91,13 +103,16 @@ fn umbrella_with_cargo_workspace_and_claude_md() {
     fs::write(
         umbrella.join("Cargo.toml"),
         "[workspace]\nmembers = [\"crates/a\"]\n",
-    ).unwrap();
+    )
+    .unwrap();
     init_git_at(&umbrella.join("crates/a"));
     let found = scan_workspace_root(root.path(), 5).unwrap();
     let umb_path = umbrella.to_string_lossy().to_string();
     // Should be detected as umbrella
     assert!(
-        found.iter().any(|w| w.path.to_string_lossy() == umb_path && w.kind == WorkspaceKind::Umbrella),
+        found
+            .iter()
+            .any(|w| w.path.to_string_lossy() == umb_path && w.kind == WorkspaceKind::Umbrella),
         "expected umbrella at workspace\nfound: {found:?}",
     );
 }
@@ -112,9 +127,13 @@ fn scan_does_not_emit_duplicate_umbrellas() {
     fs::write(stack.join("stack.code-workspace"), r#"{"folders":[]}"#).unwrap();
     init_git_at(&stack.join("repo-x"));
     let found = scan_workspace_root(root.path(), 4).unwrap();
-    let umbrella_count = found.iter().filter(|w| {
-        w.kind == WorkspaceKind::Umbrella && w.path.to_string_lossy().contains("stack")
-    }).count();
+    let umbrella_count = found
+        .iter()
+        .filter(|w| w.kind == WorkspaceKind::Umbrella && w.path.to_string_lossy().contains("stack"))
+        .count();
     // Exactly one umbrella per directory, even if multiple signals are present
-    assert_eq!(umbrella_count, 1, "expected exactly 1 umbrella, got {umbrella_count}");
+    assert_eq!(
+        umbrella_count, 1,
+        "expected exactly 1 umbrella, got {umbrella_count}"
+    );
 }

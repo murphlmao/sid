@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use sid_core::workspace_metadata::{
-    WorkspaceAction, WorkspaceKind, WorkspaceMetadata,
-};
+use sid_core::workspace_metadata::{WorkspaceAction, WorkspaceKind, WorkspaceMetadata};
 
 #[test]
 fn metadata_construction() {
@@ -40,10 +38,7 @@ fn from_basename_uses_directory_name() {
 
 #[test]
 fn from_basename_with_empty_path_uses_fallback() {
-    let m = WorkspaceMetadata::from_basename(
-        std::path::Path::new(""),
-        WorkspaceKind::Repo,
-    );
+    let m = WorkspaceMetadata::from_basename(std::path::Path::new(""), WorkspaceKind::Repo);
     assert_eq!(m.name, "workspace");
 }
 
