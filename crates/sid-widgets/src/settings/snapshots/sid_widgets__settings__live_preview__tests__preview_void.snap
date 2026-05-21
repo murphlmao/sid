@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/src/settings/live_preview.rs
+expression: s
+---
+┌──────────────────────────────────────┐
+│✦ void ✦                              │
+│  primary accent row                  │
+│  muted secondary text                │
+│  success ok                          │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│Enter to apply  ·  Esc to cancel      │
+└──────────────────────────────────────┘
