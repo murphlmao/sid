@@ -11,7 +11,7 @@ use sid_core::tab::TabId;
 use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
-use crate::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
+use crate::schema::{SECRETS, SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE, WORKSPACES};
 use crate::{OpenStore, SessionRecord, SettingValue, Store, Workspace, WidgetState};
 
 /// redb-backed implementation of [`crate::Store`].
@@ -53,6 +53,9 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(WORKSPACES)
                 .map_err(|e| SidError::Storage(format!("open workspaces: {e}")))?;
+            let _ = txn
+                .open_table(SECRETS)
+                .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
@@ -332,5 +335,76 @@ impl Store for RedbStore {
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit remove: {e}")))?;
         Ok(())
+    }
+
+    fn secret_put(&self, id: &str, value: &[u8]) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(SECRETS)
+                .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
+            tbl.insert(id, value)
+                .map_err(|e| SidError::Storage(format!("insert secret: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit secret: {e}")))?;
+        Ok(())
+    }
+
+    fn secret_get(&self, id: &str) -> Result<Option<Vec<u8>>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(SECRETS)
+            .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
+        let got = tbl
+            .get(id)
+            .map_err(|e| SidError::Storage(format!("get secret: {e}")))?;
+        match got {
+            None => Ok(None),
+            Some(guard) => Ok(Some(guard.value().to_vec())),
+        }
+    }
+
+    fn secret_delete(&self, id: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(SECRETS)
+                .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
+            tbl.remove(id)
+                .map_err(|e| SidError::Storage(format!("remove secret: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit secret remove: {e}")))?;
+        Ok(())
+    }
+
+    fn list_secret_ids(&self) -> Result<Vec<String>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(SECRETS)
+            .map_err(|e| SidError::Storage(format!("open secrets: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter secrets: {e}")))?;
+        for entry in iter {
+            let (k, _v) =
+                entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            out.push(k.value().to_string());
+        }
+        Ok(out)
     }
 }

@@ -6,5 +6,6 @@ pub mod db_client;
 pub mod git;
 pub mod notifier;
 pub mod pty;
+pub mod secrets;
 pub mod ssh;
 pub mod sys;
