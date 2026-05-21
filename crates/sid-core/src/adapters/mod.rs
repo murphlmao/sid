@@ -10,3 +10,4 @@ pub mod secrets;
 pub mod ssh;
 pub mod sys;
 pub mod systemctl;
+pub mod terminal_spawner;
