@@ -1589,10 +1589,9 @@ mod tests {
         let store = Arc::new(RedbStore::open(&db_file).unwrap());
         // Leak tempdir so it isn't deleted before draw runs — only used in tests.
         std::mem::forget(dir);
-        let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
-            Arc::new(sid_secrets::PlainStore::new(
-                Arc::clone(&store) as Arc<dyn Store>
-            ));
+        let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
+            sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
+        );
         SidApp {
             app: build_app(start_tab, vec![]),
             store,

@@ -7,17 +7,17 @@
 use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable};
+use sid_core::SidError;
 use sid_core::tab::TabId;
 use sid_core::widget::WidgetId;
-use sid_core::SidError;
 
 use crate::schema::{
     DB_CONNECTIONS, KEYBINDS, PINNED_CONFIGS, QUERY_HISTORY, QUICK_ACTIONS, SECRETS, SESSION_META,
     SESSIONS, SETTINGS, THEMES, WIDGET_STATE, WORKSPACES,
 };
 use crate::{
-    DbConnection, KeybindProfile, OpenStore, PinnedConfig, QueryRecord, QuickAction,
-    SessionRecord, SettingValue, Store, ThemeSpec, Workspace, WidgetState,
+    DbConnection, KeybindProfile, OpenStore, PinnedConfig, QueryRecord, QuickAction, SessionRecord,
+    SettingValue, Store, ThemeSpec, WidgetState, Workspace,
 };
 
 /// redb-backed implementation of [`crate::Store`].
@@ -199,8 +199,7 @@ impl Store for RedbStore {
         };
         let blob_bytes: Vec<u8> = blob_guard.value().to_vec();
         drop(blob_guard);
-        let (_version, rec) =
-            crate::codec::decode_versioned::<SessionRecord>(&blob_bytes)?;
+        let (_version, rec) = crate::codec::decode_versioned::<SessionRecord>(&blob_bytes)?;
         Ok(Some(rec))
     }
 
@@ -246,8 +245,7 @@ impl Store for RedbStore {
             let Some(existing_bytes) = existing_bytes else {
                 return Ok(()); // no-op: session not found
             };
-            let (_v, mut rec) =
-                crate::codec::decode_versioned::<SessionRecord>(&existing_bytes)?;
+            let (_v, mut rec) = crate::codec::decode_versioned::<SessionRecord>(&existing_bytes)?;
             rec.ended_at = Some(ended_at);
             let bytes = crate::codec::encode_versioned(1, &rec)?;
             sess.insert(id, &bytes[..])
@@ -271,8 +269,7 @@ impl Store for RedbStore {
             .iter()
             .map_err(|e| SidError::Storage(format!("iter sessions: {e}")))?;
         for entry in iter {
-            let (_k, v) = entry
-                .map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
             let blob: Vec<u8> = v.value().to_vec();
             let (_ver, rec) = crate::codec::decode_versioned::<SessionRecord>(&blob)?;
             out.push(rec);
@@ -333,8 +330,7 @@ impl Store for RedbStore {
             .iter()
             .map_err(|e| SidError::Storage(format!("iter workspaces: {e}")))?;
         for entry in iter {
-            let (_k, v) =
-                entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
             let (_ver, w) = crate::codec::decode_versioned::<Workspace>(v.value())?;
             out.push(w);
         }
@@ -463,8 +459,7 @@ impl Store for RedbStore {
             .iter()
             .map_err(|e| SidError::Storage(format!("iter secrets: {e}")))?;
         for entry in iter {
-            let (k, _v) =
-                entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (k, _v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
             out.push(k.value().to_string());
         }
         Ok(out)

@@ -132,8 +132,7 @@ pub const QUICK_ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("qu
 /// use sid_store::schema::PINNED_CONFIGS;
 /// assert_eq!(PINNED_CONFIGS.name(), "pinned_configs");
 /// ```
-pub const PINNED_CONFIGS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("pinned_configs");
+pub const PINNED_CONFIGS: TableDefinition<&str, &[u8]> = TableDefinition::new("pinned_configs");
 
 /// DB connection registry (Plan 4). Key: connection id. Value: versioned-postcard
 /// [`crate::DbConnection`].
@@ -145,8 +144,7 @@ pub const PINNED_CONFIGS: TableDefinition<&str, &[u8]> =
 /// use sid_store::schema::DB_CONNECTIONS;
 /// assert_eq!(DB_CONNECTIONS.name(), "db_connections");
 /// ```
-pub const DB_CONNECTIONS: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("db_connections");
+pub const DB_CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("db_connections");
 
 /// Per-connection query history (Plan 4). Composite key `(ts_ns, seq)` packed
 /// into a big-endian 24-byte buffer (`u128` ts_ns followed by `u64` seq). Value:
@@ -159,8 +157,7 @@ pub const DB_CONNECTIONS: TableDefinition<&str, &[u8]> =
 /// use sid_store::schema::QUERY_HISTORY;
 /// assert_eq!(QUERY_HISTORY.name(), "query_history");
 /// ```
-pub const QUERY_HISTORY: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("query_history");
+pub const QUERY_HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("query_history");
 
 #[cfg(test)]
 mod tests {

@@ -18,10 +18,7 @@ fn conn(id: &str, k: DbKind) -> DbConnection {
 // Task 21: connection-list state.
 #[test]
 fn new_state_selects_first_connection() {
-    let s = DatabaseState::new(vec![
-        conn("a", DbKind::Sqlite),
-        conn("b", DbKind::Postgres),
-    ]);
+    let s = DatabaseState::new(vec![conn("a", DbKind::Sqlite), conn("b", DbKind::Postgres)]);
     assert_eq!(s.selected_connection().unwrap().id, "a");
 }
 

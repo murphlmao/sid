@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sid_core::SidError;
 use sid_core::tab::TabId;
 use sid_core::widget::WidgetId;
-use sid_core::SidError;
 
 pub mod codec;
 pub mod keybind_load;
@@ -103,10 +103,9 @@ pub trait TypedSettings: Store {
     fn get_string(&self, key: &str) -> Result<Option<String>, SidError> {
         match self.get_setting(key)? {
             None => Ok(None),
-            Some(v) => Ok(Some(
-                String::from_utf8(v.0)
-                    .map_err(|e| SidError::Storage(format!("non-utf8 setting '{key}': {e}")))?,
-            )),
+            Some(v) => Ok(Some(String::from_utf8(v.0).map_err(|e| {
+                SidError::Storage(format!("non-utf8 setting '{key}': {e}"))
+            })?)),
         }
     }
 
@@ -151,9 +150,9 @@ pub trait TypedSettings: Store {
             Some(v) => {
                 let s = std::str::from_utf8(&v.0)
                     .map_err(|e| SidError::Storage(format!("non-utf8 u64 '{key}': {e}")))?;
-                let parsed = s
-                    .parse::<u64>()
-                    .map_err(|e| SidError::Storage(format!("invalid u64 '{s}' for '{key}': {e}")))?;
+                let parsed = s.parse::<u64>().map_err(|e| {
+                    SidError::Storage(format!("invalid u64 '{s}' for '{key}': {e}"))
+                })?;
                 Ok(Some(parsed))
             }
         }
@@ -1515,7 +1514,10 @@ mod tests {
                 Ok(self.settings.lock().unwrap().get(key).cloned())
             }
             fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError> {
-                self.settings.lock().unwrap().insert(key.to_string(), val.clone());
+                self.settings
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), val.clone());
                 Ok(())
             }
             fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
@@ -1585,10 +1587,7 @@ mod tests {
             fn list_keybind_profiles(&self) -> Result<Vec<KeybindProfile>, SidError> {
                 Ok(vec![])
             }
-            fn get_keybind_profile(
-                &self,
-                _: &str,
-            ) -> Result<Option<KeybindProfile>, SidError> {
+            fn get_keybind_profile(&self, _: &str) -> Result<Option<KeybindProfile>, SidError> {
                 Ok(None)
             }
             fn upsert_keybind_profile(&self, _: &KeybindProfile) -> Result<(), SidError> {
@@ -1641,7 +1640,9 @@ mod tests {
             }
         }
 
-        let store = MemStore { settings: Mutex::new(HashMap::new()) };
+        let store = MemStore {
+            settings: Mutex::new(HashMap::new()),
+        };
         let key = "foo";
         let val = SettingValue(b"bar".to_vec());
         store.put_setting(key, &val).unwrap();

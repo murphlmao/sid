@@ -35,7 +35,12 @@ fn end_to_end_sqlite_session() {
     assert!(
         Command::new(bin)
             .args(common)
-            .args(["db", "query", "data", "CREATE TABLE users (id INT, name TEXT)"])
+            .args([
+                "db",
+                "query",
+                "data",
+                "CREATE TABLE users (id INT, name TEXT)"
+            ])
             .status()
             .unwrap()
             .success()

@@ -363,10 +363,9 @@ async fn main() -> Result<()> {
     let spawner = wire::build_terminal_spawner();
     let postgres = sid_db_clients::PostgresClient::factory();
     let sqlite = sid_db_clients::SqliteClient::factory();
-    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
-        Arc::new(sid_secrets::PlainStore::new(
-            Arc::clone(&store) as Arc<dyn Store>
-        ));
+    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
+        sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
+    );
 
     let mut sid_app = wire::SidApp {
         app,
