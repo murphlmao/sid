@@ -20,6 +20,212 @@ pub mod schema;
 
 pub use redb_impl::RedbStore;
 
+/// Canonical keys for settings persisted in the `settings` table.
+///
+/// Centralised so the Settings widget, the `sid settings get/set` CLI, and the
+/// reset-to-defaults flow agree on the names byte-for-byte.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::settings_keys;
+/// assert_eq!(settings_keys::THEME_NAME, "theme_name");
+/// assert_eq!(settings_keys::KEYBIND_PROFILE_NAME, "keybind_profile_name");
+/// assert_eq!(settings_keys::WORKSPACE_ROOTS, "workspace_roots");
+/// assert_eq!(settings_keys::PERSIST_DEBOUNCE_MS, "persist_debounce_ms");
+/// assert_eq!(settings_keys::HEARTBEAT_INTERVAL_SECS, "heartbeat_interval_secs");
+/// assert_eq!(settings_keys::AUTO_RESTORE_SESSION, "auto_restore_session");
+/// assert_eq!(settings_keys::AUTO_SCAN_WORKSPACES, "auto_scan_workspaces");
+/// assert_eq!(settings_keys::DEFAULT_TAB, "default_tab");
+/// assert_eq!(settings_keys::SETTINGS_FOCUSED_CATEGORY, "settings_focused_category");
+/// ```
+pub mod settings_keys {
+    /// Canonical name of the active theme.
+    pub const THEME_NAME: &str = "theme_name";
+    /// Canonical name of the active keybind profile (postcard blob lives in the
+    /// `keybinds` table; this setting names which profile is loaded).
+    pub const KEYBIND_PROFILE_NAME: &str = "keybind_profile_name";
+    /// JSON-encoded list of absolute workspace roots that the discovery walker
+    /// should consider as scan origins.
+    pub const WORKSPACE_ROOTS: &str = "workspace_roots";
+    /// Debounce window (milliseconds) for `StatePersister` flushes.
+    pub const PERSIST_DEBOUNCE_MS: &str = "persist_debounce_ms";
+    /// Heartbeat interval (seconds) for the detached session writer.
+    pub const HEARTBEAT_INTERVAL_SECS: &str = "heartbeat_interval_secs";
+    /// Whether the previous session should be restored on startup.
+    pub const AUTO_RESTORE_SESSION: &str = "auto_restore_session";
+    /// Whether workspace discovery runs automatically on startup.
+    pub const AUTO_SCAN_WORKSPACES: &str = "auto_scan_workspaces";
+    /// Tab id (string) to land on when sid starts with no prior session.
+    pub const DEFAULT_TAB: &str = "default_tab";
+    /// Settings widget — last-focused sub-category (string id).
+    pub const SETTINGS_FOCUSED_CATEGORY: &str = "settings_focused_category";
+}
+
+/// String-typed setting helpers. Default impls call [`Store::get_setting`] /
+/// [`Store::put_setting`] and store the value as UTF-8 bytes so that
+/// `sid settings get` can dump them without invoking the codec.
+///
+/// All accessors return `Ok(None)` when a key is unset — they never fabricate
+/// defaults; defaulting is a widget-level concern.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{settings_keys, OpenStore, RedbStore, TypedSettings};
+/// use tempfile::tempdir;
+///
+/// let dir = tempdir().unwrap();
+/// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+/// store.put_string(settings_keys::THEME_NAME, "cosmos").unwrap();
+/// assert_eq!(
+///     store.get_string(settings_keys::THEME_NAME).unwrap().as_deref(),
+///     Some("cosmos"),
+/// );
+/// ```
+pub trait TypedSettings: Store {
+    /// Read a UTF-8 string-typed setting. `Ok(None)` if unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.get_string("theme_name").unwrap().is_none());
+    /// store.put_string("theme_name", "cosmos").unwrap();
+    /// assert_eq!(store.get_string("theme_name").unwrap().as_deref(), Some("cosmos"));
+    /// ```
+    fn get_string(&self, key: &str) -> Result<Option<String>, SidError> {
+        match self.get_setting(key)? {
+            None => Ok(None),
+            Some(v) => Ok(Some(
+                String::from_utf8(v.0)
+                    .map_err(|e| SidError::Storage(format!("non-utf8 setting '{key}': {e}")))?,
+            )),
+        }
+    }
+
+    /// Write a UTF-8 string-typed setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_string("k", "v").unwrap();
+    /// assert_eq!(store.get_string("k").unwrap().as_deref(), Some("v"));
+    /// ```
+    fn put_string(&self, key: &str, val: &str) -> Result<(), SidError> {
+        self.put_setting(key, &SettingValue(val.as_bytes().to_vec()))
+    }
+
+    /// Read a `u64`-typed setting (UTF-8 ASCII decimal). `Ok(None)` if unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SidError::Storage` if the bytes are not valid UTF-8 or do not
+    /// parse as a `u64`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_u64("persist_debounce_ms", 250).unwrap();
+    /// assert_eq!(store.get_u64("persist_debounce_ms").unwrap(), Some(250));
+    /// ```
+    fn get_u64(&self, key: &str) -> Result<Option<u64>, SidError> {
+        match self.get_setting(key)? {
+            None => Ok(None),
+            Some(v) => {
+                let s = std::str::from_utf8(&v.0)
+                    .map_err(|e| SidError::Storage(format!("non-utf8 u64 '{key}': {e}")))?;
+                let parsed = s
+                    .parse::<u64>()
+                    .map_err(|e| SidError::Storage(format!("invalid u64 '{s}' for '{key}': {e}")))?;
+                Ok(Some(parsed))
+            }
+        }
+    }
+
+    /// Write a `u64`-typed setting, encoded as UTF-8 decimal bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_u64("k", 42).unwrap();
+    /// assert_eq!(store.get_u64("k").unwrap(), Some(42));
+    /// ```
+    fn put_u64(&self, key: &str, val: u64) -> Result<(), SidError> {
+        self.put_string(key, &val.to_string())
+    }
+
+    /// Read a `bool`-typed setting (either `"true"` or `"false"`). `Ok(None)`
+    /// if unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SidError::Storage` if the bytes are not exactly `"true"` or
+    /// `"false"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_bool("auto_restore_session", true).unwrap();
+    /// assert_eq!(store.get_bool("auto_restore_session").unwrap(), Some(true));
+    /// ```
+    fn get_bool(&self, key: &str) -> Result<Option<bool>, SidError> {
+        match self.get_string(key)? {
+            None => Ok(None),
+            Some(s) => match s.as_str() {
+                "true" => Ok(Some(true)),
+                "false" => Ok(Some(false)),
+                other => Err(SidError::Storage(format!(
+                    "invalid bool '{other}' for key '{key}'"
+                ))),
+            },
+        }
+    }
+
+    /// Write a `bool`-typed setting as `"true"` or `"false"` bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, TypedSettings};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_bool("k", false).unwrap();
+    /// assert_eq!(store.get_bool("k").unwrap(), Some(false));
+    /// ```
+    fn put_bool(&self, key: &str, val: bool) -> Result<(), SidError> {
+        self.put_string(key, if val { "true" } else { "false" })
+    }
+}
+
+impl<S: Store + ?Sized> TypedSettings for S {}
+
 /// Wall-clock instant as nanoseconds since UNIX epoch. Used for ordering.
 ///
 /// # Examples
