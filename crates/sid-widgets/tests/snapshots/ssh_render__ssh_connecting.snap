@@ -1,0 +1,20 @@
+---
+source: crates/sid-widgets/tests/ssh_render.rs
+expression: s
+---
+┌ Hosts (j/k Enter) ───────────┐┌ Status ──────────────────────────────────────┐
+│> ● my-prod-server            ││● Connecting to my-prod-server                │
+│                              │└──────────────────────────────────────────────┘
+│                              │┌ Session ─────────────────────────────────────┐
+│                              ││Connecting to my-prod-server...               │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              │└──────────────────────────────────────────────┘
+└──────────────────────────────┘ (no recent commands)
