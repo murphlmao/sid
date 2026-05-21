@@ -70,6 +70,81 @@ enum Cmd {
         #[command(subcommand)]
         op: SettingsOp,
     },
+    /// System tab operations (pin configs, list services, manage quick actions).
+    ///
+    /// Allows scripting the pinned-configs registry and the global quick-action
+    /// table from outside the TUI. `services` requires a systemd host.
+    System {
+        #[command(subcommand)]
+        op: SystemOp,
+    },
+}
+
+/// Operations on the System tab — pinned configs, systemd services, quick actions.
+#[derive(clap::Subcommand, Debug)]
+enum SystemOp {
+    /// Add a pinned config (creates or replaces).
+    Pin {
+        /// Path to pin (canonicalized).
+        path: PathBuf,
+        /// Display label. Defaults to the file name.
+        #[arg(long)]
+        label: Option<String>,
+        /// Override the default opener command (shell command line).
+        #[arg(long)]
+        opener: Option<String>,
+    },
+    /// Remove a pinned config by path.
+    Unpin {
+        /// Path that was pinned.
+        path: PathBuf,
+    },
+    /// List all pinned configs.
+    Pins,
+    /// List systemd services (requires `systemctl` on PATH).
+    Services {
+        /// Only user units. Mutually exclusive with `--system`; if neither set, both buses are queried.
+        #[arg(long)]
+        user: bool,
+        /// Only system units. Mutually exclusive with `--user`.
+        #[arg(long)]
+        system: bool,
+        /// Filter by `ActiveState` (e.g. `active`, `failed`, `inactive`).
+        #[arg(long, value_name = "STATE")]
+        state: Option<String>,
+    },
+    /// Quick-action CRUD + run.
+    Action {
+        #[command(subcommand)]
+        op: ActionOp,
+    },
+}
+
+/// Quick-action subcommands.
+#[derive(clap::Subcommand, Debug)]
+enum ActionOp {
+    /// Add a global quick action.
+    Add {
+        /// Human-readable label.
+        label: String,
+        /// Shell command to run.
+        cmd: String,
+        /// Optional keybind chord string (matches `KeybindEntry::chord`).
+        #[arg(long)]
+        keybind: Option<String>,
+    },
+    /// List all quick actions.
+    List,
+    /// Remove a quick action by id.
+    Remove {
+        /// Action id (e.g. `qa-…`).
+        id: String,
+    },
+    /// Run a quick action by id immediately (no TUI).
+    Run {
+        /// Action id (e.g. `qa-…`).
+        id: String,
+    },
 }
 
 /// Operations on the settings table.
@@ -179,6 +254,11 @@ async fn main() -> Result<()> {
     // Handle `sid settings` subcommands (exit before launching TUI).
     if let Some(Cmd::Settings { op }) = cli.cmd {
         return handle_settings_cmd(&*store, op);
+    }
+
+    // Handle `sid system` subcommands (exit before launching TUI).
+    if let Some(Cmd::System { op }) = cli.cmd {
+        return handle_system_cmd(&*store, op);
     }
 
     // Startup workspace discovery (scan ~/vcs/ by default).
@@ -541,6 +621,120 @@ fn handle_settings_cmd(store: &dyn Store, op: SettingsOp) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// Dispatch `sid system …` subcommands (pin/unpin/pins/services/action).
+fn handle_system_cmd(store: &dyn Store, op: SystemOp) -> Result<()> {
+    use sid_core::adapters::systemctl::{SystemctlClient as _, UnitBus, UnitFilter};
+    use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
+
+    match op {
+        SystemOp::Pin {
+            path,
+            label,
+            opener,
+        } => {
+            // canonicalize so identical-but-different-form paths collapse.
+            let abs = std::fs::canonicalize(&path).unwrap_or(path);
+            let display_label = label.unwrap_or_else(|| {
+                abs.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("(unnamed)")
+                    .to_string()
+            });
+            let pc = PinnedConfig {
+                path: abs.clone(),
+                label: display_label,
+                opener_cmd: opener,
+                created_at: now_epoch(),
+            };
+            store.upsert_pinned_config(&pc)?;
+            println!("pinned: {}", abs.display());
+            Ok(())
+        }
+        SystemOp::Unpin { path } => {
+            let abs = std::fs::canonicalize(&path).unwrap_or(path);
+            store.remove_pinned_config(&abs)?;
+            println!("unpinned: {}", abs.display());
+            Ok(())
+        }
+        SystemOp::Pins => {
+            for p in store.list_pinned_configs()? {
+                println!("{:<40} {}", p.label, p.path.display());
+            }
+            Ok(())
+        }
+        SystemOp::Services {
+            user,
+            system,
+            state,
+        } => {
+            let bus_both = (user && system) || (!user && !system);
+            let bus = if system { UnitBus::System } else { UnitBus::User };
+            let state_filter = state.as_deref().map(sid_system::parse::parse_unit_state);
+            let client = sid_system::SystemctlCmdClient::new()
+                .map_err(|e| anyhow!("systemctl unavailable: {e}"))?;
+            let units = client
+                .list_units(UnitFilter {
+                    name_substring: None,
+                    state: state_filter,
+                    bus,
+                    bus_both,
+                })
+                .map_err(|e| anyhow!("list_units: {e}"))?;
+            for u in units {
+                println!(
+                    "{:<40} {:<12} {:<10} {}",
+                    u.name,
+                    format!("{:?}", u.state),
+                    u.sub_state,
+                    u.description
+                );
+            }
+            Ok(())
+        }
+        SystemOp::Action { op } => match op {
+            ActionOp::Add {
+                label,
+                cmd,
+                keybind,
+            } => {
+                let a = QuickAction {
+                    id: QuickAction::new_id(),
+                    label,
+                    scope: QuickActionScope::Global,
+                    cmd,
+                    keybind,
+                };
+                store.upsert_quick_action(&a)?;
+                println!("added action: {} ({})", a.label, a.id);
+                Ok(())
+            }
+            ActionOp::List => {
+                for a in store.list_quick_actions()? {
+                    println!("{:<24} {:<40} {}", a.id, a.label, a.cmd);
+                }
+                Ok(())
+            }
+            ActionOp::Remove { id } => {
+                store.remove_quick_action(&id)?;
+                println!("removed: {id}");
+                Ok(())
+            }
+            ActionOp::Run { id } => {
+                let a = store
+                    .get_quick_action(&id)?
+                    .ok_or_else(|| anyhow!("no such action: {id}"))?;
+                let parts =
+                    shell_words::split(&a.cmd).map_err(|e| anyhow!("shell-words: {e}"))?;
+                let (bin, args) = parts
+                    .split_first()
+                    .ok_or_else(|| anyhow!("empty cmd"))?;
+                let status = std::process::Command::new(bin).args(args).status()?;
+                std::process::exit(status.code().unwrap_or(1));
+            }
+        },
     }
 }
 
