@@ -7,6 +7,7 @@ pub mod context;
 pub mod error;
 pub mod event;
 pub mod keybind;
+pub mod keybind_profile;
 pub mod layout;
 pub mod palette;
 pub mod persister;

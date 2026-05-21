@@ -15,6 +15,7 @@ use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
 pub mod codec;
+pub mod keybind_load;
 pub mod redb_impl;
 pub mod schema;
 pub mod sid_toml;
