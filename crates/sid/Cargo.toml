@@ -24,6 +24,8 @@ sid-store.workspace = true
 sid-job.workspace = true
 sid-widgets.workspace = true
 sid-git.workspace = true
+sid-sysinfo.workspace = true
+serde_json.workspace = true
 
 ratatui.workspace = true
 crossterm.workspace = true

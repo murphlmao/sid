@@ -53,6 +53,52 @@ enum Cmd {
         #[command(subcommand)]
         op: WorkspaceOp,
     },
+    /// Network info and actions.
+    ///
+    /// Provides non-interactive access to the same data the Network tab
+    /// renders: listening ports, processes, interfaces. Also exposes the
+    /// kill flow for scripting (`sid net kill <pid>` / `port:<n>`).
+    Net {
+        #[command(subcommand)]
+        op: NetOp,
+    },
+}
+
+/// Operations on the network / process surface.
+#[derive(clap::Subcommand, Debug)]
+enum NetOp {
+    /// List TCP/UDP sockets in LISTEN state.
+    Ports {
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+    /// List visible processes.
+    Procs {
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+        /// Sort key: `pid` (default), `cpu`, `rss`, `name`.
+        #[arg(long, default_value = "pid")]
+        sort: String,
+        /// Maximum rows to print.
+        #[arg(long, default_value_t = 50)]
+        top: usize,
+    },
+    /// List network interfaces.
+    Interfaces {
+        /// Output format: `table` (default) or `json`.
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+    /// Send a kill signal to a target by PID or `port:<n>`.
+    Kill {
+        /// Either a numeric PID or `port:<n>` (e.g., `port:8080`).
+        target: String,
+        /// Skip the SIGTERM grace period and SIGKILL immediately.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Operations on the workspace registry.
@@ -89,6 +135,11 @@ async fn main() -> Result<()> {
     // Handle workspace subcommands (exit before launching TUI).
     if let Some(Cmd::Workspace { op }) = cli.cmd {
         return handle_workspace_cmd(&*store, op);
+    }
+
+    // Handle network subcommands (exit before launching TUI).
+    if let Some(Cmd::Net { op }) = cli.cmd {
+        return handle_net_cmd(op).await;
     }
 
     // Startup workspace discovery (scan ~/vcs/ by default).
@@ -151,6 +202,182 @@ fn install_tracing() {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+/// Dispatch a `sid net …` subcommand.
+async fn handle_net_cmd(op: NetOp) -> Result<()> {
+    use std::time::Duration as StdDuration;
+
+    use sid_core::adapters::sys::{Signal, SysProvider as _};
+    use sid_core::sys_probe::kill_job::{KillOutcome, run_kill_job};
+
+    let mut provider = sid_sysinfo::SysinfoProvider::new();
+    match op {
+        NetOp::Ports { format } => {
+            let ports = provider
+                .list_listening_ports()
+                .map_err(|e| anyhow!("list_listening_ports: {e}"))?;
+            match format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(&ports)?),
+                _ => {
+                    println!(
+                        "{:<6} {:<8} {:<5} {:<8} COMMAND",
+                        "PORT", "PID", "PROTO", "STATE"
+                    );
+                    for p in ports {
+                        let pid_s = p
+                            .pid
+                            .map(|p| p.as_u32().to_string())
+                            .unwrap_or_else(|| "-".into());
+                        println!(
+                            "{:<6} {:<8} {:<5} {:<8} {}",
+                            p.port,
+                            pid_s,
+                            format!("{:?}", p.protocol).to_lowercase(),
+                            format!("{:?}", p.state).to_lowercase(),
+                            p.command,
+                        );
+                    }
+                }
+            }
+        }
+        NetOp::Procs { format, sort, top } => {
+            let mut procs = provider
+                .list_processes()
+                .map_err(|e| anyhow!("list_processes: {e}"))?;
+            match sort.as_str() {
+                "cpu" => procs.sort_by(|a, b| {
+                    b.cpu_pct
+                        .partial_cmp(&a.cpu_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }),
+                "rss" => procs.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes)),
+                "name" => procs.sort_by(|a, b| a.name.cmp(&b.name)),
+                _ => procs.sort_by_key(|p| p.pid.as_u32()),
+            }
+            procs.truncate(top);
+            match format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(&procs)?),
+                _ => {
+                    println!(
+                        "{:<8} {:<24} {:>6} {:>10} USER",
+                        "PID", "NAME", "CPU%", "RSS"
+                    );
+                    for p in procs {
+                        let user = p.user.unwrap_or_else(|| "-".into());
+                        println!(
+                            "{:<8} {:<24} {:>6.1} {:>10} {}",
+                            p.pid.as_u32(),
+                            truncate_to(&p.name, 24),
+                            p.cpu_pct,
+                            p.rss_bytes,
+                            user,
+                        );
+                    }
+                }
+            }
+        }
+        NetOp::Interfaces { format } => {
+            let ifs = provider
+                .list_interfaces()
+                .map_err(|e| anyhow!("list_interfaces: {e}"))?;
+            match format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(&ifs)?),
+                _ => {
+                    println!(
+                        "{:<16} {:<6} {:>12} {:>12} ADDRS",
+                        "NAME", "STATUS", "RX", "TX"
+                    );
+                    for i in ifs {
+                        let status = if i.is_up { "up" } else { "down" };
+                        println!(
+                            "{:<16} {:<6} {:>12} {:>12} {}",
+                            i.name,
+                            status,
+                            i.rx_bytes,
+                            i.tx_bytes,
+                            i.addrs.join(","),
+                        );
+                    }
+                }
+            }
+        }
+        NetOp::Kill { target, force } => {
+            let pid = parse_kill_target(&target, &mut provider)?;
+            if force {
+                // Skip the SIGTERM grace period; SIGKILL directly.
+                provider
+                    .kill_process(pid, Signal::Kill)
+                    .map_err(|e| anyhow!("kill: {e}"))?;
+                println!("sent SIGKILL to PID {}", pid.as_u32());
+                return Ok(());
+            }
+            let provider_arc: std::sync::Arc<std::sync::Mutex<dyn sid_core::adapters::sys::SysProvider>> =
+                std::sync::Arc::new(std::sync::Mutex::new(provider));
+            let outcome = run_kill_job(provider_arc, pid, StdDuration::from_secs(5))
+                .await
+                .map_err(|e| anyhow!("kill: {e}"))?;
+            match outcome {
+                KillOutcome::Killed(p) => {
+                    println!("killed PID {} (SIGTERM)", p.as_u32());
+                }
+                KillOutcome::EscalatedToSigkill(p) => {
+                    println!("PID {} ignored SIGTERM; sent SIGKILL", p.as_u32());
+                }
+                KillOutcome::Failed(p, msg) => {
+                    eprintln!("kill PID {} failed: {msg}", p.as_u32());
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn truncate_to(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    }
+}
+
+/// Parse a `target` argument from `sid net kill`:
+/// - `port:N` → resolves to the PID of the LISTEN socket on N, if any.
+/// - digits-only → treats as a raw PID.
+/// - anything else → exits with code 2.
+fn parse_kill_target(
+    target: &str,
+    provider: &mut sid_sysinfo::SysinfoProvider,
+) -> Result<sid_core::adapters::sys::Pid> {
+    use sid_core::adapters::sys::{Pid, SysProvider as _};
+
+    if let Some(num) = target.strip_prefix("port:") {
+        let port: u16 = num
+            .parse()
+            .map_err(|e| anyhow!("invalid port number {num:?}: {e}"))?;
+        let ports = provider
+            .list_listening_ports()
+            .map_err(|e| anyhow!("list_listening_ports: {e}"))?;
+        let owner = ports
+            .into_iter()
+            .find(|p| p.port == port)
+            .ok_or_else(|| anyhow!("no listening socket on port {port}"))?;
+        let pid = owner
+            .pid
+            .ok_or_else(|| anyhow!("port {port} has no attributable PID"))?;
+        return Ok(pid);
+    }
+    // Plain digits → PID.
+    if target.chars().all(|c| c.is_ascii_digit()) && !target.is_empty() {
+        let pid: u32 = target
+            .parse()
+            .map_err(|e| anyhow!("invalid PID {target:?}: {e}"))?;
+        return Ok(Pid::from_u32(pid));
+    }
+    Err(anyhow!(
+        "invalid kill target {target:?}: expected `port:<n>` or a numeric PID"
+    ))
 }
 
 /// Dispatch a workspace registry subcommand and return.
