@@ -27,6 +27,8 @@ use sid_core::workspace_metadata::WorkspaceKind;
 use sid_git::Git2ProviderFactory;
 use sid_store::{RedbStore, SessionRecord, Store, Workspace, now_epoch};
 use sid_ui::helpers::styled_block;
+use sid_ui::theme::{Color as UiColor, GlyphSet, Theme};
+use sid_ui::theme_registry::ThemeRegistry;
 use sid_ui::themes::cosmos;
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
@@ -105,12 +107,147 @@ pub fn db_path(override_path: Option<PathBuf>) -> PathBuf {
     if let Some(p) = override_path {
         return p;
     }
+    // Check `~/.config/sid/sid.toml` for an override before falling back to XDG.
     if let Some(dirs) = ProjectDirs::from("dev", "sid", "sid") {
+        let toml_path = dirs.config_dir().join("sid.toml");
+        if let Ok(cfg) = sid_store::sid_toml::read_sid_toml(&toml_path)
+            && let Some(override_from_toml) = cfg.db_path_override
+        {
+            return expand_tilde_path(&override_from_toml);
+        }
         let data = dirs.data_local_dir().to_path_buf();
         std::fs::create_dir_all(&data).ok();
         return data.join("sid.redb");
     }
     PathBuf::from("./sid.redb")
+}
+
+fn expand_tilde_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    p.to_path_buf()
+}
+
+/// Path to the `sid.toml` config file (XDG-rooted by default). Exposed for
+/// integration tests and the [`crate::wire::load_active_theme`] /
+/// [`crate::wire::load_active_keybinds`] startup helpers; the binary uses
+/// the same resolution implicitly via [`db_path`].
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::sid_toml_path;
+/// let p = sid_toml_path();
+/// assert!(p.to_string_lossy().ends_with("sid.toml"));
+/// ```
+#[allow(dead_code)]
+pub fn sid_toml_path() -> PathBuf {
+    if let Some(dirs) = ProjectDirs::from("dev", "sid", "sid") {
+        return dirs.config_dir().join("sid.toml");
+    }
+    PathBuf::from("./sid.toml")
+}
+
+/// Convert a persisted [`sid_store::ThemeSpec`] back into a [`Theme`] so it can
+/// be merged into a [`ThemeRegistry`].
+fn theme_spec_to_theme(spec: sid_store::ThemeSpec) -> Theme {
+    let rgb = |v: u32| {
+        UiColor::rgb(
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+        )
+    };
+    Theme {
+        name: spec.name,
+        background: rgb(spec.palette.background),
+        surface: rgb(spec.palette.surface),
+        foreground: rgb(spec.palette.foreground),
+        muted: rgb(spec.palette.muted),
+        accent_primary: rgb(spec.palette.accent_primary),
+        accent_success: rgb(spec.palette.accent_success),
+        accent_warning: rgb(spec.palette.accent_warning),
+        accent_error: rgb(spec.palette.accent_error),
+        border: rgb(spec.palette.border),
+        glyphs: GlyphSet {
+            star: spec.glyphs.star,
+            small_star: spec.glyphs.small_star,
+            dot: spec.glyphs.dot,
+        },
+    }
+}
+
+/// Load the active theme + the merged [`ThemeRegistry`] (built-ins plus user
+/// themes from the store). Falls back to `cosmos` with a warning if the
+/// configured theme name is missing.
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::load_active_theme;
+/// use sid_store::{OpenStore, RedbStore};
+/// use tempfile::tempdir;
+///
+/// let d = tempdir().unwrap();
+/// let store = RedbStore::open(&d.path().join("s.redb")).unwrap();
+/// let (theme, _registry) = load_active_theme(&store);
+/// assert_eq!(theme.name, "cosmos");
+/// ```
+pub fn load_active_theme(store: &dyn Store) -> (Theme, ThemeRegistry) {
+    use sid_store::TypedSettings;
+    let mut registry = ThemeRegistry::with_builtins();
+    if let Ok(user_themes) = store.list_themes() {
+        for spec in user_themes {
+            registry.register(theme_spec_to_theme(spec));
+        }
+    }
+    let name = store
+        .get_string(sid_store::settings_keys::THEME_NAME)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "cosmos".to_string());
+    let theme = registry.get(&name).cloned().unwrap_or_else(|| {
+        tracing::warn!(theme = %name, "theme not found, falling back to cosmos");
+        cosmos()
+    });
+    (theme, registry)
+}
+
+/// Load the active keybind profile from the store. On first run (empty store)
+/// seeds and returns the cosmos default.
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::load_active_keybinds;
+/// use sid_store::{OpenStore, RedbStore};
+/// use tempfile::tempdir;
+///
+/// let d = tempdir().unwrap();
+/// let store = RedbStore::open(&d.path().join("s.redb")).unwrap();
+/// let map = load_active_keybinds(&store);
+/// assert!(map.iter().count() > 0);
+/// ```
+pub fn load_active_keybinds(store: &dyn Store) -> KeybindMap {
+    use sid_store::TypedSettings;
+    let name = store
+        .get_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "cosmos".to_string());
+    match sid_store::keybind_load::load_keybind_profile(store, &name) {
+        Ok(Some(map)) => map,
+        _ => {
+            let m = KeybindMap::cosmos_default();
+            // Best-effort seed; ignore errors so a read-only store still boots.
+            let _ = sid_store::keybind_load::save_keybind_profile(store, "cosmos", &m);
+            m
+        }
+    }
 }
 
 /// Build an [`App`] with the six Plan-1 tabs pre-wired.
@@ -1279,5 +1416,94 @@ mod tests {
             session_id: "draw-test-sess".into(),
             sys_probe: None,
         }
+    }
+
+    // ---- load_active_theme / load_active_keybinds ----
+
+    fn fresh_store() -> (tempfile::TempDir, RedbStore) {
+        let d = tempdir().unwrap();
+        let s = RedbStore::open(&d.path().join("s.redb")).unwrap();
+        (d, s)
+    }
+
+    #[test]
+    fn load_active_theme_first_run_returns_cosmos() {
+        let (_d, store) = fresh_store();
+        let (theme, registry) = load_active_theme(&store);
+        assert_eq!(theme.name, "cosmos");
+        assert!(registry.get("void").is_some());
+    }
+
+    #[test]
+    fn load_active_theme_honours_setting() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_string(sid_store::settings_keys::THEME_NAME, "void")
+            .unwrap();
+        let (theme, _) = load_active_theme(&store);
+        assert_eq!(theme.name, "void");
+    }
+
+    #[test]
+    fn load_active_theme_falls_back_when_setting_unknown() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_string(sid_store::settings_keys::THEME_NAME, "nope")
+            .unwrap();
+        let (theme, _) = load_active_theme(&store);
+        assert_eq!(theme.name, "cosmos");
+    }
+
+    #[test]
+    fn load_active_theme_merges_user_themes() {
+        use sid_store::{ThemeGlyphs, ThemePalette, ThemeSpec};
+        let (_d, store) = fresh_store();
+        store
+            .upsert_theme(&ThemeSpec {
+                name: "mine".into(),
+                palette: ThemePalette {
+                    background: 0x010203,
+                    surface: 0,
+                    foreground: 0,
+                    muted: 0,
+                    accent_primary: 0,
+                    accent_success: 0,
+                    accent_warning: 0,
+                    accent_error: 0,
+                    border: 0,
+                },
+                glyphs: ThemeGlyphs {
+                    star: '*',
+                    small_star: '.',
+                    dot: '.',
+                },
+            })
+            .unwrap();
+        let (_theme, registry) = load_active_theme(&store);
+        assert!(registry.get("mine").is_some());
+        assert_eq!(registry.get("mine").unwrap().background.r, 0x01);
+    }
+
+    #[test]
+    fn load_active_keybinds_first_run_seeds_cosmos_default() {
+        let (_d, store) = fresh_store();
+        let map = load_active_keybinds(&store);
+        assert!(map.iter().count() > 0);
+        // Cosmos profile should now be persisted.
+        assert!(store.get_keybind_profile("cosmos").unwrap().is_some());
+    }
+
+    #[test]
+    fn load_active_keybinds_unknown_name_falls_back() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME, "missing")
+            .unwrap();
+        // Should not panic; returns cosmos default (and seeds 'cosmos').
+        let map = load_active_keybinds(&store);
+        assert!(map.iter().count() > 0);
     }
 }
