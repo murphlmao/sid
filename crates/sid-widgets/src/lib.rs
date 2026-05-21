@@ -16,7 +16,7 @@ pub mod workspaces;
 
 pub use database::DatabaseWidget;
 pub use network::NetworkWidget;
-pub use settings::SettingsWidget;
+pub use settings::{SettingsCategory, SettingsWidget};
 pub use ssh::SshWidget;
 pub use system::SystemWidget;
 pub use workspaces::WorkspacesWidget;
