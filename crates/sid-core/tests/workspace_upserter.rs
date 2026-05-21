@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use sid_core::workspace_discovery::{
-    merge_discoveries_into, scan_workspace_root, WorkspaceUpserter,
+    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
 };
 use sid_core::workspace_metadata::WorkspaceKind;
 use tempfile::tempdir;
@@ -23,7 +23,9 @@ struct CapturingUpserter {
 
 impl CapturingUpserter {
     fn new() -> Self {
-        Self { records: Mutex::new(vec![]) }
+        Self {
+            records: Mutex::new(vec![]),
+        }
     }
 
     fn count(&self) -> usize {
@@ -31,13 +33,20 @@ impl CapturingUpserter {
     }
 
     fn has_path(&self, path: &Path) -> bool {
-        self.records.lock().unwrap().iter().any(|(p, _, _)| p == path)
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(p, _, _)| p == path)
     }
 }
 
 impl WorkspaceUpserter for CapturingUpserter {
     fn upsert(&self, path: &Path, kind: WorkspaceKind, name: &str) -> Result<(), String> {
-        self.records.lock().unwrap().push((path.to_path_buf(), kind, name.to_string()));
+        self.records
+            .lock()
+            .unwrap()
+            .push((path.to_path_buf(), kind, name.to_string()));
         Ok(())
     }
 }
@@ -66,9 +75,15 @@ fn merge_passes_correct_kind_to_upsert() {
     let upserter = CapturingUpserter::new();
     merge_discoveries_into(&upserter, &discoveries).unwrap();
     let records = upserter.records.lock().unwrap();
-    let umbrella_record = records.iter().find(|(p, _, _)| p.ends_with("stack")).unwrap();
+    let umbrella_record = records
+        .iter()
+        .find(|(p, _, _)| p.ends_with("stack"))
+        .unwrap();
     assert_eq!(umbrella_record.1, WorkspaceKind::Umbrella);
-    let child_record = records.iter().find(|(p, _, _)| p.ends_with("child")).unwrap();
+    let child_record = records
+        .iter()
+        .find(|(p, _, _)| p.ends_with("child"))
+        .unwrap();
     assert_eq!(child_record.1, WorkspaceKind::Repo);
 }
 
@@ -80,7 +95,10 @@ fn merge_passes_name_to_upsert() {
     let upserter = CapturingUpserter::new();
     merge_discoveries_into(&upserter, &discoveries).unwrap();
     let records = upserter.records.lock().unwrap();
-    let record = records.iter().find(|(p, _, _)| p.ends_with("my-service")).unwrap();
+    let record = records
+        .iter()
+        .find(|(p, _, _)| p.ends_with("my-service"))
+        .unwrap();
     assert_eq!(record.2, "my-service");
 }
 
@@ -182,12 +200,20 @@ fn discoveries_with_duplicate_paths_call_upsert_for_each() {
     }
     impl WorkspaceUpserter for CountingStore<'_> {
         fn upsert(&self, path: &Path, _kind: WorkspaceKind, _name: &str) -> Result<(), String> {
-            *self.counts.lock().unwrap().entry(path.to_string_lossy().to_string()).or_default() += 1;
+            *self
+                .counts
+                .lock()
+                .unwrap()
+                .entry(path.to_string_lossy().to_string())
+                .or_default() += 1;
             Ok(())
         }
     }
     let counts = Mutex::new(path_counts);
     merge_discoveries_into(&CountingStore { counts: &counts }, &discoveries).unwrap();
     let counts = counts.into_inner().unwrap();
-    assert!(counts.values().all(|&v| v == 1), "each path should be upserted once");
+    assert!(
+        counts.values().all(|&v| v == 1),
+        "each path should be upserted once"
+    );
 }

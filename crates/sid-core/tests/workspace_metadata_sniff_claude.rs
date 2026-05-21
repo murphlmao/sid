@@ -42,7 +42,11 @@ fn very_large_claude_md_does_not_panic() {
     let dir = tempdir().unwrap();
     let mut content = String::new();
     for i in 0..5000 {
-        content.push_str(&format!("| `host-{i}` | 10.0.{}.{} | gen |\n", i / 256, i % 256));
+        content.push_str(&format!(
+            "| `host-{i}` | 10.0.{}.{} | gen |\n",
+            i / 256,
+            i % 256
+        ));
     }
     fs::write(dir.path().join("CLAUDE.md"), &content).unwrap();
     let s = sniff_claude_md(dir.path()).unwrap().unwrap();

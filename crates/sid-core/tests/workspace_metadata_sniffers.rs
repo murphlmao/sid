@@ -127,7 +127,11 @@ fn sniff_procfile_with_100_processes() {
 #[test]
 fn sniff_procfile_all_comments_returns_none() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("Procfile"), "# all comments\n# no processes\n").unwrap();
+    fs::write(
+        dir.path().join("Procfile"),
+        "# all comments\n# no processes\n",
+    )
+    .unwrap();
     let p = sniff_procfile(dir.path()).unwrap();
     assert!(p.is_none());
 }

@@ -23,6 +23,6 @@ pub use keybind::{KeyBinding, KeybindMap};
 pub use layout::{Dir, Layout};
 pub use palette::CommandPalette;
 pub use persister::StatePersister;
-pub use restore::{decide, RestoreDecision, SessionView};
+pub use restore::{RestoreDecision, SessionView, decide};
 pub use tab::{Tab, TabId, TabManager};
 pub use widget::{EventOutcome, RenderTarget, Widget, WidgetId};

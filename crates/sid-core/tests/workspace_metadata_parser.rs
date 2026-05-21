@@ -1,8 +1,8 @@
 use std::fs;
 
 use sid_core::workspace_metadata::{
-    parse_metadata_file, sniff_cargo_workspace, sniff_claude_md, sniff_package_json_workspaces,
-    sniff_procfile, WorkspaceKind,
+    WorkspaceKind, parse_metadata_file, sniff_cargo_workspace, sniff_claude_md,
+    sniff_package_json_workspaces, sniff_procfile,
 };
 use tempfile::tempdir;
 
@@ -52,7 +52,11 @@ fn parses_empty_actions_and_children_when_omitted() {
     let dir = tempdir().unwrap();
     let sid_dir = dir.path().join(".sid");
     fs::create_dir(&sid_dir).unwrap();
-    fs::write(sid_dir.join("_metadata.sid"), r#"{"name": "x", "kind": "Repo"}"#).unwrap();
+    fs::write(
+        sid_dir.join("_metadata.sid"),
+        r#"{"name": "x", "kind": "Repo"}"#,
+    )
+    .unwrap();
     let m = parse_metadata_file(dir.path()).unwrap().unwrap();
     assert!(m.actions.is_empty());
     assert!(m.children.is_empty());
@@ -275,7 +279,11 @@ fn sniff_procfile_returns_none_when_missing() {
 #[test]
 fn sniff_procfile_dev_fallback() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("Procfile.dev"), "web: rails s\nworker: sidekiq\n").unwrap();
+    fs::write(
+        dir.path().join("Procfile.dev"),
+        "web: rails s\nworker: sidekiq\n",
+    )
+    .unwrap();
     let p = sniff_procfile(dir.path()).unwrap().unwrap();
     assert!(p.contains(&"web".to_string()));
 }
@@ -283,7 +291,11 @@ fn sniff_procfile_dev_fallback() {
 #[test]
 fn sniff_cargo_workspace_with_malformed_toml_returns_err() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("Cargo.toml"), "this is not valid toml !!!===").unwrap();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "this is not valid toml !!!===",
+    )
+    .unwrap();
     assert!(sniff_cargo_workspace(dir.path()).is_err());
 }
 
@@ -310,7 +322,10 @@ fn read_uses_metadata_sid_when_present() {
     .unwrap();
     let m = read_workspace_metadata(dir.path()).unwrap();
     assert_eq!(m.name, "explicit");
-    assert_eq!(m.kind, sid_core::workspace_metadata::WorkspaceKind::Umbrella);
+    assert_eq!(
+        m.kind,
+        sid_core::workspace_metadata::WorkspaceKind::Umbrella
+    );
 }
 
 #[test]
@@ -319,7 +334,13 @@ fn read_falls_back_to_basename_when_nothing_present() {
     // Don't create .sid, CLAUDE.md, Cargo.toml, or package.json
     let m = read_workspace_metadata(dir.path()).unwrap();
     // Name comes from basename
-    let expected_name = dir.path().file_name().unwrap().to_str().unwrap().to_string();
+    let expected_name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert_eq!(m.name, expected_name);
     assert_eq!(m.kind, sid_core::workspace_metadata::WorkspaceKind::Repo);
 }
@@ -334,7 +355,10 @@ members = ["crates/a", "crates/b"]"#,
     )
     .unwrap();
     let m = read_workspace_metadata(dir.path()).unwrap();
-    assert_eq!(m.kind, sid_core::workspace_metadata::WorkspaceKind::Umbrella);
+    assert_eq!(
+        m.kind,
+        sid_core::workspace_metadata::WorkspaceKind::Umbrella
+    );
     assert_eq!(m.children.len(), 2);
 }
 
@@ -347,7 +371,10 @@ fn read_infers_umbrella_from_package_json_workspaces() {
     )
     .unwrap();
     let m = read_workspace_metadata(dir.path()).unwrap();
-    assert_eq!(m.kind, sid_core::workspace_metadata::WorkspaceKind::Umbrella);
+    assert_eq!(
+        m.kind,
+        sid_core::workspace_metadata::WorkspaceKind::Umbrella
+    );
     assert_eq!(m.children.len(), 3);
 }
 

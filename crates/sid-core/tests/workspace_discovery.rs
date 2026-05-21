@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use sid_core::workspace_discovery::{
-    merge_discoveries_into, scan_workspace_root, WorkspaceUpserter,
+    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
 };
 use sid_core::workspace_metadata::WorkspaceKind;
 use tempfile::tempdir;
@@ -35,7 +35,10 @@ fn scan_finds_two_repos_at_same_level() {
     init_git_at(&root.path().join("b"));
     let found = scan_workspace_root(root.path(), 2).unwrap();
     // 2 repos
-    let repo_count = found.iter().filter(|w| w.kind == WorkspaceKind::Repo).count();
+    let repo_count = found
+        .iter()
+        .filter(|w| w.kind == WorkspaceKind::Repo)
+        .count();
     assert_eq!(repo_count, 2);
 }
 
@@ -56,13 +59,23 @@ fn scan_skips_target_node_modules_dot_dirs() {
     init_git_at(&root.path().join("node_modules/lib"));
     init_git_at(&root.path().join(".cache/x"));
     let found = scan_workspace_root(root.path(), 4).unwrap();
-    let repo_paths: Vec<_> = found.iter()
+    let repo_paths: Vec<_> = found
+        .iter()
         .filter(|w| w.kind == WorkspaceKind::Repo)
         .map(|w| w.path.file_name().unwrap().to_string_lossy().to_string())
         .collect();
-    assert!(repo_paths.contains(&"real".to_string()), "expected 'real' in {repo_paths:?}");
-    assert!(!repo_paths.contains(&"junk".to_string()), "should skip 'target' subdir");
-    assert!(!repo_paths.contains(&"lib".to_string()), "should skip 'node_modules' subdir");
+    assert!(
+        repo_paths.contains(&"real".to_string()),
+        "expected 'real' in {repo_paths:?}"
+    );
+    assert!(
+        !repo_paths.contains(&"junk".to_string()),
+        "should skip 'target' subdir"
+    );
+    assert!(
+        !repo_paths.contains(&"lib".to_string()),
+        "should skip 'node_modules' subdir"
+    );
 }
 
 #[test]
@@ -87,7 +100,10 @@ fn scan_result_has_valid_metadata_name() {
     let root = tempdir().unwrap();
     init_git_at(&root.path().join("my-project"));
     let found = scan_workspace_root(root.path(), 2).unwrap();
-    let repo = found.iter().find(|w| w.path.ends_with("my-project")).unwrap();
+    let repo = found
+        .iter()
+        .find(|w| w.path.ends_with("my-project"))
+        .unwrap();
     assert!(!repo.metadata.name.is_empty());
 }
 
@@ -103,7 +119,10 @@ fn scan_picks_up_metadata_sid_when_present() {
     )
     .unwrap();
     let found = scan_workspace_root(root.path(), 2).unwrap();
-    let repo = found.iter().find(|w| w.path.ends_with("annotated-project")).unwrap();
+    let repo = found
+        .iter()
+        .find(|w| w.path.ends_with("annotated-project"))
+        .unwrap();
     assert_eq!(repo.metadata.name, "Custom Name");
 }
 
@@ -125,7 +144,9 @@ fn umbrella_dir_with_subrepos_is_detected_as_umbrella() {
     );
     // Sub-repos still listed as Repo
     assert!(
-        found.iter().any(|w| w.path.ends_with("repo-a") && w.kind == WorkspaceKind::Repo),
+        found
+            .iter()
+            .any(|w| w.path.ends_with("repo-a") && w.kind == WorkspaceKind::Repo),
         "expected repo-a as Repo"
     );
 }
@@ -151,7 +172,9 @@ fn code_workspace_file_triggers_umbrella_detection() {
     let found = scan_workspace_root(root.path(), 4).unwrap();
     let stack_path = stack.to_string_lossy().to_string();
     assert!(
-        found.iter().any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
+        found
+            .iter()
+            .any(|w| w.path.to_string_lossy() == stack_path && w.kind == WorkspaceKind::Umbrella),
         "expected .code-workspace to trigger umbrella detection\nfound: {found:?}"
     );
 }
@@ -190,17 +213,14 @@ fn merge_into_store_persists_each_discovery() {
         ws: Mutex<BTreeMap<PathBuf, ()>>,
     }
     impl WorkspaceUpserter for MemStore {
-        fn upsert(
-            &self,
-            path: &Path,
-            _kind: WorkspaceKind,
-            _name: &str,
-        ) -> Result<(), String> {
+        fn upsert(&self, path: &Path, _kind: WorkspaceKind, _name: &str) -> Result<(), String> {
             self.ws.lock().unwrap().insert(path.to_path_buf(), ());
             Ok(())
         }
     }
-    let store = MemStore { ws: Mutex::new(BTreeMap::new()) };
+    let store = MemStore {
+        ws: Mutex::new(BTreeMap::new()),
+    };
     let n = merge_discoveries_into(&store, &discoveries).unwrap();
     assert_eq!(n, discoveries.len());
     assert_eq!(store.ws.lock().unwrap().len(), discoveries.len());
@@ -248,14 +268,22 @@ fn workspace_upserter_receives_correct_metadata() {
     }
     impl WorkspaceUpserter for CapturingStore {
         fn upsert(&self, path: &Path, kind: WorkspaceKind, name: &str) -> Result<(), String> {
-            self.captured.lock().unwrap().push((path.to_path_buf(), kind, name.to_string()));
+            self.captured
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), kind, name.to_string()));
             Ok(())
         }
     }
-    let store = CapturingStore { captured: Mutex::new(vec![]) };
+    let store = CapturingStore {
+        captured: Mutex::new(vec![]),
+    };
     merge_discoveries_into(&store, &discoveries).unwrap();
     let captured = store.captured.lock().unwrap();
-    let repo = captured.iter().find(|(p, _, _)| p.ends_with("my-repo")).unwrap();
+    let repo = captured
+        .iter()
+        .find(|(p, _, _)| p.ends_with("my-repo"))
+        .unwrap();
     assert_eq!(repo.2, "my-repo");
 }
 
@@ -274,6 +302,10 @@ fn scan_with_vendor_dir_skipped() {
     init_git_at(&root.path().join("vendor/dep"));
     init_git_at(&root.path().join("real"));
     let found = scan_workspace_root(root.path(), 4).unwrap();
-    assert!(found.iter().all(|w| !w.path.to_string_lossy().contains("vendor")));
+    assert!(
+        found
+            .iter()
+            .all(|w| !w.path.to_string_lossy().contains("vendor"))
+    );
     assert!(found.iter().any(|w| w.path.ends_with("real")));
 }
