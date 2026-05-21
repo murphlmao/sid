@@ -25,4 +25,5 @@ csv.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 insta.workspace = true
+async-trait.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
