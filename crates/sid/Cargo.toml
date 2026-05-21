@@ -1,9 +1,34 @@
-# minimal stub — will be replaced in later tasks
 [package]
 name = "sid"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "sid"
 path = "src/main.rs"
+
+[dependencies]
+sid-core.workspace = true
+sid-ui.workspace = true
+sid-store.workspace = true
+sid-job.workspace = true
+sid-widgets.workspace = true
+
+ratatui.workspace = true
+crossterm.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
+clap.workspace = true
+
+anyhow.workspace = true
+color-eyre.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+directories.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
