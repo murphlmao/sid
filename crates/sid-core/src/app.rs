@@ -118,6 +118,12 @@ impl App {
         &self.actions
     }
 
+    /// Return a mutable reference to the action registry. Used by Plan 6 to
+    /// hydrate global quick-actions from the store at startup and on CRUD.
+    pub fn actions_mut(&mut self) -> &mut ActionRegistry {
+        &mut self.actions
+    }
+
     /// Return a reference to the command palette.
     pub fn palette(&self) -> &CommandPalette {
         &self.palette
