@@ -12,6 +12,8 @@ members = [
     "crates/sid-sysinfo",
     "crates/sid-system",
     "crates/sid-db-clients",
+    "crates/sid-ssh",
+    "crates/sid-pty",
 ]
 
 [workspace.package]
@@ -34,6 +36,8 @@ sid-secrets = { path = "crates/sid-secrets" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-system = { path = "crates/sid-system" }
 sid-db-clients = { path = "crates/sid-db-clients" }
+sid-ssh = { path = "crates/sid-ssh" }
+sid-pty = { path = "crates/sid-pty" }
 
 # TUI
 ratatui = "0.30"
@@ -67,6 +71,15 @@ tracing-appender = "0.2"
 # Git
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 walkdir = "2"
+
+# SSH
+russh = "0.50"
+russh-sftp = "2.0"
+russh-keys = "0.46"
+
+# PTY
+portable-pty = "0.9"
+vt100 = "0.16"
 
 # Database clients
 tokio-postgres = "0.7"
