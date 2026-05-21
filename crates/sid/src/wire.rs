@@ -53,10 +53,12 @@ use tokio::sync::mpsc::Receiver;
 /// use std::path::Path;
 /// use std::sync::Arc;
 /// use sid::wire::{build_app, NoopSystemctlClient, NoopTerminalSpawner, SidApp};
-/// use sid_store::{OpenStore, RedbStore};
+/// use sid_store::{OpenStore, RedbStore, Store};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 /// let app = build_app(None, vec![]);
+/// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
 /// let sid_app = SidApp {
 ///     app,
 ///     store,
@@ -64,6 +66,9 @@ use tokio::sync::mpsc::Receiver;
 ///     sys_probe: None,
 ///     systemctl: Arc::new(NoopSystemctlClient),
 ///     spawner: Arc::new(NoopTerminalSpawner),
+///     postgres: sid_db_clients::PostgresClient::factory(),
+///     sqlite: sid_db_clients::SqliteClient::factory(),
+///     secrets,
 /// };
 /// ```
 pub struct SidApp {
@@ -87,6 +92,18 @@ pub struct SidApp {
     /// configs). Degrades to [`NoopTerminalSpawner`] when `kitty` is missing.
     #[allow(dead_code)]
     pub spawner: Arc<dyn TerminalSpawner>,
+    /// Postgres `DbClient` factory (Plan 4). Bind a real connection via
+    /// `factory().open(...)` when the user activates a saved Postgres
+    /// connection.
+    #[allow(dead_code)]
+    pub postgres: Arc<dyn sid_core::adapters::db_client::DbClient>,
+    /// SQLite `DbClient` factory (Plan 4).
+    #[allow(dead_code)]
+    pub sqlite: Arc<dyn sid_core::adapters::db_client::DbClient>,
+    /// Plaintext-backed secret store (Plan 4). The Database tab pulls
+    /// connection passwords through this.
+    #[allow(dead_code)]
+    pub secrets: Arc<dyn sid_core::adapters::secrets::SecretStore>,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -525,9 +542,11 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 /// use ratatui::Terminal;
 /// use ratatui::backend::TestBackend;
 /// use sid::wire::{NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
-/// use sid_store::{OpenStore, RedbStore};
+/// use sid_store::{OpenStore, RedbStore, Store};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/draw_test.redb")).unwrap());
+/// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
 /// let sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
@@ -535,6 +554,9 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     sys_probe: None,
 ///     systemctl: Arc::new(NoopSystemctlClient),
 ///     spawner: Arc::new(NoopTerminalSpawner),
+///     postgres: sid_db_clients::PostgresClient::factory(),
+///     sqlite: sid_db_clients::SqliteClient::factory(),
+///     secrets,
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -851,7 +873,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 /// use ratatui::Terminal;
 /// use ratatui::backend::TestBackend;
 /// use sid::wire::{SidApp, build_app, run_event_loop};
-/// use sid_store::{OpenStore, RedbStore};
+/// use sid_store::{OpenStore, RedbStore, Store};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -859,6 +881,8 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///     let mut terminal = Terminal::new(backend).unwrap();
 ///     let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
 ///     let app = build_app(None, vec![]);
+///     let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+///         Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
 ///     let mut sid_app = SidApp {
 ///         app,
 ///         store,
@@ -866,6 +890,9 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         sys_probe: None,
 ///         systemctl: Arc::new(sid::wire::NoopSystemctlClient),
 ///         spawner: Arc::new(sid::wire::NoopTerminalSpawner),
+///         postgres: sid_db_clients::PostgresClient::factory(),
+///         sqlite: sid_db_clients::SqliteClient::factory(),
+///         secrets,
 ///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -1562,6 +1589,10 @@ mod tests {
         let store = Arc::new(RedbStore::open(&db_file).unwrap());
         // Leak tempdir so it isn't deleted before draw runs — only used in tests.
         std::mem::forget(dir);
+        let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+            Arc::new(sid_secrets::PlainStore::new(
+                Arc::clone(&store) as Arc<dyn Store>
+            ));
         SidApp {
             app: build_app(start_tab, vec![]),
             store,
@@ -1569,6 +1600,9 @@ mod tests {
             sys_probe: None,
             systemctl: Arc::new(NoopSystemctlClient),
             spawner: Arc::new(NoopTerminalSpawner),
+            postgres: sid_db_clients::PostgresClient::factory(),
+            sqlite: sid_db_clients::SqliteClient::factory(),
+            secrets,
         }
     }
 
