@@ -16,15 +16,6 @@ use tracing_subscriber::EnvFilter;
 mod runtime;
 mod wire;
 
-/// CLI arguments for the sid TUI cockpit.
-///
-/// # Examples
-///
-/// ```no_run
-/// // Parsing is handled by clap at runtime; this type is constructed via
-/// // `Cli::parse()` in main.  See integration tests in tests/cli.rs for
-/// // end-to-end coverage.
-/// ```
 #[derive(Parser, Debug)]
 #[command(name = "sid", version, about = "a fast, focused TUI cockpit for developer workflow")]
 struct Cli {
