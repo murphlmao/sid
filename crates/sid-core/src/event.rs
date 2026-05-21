@@ -26,10 +26,10 @@ impl Event {
     /// Every crossterm variant is handled:
     /// - `Key` → [`Event::Key`] with a [`KeyChord`]
     /// - `Mouse` → [`Event::Mouse`] (passthrough)
-    /// - `Resize(w, h)` → [`Event::Resize { width, height }`]
-    /// - `FocusGained` → [`Event::Focus(true)`]
-    /// - `FocusLost` → [`Event::Focus(false)`]
-    /// - `Paste(_)` → [`Event::Custom("paste")`]
+    /// - `Resize(w, h)` → [`Event::Resize`]
+    /// - `FocusGained` → [`Event::Focus`] with `true`
+    /// - `FocusLost` → [`Event::Focus`] with `false`
+    /// - `Paste(_)` → [`Event::Custom`] with `"paste"` (payload discarded in v1)
     ///
     /// # Examples
     ///
