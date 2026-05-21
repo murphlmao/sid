@@ -1,0 +1,18 @@
+[package]
+name = "sid-fx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+sid-ui.workspace = true
+ratatui.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true

@@ -3728,6 +3728,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sid-fx"
+version = "0.0.1"
+dependencies = [
+ "insta",
+ "proptest",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "ratatui",
+ "sid-core",
+ "sid-ui",
+]
+
+[[package]]
 name = "sid-git"
 version = "0.0.1"
 dependencies = [

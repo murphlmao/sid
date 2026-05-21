@@ -2,6 +2,7 @@
 
 pub mod action;
 pub mod adapters;
+pub mod animation;
 pub mod app;
 pub mod context;
 pub mod error;
@@ -20,6 +21,7 @@ pub mod workspace_discovery;
 pub mod workspace_metadata;
 
 pub use action::{Action, ActionId, ActionRegistry, ActionScope};
+pub use animation::{AnimationConfig, GlyphSet as AnimationGlyphSet, SETTING_ANIMATION_KEY};
 pub use app::App;
 pub use error::{Result, SidError};
 pub use keybind::{KeyBinding, KeybindMap};

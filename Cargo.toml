@@ -14,6 +14,7 @@ members = [
     "crates/sid-db-clients",
     "crates/sid-ssh",
     "crates/sid-pty",
+    "crates/sid-fx",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ sid-system = { path = "crates/sid-system" }
 sid-db-clients = { path = "crates/sid-db-clients" }
 sid-ssh = { path = "crates/sid-ssh" }
 sid-pty = { path = "crates/sid-pty" }
+sid-fx = { path = "crates/sid-fx" }
 
 # TUI
 ratatui = "0.30"
@@ -98,6 +100,10 @@ directories = "5"
 # System / subprocess utilities
 which = "7"
 shell-words = "1.1"
+
+# Random / animation
+rand = "0.9"
+rand_chacha = "0.9"
 
 # Test
 insta = { version = "1", features = ["yaml"] }
