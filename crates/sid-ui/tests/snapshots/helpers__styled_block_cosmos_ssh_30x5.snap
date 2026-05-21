@@ -1,0 +1,9 @@
+---
+source: crates/sid-ui/tests/helpers.rs
+expression: rendered
+---
+- ┌ ✦ SSH ─────────────────────┐
+- │                            │
+- │                            │
+- │                            │
+- └────────────────────────────┘
