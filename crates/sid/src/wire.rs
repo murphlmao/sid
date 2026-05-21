@@ -704,10 +704,14 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         return;
     }
 
-    // ─── Starfield background ─────────────────────────────────────────────
-    // Paint stars first; chrome and widget content overwrite cells on top.
+    // ─── Starfield + supernovae background ────────────────────────────────
+    // Stars first, supernovae second. Both are background layers — widget
+    // body draws on top, but supernova glyphs show through any empty cell.
+    // Net effect: a celebration bloom is visible in "empty space" of the
+    // active tab without overdrawing real content.
     if let Some(fx) = &sid_app.fx_state {
         sid_fx::render_starfield(frame.buffer_mut(), size, fx, &sid_app.animation, &theme);
+        sid_fx::render_supernovae(frame.buffer_mut(), size, fx, &sid_app.animation, &theme);
     }
 
     // ─── Outer "✦ sid — <active>" bordered window ─────────────────────────
@@ -1765,6 +1769,35 @@ fn drain_pending_submits(sid_app: &mut SidApp) {
     }
 }
 
+/// Trigger a celebration supernova bloom on the configured FX state.
+///
+/// No-op when:
+/// - `fx_state` is None (animation disabled or in tests),
+/// - `animation.enabled == false`, or
+/// - `animation.supernova_on_event == false`.
+///
+/// Called after every successful "add"-flavoured mutation (new workspace,
+/// new SSH host, new DB connection, new pinned config, new quick action,
+/// new SSH key). Removals don't celebrate.
+fn celebrate(sid_app: &mut SidApp, palette: sid_fx::SupernovaPalette) {
+    if !sid_app.animation.enabled || !sid_app.animation.supernova_on_event {
+        return;
+    }
+    let Some(fx) = sid_app.fx_state.as_mut() else {
+        return;
+    };
+    // Use a representative area; the FxState clamps internally to the last
+    // tick area, so passing 80x24 here is safe for tests. The real binary
+    // re-ticks with the actual terminal size every frame.
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
+    fx.trigger_supernova(area, palette);
+}
+
 /// Look up the submit handler for a modal id and run it. Refreshes any
 /// affected widget after a successful mutation.
 fn dispatch_modal_submit(
@@ -1800,6 +1833,7 @@ fn dispatch_modal_submit(
             .upsert_workspace(&w)
             .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
         refresh_workspaces_widget(sid_app);
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(parent_str) = key.strip_prefix("workspaces.add_repo:") {
         let parent = PathBuf::from(parent_str);
         let _ = values; // path comes from the picker field
@@ -1834,6 +1868,7 @@ fn dispatch_modal_submit(
             .upsert_workspace(&w)
             .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
         refresh_workspaces_widget(sid_app);
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(target_str) = key.strip_prefix("workspaces.remove:") {
         let target = PathBuf::from(target_str);
         let confirm = choice_value(values, "confirm").unwrap_or_default();
@@ -1846,20 +1881,25 @@ fn dispatch_modal_submit(
         }
     } else if key == "ssh.new" {
         submit_ssh_new(sid_app, values)?;
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
         submit_ssh_remove(sid_app, alias, values)?;
     } else if key == "ssh.gen_key" {
         submit_ssh_gen_key(values)?;
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if key == "database.new" {
         submit_database_new(sid_app, values)?;
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(conn_id) = key.strip_prefix("database.remove:") {
         submit_database_remove(sid_app, conn_id, values)?;
     } else if key == "system.pin_config" {
         submit_system_pin_config(sid_app, values)?;
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(path_str) = key.strip_prefix("system.remove_pin:") {
         submit_system_remove_pin(sid_app, path_str, values)?;
     } else if key == "system.quick_action.new" {
         submit_system_quick_action_new(sid_app, values)?;
+        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(qa_id) = key.strip_prefix("system.remove_quick_action:") {
         submit_system_remove_quick_action(sid_app, qa_id, values)?;
     } else {
