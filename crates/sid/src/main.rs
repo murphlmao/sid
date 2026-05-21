@@ -530,6 +530,8 @@ async fn main() -> Result<()> {
         secrets,
         animation,
         fx_state,
+        modal_stack: Vec::new(),
+        pending_submits: Vec::new(),
     };
 
     // Set up terminal.

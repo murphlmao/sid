@@ -124,6 +124,14 @@ impl TabManager {
         &self.tabs
     }
 
+    /// Return a mutable slice over the tabs.
+    ///
+    /// Used by the binary's wire layer to refresh a non-active tab's widget
+    /// state after a store mutation (e.g. workspace added via modal).
+    pub fn tabs_mut(&mut self) -> &mut [Tab] {
+        &mut self.tabs
+    }
+
     /// Return the zero-based index of the active tab.
     pub fn active_index(&self) -> usize {
         self.active_idx

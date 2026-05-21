@@ -107,6 +107,12 @@ pub struct SidApp {
     /// Live starfield state. `None` disables the background layer (tests +
     /// `animation.enabled == false`).
     pub fx_state: Option<FxState>,
+    /// Stack of open modals. The topmost entry intercepts key events; widgets
+    /// see them only when the stack is empty. New modals push on top.
+    pub modal_stack: Vec<sid_widgets::ModalSpec>,
+    /// Modals submitted on the previous frame whose handler hasn't run yet.
+    /// Drained at the top of [`run_event_loop`] each iteration.
+    pub pending_submits: Vec<(sid_widgets::ModalId, Vec<(String, sid_widgets::FieldValue)>)>,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -876,6 +882,14 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         frame.render_widget(global, footer_split[0]);
     }
 
+    // ─── Modal overlay (Phase 3) ──────────────────────────────────────────
+    // The topmost modal renders on top of body+footer+status. Animation is
+    // already painted but we don't tick stars while a modal is open — see
+    // `run_event_loop`. Render after the body so the modal covers it cleanly.
+    if let Some(modal) = sid_app.modal_stack.last() {
+        sid_widgets::render_modal(frame, inner, &theme, modal);
+    }
+
     // ─── Palette overlay if open ──────────────────────────────────────────
     if app.palette().is_open() {
         let overlay_rect = centered(size, 60, 40);
@@ -1168,15 +1182,25 @@ where
 {
     let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
     loop {
+        // Drain any modal submits queued in the previous iteration.
+        drain_pending_submits(sid_app);
+
         // Advance starfield phase on each frame before drawing.
         if let Some(fx) = sid_app.fx_state.as_mut() {
-            // Use current terminal area for star regen on resize.
-            let area = terminal.size().map(|s| Rect {
-                x: 0,
-                y: 0,
-                width: s.width,
-                height: s.height,
-            }).unwrap_or(Rect { x: 0, y: 0, width: 80, height: 24 });
+            let area = terminal
+                .size()
+                .map(|s| Rect {
+                    x: 0,
+                    y: 0,
+                    width: s.width,
+                    height: s.height,
+                })
+                .unwrap_or(Rect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 24,
+                });
             fx.tick(area, &sid_app.animation);
         }
         terminal.draw(|f| draw(f, sid_app))?;
@@ -1184,13 +1208,289 @@ where
             Some(e) => e,
             None => break,
         };
-        let dispatch = sid_app.app.handle_event(&ev);
-        let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
-        if matches!(dispatch, Dispatch::Quit) {
-            break;
+
+        // Route key events. If a modal is open it intercepts everything except
+        // global-quit. Otherwise check per-tab modal triggers; if one fires we
+        // open the modal and swallow the event. Otherwise dispatch normally.
+        let mut handled = false;
+        if let SidEvent::Key(chord) = ev {
+            // Global quit always wins, even with a modal open.
+            let is_global_quit = chord.code == crossterm::event::KeyCode::Char('q')
+                && chord
+                    .mods
+                    .contains(crossterm::event::KeyModifiers::CONTROL);
+            if !is_global_quit && !sid_app.modal_stack.is_empty() {
+                handled = true;
+                let outcome = {
+                    let modal = sid_app.modal_stack.last_mut().expect("modal_stack non-empty");
+                    sid_widgets::route_key_to_modal(modal, chord)
+                };
+                match outcome {
+                    sid_widgets::ModalKeyOutcome::Consumed => {}
+                    sid_widgets::ModalKeyOutcome::Cancel => {
+                        sid_app.modal_stack.pop();
+                    }
+                    sid_widgets::ModalKeyOutcome::Submit => {
+                        let popped = sid_app.modal_stack.pop().expect("modal popped");
+                        let values = popped.collect_values();
+                        sid_app.pending_submits.push((popped.id, values));
+                    }
+                }
+            } else if !is_global_quit {
+                if let Some(modal) = workspace_modal_for_key(sid_app, chord) {
+                    sid_app.modal_stack.push(modal);
+                    handled = true;
+                }
+            }
+        }
+
+        if !handled {
+            let dispatch = sid_app.app.handle_event(&ev);
+            let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
+            if matches!(dispatch, Dispatch::Quit) {
+                break;
+            }
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Modal routing + Workspaces CRUD
+// ---------------------------------------------------------------------------
+
+/// If `chord` is one of the active tab's modal-opening keys, return the modal
+/// to push. Returns `None` if the key has no modal binding.
+fn workspace_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use sid_widgets::{Field, ModalSpec};
+    let active = sid_app.app.tabs().active().id.as_str();
+    if active != "workspaces" {
+        return None;
+    }
+    // Only plain (unmodified) keys open modals; ctrl/alt combos are reserved
+    // for global actions.
+    if chord
+        .mods
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => Some(
+            ModalSpec::new(
+                "workspaces.new",
+                "New Workspace",
+                vec![
+                    Field::Text {
+                        label: "name".into(),
+                        value: String::new(),
+                        placeholder: Some("e.g. my-monorepo".into()),
+                    },
+                    Field::Picker {
+                        label: "path".into(),
+                        value: String::new(),
+                        hint: "absolute path".into(),
+                    },
+                    Field::Choice {
+                        label: "kind".into(),
+                        options: vec!["Umbrella".into(), "Repo".into()],
+                        selected: 0,
+                    },
+                ],
+            )
+            .with_help("Tab moves between fields · Enter saves · Esc cancels"),
+        ),
+        KeyCode::Char('A') | KeyCode::Char('a') => {
+            // Only meaningful when an umbrella is selected; if not, drop the
+            // open and let the event flow through.
+            let parent = workspaces_selected_path(sid_app)?;
+            Some(
+                ModalSpec::new(
+                    format!("workspaces.add_repo:{}", parent.display()),
+                    format!("Add repo to {}", parent.display()),
+                    vec![Field::Picker {
+                        label: "repo path".into(),
+                        value: String::new(),
+                        hint: "absolute path".into(),
+                    }],
+                )
+                .with_help("Tab moves between fields · Enter saves · Esc cancels"),
+            )
+        }
+        KeyCode::Char('R') | KeyCode::Char('r') => {
+            let target = workspaces_selected_path(sid_app)?;
+            Some(
+                ModalSpec::new(
+                    format!("workspaces.remove:{}", target.display()),
+                    format!("Remove workspace {}?", target.display()),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, remove".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Removes the workspace registration. Files are NOT deleted."),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Inspect the active Workspaces widget for the selected workspace's path.
+fn workspaces_selected_path(sid_app: &SidApp) -> Option<PathBuf> {
+    use sid_widgets::WorkspacesWidget;
+    let layout = &sid_app.app.tabs().active().layout;
+    let widget = layout.iter_widgets().next()?;
+    let ws = widget.as_any().downcast_ref::<WorkspacesWidget>()?;
+    ws.state().selected_workspace().map(|w| w.path.clone())
+}
+
+/// Drain any queued modal submits and call the corresponding handler.
+fn drain_pending_submits(sid_app: &mut SidApp) {
+    let submits = std::mem::take(&mut sid_app.pending_submits);
+    for (id, values) in submits {
+        if let Err(e) = dispatch_modal_submit(sid_app, &id, &values) {
+            tracing::warn!("modal submit {id:?} failed: {e}");
+        }
+    }
+}
+
+/// Look up the submit handler for a modal id and run it. Refreshes any
+/// affected widget after a successful mutation.
+fn dispatch_modal_submit(
+    sid_app: &mut SidApp,
+    id: &sid_widgets::ModalId,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_widgets::FieldValue;
+    let key = id.0.as_str();
+    if key == "workspaces.new" {
+        let name = string_value(values, "name").unwrap_or_default();
+        let path_str = string_value(values, "path").unwrap_or_default();
+        let kind_str = choice_value(values, "kind").unwrap_or_else(|| "Repo".into());
+        if name.is_empty() || path_str.is_empty() {
+            return Err(anyhow::anyhow!("name and path are required"));
+        }
+        let path = PathBuf::from(&path_str);
+        let abs = std::fs::canonicalize(&path).unwrap_or(path);
+        let kind = match kind_str.as_str() {
+            "Umbrella" => WorkspaceKind::Umbrella,
+            _ => WorkspaceKind::Repo,
+        };
+        let w = Workspace {
+            path: abs,
+            name,
+            kind,
+            manifest_hash: 0,
+            last_seen: now_epoch(),
+            parent: None,
+        };
+        sid_app
+            .store
+            .upsert_workspace(&w)
+            .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
+        refresh_workspaces_widget(sid_app);
+    } else if let Some(parent_str) = key.strip_prefix("workspaces.add_repo:") {
+        let parent = PathBuf::from(parent_str);
+        let _ = values; // path comes from the picker field
+        let raw_path = match values
+            .iter()
+            .find(|(k, _)| k == "repo path")
+            .map(|(_, v)| v)
+        {
+            Some(FieldValue::Picker(s) | FieldValue::Text(s)) => s.clone(),
+            _ => String::new(),
+        };
+        if raw_path.is_empty() {
+            return Err(anyhow::anyhow!("repo path is required"));
+        }
+        let path = PathBuf::from(&raw_path);
+        let abs = std::fs::canonicalize(&path).unwrap_or(path);
+        let name = abs
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let w = Workspace {
+            path: abs,
+            name,
+            kind: WorkspaceKind::Repo,
+            manifest_hash: 0,
+            last_seen: now_epoch(),
+            parent: Some(parent),
+        };
+        sid_app
+            .store
+            .upsert_workspace(&w)
+            .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
+        refresh_workspaces_widget(sid_app);
+    } else if let Some(target_str) = key.strip_prefix("workspaces.remove:") {
+        let target = PathBuf::from(target_str);
+        let confirm = choice_value(values, "confirm").unwrap_or_default();
+        if confirm == "Yes, remove" {
+            sid_app
+                .store
+                .remove_workspace(&target)
+                .map_err(|e| anyhow::anyhow!("remove workspace: {e}"))?;
+            refresh_workspaces_widget(sid_app);
+        }
+    } else {
+        tracing::debug!("unhandled modal submit id={key}");
+    }
+    Ok(())
+}
+
+fn string_value(
+    values: &[(String, sid_widgets::FieldValue)],
+    label: &str,
+) -> Option<String> {
+    use sid_widgets::FieldValue;
+    values.iter().find(|(k, _)| k == label).and_then(|(_, v)| match v {
+        FieldValue::Text(s) | FieldValue::Picker(s) | FieldValue::Password(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
+fn choice_value(
+    values: &[(String, sid_widgets::FieldValue)],
+    label: &str,
+) -> Option<String> {
+    use sid_widgets::FieldValue;
+    values.iter().find(|(k, _)| k == label).and_then(|(_, v)| match v {
+        FieldValue::Choice(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
+/// Reload the WorkspacesWidget's state from `store.list_workspaces()`.
+///
+/// The widget already exposes `state_mut()`; we replace the inner
+/// `WorkspacesState` wholesale. This loses transient sub-view state (focused
+/// commit, etc.) but that's acceptable after a CRUD — the user just changed
+/// the list.
+fn refresh_workspaces_widget(sid_app: &mut SidApp) {
+    let ws = match sid_app.store.list_workspaces() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("list_workspaces after modal submit failed: {e}");
+            return;
+        }
+    };
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "workspaces" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                if let Some(ww) = any_ref.downcast_mut::<WorkspacesWidget>() {
+                    *ww.state_mut() = sid_widgets::workspaces::WorkspacesState::new(ws);
+                }
+            }
+            break;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,6 +2172,8 @@ mod tests {
             secrets,
             animation: AnimationConfig::default(),
             fx_state: None,
+            modal_stack: Vec::new(),
+            pending_submits: Vec::new(),
         }
     }
 
@@ -2102,5 +2404,150 @@ mod tests {
     #[test]
     fn build_terminal_spawner_does_not_panic() {
         let _ = super::build_terminal_spawner();
+    }
+
+    // ---- Phase 3 modal routing ----
+
+    /// `workspace_modal_for_key` opens a "New Workspace" modal when on the
+    /// Workspaces tab and `N` is pressed.
+    #[test]
+    fn modal_for_key_n_on_workspaces_opens_new_modal() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let chord = KeyChord {
+            code: KeyCode::Char('N'),
+            mods: KeyModifiers::NONE,
+        };
+        let modal = workspace_modal_for_key(&sid_app, chord);
+        assert!(modal.is_some(), "N on workspaces should open a modal");
+        let m = modal.unwrap();
+        assert_eq!(m.id.0, "workspaces.new");
+        // Three fields: name, path, kind.
+        assert_eq!(m.fields.len(), 3);
+    }
+
+    /// Pressing `N` on a non-workspaces tab does not open a modal.
+    #[test]
+    fn modal_for_key_n_on_other_tab_returns_none() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let sid_app = build_test_sid_app(Some("settings"));
+        let chord = KeyChord {
+            code: KeyCode::Char('N'),
+            mods: KeyModifiers::NONE,
+        };
+        assert!(workspace_modal_for_key(&sid_app, chord).is_none());
+    }
+
+    /// Modifier-combined keys (Ctrl+N) do NOT trigger the modal — those are
+    /// reserved for global actions.
+    #[test]
+    fn modal_for_key_ctrl_n_does_not_open() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let chord = KeyChord {
+            code: KeyCode::Char('N'),
+            mods: KeyModifiers::CONTROL,
+        };
+        assert!(workspace_modal_for_key(&sid_app, chord).is_none());
+    }
+
+    /// Submitting a "New Workspace" modal upserts the workspace into the
+    /// store and the WorkspacesWidget then sees it on next refresh.
+    #[test]
+    fn modal_submit_new_workspace_persists_and_refreshes() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Create a real directory so canonicalize succeeds and the workspace
+        // path is stable.
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+
+        // Before: no workspaces in the store.
+        assert!(sid_app.store.list_workspaces().unwrap().is_empty());
+
+        // Simulate the modal's collected values after Enter.
+        let id = ModalId("workspaces.new".to_string());
+        let values = vec![
+            ("name".to_string(), FieldValue::Text("test-ws".into())),
+            (
+                "path".to_string(),
+                FieldValue::Picker(target.to_string_lossy().into_owned()),
+            ),
+            ("kind".to_string(), FieldValue::Choice("Umbrella".into())),
+        ];
+
+        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+
+        let ws = sid_app.store.list_workspaces().unwrap();
+        assert_eq!(ws.len(), 1, "exactly one workspace persisted");
+        assert_eq!(ws[0].name, "test-ws");
+        assert_eq!(ws[0].kind, WorkspaceKind::Umbrella);
+    }
+
+    /// Submitting "Remove" with the "No, cancel" choice is a no-op.
+    #[test]
+    fn modal_submit_remove_cancel_does_not_delete() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+        sid_app
+            .store
+            .upsert_workspace(&Workspace {
+                path: target.clone(),
+                name: "victim".into(),
+                kind: WorkspaceKind::Repo,
+                manifest_hash: 0,
+                last_seen: now_epoch(),
+                parent: None,
+            })
+            .unwrap();
+        assert_eq!(sid_app.store.list_workspaces().unwrap().len(), 1);
+
+        let id = ModalId(format!("workspaces.remove:{}", target.display()));
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("No, cancel".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+        assert_eq!(
+            sid_app.store.list_workspaces().unwrap().len(),
+            1,
+            "no-cancel must not delete"
+        );
+    }
+
+    /// Submitting "Remove" with "Yes, remove" actually removes the workspace.
+    #[test]
+    fn modal_submit_remove_yes_deletes() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let dir = tempdir().unwrap();
+        let target = dir.path().to_path_buf();
+        sid_app
+            .store
+            .upsert_workspace(&Workspace {
+                path: target.clone(),
+                name: "victim".into(),
+                kind: WorkspaceKind::Repo,
+                manifest_hash: 0,
+                last_seen: now_epoch(),
+                parent: None,
+            })
+            .unwrap();
+
+        let id = ModalId(format!("workspaces.remove:{}", target.display()));
+        let values = vec![(
+            "confirm".to_string(),
+            FieldValue::Choice("Yes, remove".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+        assert!(
+            sid_app.store.list_workspaces().unwrap().is_empty(),
+            "yes-remove must delete"
+        );
     }
 }
