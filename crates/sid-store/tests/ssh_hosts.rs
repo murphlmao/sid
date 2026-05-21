@@ -1,0 +1,147 @@
+use sid_store::{OpenStore, RedbStore, SshHost, SshHostSource, Store, now_epoch};
+use tempfile::tempdir;
+
+fn host(alias: &str, host: &str, user: &str) -> SshHost {
+    SshHost {
+        alias: alias.into(),
+        host: host.into(),
+        port: 22,
+        user: user.into(),
+        identity_file: None,
+        source: SshHostSource::Manual,
+        last_connected: now_epoch(),
+        command_history: Vec::new(),
+    }
+}
+
+#[test]
+fn ssh_host_construction() {
+    let h = host("jp46-dev", "10.1.40.102", "pi");
+    assert_eq!(h.alias, "jp46-dev");
+    assert_eq!(h.source, SshHostSource::Manual);
+}
+
+#[test]
+fn now_epoch_is_positive() {
+    assert!(now_epoch() > 0);
+}
+
+#[test]
+fn opening_store_creates_ssh_hosts_table_without_error() {
+    let dir = tempdir().unwrap();
+    {
+        let _store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    }
+    let _store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+}
+
+#[test]
+fn upsert_then_list_returns_host() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    store.upsert_ssh_host(&host("a", "10.0.0.1", "u")).unwrap();
+    let all = store.list_ssh_hosts().unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].alias, "a");
+}
+
+#[test]
+fn get_ssh_host_returns_existing_and_none_for_missing() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    store.upsert_ssh_host(&host("a", "h", "u")).unwrap();
+    assert!(store.get_ssh_host("a").unwrap().is_some());
+    assert!(store.get_ssh_host("missing").unwrap().is_none());
+}
+
+#[test]
+fn remove_ssh_host_drops_it() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    store.upsert_ssh_host(&host("a", "h", "u")).unwrap();
+    store.remove_ssh_host("a").unwrap();
+    assert!(store.list_ssh_hosts().unwrap().is_empty());
+}
+
+#[test]
+fn upsert_replaces_existing() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    store.upsert_ssh_host(&host("a", "v1", "u")).unwrap();
+    store.upsert_ssh_host(&host("a", "v2", "u")).unwrap();
+    let found = store.get_ssh_host("a").unwrap().unwrap();
+    assert_eq!(found.host, "v2");
+}
+
+#[test]
+fn remove_nonexistent_is_noop() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    store.remove_ssh_host("never-added").unwrap();
+}
+
+#[test]
+fn list_with_many_hosts_returns_all() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    for i in 0..200 {
+        store
+            .upsert_ssh_host(&SshHost {
+                alias: format!("h{i}"),
+                host: format!("10.0.0.{}", i % 256),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+            })
+            .unwrap();
+    }
+    assert_eq!(store.list_ssh_hosts().unwrap().len(), 200);
+}
+
+#[test]
+fn long_command_history_round_trips() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    let h = SshHost {
+        alias: "a".into(),
+        host: "h".into(),
+        port: 22,
+        user: "u".into(),
+        identity_file: None,
+        source: SshHostSource::Manual,
+        last_connected: 0,
+        command_history: (0..500).map(|i| format!("cmd {i}")).collect(),
+    };
+    store.upsert_ssh_host(&h).unwrap();
+    let back = store.get_ssh_host("a").unwrap().unwrap();
+    assert_eq!(back.command_history.len(), 500);
+}
+
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn prop_upsert_get_round_trip(
+        alias in "[a-zA-Z0-9_-]{1,16}",
+        h in "[a-z0-9.]{1,40}",
+    ) {
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        let entry = SshHost {
+            alias: alias.clone(),
+            host: h.clone(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: Vec::new(),
+        };
+        store.upsert_ssh_host(&entry).unwrap();
+        let back = store.get_ssh_host(&alias).unwrap().unwrap();
+        prop_assert_eq!(entry, back);
+    }
+}

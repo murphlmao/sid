@@ -159,6 +159,18 @@ pub const DB_CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("d
 /// ```
 pub const QUERY_HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("query_history");
 
+/// SSH host registry (Plan 3). Key: alias string. Value: versioned-postcard
+/// [`crate::SshHost`].
+///
+/// # Examples
+///
+/// ```
+/// use redb::TableHandle;
+/// use sid_store::schema::SSH_HOSTS;
+/// assert_eq!(SSH_HOSTS.name(), "ssh_hosts");
+/// ```
+pub const SSH_HOSTS: TableDefinition<&str, &[u8]> = TableDefinition::new("ssh_hosts");
+
 #[cfg(test)]
 mod tests {
     use redb::TableHandle;
@@ -179,5 +191,6 @@ mod tests {
         assert_eq!(PINNED_CONFIGS.name(), "pinned_configs");
         assert_eq!(DB_CONNECTIONS.name(), "db_connections");
         assert_eq!(QUERY_HISTORY.name(), "query_history");
+        assert_eq!(SSH_HOSTS.name(), "ssh_hosts");
     }
 }

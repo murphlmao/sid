@@ -13,11 +13,11 @@ use sid_core::widget::WidgetId;
 
 use crate::schema::{
     DB_CONNECTIONS, KEYBINDS, PINNED_CONFIGS, QUERY_HISTORY, QUICK_ACTIONS, SECRETS, SESSION_META,
-    SESSIONS, SETTINGS, THEMES, WIDGET_STATE, WORKSPACES,
+    SESSIONS, SETTINGS, SSH_HOSTS, THEMES, WIDGET_STATE, WORKSPACES,
 };
 use crate::{
     DbConnection, KeybindProfile, OpenStore, PinnedConfig, QueryRecord, QuickAction, SessionRecord,
-    SettingValue, Store, ThemeSpec, WidgetState, Workspace,
+    SettingValue, SshHost, Store, ThemeSpec, WidgetState, Workspace,
 };
 
 /// redb-backed implementation of [`crate::Store`].
@@ -80,6 +80,9 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(QUERY_HISTORY)
                 .map_err(|e| SidError::Storage(format!("open query_history: {e}")))?;
+            let _ = txn
+                .open_table(SSH_HOSTS)
+                .map_err(|e| SidError::Storage(format!("open ssh_hosts: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
@@ -896,5 +899,80 @@ impl Store for RedbStore {
             }
         }
         Ok(out)
+    }
+
+    fn list_ssh_hosts(&self) -> Result<Vec<SshHost>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(SSH_HOSTS)
+            .map_err(|e| SidError::Storage(format!("open ssh_hosts: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter: {e}")))?;
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("step: {e}")))?;
+            let (_v, h) = crate::codec::decode_versioned::<SshHost>(v.value())?;
+            out.push(h);
+        }
+        Ok(out)
+    }
+
+    fn upsert_ssh_host(&self, h: &SshHost) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, h)?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(SSH_HOSTS)
+                .map_err(|e| SidError::Storage(format!("open ssh_hosts: {e}")))?;
+            tbl.insert(h.alias.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
+        Ok(())
+    }
+
+    fn get_ssh_host(&self, alias: &str) -> Result<Option<SshHost>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(SSH_HOSTS)
+            .map_err(|e| SidError::Storage(format!("open ssh_hosts: {e}")))?;
+        let got = tbl
+            .get(alias)
+            .map_err(|e| SidError::Storage(format!("get: {e}")))?;
+        match got {
+            Some(v) => {
+                let (_v, h) = crate::codec::decode_versioned::<SshHost>(v.value())?;
+                Ok(Some(h))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn remove_ssh_host(&self, alias: &str) -> Result<(), SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(SSH_HOSTS)
+                .map_err(|e| SidError::Storage(format!("open ssh_hosts: {e}")))?;
+            tbl.remove(alias)
+                .map_err(|e| SidError::Storage(format!("remove: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
+        Ok(())
     }
 }

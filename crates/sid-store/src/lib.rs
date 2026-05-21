@@ -698,6 +698,52 @@ pub struct PlainSecret {
     pub value: String,
 }
 
+/// Source of an SSH host entry.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::SshHostSource;
+/// let _ = SshHostSource::Manual;
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SshHostSource {
+    /// Sourced from `~/.ssh/config` (read-only).
+    SshConfig,
+    /// Added by the user via `sid ssh add` or the SSH tab UI.
+    Manual,
+}
+
+/// A registered SSH host. The `alias` is the primary key.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshHost, SshHostSource};
+/// let h = SshHost {
+///     alias: "dev".into(),
+///     host: "10.0.0.1".into(),
+///     port: 22,
+///     user: "pi".into(),
+///     identity_file: None,
+///     source: SshHostSource::Manual,
+///     last_connected: 0,
+///     command_history: Vec::new(),
+/// };
+/// assert_eq!(h.alias, "dev");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SshHost {
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub identity_file: Option<String>,
+    pub source: SshHostSource,
+    pub last_connected: Epoch,
+    pub command_history: Vec<String>,
+}
+
 /// The domain storage trait. `sid-store` is the only crate that provides an
 /// implementation (`RedbStore`); other crates depend on this trait only.
 ///
@@ -774,6 +820,10 @@ pub struct PlainSecret {
 ///     fn remove_db_connection(&self, _: &str) -> Result<(), SidError> { Ok(()) }
 ///     fn append_query_record(&self, _: &sid_store::QueryRecord) -> Result<(), SidError> { Ok(()) }
 ///     fn recent_queries(&self, _: &str, _: usize) -> Result<Vec<sid_store::QueryRecord>, SidError> { Ok(vec![]) }
+///     fn list_ssh_hosts(&self) -> Result<Vec<sid_store::SshHost>, SidError> { Ok(vec![]) }
+///     fn upsert_ssh_host(&self, _: &sid_store::SshHost) -> Result<(), SidError> { Ok(()) }
+///     fn get_ssh_host(&self, _: &str) -> Result<Option<sid_store::SshHost>, SidError> { Ok(None) }
+///     fn remove_ssh_host(&self, _: &str) -> Result<(), SidError> { Ok(()) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -1384,6 +1434,18 @@ pub trait Store: Send + Sync {
     /// Return the most recent `limit` query records for the given connection,
     /// newest first. (Plan 4.)
     fn recent_queries(&self, conn_id: &str, limit: usize) -> Result<Vec<QueryRecord>, SidError>;
+
+    /// List every SSH host stored in the registry. Order is implementation-defined.
+    fn list_ssh_hosts(&self) -> Result<Vec<SshHost>, SidError>;
+
+    /// Insert or replace an SSH host keyed on its `alias`.
+    fn upsert_ssh_host(&self, h: &SshHost) -> Result<(), SidError>;
+
+    /// Fetch an SSH host by alias. Returns `Ok(None)` if absent.
+    fn get_ssh_host(&self, alias: &str) -> Result<Option<SshHost>, SidError>;
+
+    /// Remove an SSH host by alias. No-op if absent.
+    fn remove_ssh_host(&self, alias: &str) -> Result<(), SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -1637,6 +1699,18 @@ mod tests {
             }
             fn recent_queries(&self, _: &str, _: usize) -> Result<Vec<QueryRecord>, SidError> {
                 Ok(vec![])
+            }
+            fn list_ssh_hosts(&self) -> Result<Vec<crate::SshHost>, SidError> {
+                Ok(vec![])
+            }
+            fn upsert_ssh_host(&self, _: &crate::SshHost) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn get_ssh_host(&self, _: &str) -> Result<Option<crate::SshHost>, SidError> {
+                Ok(None)
+            }
+            fn remove_ssh_host(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
             }
         }
 
