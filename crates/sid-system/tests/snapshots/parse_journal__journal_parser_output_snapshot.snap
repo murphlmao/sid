@@ -1,0 +1,24 @@
+---
+source: crates/sid-system/tests/parse_journal.rs
+expression: entries
+---
+[
+    JournalEntry {
+        timestamp_secs: 1779352211,
+        hostname: "myhost",
+        source: "nginx[12345]",
+        message: "starting up",
+    },
+    JournalEntry {
+        timestamp_secs: 1779352212,
+        hostname: "myhost",
+        source: "nginx[12345]",
+        message: "ready to accept connections",
+    },
+    JournalEntry {
+        timestamp_secs: 1779352213,
+        hostname: "myhost",
+        source: "systemd[1]",
+        message: "Started nginx.service.",
+    },
+]
