@@ -9,11 +9,18 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
-use sid_store::{PinnedConfig, QuickAction};
+use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
+use sid_ui::Theme;
+use sid_ui::themes::cosmos;
 
 use crate::stub::ComingSoonBody;
 
@@ -194,9 +201,7 @@ impl PinnedConfigsState {
             Some(needle) => self
                 .items
                 .iter()
-                .filter(|p| {
-                    p.label.contains(needle) || p.path.to_string_lossy().contains(needle)
-                })
+                .filter(|p| p.label.contains(needle) || p.path.to_string_lossy().contains(needle))
                 .collect(),
         }
     }
@@ -594,6 +599,10 @@ pub struct SystemWidget {
     body: ComingSoonBody,
     id: WidgetId,
     state: SystemState,
+    pinned: PinnedConfigsState,
+    services: ServicesState,
+    quick_actions: QuickActionsState,
+    journal: JournalTailState,
 }
 
 impl SystemWidget {
@@ -606,6 +615,10 @@ impl SystemWidget {
             ),
             id: WidgetId::new("system.root"),
             state: SystemState::new(),
+            pinned: PinnedConfigsState::new(Vec::new()),
+            services: ServicesState::new(Vec::new()),
+            quick_actions: QuickActionsState::new(Vec::new()),
+            journal: JournalTailState::new(String::new(), UnitBus::User),
         }
     }
 
@@ -617,6 +630,322 @@ impl SystemWidget {
     /// Mutably borrow the focus/filter state.
     pub fn state_mut(&mut self) -> &mut SystemState {
         &mut self.state
+    }
+
+    /// Borrow the pinned-configs sub-panel state.
+    pub fn pinned_configs(&self) -> &PinnedConfigsState {
+        &self.pinned
+    }
+
+    /// Mutably borrow the pinned-configs sub-panel state.
+    pub fn pinned_configs_mut(&mut self) -> &mut PinnedConfigsState {
+        &mut self.pinned
+    }
+
+    /// Borrow the services sub-panel state.
+    pub fn services(&self) -> &ServicesState {
+        &self.services
+    }
+
+    /// Mutably borrow the services sub-panel state.
+    pub fn services_mut(&mut self) -> &mut ServicesState {
+        &mut self.services
+    }
+
+    /// Borrow the quick-actions sub-panel state.
+    pub fn quick_actions(&self) -> &QuickActionsState {
+        &self.quick_actions
+    }
+
+    /// Mutably borrow the quick-actions sub-panel state.
+    pub fn quick_actions_mut(&mut self) -> &mut QuickActionsState {
+        &mut self.quick_actions
+    }
+
+    /// Borrow the journal-tail modal state. Plan 6 surfaces it through the
+    /// services pane menu; the render path treats it as an overlay-on-services
+    /// rather than a full pane.
+    pub fn journal(&self) -> &JournalTailState {
+        &self.journal
+    }
+
+    /// Mutably borrow the journal-tail modal state.
+    pub fn journal_mut(&mut self) -> &mut JournalTailState {
+        &mut self.journal
+    }
+
+    /// Replace the journal tail state wholesale. Used by the binary wiring
+    /// when a user opens journal-tail for a specific unit, and by tests.
+    pub fn set_journal(&mut self, j: JournalTailState) {
+        self.journal = j;
+    }
+
+    /// Render the widget into a ratatui [`Frame`]. Used by the insta
+    /// snapshot tests and by the future direct-frame plumbing.
+    ///
+    /// Layout: a one-row pane strip at the top, then the focused pane's body
+    /// in the remainder, then a one-row filter / keybind hint at the bottom.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let strip_rect = split[0];
+        let body_rect = split[1];
+        let bar_rect = split[2];
+
+        self.render_pane_strip(frame, strip_rect, theme);
+        match self.state.focused_pane() {
+            SystemPane::PinnedConfigs => self.render_pinned_configs(frame, body_rect, theme),
+            SystemPane::Services => self.render_services(frame, body_rect, theme),
+            SystemPane::QuickActions => self.render_quick_actions(frame, body_rect, theme),
+        }
+        self.render_filter_bar(frame, bar_rect, theme);
+
+        // Journal tail overlay (when unit name is non-empty) — surfaced from
+        // the services pane menu in real use; tests can populate via
+        // `set_journal`.
+        if !self.journal.unit_name().is_empty() {
+            self.render_journal(frame, body_rect, theme);
+        }
+    }
+
+    fn render_pane_strip(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let focused = self.state.focused_pane();
+        let mut spans: Vec<Span<'_>> = Vec::new();
+        for (i, (pane, label)) in [
+            (SystemPane::PinnedConfigs, "Pinned configs"),
+            (SystemPane::Services, "Services"),
+            (SystemPane::QuickActions, "Quick actions"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if i > 0 {
+                spans.push(Span::styled(" · ", Style::default().fg(theme.muted.into())));
+            }
+            let glyph = if pane == focused { "● " } else { "○ " };
+            let style = if pane == focused {
+                Style::default()
+                    .fg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.muted.into())
+            };
+            spans.push(Span::styled(format!("{glyph}{label}"), style));
+        }
+        spans.push(Span::styled(
+            "   (Tab cycles)",
+            Style::default().fg(theme.muted.into()),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), rect);
+    }
+
+    fn render_pinned_configs(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let filter = self.state.filter();
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        let items = self.pinned.items();
+        let selected = items.iter().position(|p| Some(p) == self.pinned.selected());
+        for (i, item) in items.iter().enumerate() {
+            if let Some(needle) = filter {
+                if !item.label.contains(needle) && !item.path.to_string_lossy().contains(needle) {
+                    continue;
+                }
+            }
+            let marker = if Some(i) == selected { "> " } else { "  " };
+            let path = item.path.to_string_lossy();
+            let label = if item.label.is_empty() {
+                format!("{marker}{path}")
+            } else {
+                format!("{marker}{path}  [{}]", item.label)
+            };
+            let style = if Some(i) == selected {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+            } else {
+                Style::default().fg(theme.foreground.into())
+            };
+            lines.push(Line::from(Span::styled(label, style)));
+        }
+        if items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (no pinned configs)",
+                Style::default().fg(theme.muted.into()),
+            )));
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Pinned configs ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_services(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let filter = self.state.filter();
+        let header = Row::new(["UNIT", "STATE", "SUB"]).style(
+            Style::default()
+                .fg(theme.muted.into())
+                .add_modifier(Modifier::BOLD),
+        );
+        let units = self.services.units();
+        let selected = units
+            .iter()
+            .position(|u| Some(u) == self.services.selected());
+        let mut body: Vec<Row<'_>> = Vec::new();
+        for (i, u) in units.iter().enumerate() {
+            if let Some(needle) = filter {
+                if !u.name.contains(needle) {
+                    continue;
+                }
+            }
+            let state_label = format!("{:?}", u.state).to_lowercase();
+            let state_color = match u.state {
+                UnitState::Active => theme.accent_success,
+                UnitState::Failed => theme.accent_error,
+                UnitState::Activating | UnitState::Reloading => theme.accent_warning,
+                _ => theme.muted,
+            };
+            let row_style = if Some(i) == selected {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+            } else {
+                Style::default().fg(theme.foreground.into())
+            };
+            let row = Row::new(vec![
+                Span::raw(u.name.clone()),
+                Span::styled(state_label, Style::default().fg(state_color.into())),
+                Span::raw(u.sub_state.clone()),
+            ])
+            .style(row_style);
+            body.push(row);
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Services ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let table = Table::new(
+            body,
+            [
+                Constraint::Min(20),
+                Constraint::Length(12),
+                Constraint::Length(12),
+            ],
+        )
+        .header(header)
+        .block(block);
+        frame.render_widget(table, rect);
+    }
+
+    fn render_journal(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        // Newest at bottom; show last `rect.height - 2` lines so the border
+        // fits.
+        let visible = rect.height.saturating_sub(2) as usize;
+        let entries = self.journal.entries();
+        let start = entries.len().saturating_sub(visible);
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible);
+        for entry in entries.iter().skip(start) {
+            let stamp = format!("{:>10}", entry.timestamp_secs);
+            let line = Line::from(vec![
+                Span::styled(stamp, Style::default().fg(theme.muted.into())),
+                Span::raw("  "),
+                Span::styled(
+                    entry.message.clone(),
+                    Style::default().fg(theme.foreground.into()),
+                ),
+            ]);
+            lines.push(line);
+        }
+        let follow_tag = if self.journal.is_following() {
+            "on"
+        } else {
+            "off"
+        };
+        let title = format!(
+            " Journal: {} (following: {follow_tag}) ",
+            self.journal.unit_name()
+        );
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+        frame.render_widget(Clear, rect);
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_quick_actions(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let filter = self.state.filter();
+        let header = Row::new(["LABEL", "COMMAND", "SCOPE", "KEY"]).style(
+            Style::default()
+                .fg(theme.muted.into())
+                .add_modifier(Modifier::BOLD),
+        );
+        let items = self.quick_actions.items();
+        let selected = items
+            .iter()
+            .position(|a| Some(a) == self.quick_actions.selected());
+        let mut body: Vec<Row<'_>> = Vec::new();
+        for (i, a) in items.iter().enumerate() {
+            if let Some(needle) = filter {
+                if !a.label.contains(needle) && !a.cmd.contains(needle) {
+                    continue;
+                }
+            }
+            let scope = match a.scope {
+                QuickActionScope::Global => "global",
+                QuickActionScope::Workspace => "workspace",
+            };
+            let key = a.keybind.clone().unwrap_or_else(|| "-".into());
+            let row_style = if Some(i) == selected {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+            } else {
+                Style::default().fg(theme.foreground.into())
+            };
+            body.push(
+                Row::new(vec![a.label.clone(), a.cmd.clone(), scope.into(), key]).style(row_style),
+            );
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Quick actions ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let table = Table::new(
+            body,
+            [
+                Constraint::Length(18),
+                Constraint::Min(16),
+                Constraint::Length(10),
+                Constraint::Length(12),
+            ],
+        )
+        .header(header)
+        .block(block);
+        frame.render_widget(table, rect);
+    }
+
+    fn render_filter_bar(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let line = match self.state.filter() {
+            Some(q) if !q.is_empty() => Line::from(vec![
+                Span::styled("/ ", Style::default().fg(theme.accent_warning.into())),
+                Span::styled(q.to_string(), Style::default().fg(theme.foreground.into())),
+            ]),
+            _ => Line::from(Span::styled(
+                "Tab: switch pane · /: filter · Enter: action",
+                Style::default().fg(theme.muted.into()),
+            )),
+        };
+        frame.render_widget(Paragraph::new(line), rect);
     }
 }
 
@@ -656,6 +985,44 @@ impl Widget for SystemWidget {
         }
         self.body.handle_event(ev, ctx)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience: render the widget into a fresh ratatui `Buffer` for tests.
+// ---------------------------------------------------------------------------
+
+/// Render the widget into a fresh test buffer of `(width, height)` using
+/// the cosmos theme.
+///
+/// Pulled out as a free helper so doc tests and integration tests can both
+/// use it without spinning up a Terminal.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::SystemWidget;
+/// use sid_widgets::system::render_to_string;
+/// let w = SystemWidget::new();
+/// let s = render_to_string(&w, 80, 12);
+/// assert!(s.contains("Pinned configs"));
+/// ```
+pub fn render_to_string(widget: &SystemWidget, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| widget.render_into_frame(f, f.area(), &theme))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        s.push('\n');
+    }
+    s
 }
 
 #[cfg(test)]

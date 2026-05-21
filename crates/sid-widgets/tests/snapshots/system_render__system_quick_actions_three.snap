@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/tests/system_render.rs
+expression: s
+---
+○ Pinned configs · ○ Services · ● Quick actions   (Tab cycles)                  
+┌ Quick actions ───────────────────────────────────────────────────────────────┐
+│LABEL              COMMAND                             SCOPE      KEY         │
+│Reload nginx       sudo systemctl reload nginx         global     Char('r')   │
+│Tail syslog        journalctl -f                       global     -           │
+│Kill 8080          fuser -k 8080/tcp                   global     Char('k')   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Tab: switch pane · /: filter · Enter: action

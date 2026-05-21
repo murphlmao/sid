@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/tests/system_render.rs
+expression: s
+---
+○ Pinned configs · ● Services · ○ Quick actions   (Tab cycles)                  
+┌ Journal: nginx.service (following: on) ──────────────────────────────────────┐
+│1700000001  starting up                                                       │
+│1700000002  loaded config                                                     │
+│1700000003  bound :80                                                         │
+│1700000004  worker spawned                                                    │
+│1700000005  ready                                                             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Tab: switch pane · /: filter · Enter: action
