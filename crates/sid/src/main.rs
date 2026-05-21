@@ -676,7 +676,11 @@ fn handle_system_cmd(store: &dyn Store, op: SystemOp) -> Result<()> {
             state,
         } => {
             let bus_both = (user && system) || (!user && !system);
-            let bus = if system { UnitBus::System } else { UnitBus::User };
+            let bus = if system {
+                UnitBus::System
+            } else {
+                UnitBus::User
+            };
             let state_filter = state.as_deref().map(sid_system::parse::parse_unit_state);
             let client = sid_system::SystemctlCmdClient::new()
                 .map_err(|e| anyhow!("systemctl unavailable: {e}"))?;
@@ -731,11 +735,8 @@ fn handle_system_cmd(store: &dyn Store, op: SystemOp) -> Result<()> {
                 let a = store
                     .get_quick_action(&id)?
                     .ok_or_else(|| anyhow!("no such action: {id}"))?;
-                let parts =
-                    shell_words::split(&a.cmd).map_err(|e| anyhow!("shell-words: {e}"))?;
-                let (bin, args) = parts
-                    .split_first()
-                    .ok_or_else(|| anyhow!("empty cmd"))?;
+                let parts = shell_words::split(&a.cmd).map_err(|e| anyhow!("shell-words: {e}"))?;
+                let (bin, args) = parts.split_first().ok_or_else(|| anyhow!("empty cmd"))?;
                 let status = std::process::Command::new(bin).args(args).status()?;
                 std::process::exit(status.code().unwrap_or(1));
             }
