@@ -9,3 +9,4 @@ pub mod pty;
 pub mod secrets;
 pub mod ssh;
 pub mod sys;
+pub mod systemctl;
