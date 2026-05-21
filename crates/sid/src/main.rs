@@ -62,6 +62,38 @@ enum Cmd {
         #[command(subcommand)]
         op: NetOp,
     },
+    /// Read/write `sid` settings without launching the TUI.
+    ///
+    /// Settings are stored in the redb `settings` table; the keys are the
+    /// canonical names listed in `sid_store::settings_keys`.
+    Settings {
+        #[command(subcommand)]
+        op: SettingsOp,
+    },
+}
+
+/// Operations on the settings table.
+#[derive(clap::Subcommand, Debug)]
+enum SettingsOp {
+    /// Print one setting value (UTF-8 bytes) to stdout.
+    Get {
+        /// Canonical setting key.
+        key: String,
+    },
+    /// Set a setting to a raw UTF-8 string value.
+    Set {
+        /// Canonical setting key.
+        key: String,
+        /// New value (stored verbatim as UTF-8 bytes).
+        value: String,
+    },
+    /// List every key currently set in the `settings` table.
+    List,
+    /// Delete a setting key.
+    Delete {
+        /// Canonical setting key.
+        key: String,
+    },
 }
 
 /// Operations on the network / process surface.
@@ -142,6 +174,11 @@ async fn main() -> Result<()> {
     // Handle workspace subcommands (exit before launching TUI).
     if let Some(Cmd::Workspace { op }) = cli.cmd {
         return handle_workspace_cmd(&*store, op);
+    }
+
+    // Handle `sid settings` subcommands (exit before launching TUI).
+    if let Some(Cmd::Settings { op }) = cli.cmd {
+        return handle_settings_cmd(&*store, op);
     }
 
     // Startup workspace discovery (scan ~/vcs/ by default).
@@ -452,4 +489,57 @@ fn handle_workspace_cmd(store: &dyn Store, op: WorkspaceOp) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Dispatch a `sid settings …` subcommand.
+fn handle_settings_cmd(store: &dyn Store, op: SettingsOp) -> Result<()> {
+    use sid_store::SettingValue;
+    match op {
+        SettingsOp::Get { key } => match store.get_setting(&key)? {
+            None => Err(anyhow!("setting not set: {key}")),
+            Some(v) => {
+                match std::str::from_utf8(&v.0) {
+                    Ok(s) => println!("{s}"),
+                    Err(_) => {
+                        // Fall back to a length-prefixed hex line for non-UTF8
+                        // values so scripts can still consume the output.
+                        println!("0x{}", hex_string(&v.0));
+                    }
+                }
+                Ok(())
+            }
+        },
+        SettingsOp::Set { key, value } => {
+            store.put_setting(&key, &SettingValue(value.into_bytes()))?;
+            Ok(())
+        }
+        SettingsOp::Delete { key } => {
+            if store.delete_setting(&key)? {
+                println!("deleted: {key}");
+            } else {
+                println!("not set: {key}");
+            }
+            Ok(())
+        }
+        SettingsOp::List => {
+            for key in store.list_setting_keys()? {
+                match store.get_setting(&key)? {
+                    Some(v) => match std::str::from_utf8(&v.0) {
+                        Ok(s) => println!("{key} = {s}"),
+                        Err(_) => println!("{key} = 0x{}", hex_string(&v.0)),
+                    },
+                    None => println!("{key} = <missing>"),
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
