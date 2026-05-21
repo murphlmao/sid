@@ -1,4 +1,10 @@
-//! Settings tab widget — stub for Plan 1; full implementation in Plan 7.
+//! Settings tab widget.
+//!
+//! Plan 7 fills this out with sub-views (theme picker, keybind editor, etc.).
+//! For now the top-level widget is still a stub; the sub-modules expose the
+//! state types that the composer (Task 20) will glue together.
+
+pub mod theme_picker;
 
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
