@@ -25,7 +25,7 @@
 | **Workspaces** | Browse registered code workspaces (umbrella + sub-repos), drive git operations |
 | **SSH** | Connect to hosts, embedded terminal, SFTP browser |
 | **Database** | Postgres + SQLite. Query editor, paginated results, history |
-| **Network** | Listening ports, processes, interfaces. Kill PIDs from the keyboard |
+| **Network** | Listening ports, processes, interfaces — all sortable; `/` filter; `k` kills selected PID with SIGTERM → 5s grace → SIGKILL; CLI: `sid net ports/procs/interfaces/kill` |
 | **System** | Pinned config files, systemctl services, custom shell quick-actions |
 | **Settings** | Theme, keybinds, behavior — all in-app, no config-file scavenger hunt |
 
@@ -65,11 +65,20 @@ cargo test --workspace
 
 # Override the DB location (otherwise XDG default applies)
 sid --db /tmp/sid.redb
+
+# Network inspection (CLI, no TUI needed)
+sid net ports                  # listening sockets, table form
+sid net ports --format json    # same data, machine-readable
+sid net procs --sort cpu --top 20
+sid net interfaces
+sid net kill 1234              # SIGTERM with 5s grace, then SIGKILL
+sid net kill 1234 --force      # SIGKILL immediately
+sid net kill port:8080         # kill whoever owns port 8080
 ```
 
 **Keybinds in this build:** `Ctrl+←/→` switch tabs · `Ctrl+1..6` jump · `Ctrl+F` command palette · `Ctrl+Q` quit · `Ctrl+,` open Settings.
 
-> **What works in this build:** Foundation complete. Six tabs render as labelled stubs in the cosmos theme; navigation, command palette, theme, and active-tab persistence work. Real tab content arrives in subsequent plans.
+> **What works in this build:** Foundation + Workspaces + Network tab fully functional. Ports/processes/interfaces panes; sort, `/` filter, `k` kill with two-stage confirmation; non-interactive `sid net …` CLI for scripting. SSH, Database, System, Settings tabs render as labelled stubs in the cosmos theme; their content arrives in subsequent plans.
 
 ## Documentation
 
