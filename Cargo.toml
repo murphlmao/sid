@@ -7,6 +7,7 @@ members = [
     "crates/sid-store",
     "crates/sid-job",
     "crates/sid-widgets",
+    "crates/sid-git",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ sid-ui = { path = "crates/sid-ui" }
 sid-store = { path = "crates/sid-store" }
 sid-job = { path = "crates/sid-job" }
 sid-widgets = { path = "crates/sid-widgets" }
+sid-git = { path = "crates/sid-git" }
 
 # TUI
 ratatui = "0.30"
@@ -52,6 +54,10 @@ color-eyre = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
+
+# Git
+git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+walkdir = "2"
 
 # Paths
 directories = "5"
