@@ -17,3 +17,10 @@ tracing.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+criterion.workspace = true
+insta.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "store_bench"
+harness = false

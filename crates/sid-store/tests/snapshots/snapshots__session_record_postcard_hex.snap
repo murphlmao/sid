@@ -1,0 +1,5 @@
+---
+source: crates/sid-store/tests/snapshots.rs
+expression: hex
+---
+01 0B 73 6E 61 70 2D 73 65 73 73 2D 31 80 80 A8 B1 E3 9F E7 CB 17 80 C2 FF E0 E3 9F E7 CB 17 01 80 94 93 8E E7 9F E7 CB 17 00 00

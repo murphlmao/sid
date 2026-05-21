@@ -1,0 +1,12 @@
+---
+source: crates/sid-store/tests/snapshots.rs
+expression: json
+---
+{
+  "id": "snap-sess-1",
+  "started_at": 1700000000000000000,
+  "last_active": 1700000000100000000,
+  "ended_at": 1700000001000000000,
+  "active_tab": null,
+  "open_tabs": []
+}

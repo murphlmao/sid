@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use sid_core::tab::TabId;
 use sid_store::{now_epoch, OpenStore, RedbStore, SessionRecord, Store};
 use tempfile::tempdir;
@@ -174,4 +175,96 @@ fn end_session_does_not_affect_other_sessions() {
     let beta = all.iter().find(|s| s.id == "beta").unwrap();
     assert_eq!(alpha.ended_at, Some(42));
     assert!(beta.ended_at.is_none(), "beta must be unaffected");
+}
+
+// ── Property tests: relational invariants ─────────────────────────────────────
+
+proptest! {
+    /// upsert_session then current_session is identity for the latest session.
+    #[test]
+    fn proptest_upsert_then_current_is_identity(
+        id in "[a-z]{4,16}",
+        started_at in 0u64..1_000_000_000u64,
+    ) {
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        let s = SessionRecord {
+            id: id.clone(),
+            started_at,
+            last_active: started_at + 1,
+            ended_at: None,
+            active_tab: None,
+            open_tabs: vec![],
+        };
+        store.upsert_session(&s).unwrap();
+        let got = store.current_session().unwrap().unwrap();
+        prop_assert_eq!(got.id, id);
+        prop_assert_eq!(got.started_at, started_at);
+        prop_assert_eq!(got.ended_at, None);
+    }
+
+    /// list_sessions includes every upserted session.
+    #[test]
+    fn proptest_list_sessions_includes_all_upserted(
+        ids in proptest::collection::vec("[a-z]{4,8}", 1..=10),
+    ) {
+        // Deduplicate to avoid overwrite noise with same ids.
+        let mut unique_ids = ids.clone();
+        unique_ids.sort();
+        unique_ids.dedup();
+
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        for id in &unique_ids {
+            let s = SessionRecord {
+                id: id.clone(),
+                started_at: 0,
+                last_active: 0,
+                ended_at: None,
+                active_tab: None,
+                open_tabs: vec![],
+            };
+            store.upsert_session(&s).unwrap();
+        }
+        let all = store.list_sessions().unwrap();
+        prop_assert_eq!(all.len(), unique_ids.len());
+        for id in &unique_ids {
+            prop_assert!(
+                all.iter().any(|s| &s.id == id),
+                "session {id} missing from list_sessions"
+            );
+        }
+    }
+
+    /// end_session only affects the specified session; others are unchanged.
+    #[test]
+    fn proptest_end_session_only_affects_target(
+        id_to_end in "[a-z]{4,8}",
+        other_id in "[a-z]{4,8}",
+        ended_at in 1u64..999_999u64,
+    ) {
+        // Ensure distinct ids.
+        let id_to_end = format!("end-{id_to_end}");
+        let other_id = format!("other-{other_id}");
+        prop_assume!(id_to_end != other_id);
+
+        let dir = tempdir().unwrap();
+        let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+        for id in &[&id_to_end, &other_id] {
+            store.upsert_session(&SessionRecord {
+                id: (*id).clone(),
+                started_at: 0,
+                last_active: 0,
+                ended_at: None,
+                active_tab: None,
+                open_tabs: vec![],
+            }).unwrap();
+        }
+        store.end_session(&id_to_end, ended_at).unwrap();
+        let all = store.list_sessions().unwrap();
+        let ended = all.iter().find(|s| s.id == id_to_end).unwrap();
+        let untouched = all.iter().find(|s| s.id == other_id).unwrap();
+        prop_assert_eq!(ended.ended_at, Some(ended_at));
+        prop_assert!(untouched.ended_at.is_none(), "other session must be unaffected");
+    }
 }
