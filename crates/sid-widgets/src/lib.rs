@@ -2,6 +2,9 @@
 //!
 //! All six concrete widgets are "coming soon" stubs in Plan 1, backed by
 //! [`stub::ComingSoonBody`]. Real content arrives in Plans 2-7.
+//!
+//! The Workspaces widget is fully implemented in Plan 2; see [`workspaces`]
+//! for the full tree view and git sub-view details.
 
 pub mod database;
 pub mod network;
