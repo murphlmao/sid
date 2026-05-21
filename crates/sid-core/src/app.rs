@@ -253,3 +253,198 @@ impl App {
         self.quit = true;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Event dispatch
+// ---------------------------------------------------------------------------
+
+/// What the caller (the binary's runtime) should do next.
+///
+/// Returned from [`App::handle_event`] after every event.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::app::Dispatch;
+///
+/// let d = Dispatch::Continue;
+/// assert_eq!(d, Dispatch::Continue);
+/// assert_ne!(d, Dispatch::Quit);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Dispatch {
+    /// No further action needed by the runtime; redraw if state changed.
+    Continue,
+    /// The application should exit cleanly.
+    Quit,
+}
+
+impl App {
+    /// Top-level event dispatch.
+    ///
+    /// Priority order:
+    /// 1. If the command palette is open, handle palette-specific keys (Esc,
+    ///    Enter, Up/Down, Backspace, printable chars). Other keys are swallowed
+    ///    without reaching global keybinds.
+    /// 2. Global keybind lookup — if the event is a [`crate::event::Event::Key`]
+    ///    and the chord has a binding, the bound action is executed.
+    /// 3. Forward to the active widget (via its `handle_event`). Any actions
+    ///    the widget emits are drained and executed.
+    ///
+    /// Returns [`Dispatch::Quit`] when the `app.quit` action fires; otherwise
+    /// [`Dispatch::Continue`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::action::ActionRegistry;
+    /// use sid_core::app::{App, Dispatch};
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_core::keybind::KeybindMap;
+    /// use sid_core::layout::Layout;
+    /// use sid_core::tab::{Tab, TabId, TabManager};
+    /// use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+    /// use sid_core::context::WidgetCtx;
+    ///
+    /// struct Stub { id: WidgetId }
+    /// impl Widget for Stub {
+    ///     fn id(&self) -> &WidgetId { &self.id }
+    ///     fn title(&self) -> &str { "Stub" }
+    ///     fn render(&self, _: &mut dyn RenderTarget) {}
+    ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
+    /// }
+    ///
+    /// let tabs = TabManager::new(vec![Tab {
+    ///     id: TabId::new("a"),
+    ///     title: "A".into(),
+    ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
+    ///     hotkey: None,
+    /// }]);
+    /// let mut app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
+    ///
+    /// // Ctrl+Q quits.
+    /// let d = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL)));
+    /// assert_eq!(d, Dispatch::Quit);
+    /// assert!(app.is_quitting());
+    /// ```
+    pub fn handle_event(&mut self, ev: &crate::event::Event) -> Dispatch {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use crate::event::Event;
+
+        // ---- 1. Palette intercept ----
+        if self.palette.is_open() {
+            if let Event::Key(chord) = ev {
+                match chord.code {
+                    KeyCode::Esc => {
+                        self.palette.close();
+                        return Dispatch::Continue;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(action) = self.palette.current(&self.actions).cloned() {
+                            self.palette.close();
+                            return self.run_action(&action.id.clone());
+                        }
+                        return Dispatch::Continue;
+                    }
+                    KeyCode::Up => {
+                        self.palette.cursor_up(&self.actions);
+                        return Dispatch::Continue;
+                    }
+                    KeyCode::Down => {
+                        self.palette.cursor_down(&self.actions);
+                        return Dispatch::Continue;
+                    }
+                    KeyCode::Backspace => {
+                        self.palette.backspace();
+                        return Dispatch::Continue;
+                    }
+                    KeyCode::Char(c)
+                        if chord.mods == KeyModifiers::NONE
+                            || chord.mods == KeyModifiers::SHIFT =>
+                    {
+                        self.palette.input(&c.to_string());
+                        return Dispatch::Continue;
+                    }
+                    _ => return Dispatch::Continue,
+                }
+            }
+            // Non-key events while palette is open are swallowed.
+            return Dispatch::Continue;
+        }
+
+        // ---- 2. Global keybind ----
+        if let Event::Key(chord) = ev {
+            if let Some(action_id) = self.keybinds.lookup(chord).cloned() {
+                return self.run_action(&action_id);
+            }
+        }
+
+        // ---- 3. Forward to active widget ----
+        {
+            let tx = self.action_tx.clone();
+            let mut ctx = crate::context::WidgetCtx::new(tx);
+            if let Some(widget) = self.tabs.active_mut().layout.iter_widgets_mut().next() {
+                widget.handle_event(ev, &mut ctx);
+            }
+        }
+
+        // Drain actions the widget emitted and run them.
+        let pending = self.drain_pending_actions();
+        let mut last_dispatch = Dispatch::Continue;
+        for id in pending {
+            let d = self.run_action(&id);
+            if d == Dispatch::Quit {
+                last_dispatch = Dispatch::Quit;
+            }
+        }
+
+        last_dispatch
+    }
+
+    /// Execute a single action by id. Returns [`Dispatch::Quit`] if the action
+    /// is `app.quit`, otherwise [`Dispatch::Continue`].
+    ///
+    /// Unknown action ids log a warning and return `Continue` — they never
+    /// panic.
+    pub fn run_action(&mut self, id: &ActionId) -> Dispatch {
+        match id.as_str() {
+            "app.quit" => {
+                self.quit = true;
+                Dispatch::Quit
+            }
+            "palette.open" => {
+                self.palette.open();
+                Dispatch::Continue
+            }
+            "tabs.next" => {
+                self.tabs.next();
+                Dispatch::Continue
+            }
+            "tabs.prev" => {
+                self.tabs.prev();
+                Dispatch::Continue
+            }
+            s if s.starts_with("tabs.jump.") => {
+                if let Some(n) = s
+                    .strip_prefix("tabs.jump.")
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    // Human-facing: 1-based. Clamp to last tab via jump().
+                    self.tabs.jump(n.saturating_sub(1));
+                }
+                Dispatch::Continue
+            }
+            "app.open_settings" => {
+                self.tabs.switch_to(&crate::tab::TabId::new("settings"));
+                Dispatch::Continue
+            }
+            // No-ops in Plan 1; implemented in Plan 8.
+            "tab.detach" | "tab.attach" | "tab.reload" => Dispatch::Continue,
+            _ => {
+                tracing::warn!(action = %id, "unknown action id — ignoring");
+                Dispatch::Continue
+            }
+        }
+    }
+}
