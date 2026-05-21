@@ -12,8 +12,8 @@ use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
 use crate::schema::{
-    KEYBINDS, PINNED_CONFIGS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES,
-    WIDGET_STATE, WORKSPACES,
+    DB_CONNECTIONS, KEYBINDS, PINNED_CONFIGS, QUERY_HISTORY, QUICK_ACTIONS, SECRETS, SESSION_META,
+    SESSIONS, SETTINGS, THEMES, WIDGET_STATE, WORKSPACES,
 };
 use crate::{
     KeybindProfile, OpenStore, PinnedConfig, QuickAction, SessionRecord, SettingValue, Store,
@@ -74,6 +74,12 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(PINNED_CONFIGS)
                 .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
+            let _ = txn
+                .open_table(DB_CONNECTIONS)
+                .map_err(|e| SidError::Storage(format!("open db_connections: {e}")))?;
+            let _ = txn
+                .open_table(QUERY_HISTORY)
+                .map_err(|e| SidError::Storage(format!("open query_history: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
