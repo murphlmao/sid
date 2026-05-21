@@ -30,6 +30,7 @@ sid-db-clients.workspace = true
 sid-secrets.workspace = true
 sid-ssh.workspace = true
 sid-pty.workspace = true
+sid-fx.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 csv.workspace = true

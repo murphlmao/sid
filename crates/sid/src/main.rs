@@ -406,12 +406,73 @@ async fn main() -> Result<()> {
             })
             .collect();
 
-    let mut app = wire::build_app_full(
+    // Load every per-tab data set the binary can read from the store, so each
+    // widget is constructed populated rather than empty.
+    let db_connections = store.list_db_connections().unwrap_or_default();
+    let pinned_configs = store.list_pinned_configs().unwrap_or_default();
+    let quick_actions = store.list_quick_actions().unwrap_or_default();
+
+    // Settings sub-views.
+    let (active_theme, theme_registry) = wire::load_active_theme(&*store);
+    let _ = active_theme; // theme is applied by the render layer, not the widget
+    let active_theme_name = {
+        use sid_store::TypedSettings;
+        store
+            .get_string(sid_store::settings_keys::THEME_NAME)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "cosmos".into())
+    };
+    let active_keybinds = wire::load_active_keybinds(&*store);
+    let action_registry_for_keybinds = sid_core::action::ActionRegistry::new();
+    let workspace_roots_paths: Vec<std::path::PathBuf> = wire::default_discovery_roots();
+    let db_path_for_view = sid_widgets::settings::db_path::DbPathView::open(
+        path.clone(),
+        directories::ProjectDirs::from("dev", "murphlmao", "sid")
+            .map(|d| d.config_dir().join("sid.toml"))
+            .unwrap_or_else(|| std::path::PathBuf::from("sid.toml")),
+    )
+    .ok();
+    let mut settings_categories: Vec<sid_widgets::SettingsCategory> = Vec::new();
+    settings_categories.push(sid_widgets::SettingsCategory::Theme(
+        sid_widgets::settings::theme_picker::ThemePickerView::new(&theme_registry, &active_theme_name),
+    ));
+    settings_categories.push(sid_widgets::SettingsCategory::Keybinds(
+        sid_widgets::settings::keybind_editor::KeybindEditorView::new(
+            &action_registry_for_keybinds,
+            active_keybinds,
+        ),
+    ));
+    {
+        let mut behavior = sid_widgets::settings::behavior_toggles::BehaviorTogglesView::defaults();
+        let _ = behavior.load_from_store(&*store);
+        settings_categories.push(sid_widgets::SettingsCategory::Behavior(behavior));
+    }
+    settings_categories.push(sid_widgets::SettingsCategory::WorkspaceRoots(
+        sid_widgets::settings::workspace_roots::WorkspaceRootsView::new(workspace_roots_paths),
+    ));
+    settings_categories.push(sid_widgets::SettingsCategory::QuickActions(
+        sid_widgets::settings::quick_actions::QuickActionsView::new(quick_actions.clone()),
+    ));
+    if let Some(v) = db_path_for_view {
+        settings_categories.push(sid_widgets::SettingsCategory::DbPath(v));
+    }
+    settings_categories.push(sid_widgets::SettingsCategory::Reset(
+        sid_widgets::settings::reset::ResetView::new(),
+    ));
+
+    let mut app = wire::build_app_hydrated(
         cli.start_tab.as_deref(),
-        workspaces,
-        ssh_hosts,
-        ssh_cfg_entries,
-        start_ssh_alias,
+        wire::BuildAppData {
+            workspaces,
+            ssh_hosts,
+            ssh_config_entries: ssh_cfg_entries,
+            start_ssh_alias,
+            db_connections,
+            pinned_configs,
+            quick_actions,
+            settings_categories,
+        },
     );
 
     // Hydrate global quick-actions into the palette registry (Plan 6).
@@ -449,6 +510,14 @@ async fn main() -> Result<()> {
         sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
     );
 
+    // Background animation: load persisted AnimationConfig if any, else default.
+    let animation = wire::load_animation_config(&*store);
+    let fx_state = if animation.enabled {
+        Some(sid_fx::FxState::new())
+    } else {
+        None
+    };
+
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
@@ -459,6 +528,8 @@ async fn main() -> Result<()> {
         postgres,
         sqlite,
         secrets,
+        animation,
+        fx_state,
     };
 
     // Set up terminal.

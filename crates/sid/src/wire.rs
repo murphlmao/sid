@@ -10,6 +10,7 @@ use anyhow::Result;
 use directories::{ProjectDirs, UserDirs};
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use sid_core::Result as SidResult;
@@ -36,6 +37,8 @@ use sid_ui::helpers::styled_block;
 use sid_ui::theme::{Color as UiColor, GlyphSet, Theme};
 use sid_ui::theme_registry::ThemeRegistry;
 use sid_ui::themes::cosmos;
+use sid_core::animation::AnimationConfig;
+use sid_fx::FxState;
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
 };
@@ -69,6 +72,8 @@ use tokio::sync::mpsc::Receiver;
 ///     postgres: sid_db_clients::PostgresClient::factory(),
 ///     sqlite: sid_db_clients::SqliteClient::factory(),
 ///     secrets,
+///     animation: sid_core::animation::AnimationConfig::default(),
+///     fx_state: None,
 /// };
 /// ```
 pub struct SidApp {
@@ -77,33 +82,31 @@ pub struct SidApp {
     pub session_id: String,
     /// Periodic system / network probe. `None` in tests that don't want a
     /// background polling task; constructed by [`build_sys_probe`] in the
-    /// production binary path. The field is currently only read through
-    /// [`SidApp::subscribe_to_sys`]; future tasks wire its broadcast
-    /// receiver into `NetworkWidget` so the field becomes load-bearing in
-    /// the render loop.
+    /// production binary path.
     #[allow(dead_code)]
     pub sys_probe: Option<Arc<SysProbe>>,
-    /// Adapter for `systemctl` operations (Plan 6 / System tab). Degrades to
-    /// [`NoopSystemctlClient`] when `systemctl` or `journalctl` are missing,
-    /// so the App is constructible on macOS / stripped Docker images.
+    /// Adapter for `systemctl` operations (Plan 6 / System tab).
     #[allow(dead_code)]
     pub systemctl: Arc<dyn SystemctlClient>,
     /// Adapter for spawning external terminal windows (Plan 6 / pinned
-    /// configs). Degrades to [`NoopTerminalSpawner`] when `kitty` is missing.
+    /// configs).
     #[allow(dead_code)]
     pub spawner: Arc<dyn TerminalSpawner>,
-    /// Postgres `DbClient` factory (Plan 4). Bind a real connection via
-    /// `factory().open(...)` when the user activates a saved Postgres
-    /// connection.
+    /// Postgres `DbClient` factory (Plan 4).
     #[allow(dead_code)]
     pub postgres: Arc<dyn sid_core::adapters::db_client::DbClient>,
     /// SQLite `DbClient` factory (Plan 4).
     #[allow(dead_code)]
     pub sqlite: Arc<dyn sid_core::adapters::db_client::DbClient>,
-    /// Plaintext-backed secret store (Plan 4). The Database tab pulls
-    /// connection passwords through this.
+    /// Plaintext-backed secret store (Plan 4).
     #[allow(dead_code)]
     pub secrets: Arc<dyn sid_core::adapters::secrets::SecretStore>,
+    /// Background-animation configuration (Phase 6.1). Persisted via the
+    /// `setting:animation` key.
+    pub animation: AnimationConfig,
+    /// Live starfield state. `None` disables the background layer (tests +
+    /// `animation.enabled == false`).
+    pub fx_state: Option<FxState>,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -362,6 +365,20 @@ pub fn load_active_keybinds(store: &dyn Store) -> KeybindMap {
     }
 }
 
+/// Load the persisted [`AnimationConfig`] from `store`, falling back to the
+/// default. The value is a JSON-encoded `AnimationConfig` blob written by the
+/// Settings tab under the `animation` setting key. JSON is used over postcard
+/// so the binary can read values written by hand-edited `sid.toml` later.
+pub fn load_animation_config(store: &dyn Store) -> AnimationConfig {
+    let key = sid_core::animation::SETTING_ANIMATION_KEY;
+    if let Ok(Some(val)) = store.get_setting(key) {
+        if let Ok(cfg) = serde_json::from_slice::<AnimationConfig>(&val.0) {
+            return cfg;
+        }
+    }
+    AnimationConfig::default()
+}
+
 /// Build an [`App`] with the six Plan-1 tabs pre-wired.
 ///
 /// Injects the real [`Git2ProviderFactory`] into the [`WorkspacesWidget`] and
@@ -428,12 +445,54 @@ pub fn build_app_full(
     ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
     start_ssh_alias: Option<String>,
 ) -> App {
+    build_app_hydrated(
+        start_tab,
+        BuildAppData::just_workspaces(workspaces, ssh_hosts, ssh_config_entries, start_ssh_alias),
+    )
+}
+
+/// Pre-loaded state for `build_app_hydrated`.
+///
+/// Holds everything the binary's startup code has read from the store, so
+/// each widget can be constructed with real data instead of empty defaults.
+/// Used by `main.rs`; tests typically use `BuildAppData::just_workspaces`
+/// which keeps every other field empty.
+#[derive(Default)]
+pub struct BuildAppData {
+    pub workspaces: Vec<Workspace>,
+    pub ssh_hosts: Vec<sid_store::SshHost>,
+    pub ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
+    pub start_ssh_alias: Option<String>,
+    pub db_connections: Vec<sid_store::DbConnection>,
+    pub pinned_configs: Vec<sid_store::PinnedConfig>,
+    pub quick_actions: Vec<sid_store::QuickAction>,
+    pub settings_categories: Vec<sid_widgets::SettingsCategory>,
+}
+
+impl BuildAppData {
+    pub fn just_workspaces(
+        workspaces: Vec<Workspace>,
+        ssh_hosts: Vec<sid_store::SshHost>,
+        ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
+        start_ssh_alias: Option<String>,
+    ) -> Self {
+        Self {
+            workspaces,
+            ssh_hosts,
+            ssh_config_entries,
+            start_ssh_alias,
+            ..Default::default()
+        }
+    }
+}
+
+pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
     let git_factory = Arc::new(Git2ProviderFactory::new());
 
     // Build the SSH widget with pre-loaded state.
-    let ssh_state = sid_widgets::ssh::SshState::new(ssh_hosts, ssh_config_entries);
+    let ssh_state = sid_widgets::ssh::SshState::new(data.ssh_hosts, data.ssh_config_entries);
     let mut ssh_widget = SshWidget::with_state(ssh_state);
-    if let Some(ref alias) = start_ssh_alias {
+    if let Some(ref alias) = data.start_ssh_alias {
         let aliases: Vec<_> = ssh_widget
             .state()
             .visible_hosts()
@@ -448,18 +507,33 @@ pub fn build_app_full(
         }
     }
 
+    // System widget: load pinned configs + quick actions from store.
+    let mut system_widget = SystemWidget::new();
+    *system_widget.pinned_configs_mut() =
+        sid_widgets::system::PinnedConfigsState::new(data.pinned_configs);
+    *system_widget.quick_actions_mut() =
+        sid_widgets::system::QuickActionsState::new(data.quick_actions);
+
+    // Settings widget: build with pre-loaded categories, falling back to the
+    // legacy empty constructor only when callers haven't filled them in.
+    let settings_widget = if data.settings_categories.is_empty() {
+        SettingsWidget::new()
+    } else {
+        SettingsWidget::with_categories(data.settings_categories)
+    };
+
     let tabs = TabManager::new(vec![
         tab(
             "workspaces",
             "Workspaces",
-            Box::new(WorkspacesWidget::new(workspaces, Some(git_factory))),
+            Box::new(WorkspacesWidget::new(data.workspaces, Some(git_factory))),
             Some('1'),
         ),
         tab("ssh", "SSH", Box::new(ssh_widget), Some('2')),
         tab(
             "database",
             "Database",
-            Box::new(DatabaseWidget::new(vec![])),
+            Box::new(DatabaseWidget::new(data.db_connections)),
             Some('3'),
         ),
         tab(
@@ -468,13 +542,8 @@ pub fn build_app_full(
             Box::new(NetworkWidget::new()),
             Some('4'),
         ),
-        tab("system", "System", Box::new(SystemWidget::new()), Some('5')),
-        tab(
-            "settings",
-            "Settings",
-            Box::new(SettingsWidget::new()),
-            Some('6'),
-        ),
+        tab("system", "System", Box::new(system_widget), Some('5')),
+        tab("settings", "Settings", Box::new(settings_widget), Some('6')),
     ]);
     let kb = KeybindMap::cosmos_default();
     let mut reg = ActionRegistry::new();
@@ -499,7 +568,7 @@ pub fn build_app_full(
     let mut app = App::new(tabs, kb, reg);
     let effective_start_tab = start_tab
         .map(|s| s.to_string())
-        .or_else(|| start_ssh_alias.as_ref().map(|_| "ssh".to_string()));
+        .or_else(|| data.start_ssh_alias.as_ref().map(|_| "ssh".to_string()));
     if let Some(id) = effective_start_tab {
         let _ = app.tabs_mut().switch_to(&TabId::new(&id));
     }
@@ -612,45 +681,82 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 /// terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
 /// ```
 pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
+    use ratatui::style::Modifier as TextMod;
+    use ratatui::style::Style as TextStyle;
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders as RBorders};
+
     let theme = cosmos();
     let app = &sid_app.app;
     let size = frame.area();
-    let help_height: u16 = 1;
-    let bar_height: u16 = 3;
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
 
-    // ─── Top bar with tab labels ──────────────────────────────────────────
-    let labels: String = app
-        .tabs()
-        .tabs()
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let marker = if i == app.tabs().active_index() {
-                '●'
-            } else {
-                '·'
-            };
-            format!("{marker} {} ", t.title)
-        })
-        .collect();
-    let bar = Paragraph::new(labels).block(styled_block(&theme, "sid"));
-    let bar_rect = Rect {
-        x: 0,
-        y: 0,
-        width: size.width,
-        height: bar_height,
-    };
-    frame.render_widget(bar, bar_rect);
+    // ─── Starfield background ─────────────────────────────────────────────
+    // Paint stars first; chrome and widget content overwrite cells on top.
+    if let Some(fx) = &sid_app.fx_state {
+        sid_fx::render_starfield(frame.buffer_mut(), size, fx, &sid_app.animation, &theme);
+    }
+
+    // ─── Outer "✦ sid — <active>" bordered window ─────────────────────────
+    let active_title = app.tabs().active().title.clone();
+    let outer_title = format!(" ✦ sid — {} ", active_title);
+    let outer = RBlock::default()
+        .title(outer_title)
+        .borders(RBorders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(TextStyle::default().fg(ui_to_ratatui(theme.border)));
+    let inner = outer.inner(size);
+    frame.render_widget(outer, size);
+
+    // Within the outer border we want a tab strip, body, status line, and
+    // a two-line footer (per-tab + global). Heights are conservative so
+    // small terminals still draw something usable.
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let tabs_h: u16 = 2;
+    let status_h: u16 = if inner.height >= 12 { 1 } else { 0 };
+    let footer_h: u16 = if inner.height >= 10 { 2 } else { 1 };
+    let body_h = inner
+        .height
+        .saturating_sub(tabs_h + status_h + footer_h);
+
+    let mut y = inner.y;
+    let tabs_rect = Rect { x: inner.x, y, width: inner.width, height: tabs_h.min(inner.height) };
+    y = y.saturating_add(tabs_rect.height);
+    let body_rect = Rect { x: inner.x, y, width: inner.width, height: body_h };
+    y = y.saturating_add(body_h);
+    let status_rect = Rect { x: inner.x, y, width: inner.width, height: status_h };
+    y = y.saturating_add(status_h);
+    let footer_rect = Rect { x: inner.x, y, width: inner.width, height: footer_h };
+
+    // ─── Tab strip ────────────────────────────────────────────────────────
+    let active_idx = app.tabs().active_index();
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, t) in app.tabs().tabs().iter().enumerate() {
+        let (marker, marker_style) = if i == active_idx {
+            ('●', TextStyle::default().fg(ui_to_ratatui(theme.accent_primary)).add_modifier(TextMod::BOLD))
+        } else {
+            ('·', TextStyle::default().fg(ui_to_ratatui(theme.muted)))
+        };
+        if i > 0 {
+            spans.push(Span::styled("  ", TextStyle::default()));
+        }
+        spans.push(Span::styled(format!("{marker} "), marker_style));
+        let title_style = if i == active_idx {
+            TextStyle::default().fg(ui_to_ratatui(theme.foreground)).add_modifier(TextMod::BOLD)
+        } else {
+            TextStyle::default().fg(ui_to_ratatui(theme.muted))
+        };
+        spans.push(Span::styled(t.title.clone(), title_style));
+    }
+    let tab_line = Line::from(spans);
+    let tab_para = Paragraph::new(tab_line);
+    frame.render_widget(tab_para, tabs_rect);
 
     // ─── Body (panel for active tab) ──────────────────────────────────────
-    let body_rect = Rect {
-        x: 0,
-        y: bar_height,
-        width: size.width,
-        height: size.height.saturating_sub(bar_height + help_height),
-    };
     let active_id = app.tabs().active().id.as_str().to_string();
-    let active_title = app.tabs().active().title.clone();
     let active_layout = &app.tabs().active().layout;
     let widget = active_layout.iter_widgets().next();
 
@@ -714,15 +820,61 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         frame.render_widget(body, body_rect);
     }
 
-    // ─── Help bar (bottom row, always visible) ────────────────────────────
-    let help_rect = Rect {
-        x: 0,
-        y: size.height.saturating_sub(help_height),
-        width: size.width,
-        height: help_height,
-    };
-    let help = Paragraph::new(help_line());
-    frame.render_widget(help, help_rect);
+    // ─── Status line (above footer) ───────────────────────────────────────
+    if status_h > 0 {
+        let status_text = build_status_line(sid_app);
+        let status = Paragraph::new(status_text)
+            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        frame.render_widget(status, status_rect);
+    }
+
+    // ─── Footer hint strip ────────────────────────────────────────────────
+    // Upper line: per-tab capital-letter actions from the active widget.
+    // Lower line: global hints (Ctrl+Q, Ctrl+F, ...).
+    let footer_split = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints(if footer_h >= 2 {
+            vec![ratatui::layout::Constraint::Length(1), ratatui::layout::Constraint::Length(1)]
+        } else {
+            vec![ratatui::layout::Constraint::Length(1)]
+        })
+        .split(footer_rect);
+    if footer_h >= 2 {
+        if let Some(w) = widget {
+            let hints = w.footer_hint();
+            let spans: Vec<Span> = hints
+                .iter()
+                .flat_map(|h| {
+                    [
+                        Span::styled(
+                            "  [ ",
+                            TextStyle::default().fg(ui_to_ratatui(theme.muted)),
+                        ),
+                        Span::styled(
+                            h.chord.clone(),
+                            TextStyle::default()
+                                .fg(ui_to_ratatui(theme.accent_primary))
+                                .add_modifier(TextMod::BOLD),
+                        ),
+                        Span::styled(
+                            format!(": {}", h.label),
+                            TextStyle::default().fg(ui_to_ratatui(theme.foreground)),
+                        ),
+                        Span::styled(" ]", TextStyle::default().fg(ui_to_ratatui(theme.muted))),
+                    ]
+                })
+                .collect();
+            let p = Paragraph::new(Line::from(spans));
+            frame.render_widget(p, footer_split[0]);
+        }
+        let global = Paragraph::new(help_line())
+            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        frame.render_widget(global, footer_split[1]);
+    } else {
+        let global = Paragraph::new(help_line())
+            .style(TextStyle::default().fg(ui_to_ratatui(theme.muted)));
+        frame.render_widget(global, footer_split[0]);
+    }
 
     // ─── Palette overlay if open ──────────────────────────────────────────
     if app.palette().is_open() {
@@ -810,6 +962,27 @@ fn render_workspaces_body(store: &dyn Store) -> String {
 /// One-line help bar shown at the bottom of every frame.
 fn help_line() -> &'static str {
     " Ctrl+Q quit  ·  Ctrl+F palette  ·  Ctrl+←/→ tabs  ·  Ctrl+1..6 jump  ·  Ctrl+, settings"
+}
+
+/// Render a one-line status string for the bar between body and footer.
+fn build_status_line(sid_app: &SidApp) -> String {
+    let workspaces = sid_app.store.list_workspaces().map(|v| v.len()).unwrap_or(0);
+    let hosts = sid_app.store.list_ssh_hosts().map(|v| v.len()).unwrap_or(0);
+    let dbs = sid_app.store.list_db_connections().map(|v| v.len()).unwrap_or(0);
+    let pins = sid_app.store.list_pinned_configs().map(|v| v.len()).unwrap_or(0);
+    let anim = if sid_app.animation.enabled {
+        format!("animation on @ {}fps", sid_app.animation.fps)
+    } else {
+        "animation off".to_string()
+    };
+    format!(
+        " workspaces: {workspaces}  ·  hosts: {hosts}  ·  databases: {dbs}  ·  pins: {pins}  ·  {anim}"
+    )
+}
+
+/// Convert a `sid_ui::theme::Color` to a `ratatui::style::Color`.
+fn ui_to_ratatui(c: UiColor) -> ratatui::style::Color {
+    ratatui::style::Color::Rgb(c.r, c.g, c.b)
 }
 
 /// Return a [`Rect`] centred within `area` that is `pct_w`% wide and `pct_h`%
@@ -995,6 +1168,17 @@ where
 {
     let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
     loop {
+        // Advance starfield phase on each frame before drawing.
+        if let Some(fx) = sid_app.fx_state.as_mut() {
+            // Use current terminal area for star regen on resize.
+            let area = terminal.size().map(|s| Rect {
+                x: 0,
+                y: 0,
+                width: s.width,
+                height: s.height,
+            }).unwrap_or(Rect { x: 0, y: 0, width: 80, height: 24 });
+            fx.tick(area, &sid_app.animation);
+        }
         terminal.draw(|f| draw(f, sid_app))?;
         let ev = match rx.recv().await {
             Some(e) => e,
@@ -1686,6 +1870,8 @@ mod tests {
             postgres: sid_db_clients::PostgresClient::factory(),
             sqlite: sid_db_clients::SqliteClient::factory(),
             secrets,
+            animation: AnimationConfig::default(),
+            fx_state: None,
         }
     }
 
