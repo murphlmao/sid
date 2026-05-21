@@ -142,9 +142,7 @@ pub fn build_systemctl_client() -> Arc<dyn SystemctlClient> {
     match sid_system::SystemctlCmdClient::new() {
         Ok(c) => Arc::new(c),
         Err(e) => {
-            tracing::warn!(
-                "systemctl unavailable: {e}; System tab services pane will show empty"
-            );
+            tracing::warn!("systemctl unavailable: {e}; System tab services pane will show empty");
             Arc::new(NoopSystemctlClient)
         }
     }
@@ -1750,9 +1748,7 @@ mod tests {
 
     #[test]
     fn noop_systemctl_client_returns_missing_for_every_method() {
-        use sid_core::adapters::systemctl::{
-            SystemctlClient, SystemctlError, UnitBus, UnitFilter,
-        };
+        use sid_core::adapters::systemctl::{SystemctlClient, SystemctlError, UnitBus, UnitFilter};
         let c = super::NoopSystemctlClient;
         assert!(matches!(
             c.list_units(UnitFilter::default()).unwrap_err(),
