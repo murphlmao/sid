@@ -23,7 +23,7 @@
 | Tab | What it does |
 |:---|:---|
 | **Workspaces** | Browse registered code workspaces (umbrella + sub-repos), drive git operations |
-| **SSH** | Connect to hosts, embedded terminal, SFTP browser |
+| **SSH** | Hosts list (merged from `~/.ssh/config` + sid-managed), embedded interactive shell via PTY, SFTP browser with download/upload/edit-in-place, per-host command history |
 | **Database** | Saved Postgres + SQLite connections, multi-line query editor with SQL syntax highlight, paginated sortable results, copy-cell, CSV export, per-connection query history; CLI: `sid db add/remove/list/query` |
 | **Network** | Listening ports, processes, interfaces — all sortable; `/` filter; `k` kills selected PID with SIGTERM → 5s grace → SIGKILL; CLI: `sid net ports/procs/interfaces/kill` |
 | **System** | Pinned config files (Enter launches external kitty + `$EDITOR`), systemctl services (start/stop/restart, journal tail), user-defined shell quick-actions (available globally from `Ctrl+F`) |
@@ -98,11 +98,19 @@ sid db query local "SELECT * FROM users LIMIT 5"   # CSV on stdout
 sid db query local "INSERT INTO t VALUES (1)"      # rows-affected summary
 sid db list
 sid db remove local
+
+# SSH host management
+sid ssh add jp46-dev 10.1.40.102 --user pi --port 22
+sid ssh list                  # merged manual + ~/.ssh/config
+sid ssh connect jp46-dev      # launches the TUI on the SSH tab, pre-pointed
+sid ssh remove jp46-dev
 ```
+
+Inside the SSH tab: `j`/`k` select a host, Enter connects (opens embedded shell via PTY), `Tab` toggles the SFTP sub-panel.
 
 **Keybinds in this build:** `Ctrl+←/→` switch tabs · `Ctrl+1..6` jump · `Ctrl+F` command palette · `Ctrl+Q` quit · `Ctrl+,` open Settings.
 
-> **What works in this build:** Foundation + Workspaces + Network + Settings + **System** + **Database** data surfaces fully functional. Settings tab carries theme picker with live preview, keybind editor with capture-mode + conflict detection, behavior toggles, workspace roots editor, quick actions editor, DB path override (writes the one-line `~/.config/sid/sid.toml`), and reset-to-defaults flow; `sid settings get/set/list/delete` provides scripted access. System tab data surface is wired: pinned configs and global quick-actions persist in redb; `sid system pin/unpin/pins`, `sid system services [--user|--system] [--state STATE]`, and `sid system action add/list/remove/run` are scriptable from the CLI; global quick-actions hydrate into the `Ctrl+F` palette at startup. Database tab has full pure-state coverage (connection list, multi-line editor with SQL syntax highlight via a hand-rolled lexer, paginated sortable results, copy-cell, CSV export, per-connection history), plus `sid db add/remove/list/query` for scripting; the interactive ratatui chrome for the Database tab lands once the cosmos render harness is built, and SSH renders as a labelled stub.
+> **What works in this build:** Foundation + Workspaces + Network + Settings + **System** + **Database** data surfaces fully functional. Settings tab carries theme picker with live preview, keybind editor with capture-mode + conflict detection, behavior toggles, workspace roots editor, quick actions editor, DB path override (writes the one-line `~/.config/sid/sid.toml`), and reset-to-defaults flow; `sid settings get/set/list/delete` provides scripted access. System tab data surface is wired: pinned configs and global quick-actions persist in redb; `sid system pin/unpin/pins`, `sid system services [--user|--system] [--state STATE]`, and `sid system action add/list/remove/run` are scriptable from the CLI; global quick-actions hydrate into the `Ctrl+F` palette at startup. Database tab has full pure-state coverage (connection list, multi-line editor with SQL syntax highlight via a hand-rolled lexer, paginated sortable results, copy-cell, CSV export, per-connection history), plus `sid db add/remove/list/query` for scripting; the interactive ratatui chrome for the Database tab lands once the cosmos render harness is built, Database tab interactive ratatui chrome lands once the cosmos render harness is built. SSH tab is now functional: hosts list merges `~/.ssh/config` with manually-added hosts; Enter on a host opens an interactive shell in an embedded PTY; `Tab` toggles an SFTP sub-panel with download/upload/edit-in-place; `sid ssh add/remove/list/connect` CLI for headless management.
 
 ## Documentation
 
