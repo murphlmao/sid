@@ -4,6 +4,7 @@
 //! For now the top-level widget is still a stub; the sub-modules expose the
 //! state types that the composer (Task 20) will glue together.
 
+pub mod keybind_editor;
 pub mod live_preview;
 pub mod theme_picker;
 
