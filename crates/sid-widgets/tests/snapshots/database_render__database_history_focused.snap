@@ -1,0 +1,28 @@
+---
+source: crates/sid-widgets/tests/database_render.rs
+expression: s
+---
+┌ Connections ───────────────┐┌   SQL ─────────────────────────────────────────────────────────────┐
+│> * prod-db (postgres)      ││                                                                    │
+│  o analytics (sqlite)      ││                                                                    │
+│  o scratch (sqlite)        ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            │└────────────────────────────────────────────────────────────────────┘
+│                            │┌ * Query history ───────────────────────────────────────────────────┐
+│                            ││SELECT 0 FROM t WHERE id = 0;                                       │
+│                            ││SELECT 1 FROM t WHERE id = 1;                                       │
+│                            ││SELECT 2 FROM t WHERE id = 2;                                       │
+│                            ││SELECT 3 FROM t WHERE id = 3;                                       │
+│                            ││SELECT 4 FROM t WHERE id = 4;                                       │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            ││                                                                    │
+│                            │└────────────────────────────────────────────────────────────────────┘
+└────────────────────────────┘Tab cycles right pane · Ctrl+R run query · Ctrl+E export CSV · current

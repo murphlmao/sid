@@ -12,12 +12,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sid_core::adapters::db_client::{DbClient, PageCursor, QueryPage};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Row as TableRow, Table};
+use sid_core::adapters::db_client::{DbClient, DbKind, PageCursor, QueryPage};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
 use sid_db_clients::lexer::{Token, tokenize};
 use sid_store::{DbConnection, QueryRecord};
+use sid_ui::Theme;
+use sid_ui::themes::cosmos;
 
 use crate::stub::ComingSoonBody;
 
@@ -358,6 +365,12 @@ impl DatabaseState {
         &self.connections
     }
 
+    /// Index of the currently-selected connection in [`Self::connections`].
+    /// Returns `0` when the list is empty (no row will be drawn anyway).
+    pub fn selected_index(&self) -> usize {
+        self.selected_idx
+    }
+
     /// Currently-selected connection (`None` if list is empty).
     pub fn selected_connection(&self) -> Option<&DbConnection> {
         self.connections.get(self.selected_idx)
@@ -404,6 +417,13 @@ impl DatabaseState {
     pub fn apply_connect_result(&mut self, conn_id: String, client: Arc<dyn DbClient>) {
         self.active_conn_id = Some(conn_id);
         self.active_client = Some(client);
+    }
+
+    /// Mark a connection as active without binding a client. Used by tests
+    /// (and CLI smoke flows) that need to drive renderer state without
+    /// spinning up a real driver.
+    pub fn set_active_conn_id_for_tests(&mut self, conn_id: String) {
+        self.active_conn_id = Some(conn_id);
     }
 
     /// Clear the active client (after a disconnect).
@@ -497,6 +517,353 @@ impl DatabaseWidget {
     pub fn state_mut(&mut self) -> &mut DatabaseState {
         &mut self.state
     }
+
+    /// Replace the loaded result page wholesale. Test-only helper used to
+    /// drive snapshot tests without going through the JobQueue.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::adapters::db_client::QueryPage;
+    /// use sid_widgets::DatabaseWidget;
+    /// let mut w = DatabaseWidget::new(vec![]);
+    /// w.set_results_for_tests(QueryPage {
+    ///     columns: vec![],
+    ///     rows: vec![],
+    ///     next_cursor: None,
+    ///     duration_ms: 0,
+    /// });
+    /// assert!(w.state().results.page.is_some());
+    /// ```
+    pub fn set_results_for_tests(&mut self, page: QueryPage) {
+        self.state.results.set_page(page);
+    }
+
+    /// Render the widget into a ratatui [`Frame`]. Mirrors the structure of
+    /// `NetworkWidget::render_into_frame`; used by the binary's wire layer
+    /// and by the insta snapshot tests in `tests/database_render.rs`.
+    ///
+    /// Layout:
+    ///
+    /// ```text
+    /// ┌─────────────┬────────────────────────────────┐
+    /// │ Connections │ Editor                         │
+    /// │             ├────────────────────────────────┤
+    /// │             │ Results / History              │
+    /// │             ├────────────────────────────────┤
+    /// │             │ status                         │
+    /// └─────────────┴────────────────────────────────┘
+    /// ```
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let outer = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Min(0)])
+            .split(area);
+        let left = outer[0];
+        let right_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(outer[1]);
+        let editor_rect = right_split[0];
+        let middle_rect = right_split[1];
+        let status_rect = right_split[2];
+
+        self.render_connection_list(frame, left, theme);
+        self.render_editor(frame, editor_rect, theme);
+        match self.state.right_pane {
+            RightPane::History => self.render_history(frame, middle_rect, theme),
+            RightPane::Editor | RightPane::Results => {
+                self.render_results(frame, middle_rect, theme);
+            }
+        }
+        self.render_status_bar(frame, status_rect, theme);
+    }
+
+    fn render_connection_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Connections ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+
+        if self.state.connections.is_empty() {
+            let msg = "(no connections — `sid db add` to register)";
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    msg,
+                    Style::default().fg(theme.muted.into()),
+                )))
+                .block(block),
+                rect,
+            );
+            return;
+        }
+
+        let active = self.state.active_conn_id.as_deref();
+        let selected = self.state.selected_idx;
+        let lines: Vec<Line<'_>> = self
+            .state
+            .connections
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let dot = if Some(c.id.as_str()) == active {
+                    '*'
+                } else {
+                    'o'
+                };
+                let marker = if i == selected { '>' } else { ' ' };
+                let kind = match c.kind {
+                    DbKind::Postgres => "postgres",
+                    DbKind::Sqlite => "sqlite",
+                };
+                let text = format!("{marker} {dot} {} ({kind})", c.name);
+                let style = if i == selected {
+                    Style::default()
+                        .fg(theme.background.into())
+                        .bg(theme.accent_primary.into())
+                } else {
+                    Style::default().fg(theme.foreground.into())
+                };
+                Line::from(Span::styled(text, style))
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_editor(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let focused = self.state.right_pane == RightPane::Editor;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.border
+        };
+        let title = if focused { " * SQL " } else { "   SQL " };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+
+        let cursor_line = self.state.editor.cursor_line;
+        let cursor_col = self.state.editor.cursor_col;
+        let lines: Vec<Line<'_>> = self
+            .state
+            .editor
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(li, line)| {
+                if li == cursor_line {
+                    let chars: Vec<char> = line.chars().collect();
+                    let col = cursor_col.min(chars.len());
+                    let before: String = chars[..col].iter().collect();
+                    let at: String = if col < chars.len() {
+                        chars[col].to_string()
+                    } else {
+                        " ".into()
+                    };
+                    let after: String = if col < chars.len() {
+                        chars[col + 1..].iter().collect()
+                    } else {
+                        String::new()
+                    };
+                    let cursor_style = Style::default()
+                        .fg(theme.background.into())
+                        .bg(theme.accent_primary.into())
+                        .add_modifier(Modifier::REVERSED);
+                    Line::from(vec![
+                        Span::styled(before, Style::default().fg(theme.foreground.into())),
+                        Span::styled(at, cursor_style),
+                        Span::styled(after, Style::default().fg(theme.foreground.into())),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        line.clone(),
+                        Style::default().fg(theme.foreground.into()),
+                    ))
+                }
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_results(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let focused = self.state.right_pane == RightPane::Results;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.border
+        };
+
+        let (rows_len, page_title) = match self.state.results.page.as_ref() {
+            Some(p) => {
+                let total = p.rows.len();
+                let next = p
+                    .next_cursor
+                    .map(|c| format!(" · next-offset {}", c.offset))
+                    .unwrap_or_default();
+                (total, format!(" rows {total}{next} "))
+            }
+            None => (0, " no results yet ".to_string()),
+        };
+        let title = if focused {
+            format!(" * Results ·{page_title}")
+        } else {
+            format!("   Results ·{page_title}")
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+
+        let Some(page) = self.state.results.page.as_ref() else {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "(no query has run yet — Ctrl+R to execute)",
+                    Style::default().fg(theme.muted.into()),
+                )))
+                .block(block),
+                rect,
+            );
+            return;
+        };
+
+        let header_cells: Vec<String> = page.columns.iter().map(|c| c.name.clone()).collect();
+        let header = TableRow::new(header_cells).style(
+            Style::default()
+                .fg(theme.muted.into())
+                .add_modifier(Modifier::BOLD),
+        );
+        let selected_row = self.state.results.selected_row;
+        let body: Vec<TableRow<'_>> = page
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let style = if i == selected_row && focused {
+                    Style::default()
+                        .fg(theme.background.into())
+                        .bg(theme.accent_primary.into())
+                } else {
+                    Style::default().fg(theme.foreground.into())
+                };
+                TableRow::new(r.values.clone()).style(style)
+            })
+            .collect();
+        // Even widths; ratatui handles overflow.
+        let n_cols = page.columns.len().max(1);
+        let constraints: Vec<Constraint> =
+            std::iter::repeat_n(Constraint::Percentage((100 / n_cols).max(1) as u16), n_cols)
+                .collect();
+        let _ = rows_len;
+        let table = Table::new(body, constraints).header(header).block(block);
+        frame.render_widget(table, rect);
+    }
+
+    fn render_history(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let focused = self.state.right_pane == RightPane::History;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.border
+        };
+        let title = if focused {
+            " * Query history "
+        } else {
+            "   Query history "
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+
+        if self.state.history.records.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "(no history yet)",
+                    Style::default().fg(theme.muted.into()),
+                )))
+                .block(block),
+                rect,
+            );
+            return;
+        }
+
+        let selected = self.state.history.selected;
+        let lines: Vec<Line<'_>> = self
+            .state
+            .history
+            .records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let one_line: String = r.sql.replace('\n', " ");
+                let style = if i == selected && focused {
+                    Style::default()
+                        .fg(theme.background.into())
+                        .bg(theme.accent_primary.into())
+                } else {
+                    Style::default().fg(theme.foreground.into())
+                };
+                Line::from(Span::styled(one_line, style))
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_status_bar(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let pane = match self.state.right_pane {
+            RightPane::Editor => "Editor",
+            RightPane::Results => "Results",
+            RightPane::History => "History",
+        };
+        let label = format!(
+            "Tab cycles right pane · Ctrl+R run query · Ctrl+E export CSV · current pane: {pane}"
+        );
+        let para = Paragraph::new(Line::from(Span::styled(
+            label,
+            Style::default().fg(theme.muted.into()),
+        )));
+        frame.render_widget(para, rect);
+    }
+}
+
+/// Render the widget into a fresh test buffer of `(width, height)` using
+/// the cosmos theme. Mirrors [`crate::network::render_to_string`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::DatabaseWidget;
+/// use sid_widgets::database::render_to_string;
+/// let w = DatabaseWidget::new(vec![]);
+/// let s = render_to_string(&w, 80, 24);
+/// assert!(s.contains("Connections"));
+/// ```
+pub fn render_to_string(widget: &DatabaseWidget, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| widget.render_into_frame(f, f.area(), &theme))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        s.push('\n');
+    }
+    s
 }
 
 impl Default for DatabaseWidget {
