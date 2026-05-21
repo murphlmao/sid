@@ -3673,6 +3673,7 @@ dependencies = [
  "shell-words",
  "sid-core",
  "sid-db-clients",
+ "sid-fx",
  "sid-git",
  "sid-job",
  "sid-pty",

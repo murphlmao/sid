@@ -31,6 +31,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         postgres: sid_db_clients::PostgresClient::factory(),
         sqlite: sid_db_clients::SqliteClient::factory(),
         secrets,
+        animation: sid_core::animation::AnimationConfig::default(),
+        fx_state: None,
     }
 }
 
