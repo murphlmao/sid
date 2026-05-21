@@ -61,6 +61,12 @@ insta = { version = "1", features = ["yaml"] }
 proptest = "1"
 tempfile = "3"
 
+# Performance / chaos / model-checking
+criterion = { version = "0.7", default-features = false, features = ["html_reports", "cargo_bench_support"] }
+loom = "0.7"
+fail = "0.5"
+dhat = "0.3"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
