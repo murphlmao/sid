@@ -166,9 +166,55 @@ impl DbClient for SqliteClient {
     }
 
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
-        Err(DbError::Other(
-            "schema_introspect: not yet implemented — Task 8".into(),
-        ))
+        let conn = self.inner.clone().ok_or(DbError::NotConnected)?;
+        let tables = tokio::task::spawn_blocking(move || -> Result<Vec<TableInfo>, DbError> {
+            let guard = conn
+                .lock()
+                .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
+            let mut stmt = guard
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                )
+                .map_err(map_rusqlite_error)?;
+            let table_names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(map_rusqlite_error)?
+                .filter_map(Result::ok)
+                .collect();
+            let mut tables: Vec<TableInfo> = Vec::with_capacity(table_names.len());
+            for tn in table_names {
+                // PRAGMA table_info() doesn't support param binding for the table
+                // name, so we have to interpolate. Quote any embedded quote.
+                let safe = tn.replace('"', "\"\"");
+                let mut info_stmt = guard
+                    .prepare(&format!(r#"PRAGMA table_info("{safe}")"#))
+                    .map_err(map_rusqlite_error)?;
+                let cols: Vec<Column> = info_stmt
+                    .query_map([], |row| {
+                        let name: String = row.get(1)?;
+                        let decl: String = row.get(2).unwrap_or_default();
+                        Ok(Column {
+                            name,
+                            ty: rusqlite_type_to_column_type(
+                                Some(&decl),
+                                rusqlite::types::Type::Null,
+                            ),
+                        })
+                    })
+                    .map_err(map_rusqlite_error)?
+                    .filter_map(Result::ok)
+                    .collect();
+                tables.push(TableInfo {
+                    schema: None,
+                    name: tn,
+                    columns: cols,
+                });
+            }
+            Ok(tables)
+        })
+        .await
+        .map_err(|e| DbError::Other(format!("join: {e}")))??;
+        Ok(SchemaInfo { tables })
     }
 
     async fn cancel(&self) -> Result<(), DbError> {
