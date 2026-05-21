@@ -35,6 +35,11 @@ pub struct KeyBinding {
 
 /// A map from key chords to action ids.
 ///
+/// Internally stores `(KeyChord, ActionId)` tuples keyed by a stable
+/// [`ChordKey`] string, so [`KeybindMap::iter`] can yield the original
+/// `KeyChord` back to callers that need to display bindings (e.g., the
+/// Settings keybind editor).
+///
 /// # Examples
 ///
 /// ```
@@ -50,7 +55,7 @@ pub struct KeyBinding {
 /// ```
 #[derive(Default)]
 pub struct KeybindMap {
-    by_chord: BTreeMap<ChordKey, ActionId>,
+    by_chord: BTreeMap<ChordKey, (KeyChord, ActionId)>,
 }
 
 /// Stable, ordered string key for a [`KeyChord`].
@@ -95,7 +100,7 @@ impl KeybindMap {
     /// assert!(map.lookup(&chord).is_some());
     /// ```
     pub fn bind(&mut self, b: KeyBinding) {
-        self.by_chord.insert(chord_key(&b.chord), b.action);
+        self.by_chord.insert(chord_key(&b.chord), (b.chord, b.action));
     }
 
     /// Look up the action bound to a chord.
@@ -120,7 +125,81 @@ impl KeybindMap {
     /// assert!(map.lookup(&unbound).is_none());
     /// ```
     pub fn lookup(&self, chord: &KeyChord) -> Option<&ActionId> {
-        self.by_chord.get(&chord_key(chord))
+        self.by_chord.get(&chord_key(chord)).map(|(_c, a)| a)
+    }
+
+    /// Iterate over every binding as `(chord, action)` pairs.
+    ///
+    /// Order is the lexicographic order of the internal [`ChordKey`]
+    /// representation; callers that need a different order should sort the
+    /// result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::action::ActionId;
+    /// use sid_core::event::KeyChord;
+    /// use sid_core::keybind::{KeyBinding, KeybindMap};
+    ///
+    /// let mut map = KeybindMap::new();
+    /// map.bind(KeyBinding {
+    ///     chord: KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+    ///     action: ActionId::new("app.quit"),
+    /// });
+    /// let pairs: Vec<_> = map.iter().collect();
+    /// assert_eq!(pairs.len(), 1);
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&KeyChord, &ActionId)> {
+        self.by_chord.values().map(|(chord, action)| (chord, action))
+    }
+
+    /// Find the first chord currently bound to `action`, if any.
+    ///
+    /// Used by the Settings keybind editor to render "action *X* is bound to
+    /// chord *Y*." If multiple chords map to the same action, returns
+    /// whichever one comes first in [`KeybindMap::iter`]'s ordering.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::action::ActionId;
+    /// use sid_core::event::KeyChord;
+    /// use sid_core::keybind::{KeyBinding, KeybindMap};
+    ///
+    /// let mut map = KeybindMap::new();
+    /// let chord = KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+    /// let action = ActionId::new("app.quit");
+    /// map.bind(KeyBinding { chord, action: action.clone() });
+    /// assert_eq!(map.chord_for_action(&action), Some(&chord));
+    /// assert_eq!(map.chord_for_action(&ActionId::new("unbound")), None);
+    /// ```
+    pub fn chord_for_action(&self, action: &ActionId) -> Option<&KeyChord> {
+        self.iter().find_map(|(c, a)| if a == action { Some(c) } else { None })
+    }
+
+    /// Remove the binding for `chord`. Idempotent — unbinding a chord that
+    /// was never bound is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::action::ActionId;
+    /// use sid_core::event::KeyChord;
+    /// use sid_core::keybind::{KeyBinding, KeybindMap};
+    ///
+    /// let mut map = KeybindMap::new();
+    /// let chord = KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+    /// map.bind(KeyBinding { chord, action: ActionId::new("app.quit") });
+    /// map.unbind(&chord);
+    /// assert!(map.lookup(&chord).is_none());
+    /// // Unbinding an unbound chord is a no-op.
+    /// map.unbind(&chord);
+    /// ```
+    pub fn unbind(&mut self, chord: &KeyChord) {
+        self.by_chord.remove(&chord_key(chord));
     }
 
     /// Return the built-in "cosmos" default keybind profile.
