@@ -63,7 +63,10 @@ fn get_unset_key_returns_error_exit_code() {
         ])
         .output()
         .unwrap();
-    assert!(!get.status.success(), "expected non-zero exit for missing key");
+    assert!(
+        !get.status.success(),
+        "expected non-zero exit for missing key"
+    );
     let stderr = String::from_utf8_lossy(&get.stderr);
     assert!(stderr.contains("not set"), "stderr: {stderr}");
 }

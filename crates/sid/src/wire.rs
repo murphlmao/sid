@@ -22,7 +22,9 @@ use sid_core::layout::Layout;
 use sid_core::sys_probe::SysProbe;
 use sid_core::tab::{Tab, TabId, TabManager};
 use sid_core::widget::Widget;
-use sid_core::workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root};
+use sid_core::workspace_discovery::{
+    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
+};
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_git::Git2ProviderFactory;
 use sid_store::{RedbStore, SessionRecord, Store, Workspace, now_epoch};
@@ -574,8 +576,15 @@ fn render_workspaces_body(store: &dyn Store) -> String {
         };
         lines.push(format!("  {glyph} {:<28}  {}", w.name, w.path.display()));
         // Children
-        for child in workspaces.iter().filter(|c| c.parent.as_deref() == Some(&w.path)) {
-            lines.push(format!("      · {:<24}  {}", child.name, child.path.display()));
+        for child in workspaces
+            .iter()
+            .filter(|c| c.parent.as_deref() == Some(&w.path))
+        {
+            lines.push(format!(
+                "      · {:<24}  {}",
+                child.name,
+                child.path.display()
+            ));
         }
     }
     // Loose children (parent set but parent not registered): show under "orphans"
@@ -701,12 +710,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
     }
 
     impl<'a> WorkspaceUpserter for Bridge<'a> {
-        fn upsert(
-            &self,
-            path: &Path,
-            kind: WorkspaceKind,
-            name: &str,
-        ) -> Result<(), String> {
+        fn upsert(&self, path: &Path, kind: WorkspaceKind, name: &str) -> Result<(), String> {
             let w = Workspace {
                 path: path.to_path_buf(),
                 name: name.to_string(),
@@ -724,8 +728,8 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
         if !root.exists() {
             continue;
         }
-        let discovered = scan_workspace_root(root, 2)
-            .map_err(|e| anyhow::anyhow!("scan {:?}: {e}", root))?;
+        let discovered =
+            scan_workspace_root(root, 2).map_err(|e| anyhow::anyhow!("scan {:?}: {e}", root))?;
         let n = merge_discoveries_into(&Bridge { store }, &discovered)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         total += n;

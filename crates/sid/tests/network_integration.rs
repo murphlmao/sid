@@ -31,8 +31,7 @@ impl StubProvider {
 
 impl SysProvider for StubProvider {
     fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
-        self.iter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.iter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(vec![ProcessInfo {
             pid: Pid::from_u32(1),
             name: "init".into(),
