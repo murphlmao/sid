@@ -8,6 +8,7 @@
 
 pub mod csv_export;
 pub mod database;
+pub mod modal;
 pub mod network;
 pub mod settings;
 pub mod ssh;
@@ -16,6 +17,7 @@ pub mod system;
 pub mod workspaces;
 
 pub use database::DatabaseWidget;
+pub use modal::*;
 pub use network::NetworkWidget;
 pub use settings::{SettingsCategory, SettingsWidget};
 pub use ssh::SshWidget;

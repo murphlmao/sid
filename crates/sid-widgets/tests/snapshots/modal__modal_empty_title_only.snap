@@ -1,0 +1,18 @@
+---
+source: crates/sid-widgets/tests/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ ✦ Empty Modal ───────────────────────────────┐                
+                │                                              │                
+                │  [ Enter: Save ]   [ Esc: Cancel ]           │                
+                │                                              │                
+                └──────────────────────────────────────────────┘
