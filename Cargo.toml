@@ -10,6 +10,7 @@ members = [
     "crates/sid-git",
     "crates/sid-secrets",
     "crates/sid-sysinfo",
+    "crates/sid-system",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ sid-widgets = { path = "crates/sid-widgets" }
 sid-git = { path = "crates/sid-git" }
 sid-secrets = { path = "crates/sid-secrets" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
+sid-system = { path = "crates/sid-system" }
 
 # TUI
 ratatui = "0.30"
@@ -71,6 +73,10 @@ nix = { version = "0.29", features = ["signal", "process"] }
 
 # Paths
 directories = "5"
+
+# System / subprocess utilities
+which = "7"
+shell-words = "1.1"
 
 # Test
 insta = { version = "1", features = ["yaml"] }
