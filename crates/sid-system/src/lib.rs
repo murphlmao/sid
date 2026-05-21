@@ -1,9 +1,11 @@
 //! `sid-system` — adapter crate for systemd-based systems.
 //!
-//! Exposes parsers (`parse`), `SystemctlCmdClient` (CLI-shelling
-//! implementation of [`sid_core::adapters::systemctl::SystemctlClient`]),
-//! and `KittyTerminalSpawner` (CLI-shelling implementation of
-//! [`sid_core::adapters::terminal_spawner::TerminalSpawner`]).
+//! Exposes:
+//! - [`parse`] — pure-Rust parsers for `systemctl` / `journalctl` text output.
+//! - [`SystemctlCmdClient`] — CLI-shelling implementation of
+//!   [`sid_core::adapters::systemctl::SystemctlClient`].
+//! - [`KittyTerminalSpawner`] — CLI-shelling implementation of
+//!   [`sid_core::adapters::terminal_spawner::TerminalSpawner`] (Task 16).
 //!
 //! # Examples
 //!
@@ -14,7 +16,10 @@
 //! assert!(units.is_empty());
 //! ```
 
+pub mod client;
+pub mod env;
+pub mod kitty;
 pub mod parse;
-// pub mod client;   // Task 7
-// pub mod kitty;    // Task 16
-// pub mod env;      // Task 16
+
+pub use client::SystemctlCmdClient;
+pub use kitty::KittyTerminalSpawner;
