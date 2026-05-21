@@ -10,6 +10,13 @@ repository.workspace = true
 name = "sid"
 path = "src/main.rs"
 
+# CI / coverage hook — activating this feature is a no-op for the normal build;
+# it exists so that `cargo llvm-cov --features coverage` can instrument the
+# binary without any extra feature-gating in the source.  Add
+# `--features coverage` to your `cargo llvm-cov` invocation in CI.
+[features]
+coverage = []
+
 [dependencies]
 sid-core.workspace = true
 sid-ui.workspace = true
@@ -32,3 +39,8 @@ futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "draw_bench"
+harness = false
