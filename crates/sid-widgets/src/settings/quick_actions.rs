@@ -13,9 +13,15 @@
 //! assert_eq!(view.actions().len(), 0);
 //! ```
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::SidError;
 use sid_core::keybind_profile::chord_from_string;
 use sid_store::{QuickAction, QuickActionScope, Store};
+use sid_ui::Theme;
 
 /// Edit buffer for a single quick action.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,6 +185,68 @@ impl QuickActionsView {
             self.focused = 0;
         }
         Some(r)
+    }
+
+    /// Render the quick actions editor into `area`.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Quick actions ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let banner = self.edit_buffer.is_some();
+        let list_h = if banner {
+            inner.height.saturating_sub(1)
+        } else {
+            inner.height
+        };
+        let mut rows: Vec<Line> = Vec::with_capacity(self.actions.len());
+        for (i, a) in self.actions.iter().enumerate() {
+            let cursor = if i == self.focused { '>' } else { ' ' };
+            let kb = a.keybind.as_deref().unwrap_or("-");
+            let line = Line::from(format!("{cursor} {:<16} {:<20} [{}]", a.id, a.label, kb));
+            let line = if i == self.focused {
+                line.style(
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                line.style(Style::default().fg(theme.foreground.into()))
+            };
+            rows.push(line);
+        }
+        let list_rect = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: list_h,
+        };
+        frame.render_widget(Paragraph::new(rows), list_rect);
+
+        if banner {
+            let banner_rect = Rect {
+                x: inner.x,
+                y: inner.y + list_h,
+                width: inner.width,
+                height: 1,
+            };
+            let label = if let Some(buf) = &self.edit_buffer {
+                let verb = if buf.is_new { "+" } else { "~" };
+                format!(" {verb} id={} cmd={}", buf.id, buf.cmd)
+            } else {
+                String::new()
+            };
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(theme.accent_warning.into())),
+                banner_rect,
+            );
+        }
     }
 
     /// Load the actions list from the store's `quick_actions` table.
@@ -347,10 +415,7 @@ mod tests {
         let mut v = QuickActionsView::new(vec![]);
         fill_buf(&mut v, "id", "cmd", Some("Char('q')|2"));
         v.commit_edit().unwrap();
-        assert_eq!(
-            v.actions()[0].keybind.as_deref(),
-            Some("Char('q')|2")
-        );
+        assert_eq!(v.actions()[0].keybind.as_deref(), Some("Char('q')|2"));
     }
 
     #[test]

@@ -22,10 +22,16 @@ pub mod reset;
 pub mod theme_picker;
 pub mod workspace_roots;
 
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use serde::{Deserialize, Serialize};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_ui::Theme;
 
 use crate::settings::behavior_toggles::BehaviorTogglesView;
 use crate::settings::db_path::DbPathView;
@@ -194,6 +200,130 @@ impl SettingsWidget {
             false
         }
     }
+
+    /// Render the Settings tab into `area` using `theme` as the chrome theme.
+    ///
+    /// Layout: a 25%/75% horizontal split. The left pane lists the category
+    /// labels with the focused row highlighted; the right pane delegates to
+    /// the focused sub-view's own `render_into_frame`. When the widget has no
+    /// categories the area is rendered as an empty bordered block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::Terminal;
+    /// use ratatui::backend::TestBackend;
+    /// use sid_ui::themes::cosmos;
+    /// use sid_widgets::SettingsWidget;
+    ///
+    /// let w = SettingsWidget::with_categories(vec![]);
+    /// let backend = TestBackend::new(80, 24);
+    /// let mut term = Terminal::new(backend).unwrap();
+    /// let theme = cosmos();
+    /// term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+    /// ```
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        if self.categories.is_empty() {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.into()))
+                .title(" Settings ")
+                .title_style(Style::default().fg(theme.foreground.into()));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            if inner.width > 0 && inner.height > 0 {
+                let body = Paragraph::new(Line::from("(no categories)"))
+                    .style(Style::default().fg(theme.muted.into()));
+                frame.render_widget(body, inner);
+            }
+            return;
+        }
+
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(area);
+        let left = chunks[0];
+        let right = chunks[1];
+
+        // Left pane: category list.
+        let left_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Categories ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let left_inner = left_block.inner(left);
+        frame.render_widget(left_block, left);
+        if left_inner.width > 0 && left_inner.height > 0 {
+            let mut rows: Vec<Line> = Vec::with_capacity(self.categories.len());
+            for (i, cat) in self.categories.iter().enumerate() {
+                let cursor = if i == self.focused_category { '>' } else { ' ' };
+                let marker = if i == self.focused_category { '*' } else { 'o' };
+                let line = Line::from(format!("{cursor} {marker} {}", cat.label()));
+                let line = if i == self.focused_category {
+                    line.style(
+                        Style::default()
+                            .fg(theme.accent_primary.into())
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    line.style(Style::default().fg(theme.foreground.into()))
+                };
+                rows.push(line);
+            }
+            frame.render_widget(Paragraph::new(rows), left_inner);
+        }
+
+        // Right pane: focused sub-view.
+        match self.focused_category() {
+            Some(SettingsCategory::Theme(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::Keybinds(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::Behavior(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::WorkspaceRoots(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::QuickActions(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::DbPath(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::Reset(v)) => v.render_into_frame(frame, right, theme),
+            None => {
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border.into()));
+                frame.render_widget(block, right);
+            }
+        }
+    }
+}
+
+/// Render the [`SettingsWidget`] into a fresh `(width, height)` test buffer
+/// using the cosmos theme. Mirrors `network::render_to_string`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::SettingsWidget;
+/// use sid_widgets::settings::render_to_string;
+///
+/// let w = SettingsWidget::with_categories(vec![]);
+/// let s = render_to_string(&w, 80, 12);
+/// assert!(s.contains("Settings"));
+/// ```
+pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use sid_ui::themes::cosmos;
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| widget.render_into_frame(f, f.area(), &theme))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        s.push('\n');
+    }
+    s
 }
 
 impl Default for SettingsWidget {
@@ -328,7 +458,10 @@ mod tests {
     #[test]
     fn with_categories_returns_labels() {
         let w = small_widget();
-        assert_eq!(w.category_labels(), vec!["Theme", "Behavior", "Reset to defaults"]);
+        assert_eq!(
+            w.category_labels(),
+            vec!["Theme", "Behavior", "Reset to defaults"]
+        );
         assert_eq!(w.focused_category_index(), 0);
     }
 
@@ -378,7 +511,10 @@ mod tests {
     fn load_state_with_oob_index_is_clamped_to_zero() {
         let mut w = small_widget();
         // Manually craft a SettingsState with an out-of-range value.
-        let bytes = postcard::to_allocvec(&SettingsState { focused_category: 250 }).unwrap();
+        let bytes = postcard::to_allocvec(&SettingsState {
+            focused_category: 250,
+        })
+        .unwrap();
         w.load_state(&bytes);
         assert_eq!(w.focused_category_index(), 0);
     }

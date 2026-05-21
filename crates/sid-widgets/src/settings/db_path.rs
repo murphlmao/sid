@@ -27,7 +27,13 @@
 
 use std::path::{Path, PathBuf};
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_store::sid_toml::{SidToml, SidTomlError, read_sid_toml, write_sid_toml};
+use sid_ui::Theme;
 
 /// Returned by [`DbPathView::commit_edit`] to signal a successful write.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +128,41 @@ impl DbPathView {
     pub fn cancel_edit(&mut self) {
         self.input = None;
         self.last_error = None;
+    }
+
+    /// Render the DB path editor into `area`.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" DB path ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let active = format!("active : {}", self.active_path.display());
+        let over = match self.override_path() {
+            Some(p) => format!("override: {}", p.display()),
+            None => "override: (none)".to_string(),
+        };
+        let edit = match &self.input {
+            Some(s) => format!("edit   : {s}_"),
+            None => "edit   : (Enter to edit)".to_string(),
+        };
+        let err = self
+            .last_error
+            .as_deref()
+            .map(|e| format!("error  : {e}"))
+            .unwrap_or_default();
+        let lines: Vec<Line> = vec![
+            Line::from(active).style(Style::default().fg(theme.foreground.into())),
+            Line::from(over).style(Style::default().fg(theme.foreground.into())),
+            Line::from(edit).style(Style::default().fg(theme.accent_warning.into())),
+            Line::from(err).style(Style::default().fg(theme.accent_error.into())),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     /// Commit the current input: write `sid.toml` and return a

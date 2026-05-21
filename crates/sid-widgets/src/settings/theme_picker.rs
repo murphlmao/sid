@@ -13,8 +13,15 @@
 //! programmer error in wiring. This mirrors the Plan 1 `TabManager::new(vec![])`
 //! convention.
 
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_ui::theme::Theme;
 use sid_ui::theme_registry::ThemeRegistry;
+
+use crate::settings::live_preview::render_preview;
 
 /// Outcome of dispatching a key event to the theme picker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -285,6 +292,78 @@ impl ThemePickerView {
             _ => ThemePickerOutcome::None,
         }
     }
+
+    /// Render the theme picker into `area` using `theme` as the chrome theme.
+    ///
+    /// Layout: a vertical split — the upper portion shows the list of theme
+    /// names (focused row marked with `>`, applied row marked with `*`); the
+    /// lower portion embeds the [`render_preview`] block for the focused theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::Terminal;
+    /// use ratatui::backend::TestBackend;
+    /// use sid_ui::theme_registry::ThemeRegistry;
+    /// use sid_ui::themes::cosmos;
+    /// use sid_widgets::settings::theme_picker::ThemePickerView;
+    ///
+    /// let r = ThemeRegistry::with_builtins();
+    /// let v = ThemePickerView::new(&r, "cosmos");
+    /// let backend = TestBackend::new(40, 16);
+    /// let mut term = Terminal::new(backend).unwrap();
+    /// let theme = cosmos();
+    /// term.draw(|f| v.render_into_frame(f, f.area(), &theme)).unwrap();
+    /// ```
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Theme ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        // Vertical split: list above, live-preview below.
+        let preview_height = inner.height.saturating_sub(1).min(12);
+        let list_height = inner.height.saturating_sub(preview_height);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(list_height),
+                Constraint::Length(preview_height),
+            ])
+            .split(inner);
+
+        // List rows.
+        let mut rows: Vec<Line> = Vec::with_capacity(self.themes.len());
+        for (i, t) in self.themes.iter().enumerate() {
+            let cursor = if i == self.focused { '>' } else { ' ' };
+            let marker = if t.name == self.applied { '*' } else { 'o' };
+            let line = Line::from(format!("{cursor} {marker} {}", t.name));
+            let line = if i == self.focused {
+                line.style(
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                line.style(Style::default().fg(theme.foreground.into()))
+            };
+            rows.push(line);
+        }
+        frame.render_widget(Paragraph::new(rows), chunks[0]);
+
+        // Live preview using the focused theme (not the chrome theme).
+        if preview_height >= 2 && chunks[1].width > 0 {
+            let preview = render_preview(self.focused(), chunks[1].width, preview_height);
+            let lines: Vec<Line> = preview.lines().map(|l| Line::from(l.to_string())).collect();
+            frame.render_widget(Paragraph::new(lines), chunks[1]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,9 +507,15 @@ mod tests {
     fn home_and_end_jump_to_edges() {
         let r = small();
         let mut v = ThemePickerView::new(&r, "b");
-        v.handle_event(&Event::Key(KeyChord::new(KeyCode::End, KeyModifiers::empty())));
+        v.handle_event(&Event::Key(KeyChord::new(
+            KeyCode::End,
+            KeyModifiers::empty(),
+        )));
         assert_eq!(v.focused_index(), 2);
-        v.handle_event(&Event::Key(KeyChord::new(KeyCode::Home, KeyModifiers::empty())));
+        v.handle_event(&Event::Key(KeyChord::new(
+            KeyCode::Home,
+            KeyModifiers::empty(),
+        )));
         assert_eq!(v.focused_index(), 0);
     }
 

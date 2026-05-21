@@ -12,10 +12,16 @@
 //! but allow" directive — but yields a non-empty
 //! [`KeybindEditorView::dangerous_action_warnings`] for the UI to show.
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::action::{ActionId, ActionRegistry};
 use sid_core::event::KeyChord;
 use sid_core::keybind::{KeyBinding, KeybindMap};
 use sid_core::keybind_capture::{CaptureInput, CaptureState};
+use sid_ui::Theme;
 
 /// Action ids that warrant a "are you sure?" warning when rebound. Centralised
 /// so the test and the rendering code agree.
@@ -110,10 +116,7 @@ impl KeybindEditorView {
     /// assert_eq!(view.binding_for(&ActionId::new("app.quit")), Some(quit));
     /// ```
     pub fn binding_for(&self, action: &ActionId) -> Option<KeyChord> {
-        self.map
-            .iter()
-            .find(|(_, a)| *a == action)
-            .map(|(c, _)| *c)
+        self.map.iter().find(|(_, a)| *a == action).map(|(c, _)| *c)
     }
 
     /// Move focus down (wraps).
@@ -201,8 +204,7 @@ impl KeybindEditorView {
     pub fn enter_capture(&mut self) {
         self.warnings.clear();
         if let Some(a) = self.actions.get(self.focused).cloned() {
-            self.capture = std::mem::take(&mut self.capture)
-                .step(CaptureInput::EnterCaptureFor(a));
+            self.capture = std::mem::take(&mut self.capture).step(CaptureInput::EnterCaptureFor(a));
         }
     }
 
@@ -268,8 +270,7 @@ impl KeybindEditorView {
     /// assert_eq!(view.capture_state(), &CaptureState::Idle);
     /// ```
     pub fn on_chord_captured(&mut self, chord: KeyChord) {
-        self.capture = std::mem::take(&mut self.capture)
-            .step(CaptureInput::ChordPressed(chord));
+        self.capture = std::mem::take(&mut self.capture).step(CaptureInput::ChordPressed(chord));
         let CaptureState::Captured { for_action, chord } = self.capture.clone() else {
             return;
         };
@@ -278,11 +279,10 @@ impl KeybindEditorView {
         match self.map.lookup(&chord) {
             Some(existing) if existing != &for_action => {
                 let conflicting = existing.clone();
-                self.capture = std::mem::take(&mut self.capture).step(
-                    CaptureInput::ConflictResolved {
+                self.capture =
+                    std::mem::take(&mut self.capture).step(CaptureInput::ConflictResolved {
                         conflicting_action: conflicting,
-                    },
-                );
+                    });
             }
             _ => {
                 self.capture = std::mem::take(&mut self.capture).step(CaptureInput::NoConflict);
@@ -319,6 +319,92 @@ impl KeybindEditorView {
     /// ```
     pub fn dangerous_action_warnings(&self) -> &[&'static str] {
         &self.warnings
+    }
+
+    /// Render the keybind editor into `area`.
+    ///
+    /// Each row is `action.id   chord-or-(unbound)`. The focused row is
+    /// highlighted; a capture-mode banner is rendered at the bottom while
+    /// capture is active.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let title = if matches!(self.capture, CaptureState::Idle) {
+            " Keybinds "
+        } else {
+            " Keybinds (capturing — Esc to cancel) "
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+
+        // Reserve one row at the bottom for warnings / capture banner if needed.
+        let banner = !matches!(self.capture, CaptureState::Idle) || !self.warnings.is_empty();
+        let list_h = if banner {
+            inner.height.saturating_sub(1)
+        } else {
+            inner.height
+        };
+
+        let mut rows: Vec<Line> = Vec::with_capacity(self.actions.len());
+        for (i, a) in self.actions.iter().enumerate() {
+            let cursor = if i == self.focused { '>' } else { ' ' };
+            let chord = self
+                .binding_for(a)
+                .map(|c| format!("{c:?}"))
+                .unwrap_or_else(|| "(unbound)".into());
+            let line = Line::from(format!("{cursor} {:<24} {}", a.as_str(), chord));
+            let line = if i == self.focused {
+                line.style(
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                line.style(Style::default().fg(theme.foreground.into()))
+            };
+            rows.push(line);
+        }
+        let list_rect = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: list_h,
+        };
+        frame.render_widget(Paragraph::new(rows), list_rect);
+
+        if banner {
+            let banner_rect = Rect {
+                x: inner.x,
+                y: inner.y + list_h,
+                width: inner.width,
+                height: 1,
+            };
+            let label = match &self.capture {
+                CaptureState::Waiting { for_action } => {
+                    format!(" capturing for {}…", for_action.as_str())
+                }
+                CaptureState::ConfirmOverwrite { .. } => {
+                    " overwrite existing binding? (y/n) ".into()
+                }
+                _ => {
+                    if let Some(w) = self.warnings.first() {
+                        format!(" {w}")
+                    } else {
+                        String::new()
+                    }
+                }
+            };
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(theme.accent_warning.into())),
+                banner_rect,
+            );
+        }
     }
 
     fn update_warnings(&mut self, for_action: &ActionId, chord: &KeyChord) {

@@ -16,9 +16,15 @@
 
 use std::path::PathBuf;
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::SidError;
 use sid_store::settings_keys::WORKSPACE_ROOTS;
 use sid_store::{SettingValue, Store};
+use sid_ui::Theme;
 
 /// Inline tilde-expansion (`~/foo` -> `$HOME/foo`). Anything else is returned
 /// unchanged.
@@ -183,6 +189,68 @@ impl WorkspaceRootsView {
             self.focused = 0;
         }
         Some(r)
+    }
+
+    /// Render the workspace roots editor into `area`.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border.into()))
+            .title(" Workspace roots ")
+            .title_style(Style::default().fg(theme.foreground.into()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let banner = self.input.is_some() || self.last_error.is_some();
+        let list_h = if banner {
+            inner.height.saturating_sub(1)
+        } else {
+            inner.height
+        };
+        let mut rows: Vec<Line> = Vec::with_capacity(self.roots.len());
+        for (i, p) in self.roots.iter().enumerate() {
+            let cursor = if i == self.focused { '>' } else { ' ' };
+            let line = Line::from(format!("{cursor} {}", p.display()));
+            let line = if i == self.focused {
+                line.style(
+                    Style::default()
+                        .fg(theme.accent_primary.into())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                line.style(Style::default().fg(theme.foreground.into()))
+            };
+            rows.push(line);
+        }
+        let list_rect = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: list_h,
+        };
+        frame.render_widget(Paragraph::new(rows), list_rect);
+
+        if banner {
+            let banner_rect = Rect {
+                x: inner.x,
+                y: inner.y + list_h,
+                width: inner.width,
+                height: 1,
+            };
+            let (label, color) = if let Some(err) = &self.last_error {
+                (format!(" ! {err}"), theme.accent_error)
+            } else if let Some(buf) = &self.input {
+                (format!(" + {buf}"), theme.accent_warning)
+            } else {
+                (String::new(), theme.muted)
+            };
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(color.into())),
+                banner_rect,
+            );
+        }
     }
 
     /// Persist the current root list under the `workspace_roots` setting key.
@@ -376,7 +444,10 @@ mod tests {
             Some(h) => unsafe { std::env::set_var("HOME", h) },
             None => unsafe { std::env::remove_var("HOME") },
         }
-        assert!(res.is_ok(), "tilde expansion should resolve to tempdir: {res:?}");
+        assert!(
+            res.is_ok(),
+            "tilde expansion should resolve to tempdir: {res:?}"
+        );
     }
 
     #[test]
@@ -415,10 +486,7 @@ mod tests {
     fn load_with_wrong_json_type_returns_err() {
         let (_d, store) = store();
         store
-            .put_setting(
-                WORKSPACE_ROOTS,
-                &SettingValue(b"\"not-an-array\"".to_vec()),
-            )
+            .put_setting(WORKSPACE_ROOTS, &SettingValue(b"\"not-an-array\"".to_vec()))
             .unwrap();
         assert!(WorkspaceRootsView::load(&store).is_err());
     }
@@ -426,7 +494,9 @@ mod tests {
     #[test]
     fn save_thousand_paths_round_trips() {
         let (_d, store) = store();
-        let roots: Vec<PathBuf> = (0..1000).map(|i| PathBuf::from(format!("/p/{i}"))).collect();
+        let roots: Vec<PathBuf> = (0..1000)
+            .map(|i| PathBuf::from(format!("/p/{i}")))
+            .collect();
         let v = WorkspaceRootsView::new(roots.clone());
         v.save(&store).unwrap();
         let v2 = WorkspaceRootsView::load(&store).unwrap();
