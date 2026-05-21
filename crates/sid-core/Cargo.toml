@@ -1,7 +1,15 @@
-# minimal stub — will be replaced in Task 4
 [package]
 name = "sid-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde = { workspace = true }
+crossterm.workspace = true
+
+[dev-dependencies]
