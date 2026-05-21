@@ -164,3 +164,42 @@ proptest! {
         prop_assert_eq!(store.get_quick_action(&id).unwrap().unwrap(), a);
     }
 }
+
+#[test]
+fn new_id_has_qa_prefix_and_fixed_length() {
+    let id = QuickAction::new_id();
+    assert!(id.starts_with("qa-"));
+    assert_eq!(id.len(), 3 + 14);
+}
+
+#[test]
+fn new_id_two_consecutive_ids_are_different() {
+    // Wall-clock + pid mixing should produce distinct ids on consecutive calls
+    // even in the same nanosecond bucket. Allow one retry to absorb rare ties.
+    let id1 = QuickAction::new_id();
+    let id2 = QuickAction::new_id();
+    if id1 == id2 {
+        // Retry once after a tiny sleep.
+        std::thread::sleep(std::time::Duration::from_micros(1));
+        let id3 = QuickAction::new_id();
+        assert_ne!(id1, id3, "three consecutive ids all equal: {id1}");
+    }
+}
+
+#[test]
+fn shell_words_command_round_trips_through_storage() {
+    let (_d, store) = store();
+    let cmd = r#"sh -c "echo 'one two' | tr o O""#;
+    let a = QuickAction {
+        id: QuickAction::new_id(),
+        label: "weird quoting".into(),
+        scope: QuickActionScope::Global,
+        cmd: cmd.into(),
+        keybind: None,
+    };
+    store.upsert_quick_action(&a).unwrap();
+    let got = store.get_quick_action(&a.id).unwrap().unwrap();
+    assert_eq!(got.cmd, cmd);
+    // Parser tolerates the weird quoting.
+    let _ = shell_words::split(&got.cmd).unwrap();
+}

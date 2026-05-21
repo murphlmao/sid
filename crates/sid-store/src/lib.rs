@@ -509,6 +509,37 @@ pub struct KeybindEntry {
     pub action: String,
 }
 
+/// A user-pinned configuration file path with display label and optional
+/// custom opener command. The default opener is the external terminal spawner
+/// cd'd into the parent dir running `$EDITOR <file>`.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use sid_store::{now_epoch, PinnedConfig};
+/// let p = PinnedConfig {
+///     path: PathBuf::from("/etc/nginx/nginx.conf"),
+///     label: "nginx config".into(),
+///     opener_cmd: None,
+///     created_at: now_epoch(),
+/// };
+/// assert_eq!(p.label, "nginx config");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PinnedConfig {
+    /// Absolute path. Acts as the primary key in [`schema::PINNED_CONFIGS`].
+    pub path: PathBuf,
+    /// Display label for the System tab list.
+    pub label: String,
+    /// Override default opener. `None` = use the binary's [`TerminalSpawner`] default.
+    ///
+    /// [`TerminalSpawner`]: sid_core::adapters::terminal_spawner::TerminalSpawner
+    pub opener_cmd: Option<String>,
+    /// Creation timestamp (sortable display).
+    pub created_at: Epoch,
+}
+
 /// A global quick-action. Shared between Plan 6 (System tab) and Plan 7
 /// (Settings tab editor).
 ///
@@ -537,6 +568,35 @@ pub struct QuickAction {
     pub keybind: Option<String>,
     /// Scope of this action.
     pub scope: QuickActionScope,
+}
+
+impl QuickAction {
+    /// Generate a fresh action id of the form `qa-<14 lowercase hex>`.
+    ///
+    /// Mixes the wall-clock nanoseconds with the current process id to
+    /// reduce the chance of collision across rapid parallel calls. The
+    /// result is **not** cryptographically random — it is a primary-key
+    /// hint, suitable for redb keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::QuickAction;
+    /// let a = QuickAction::new_id();
+    /// assert!(a.starts_with("qa-"));
+    /// assert_eq!(a.len(), 3 + 14);
+    /// ```
+    pub fn new_id() -> String {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id() as u128;
+        let mixed = nanos ^ (pid.wrapping_mul(2_654_435_761));
+        let masked = (mixed & 0x00FF_FFFF_FFFF_FFFF) as u64;
+        format!("qa-{masked:014x}")
+    }
 }
 
 /// Scope a [`QuickAction`] applies to.
@@ -623,6 +683,10 @@ pub enum QuickActionScope {
 ///     fn get_quick_action(&self, _: &str) -> Result<Option<QuickAction>, SidError> { Ok(None) }
 ///     fn upsert_quick_action(&self, _: &QuickAction) -> Result<(), SidError> { Ok(()) }
 ///     fn remove_quick_action(&self, _: &str) -> Result<(), SidError> { Ok(()) }
+///     fn list_pinned_configs(&self) -> Result<Vec<sid_store::PinnedConfig>, SidError> { Ok(vec![]) }
+///     fn upsert_pinned_config(&self, _: &sid_store::PinnedConfig) -> Result<(), SidError> { Ok(()) }
+///     fn get_pinned_config(&self, _: &Path) -> Result<Option<sid_store::PinnedConfig>, SidError> { Ok(None) }
+///     fn remove_pinned_config(&self, _: &Path) -> Result<(), SidError> { Ok(()) }
 /// }
 /// ```
 pub trait Store: Send + Sync {
@@ -1187,6 +1251,31 @@ pub trait Store: Send + Sync {
     /// store.remove_quick_action("never").unwrap();
     /// ```
     fn remove_quick_action(&self, id: &str) -> Result<(), SidError>;
+
+    // ─── Pinned configs (Plan 6) ────────────────────────────────────────────
+
+    /// List all pinned configs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_pinned_configs().unwrap().is_empty());
+    /// ```
+    fn list_pinned_configs(&self) -> Result<Vec<PinnedConfig>, SidError>;
+
+    /// Insert or replace a pinned config (keyed by `pc.path`).
+    fn upsert_pinned_config(&self, pc: &PinnedConfig) -> Result<(), SidError>;
+
+    /// Look up a pinned config by absolute path. Returns `None` if not present.
+    fn get_pinned_config(&self, path: &Path) -> Result<Option<PinnedConfig>, SidError>;
+
+    /// Remove a pinned config by absolute path. No-op if absent.
+    fn remove_pinned_config(&self, path: &Path) -> Result<(), SidError>;
 }
 
 /// Trait for opening a store from a filesystem path.
@@ -1409,6 +1498,18 @@ mod tests {
                 Ok(())
             }
             fn remove_quick_action(&self, _: &str) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn list_pinned_configs(&self) -> Result<Vec<PinnedConfig>, SidError> {
+                Ok(vec![])
+            }
+            fn upsert_pinned_config(&self, _: &PinnedConfig) -> Result<(), SidError> {
+                Ok(())
+            }
+            fn get_pinned_config(&self, _: &Path) -> Result<Option<PinnedConfig>, SidError> {
+                Ok(None)
+            }
+            fn remove_pinned_config(&self, _: &Path) -> Result<(), SidError> {
                 Ok(())
             }
         }

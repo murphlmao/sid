@@ -12,12 +12,12 @@ use sid_core::widget::WidgetId;
 use sid_core::SidError;
 
 use crate::schema::{
-    KEYBINDS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES, WIDGET_STATE,
-    WORKSPACES,
+    KEYBINDS, PINNED_CONFIGS, QUICK_ACTIONS, SECRETS, SESSION_META, SESSIONS, SETTINGS, THEMES,
+    WIDGET_STATE, WORKSPACES,
 };
 use crate::{
-    KeybindProfile, OpenStore, QuickAction, SessionRecord, SettingValue, Store, ThemeSpec,
-    Workspace, WidgetState,
+    KeybindProfile, OpenStore, PinnedConfig, QuickAction, SessionRecord, SettingValue, Store,
+    ThemeSpec, Workspace, WidgetState,
 };
 
 /// redb-backed implementation of [`crate::Store`].
@@ -71,6 +71,9 @@ impl OpenStore for RedbStore {
             let _ = txn
                 .open_table(QUICK_ACTIONS)
                 .map_err(|e| SidError::Storage(format!("open quick_actions: {e}")))?;
+            let _ = txn
+                .open_table(PINNED_CONFIGS)
+                .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit: {e}")))?;
@@ -683,6 +686,84 @@ impl Store for RedbStore {
         }
         txn.commit()
             .map_err(|e| SidError::Storage(format!("commit remove quick_action: {e}")))?;
+        Ok(())
+    }
+
+    fn list_pinned_configs(&self) -> Result<Vec<PinnedConfig>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(PINNED_CONFIGS)
+            .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter pinned_configs: {e}")))?;
+        for entry in iter {
+            let (_k, v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            let (_ver, p) = crate::codec::decode_versioned::<PinnedConfig>(v.value())?;
+            out.push(p);
+        }
+        Ok(out)
+    }
+
+    fn get_pinned_config(&self, path: &Path) -> Result<Option<PinnedConfig>, SidError> {
+        let key = path.to_string_lossy();
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(PINNED_CONFIGS)
+            .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
+        let got = tbl
+            .get(&*key)
+            .map_err(|e| SidError::Storage(format!("get pinned_config: {e}")))?;
+        match got {
+            None => Ok(None),
+            Some(v) => {
+                let (_ver, p) = crate::codec::decode_versioned::<PinnedConfig>(v.value())?;
+                Ok(Some(p))
+            }
+        }
+    }
+
+    fn upsert_pinned_config(&self, pc: &PinnedConfig) -> Result<(), SidError> {
+        let bytes = crate::codec::encode_versioned(1, pc)?;
+        let key = pc.path.to_string_lossy().into_owned();
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(PINNED_CONFIGS)
+                .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
+            tbl.insert(key.as_str(), &bytes[..])
+                .map_err(|e| SidError::Storage(format!("insert pinned_config: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit pinned_config: {e}")))?;
+        Ok(())
+    }
+
+    fn remove_pinned_config(&self, path: &Path) -> Result<(), SidError> {
+        let key = path.to_string_lossy().into_owned();
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        {
+            let mut tbl = txn
+                .open_table(PINNED_CONFIGS)
+                .map_err(|e| SidError::Storage(format!("open pinned_configs: {e}")))?;
+            tbl.remove(key.as_str())
+                .map_err(|e| SidError::Storage(format!("remove pinned_config: {e}")))?;
+        }
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit remove pinned_config: {e}")))?;
         Ok(())
     }
 }
