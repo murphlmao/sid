@@ -28,6 +28,23 @@ use sid_widgets::{
 use tokio::sync::mpsc::Receiver;
 
 /// Top-level wired application state owned by the binary.
+///
+/// Bundles together the [`App`] (tab manager + keybinds + action registry),
+/// the backing [`RedbStore`], and the current session identifier.  Owned
+/// exclusively by the main task for the duration of a sid invocation.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use std::sync::Arc;
+/// use sid::wire::{SidApp, build_app};
+/// use sid_store::{OpenStore, RedbStore};
+///
+/// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
+/// let app = build_app(None);
+/// let sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
+/// ```
 pub struct SidApp {
     pub app: App,
     pub store: Arc<RedbStore>,
@@ -173,12 +190,25 @@ pub fn pretty_label(action_id: &str) -> String {
 
 /// Persist the current active tab into the session record.
 ///
-/// Creates or updates the session identified by `session_id`.
+/// Creates or updates the session identified by `session_id`.  The session
+/// record stores the active tab id and the full ordered list of open tab ids.
+///
+/// # Errors
+///
+/// Returns a [`sid_core::Error`] if the underlying store write fails (e.g.,
+/// redb I/O error).
 ///
 /// # Examples
 ///
 /// ```no_run
-/// // Requires a real RedbStore; see integration tests for a runnable example.
+/// use std::path::Path;
+/// use sid::wire::{build_app, save_active_tab};
+/// use sid_store::{OpenStore, RedbStore};
+///
+/// let store = RedbStore::open(Path::new("/tmp/test.redb")).unwrap();
+/// let app = build_app(Some("ssh"));
+/// save_active_tab(&store, "sess-1", &app).unwrap();
+/// // The session record is now persisted; open the store again to verify.
 /// ```
 pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidResult<()> {
     let sess = SessionRecord {
@@ -194,6 +224,22 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 
 /// Draw one frame: tab strip at the top, active widget body below, optional
 /// palette overlay centred over everything.
+///
+/// Renders into the provided [`Frame`].  Uses the cosmos theme throughout.
+/// This function is pure layout — it does not mutate `app`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ratatui::Terminal;
+/// use ratatui::backend::TestBackend;
+/// use sid::wire::{build_app, draw};
+///
+/// let app = build_app(None);
+/// let backend = TestBackend::new(120, 40);
+/// let mut terminal = Terminal::new(backend).unwrap();
+/// terminal.draw(|frame| draw(frame, &app)).unwrap();
+/// ```
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let theme = cosmos();
     let size = frame.area();
@@ -299,7 +345,37 @@ pub fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
 /// Run the main render + event loop until the app requests to quit.
 ///
 /// Draws each frame, waits for the next event, dispatches it through the
-/// [`App`], and persists the session after each event.
+/// [`App`], and persists the session after each event.  The loop exits when
+/// [`App::handle_event`] returns [`Dispatch::Quit`] or the event channel is
+/// closed.
+///
+/// # Errors
+///
+/// Returns an error if any terminal draw call fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use std::sync::Arc;
+/// use ratatui::Terminal;
+/// use ratatui::backend::TestBackend;
+/// use sid::wire::{SidApp, build_app, run_event_loop};
+/// use sid_store::{OpenStore, RedbStore};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let backend = TestBackend::new(120, 40);
+///     let mut terminal = Terminal::new(backend).unwrap();
+///     let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
+///     let app = build_app(None);
+///     let mut sid_app = SidApp { app, store, session_id: "sess-1".to_string() };
+///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+///     // Drop the sender to close the channel so the loop exits immediately.
+///     drop(tx);
+///     run_event_loop(&mut terminal, &mut sid_app, &mut rx).await.unwrap();
+/// }
+/// ```
 pub async fn run_event_loop<B>(
     terminal: &mut Terminal<B>,
     sid_app: &mut SidApp,
@@ -669,5 +745,269 @@ mod tests {
             loaded.active_tab.as_ref().map(TabId::as_str),
             Some("network")
         );
+    }
+
+    // ---- build_app adversarial: whitespace / edge-case start_tab values ----
+
+    /// `build_app` with a start_tab containing only whitespace falls back to
+    /// the default tab (no match for " " as a tab id).
+    #[test]
+    fn build_app_start_tab_whitespace_falls_back_to_default() {
+        let app = build_app(Some("   "));
+        assert_eq!(
+            app.tabs().active_index(),
+            0,
+            "whitespace should not match any tab"
+        );
+    }
+
+    /// `build_app` with a start_tab containing a newline character falls back
+    /// to the default tab — tab ids never contain newlines.
+    #[test]
+    fn build_app_start_tab_with_newline_falls_back_to_default() {
+        let app = build_app(Some("settings\n"));
+        // "settings\n" is not a valid tab id; active index stays at 0.
+        assert_eq!(
+            app.tabs().active_index(),
+            0,
+            "newline-suffixed id should not match"
+        );
+    }
+
+    /// `build_app` with a very long start_tab string does not panic.
+    #[test]
+    fn build_app_start_tab_very_long_does_not_panic() {
+        let long = "x".repeat(100_000);
+        let app = build_app(Some(&long));
+        // No known tab id matches; falls back to default.
+        assert_eq!(app.tabs().active_index(), 0);
+    }
+
+    /// `build_app` with a start_tab that contains a dot does not panic and
+    /// falls back to the default (dots are not part of any tab id).
+    #[test]
+    fn build_app_start_tab_with_dot_falls_back() {
+        let app = build_app(Some("settings.extra"));
+        assert_eq!(app.tabs().active_index(), 0);
+    }
+
+    // ---- pretty_label edge cases ----
+
+    /// `pretty_label` on an empty string returns an empty string (no panic).
+    #[test]
+    fn pretty_label_empty_string_returns_empty() {
+        assert_eq!(pretty_label(""), "");
+    }
+
+    /// `pretty_label` on an action id that contains a dot in an unexpected
+    /// position is returned unchanged.
+    #[test]
+    fn pretty_label_dot_in_id_returned_unchanged() {
+        assert_eq!(pretty_label("a.b.c.d.e"), "a.b.c.d.e");
+        assert_eq!(pretty_label(".leading.dot"), ".leading.dot");
+        assert_eq!(pretty_label("trailing.dot."), "trailing.dot.");
+    }
+
+    /// `pretty_label` on a string containing a newline returns it unchanged.
+    #[test]
+    fn pretty_label_newline_returned_unchanged() {
+        let s = "app\nquit";
+        assert_eq!(
+            pretty_label(s),
+            s,
+            "newline in action_id returned unchanged"
+        );
+    }
+
+    /// `pretty_label` on a string containing unicode is returned unchanged
+    /// (no known mapping).
+    #[test]
+    fn pretty_label_unicode_returned_unchanged() {
+        let s = "app.日本語";
+        assert_eq!(pretty_label(s), s);
+        let s2 = "😀.action";
+        assert_eq!(pretty_label(s2), s2);
+    }
+
+    // ---- centered adversarial: zero-dimension areas ----
+
+    /// `centered` with 0-width area returns a zero-width rect (no overflow).
+    #[test]
+    fn centered_zero_width_area_does_not_panic() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 24,
+        };
+        let c = centered(area, 60, 60);
+        // 0 * 60 / 100 = 0 width; must not overflow or panic.
+        assert_eq!(c.width, 0);
+    }
+
+    /// `centered` with 0-height area returns a zero-height rect.
+    #[test]
+    fn centered_zero_height_area_does_not_panic() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 0,
+        };
+        let c = centered(area, 60, 60);
+        assert_eq!(c.height, 0);
+    }
+
+    /// `centered` with both dimensions 0 returns a zero-size rect at the origin.
+    #[test]
+    fn centered_zero_both_dimensions_does_not_panic() {
+        let area = Rect {
+            x: 5,
+            y: 3,
+            width: 0,
+            height: 0,
+        };
+        let c = centered(area, 50, 50);
+        assert_eq!(c.width, 0);
+        assert_eq!(c.height, 0);
+    }
+
+    /// `centered` with pct_w = 0 produces a zero-width result (even on large area).
+    #[test]
+    fn centered_zero_pct_w_produces_zero_width() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 100,
+        };
+        let c = centered(area, 0, 50);
+        assert_eq!(c.width, 0, "0% width should yield width=0");
+        // Height should be non-zero.
+        assert!(c.height > 0, "height should be > 0 for 50%");
+    }
+
+    /// `centered` with pct_h = 0 produces a zero-height result.
+    #[test]
+    fn centered_zero_pct_h_produces_zero_height() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 100,
+        };
+        let c = centered(area, 50, 0);
+        assert_eq!(c.height, 0, "0% height should yield height=0");
+        assert!(c.width > 0, "width should be > 0 for 50%");
+    }
+
+    /// `centered` with pct_w = 200 (> 100) is clamped to 100; the guard
+    /// returns the original area when the computed rect equals or exceeds it.
+    #[test]
+    fn centered_oversized_pct_returns_area() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
+        // 200% is clamped to 100% internally via `pct_w.min(100)`.
+        let c = centered(area, 200, 200);
+        assert_eq!(
+            c, area,
+            "200% should be clamped to 100% and return the area"
+        );
+    }
+
+    /// `centered` where only one dimension is > 100% still uses the clamped
+    /// value and may or may not return the full area depending on the other
+    /// dimension.
+    #[test]
+    fn centered_partial_oversized_pct_clamped() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
+        // 200% width → clamped to 100 → w = 100 = area.width.
+        // 50% height → h = 25 < area.height.
+        // Guard: w >= area.width AND h >= area.height → false (h=25 < 50).
+        // So we get a partially-centred rect.
+        let c = centered(area, 200, 50);
+        assert_eq!(
+            c.width, area.width,
+            "width should equal area.width at 200% clamped"
+        );
+        assert!(
+            c.height < area.height,
+            "height should be < area.height at 50%"
+        );
+        // Must still fit inside area.
+        assert!(c.x + c.width <= area.x + area.width);
+        assert!(c.y + c.height <= area.y + area.height);
+    }
+
+    // ---- draw: TestBackend smoke ----
+
+    /// `draw` renders without panicking on a normal-sized terminal.
+    #[test]
+    fn draw_does_not_panic_on_normal_terminal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let app = build_app(None);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    /// `draw` renders without panicking on a very small (1×1) terminal.
+    #[test]
+    fn draw_does_not_panic_on_tiny_terminal() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let app = build_app(None);
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    /// `draw` renders without panicking when the terminal is smaller than the
+    /// tab bar (height = 2, which is less than the 3-row bar height).
+    #[test]
+    fn draw_does_not_panic_when_shorter_than_bar() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let app = build_app(None);
+        // Height 2 < bar height 3; body_rect will have saturating_sub(3) = 0 height.
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+    }
+
+    /// `draw` renders all six tabs without panicking.
+    #[test]
+    fn draw_all_tabs_render_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        for tab_id in [
+            "workspaces",
+            "ssh",
+            "database",
+            "network",
+            "system",
+            "settings",
+        ] {
+            let app = build_app(Some(tab_id));
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &app))
+                .unwrap_or_else(|e| panic!("draw panicked for tab '{tab_id}': {e}"));
+        }
     }
 }

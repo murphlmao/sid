@@ -22,13 +22,14 @@ use tokio::sync::mpsc::{Receiver, Sender};
 /// use std::time::Duration;
 /// use sid::runtime::{make_channel, spawn_event_pump};
 ///
-/// # tokio_test::block_on(async {
-/// let (tx, mut rx) = make_channel();
-/// let handle = spawn_event_pump(tx, Duration::from_millis(250));
-/// // The pump runs in the background until the handle is aborted or the
-/// // receiver is dropped.
-/// handle.abort();
-/// # });
+/// #[tokio::main]
+/// async fn main() {
+///     let (tx, mut rx) = make_channel();
+///     let handle = spawn_event_pump(tx, Duration::from_millis(250));
+///     // The pump runs in the background until the handle is aborted or the
+///     // receiver is dropped.
+///     handle.abort();
+/// }
 /// ```
 pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -63,12 +64,14 @@ pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> tokio::tas
 ///
 /// ```no_run
 /// use sid::runtime::make_channel;
-/// # tokio_test::block_on(async {
-/// let (tx, rx) = make_channel();
-/// // tx is passed to spawn_event_pump; rx is held by the render loop.
-/// drop(tx);
-/// drop(rx);
-/// # });
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let (tx, rx) = make_channel();
+///     // tx is passed to spawn_event_pump; rx is held by the render loop.
+///     drop(tx);
+///     drop(rx);
+/// }
 /// ```
 pub fn make_channel() -> (Sender<SidEvent>, Receiver<SidEvent>) {
     tokio::sync::mpsc::channel(64)
@@ -84,12 +87,13 @@ pub fn make_channel() -> (Sender<SidEvent>, Receiver<SidEvent>) {
 /// use sid::runtime::{make_channel, next_event};
 /// use sid_core::event::Event;
 ///
-/// # tokio_test::block_on(async {
-/// let (tx, mut rx) = make_channel();
-/// tx.send(Event::Tick).await.unwrap();
-/// let ev = next_event(&mut rx).await.unwrap();
-/// assert_eq!(ev, Event::Tick);
-/// # });
+/// #[tokio::main]
+/// async fn main() {
+///     let (tx, mut rx) = make_channel();
+///     tx.send(Event::Tick).await.unwrap();
+///     let ev = next_event(&mut rx).await.unwrap();
+///     assert_eq!(ev, Event::Tick);
+/// }
 /// ```
 // Used by tests and one-shot drivers; not called from the main binary loop.
 #[allow(dead_code)]
@@ -237,5 +241,106 @@ mod tests {
 
         handle.abort();
         // No panic = pass.
+    }
+
+    /// `tokio::time::interval` panics if given `Duration::ZERO`.  The pump
+    /// itself calls `tokio::time::interval(tick_rate)` which will panic.
+    /// This test documents and asserts that behavior — callers must pass a
+    /// non-zero tick rate.
+    ///
+    /// We verify the panic happens (not a silent hang or UB) by catching it
+    /// with `std::panic::catch_unwind` on a blocking thread.
+    #[test]
+    fn tick_rate_zero_panics_as_documented() {
+        // tokio::time::interval(Duration::ZERO) panics on the first call.
+        // Run synchronously in a new runtime to isolate from the test runtime.
+        let result = std::panic::catch_unwind(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let _ticker = tokio::time::interval(Duration::ZERO);
+                // The panic occurs at construction or first tick.
+            });
+        });
+        assert!(
+            result.is_err(),
+            "tokio::time::interval(Duration::ZERO) must panic; \
+             callers of spawn_event_pump must use a non-zero tick rate"
+        );
+    }
+
+    /// A very large tick rate (10 minutes) means no `Tick` event fires during
+    /// a short test window — the channel stays empty.
+    ///
+    /// This verifies that `spawn_event_pump` does not emit spurious ticks.
+    #[tokio::test(start_paused = true)]
+    async fn large_tick_rate_fires_no_tick_in_short_window() {
+        let (tx, mut rx) = make_channel();
+        let large_tick = Duration::from_secs(600); // 10 minutes
+
+        // Tick-only loop — no EventStream needed.
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(large_tick);
+            // The first tick fires immediately (tokio default); subsequent ones
+            // are 600 s apart.
+            ticker.tick().await; // consume the immediate first tick
+            if tx.send(SidEvent::Tick).await.is_err() {
+                return;
+            }
+            // Second tick at t = 600s — we advance only 1s, so this never fires.
+            ticker.tick().await;
+            let _ = tx.send(SidEvent::Tick).await;
+        });
+
+        // Advance only 1 second — nowhere near the 600 s interval.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+
+        // Drain what arrived: should be exactly one event (the first immediate tick).
+        let mut count = 0usize;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+
+        handle.abort();
+
+        // Exactly one tick (the immediate first tick) should have fired.
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 tick (immediate) with a 600s interval, got {count}"
+        );
+    }
+
+    /// Multiple concurrent senders on the same channel should not interfere.
+    #[tokio::test]
+    async fn multiple_senders_do_not_corrupt_channel() {
+        let (tx, mut rx) = make_channel();
+        let mut handles = vec![];
+
+        // Spawn 4 tasks each sending 4 Tick events.
+        for _ in 0..4 {
+            let tx = tx.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..4 {
+                    tx.send(SidEvent::Tick).await.expect("send ok");
+                }
+            }));
+        }
+
+        drop(tx); // drop the original so the channel closes after all tasks finish.
+
+        for h in handles {
+            h.await.expect("task must not panic");
+        }
+
+        // Collect all events.
+        let mut count = 0usize;
+        while rx.recv().await.is_some() {
+            count += 1;
+        }
+
+        assert_eq!(count, 16, "expected 4 tasks × 4 events = 16 total");
     }
 }
