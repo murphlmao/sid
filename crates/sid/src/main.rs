@@ -375,8 +375,9 @@ async fn handle_net_cmd(op: NetOp) -> Result<()> {
                 println!("sent SIGKILL to PID {}", pid.as_u32());
                 return Ok(());
             }
-            let provider_arc: std::sync::Arc<std::sync::Mutex<dyn sid_core::adapters::sys::SysProvider>> =
-                std::sync::Arc::new(std::sync::Mutex::new(provider));
+            let provider_arc: std::sync::Arc<
+                std::sync::Mutex<dyn sid_core::adapters::sys::SysProvider>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(provider));
             let outcome = run_kill_job(provider_arc, pid, StdDuration::from_secs(5))
                 .await
                 .map_err(|e| anyhow!("kill: {e}"))?;
@@ -485,12 +486,7 @@ fn handle_workspace_cmd(store: &dyn Store, op: WorkspaceOp) -> Result<()> {
                 println!("(no workspaces registered)");
             } else {
                 for w in &workspaces {
-                    println!(
-                        "{:<40} {:?}  {}",
-                        w.name,
-                        w.kind,
-                        w.path.display()
-                    );
+                    println!("{:<40} {:?}  {}", w.name, w.kind, w.path.display());
                 }
             }
         }

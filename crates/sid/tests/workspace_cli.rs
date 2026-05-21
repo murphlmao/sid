@@ -33,7 +33,14 @@ fn workspace_add_list_remove_round_trip() {
 
     // add
     let add = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", repo.to_str().unwrap()])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "add",
+            repo.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(
@@ -42,11 +49,20 @@ fn workspace_add_list_remove_round_trip() {
         String::from_utf8_lossy(&add.stderr)
     );
     let add_out = String::from_utf8_lossy(&add.stdout);
-    assert!(add_out.contains("added"), "expected 'added' in output: {add_out}");
+    assert!(
+        add_out.contains("added"),
+        "expected 'added' in output: {add_out}"
+    );
 
     // list → should show the repo
     let list = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "list"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "list",
+        ])
         .output()
         .unwrap();
     assert!(list.status.success());
@@ -58,7 +74,14 @@ fn workspace_add_list_remove_round_trip() {
 
     // remove
     let remove = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "remove", repo.to_str().unwrap()])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "remove",
+            repo.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(
@@ -69,7 +92,13 @@ fn workspace_add_list_remove_round_trip() {
 
     // list again → should no longer show the repo
     let list2 = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "list"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "list",
+        ])
         .output()
         .unwrap();
     assert!(list2.status.success());
@@ -90,14 +119,31 @@ fn multiple_workspaces_all_appear_in_list() {
         let repo = dir.path().join(name);
         make_fake_repo(&repo);
         let out = sid()
-            .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", repo.to_str().unwrap()])
+            .args([
+                "--db",
+                db.to_str().unwrap(),
+                "--skip-discovery",
+                "workspace",
+                "add",
+                repo.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "add {name} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "add {name} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     let list = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "list"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "list",
+        ])
         .output()
         .unwrap();
     assert!(list.status.success());
@@ -113,7 +159,13 @@ fn list_empty_store_exits_zero() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("sid.redb");
     let out = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "list"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "list",
+        ])
         .output()
         .unwrap();
     assert!(
@@ -132,7 +184,14 @@ fn remove_nonexistent_workspace_is_noop() {
     let repo = dir.path().join("not-registered");
     fs::create_dir(&repo).unwrap();
     let out = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "remove", repo.to_str().unwrap()])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "remove",
+            repo.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     assert!(
@@ -151,7 +210,14 @@ fn add_nonexistent_path_exits_nonzero_without_panic() {
     let db = dir.path().join("sid.redb");
     let bogus = "/nonexistent/path/that/does-not-exist-xyzzy-12345";
     let out = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", bogus])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "add",
+            bogus,
+        ])
         .output()
         .unwrap();
     assert!(
@@ -176,7 +242,14 @@ fn double_add_same_workspace_is_idempotent() {
 
     for _ in 0..2 {
         let out = sid()
-            .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", repo.to_str().unwrap()])
+            .args([
+                "--db",
+                db.to_str().unwrap(),
+                "--skip-discovery",
+                "workspace",
+                "add",
+                repo.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
         assert!(
@@ -188,12 +261,24 @@ fn double_add_same_workspace_is_idempotent() {
 
     // Only one entry in the list
     let list = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "list"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "list",
+        ])
         .output()
         .unwrap();
     let list_out = String::from_utf8_lossy(&list.stdout);
-    let count = list_out.lines().filter(|l| l.contains("idempotent-repo")).count();
-    assert_eq!(count, 1, "should have exactly 1 entry after double-add; output: {list_out}");
+    let count = list_out
+        .lines()
+        .filter(|l| l.contains("idempotent-repo"))
+        .count();
+    assert_eq!(
+        count, 1,
+        "should have exactly 1 entry after double-add; output: {list_out}"
+    );
 }
 
 /// Double-remove of the same workspace is idempotent — no error.
@@ -206,14 +291,28 @@ fn double_remove_workspace_is_idempotent() {
 
     // Add first
     sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", repo.to_str().unwrap()])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "add",
+            repo.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
     // Remove twice
     for i in 0..2 {
         let out = sid()
-            .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "remove", repo.to_str().unwrap()])
+            .args([
+                "--db",
+                db.to_str().unwrap(),
+                "--skip-discovery",
+                "workspace",
+                "remove",
+                repo.to_str().unwrap(),
+            ])
             .output()
             .unwrap();
         assert!(
@@ -234,7 +333,14 @@ fn add_workspace_with_very_long_name_does_not_panic() {
     make_fake_repo(&repo);
 
     let out = sid()
-        .args(["--db", db.to_str().unwrap(), "--skip-discovery", "workspace", "add", repo.to_str().unwrap()])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "--skip-discovery",
+            "workspace",
+            "add",
+            repo.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -263,6 +369,9 @@ fn workspace_help_mentions_ops() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("add"), "should mention 'add': {stdout}");
-    assert!(stdout.contains("remove"), "should mention 'remove': {stdout}");
+    assert!(
+        stdout.contains("remove"),
+        "should mention 'remove': {stdout}"
+    );
     assert!(stdout.contains("list"), "should mention 'list': {stdout}");
 }

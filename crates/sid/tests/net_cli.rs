@@ -50,7 +50,11 @@ fn sid_net_procs_table_includes_a_pid() {
         .args(["net", "procs", "--top", "200"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("PID"),
@@ -79,7 +83,11 @@ fn sid_net_procs_sort_by_cpu_does_not_error() {
         .args(["net", "procs", "--sort", "cpu", "--top", "5"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // ---- interfaces ----
@@ -90,12 +98,19 @@ fn sid_net_interfaces_includes_lo_or_similar() {
         .args(["net", "interfaces"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("NAME"), "table header missing:\n{stdout}");
     // At least one row beyond the header.
     let lines = stdout.lines().count();
-    assert!(lines >= 2, "expected interfaces beyond the header:\n{stdout}");
+    assert!(
+        lines >= 2,
+        "expected interfaces beyond the header:\n{stdout}"
+    );
 }
 
 #[test]
@@ -133,7 +148,10 @@ fn sid_net_kill_invalid_target_is_rejected() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.to_lowercase().contains("invalid"), "stderr: {stderr}");
+    assert!(
+        stderr.to_lowercase().contains("invalid"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
