@@ -591,6 +591,9 @@ pub enum QuickActionScope {
 ///         self.settings.lock().unwrap().insert(key.to_string(), val.clone());
 ///         Ok(())
 ///     }
+///     fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
+///         Ok(self.settings.lock().unwrap().remove(key).is_some())
+///     }
 ///     fn current_session(&self) -> Result<Option<SessionRecord>, SidError> { Ok(None) }
 ///     fn upsert_session(&self, _: &SessionRecord) -> Result<(), SidError> { Ok(()) }
 ///     fn end_session(&self, _: &str, _: Epoch) -> Result<(), SidError> { Ok(()) }
@@ -654,6 +657,25 @@ pub trait Store: Send + Sync {
     /// assert_eq!(store.get_setting("key").unwrap().unwrap().0, b"v2");
     /// ```
     fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError>;
+
+    /// Delete a setting by key. Returns `Ok(true)` if a value was removed and
+    /// `Ok(false)` if the key did not exist. Idempotent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, SettingValue, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// store.put_setting("k", &SettingValue(b"v".to_vec())).unwrap();
+    /// assert!(store.delete_setting("k").unwrap());
+    /// assert!(store.get_setting("k").unwrap().is_none());
+    /// // Idempotent.
+    /// assert!(!store.delete_setting("k").unwrap());
+    /// ```
+    fn delete_setting(&self, key: &str) -> Result<bool, SidError>;
 
     /// Retrieve the most recently active session, if any.
     ///
@@ -1275,6 +1297,9 @@ mod tests {
             fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError> {
                 self.settings.lock().unwrap().insert(key.to_string(), val.clone());
                 Ok(())
+            }
+            fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
+                Ok(self.settings.lock().unwrap().remove(key).is_some())
             }
             fn current_session(&self) -> Result<Option<SessionRecord>, SidError> {
                 Ok(None)

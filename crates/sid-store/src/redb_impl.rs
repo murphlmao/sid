@@ -105,6 +105,25 @@ impl Store for RedbStore {
         }
     }
 
+    fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| SidError::Storage(format!("write txn: {e}")))?;
+        let removed: bool = {
+            let mut tbl = txn
+                .open_table(SETTINGS)
+                .map_err(|e| SidError::Storage(format!("open settings: {e}")))?;
+            let prior = tbl
+                .remove(key)
+                .map_err(|e| SidError::Storage(format!("remove setting: {e}")))?;
+            prior.is_some()
+        };
+        txn.commit()
+            .map_err(|e| SidError::Storage(format!("commit delete setting: {e}")))?;
+        Ok(removed)
+    }
+
     /// Persist a setting value. Overwrites any existing value for the key.
     fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError> {
         let txn = self
