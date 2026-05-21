@@ -229,29 +229,41 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
     store.upsert_session(&sess)
 }
 
-/// Draw one frame: tab strip at the top, active widget body below, optional
-/// palette overlay centred over everything.
+/// Draw one frame: tab strip on top, active panel body, help bar on bottom,
+/// optional command-palette overlay centred over everything.
 ///
-/// Renders into the provided [`Frame`].  Uses the cosmos theme throughout.
-/// This function is pure layout — it does not mutate `app`.
+/// Uses the cosmos theme throughout. Pure layout — does not mutate any state.
+/// Receives `&SidApp` (not just `&App`) so the active panel can read live data
+/// out of the store (workspaces list, etc.) instead of relying on widget state.
 ///
 /// # Examples
 ///
 /// ```no_run
+/// use std::path::Path;
+/// use std::sync::Arc;
 /// use ratatui::Terminal;
 /// use ratatui::backend::TestBackend;
-/// use sid::wire::{build_app, draw};
+/// use sid::wire::{SidApp, build_app, draw};
+/// use sid_store::{OpenStore, RedbStore};
 ///
-/// let app = build_app(None, vec![]);
+/// let store = Arc::new(RedbStore::open(Path::new("/tmp/draw_test.redb")).unwrap());
+/// let sid_app = SidApp {
+///     app: build_app(None, vec![]),
+///     store,
+///     session_id: "sess-1".to_string(),
+/// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
-/// terminal.draw(|frame| draw(frame, &app)).unwrap();
+/// terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
 /// ```
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
+pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     let theme = cosmos();
+    let app = &sid_app.app;
     let size = frame.area();
+    let help_height: u16 = 1;
+    let bar_height: u16 = 3;
 
-    // Top bar with tab labels.
+    // ─── Top bar with tab labels ──────────────────────────────────────────
     let labels: String = app
         .tabs()
         .tabs()
@@ -271,23 +283,58 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         x: 0,
         y: 0,
         width: size.width,
-        height: 3,
+        height: bar_height,
     };
     frame.render_widget(bar, bar_rect);
 
-    // Active widget body — stubs render a centred placeholder.
+    // ─── Body (panel for active tab) ──────────────────────────────────────
     let body_rect = Rect {
         x: 0,
-        y: 3,
+        y: bar_height,
         width: size.width,
-        height: size.height.saturating_sub(3),
+        height: size.height.saturating_sub(bar_height + help_height),
     };
-    let title = app.tabs().active().title.clone();
-    let body =
-        Paragraph::new(format!("{title}\n\n(coming soon)")).block(styled_block(&theme, "panel"));
+    let active_id = app.tabs().active().id.as_str().to_string();
+    let active_title = app.tabs().active().title.clone();
+    let block = styled_block(&theme, &active_title);
+    let body_text = match active_id.as_str() {
+        "workspaces" => render_workspaces_body(&*sid_app.store),
+        "ssh" => stub_panel(
+            "SSH",
+            "Plan 3 — host list (from ~/.ssh/config + custom), embedded PTY, SFTP browser",
+        ),
+        "database" => stub_panel(
+            "Database",
+            "Plan 4 — Postgres + SQLite query runner with paginated results & history",
+        ),
+        "network" => stub_panel(
+            "Network",
+            "Plan 5 — listening ports, processes, interfaces (k to kill PID, / to filter)",
+        ),
+        "system" => stub_panel(
+            "System",
+            "Plan 6 — pinned configs, systemctl services, custom quick-actions",
+        ),
+        "settings" => stub_panel(
+            "Settings",
+            "Plan 7 — theme picker, keybind editor, behavior toggles (all in-app)",
+        ),
+        other => stub_panel(other, "(unknown tab)"),
+    };
+    let body = Paragraph::new(body_text).block(block);
     frame.render_widget(body, body_rect);
 
-    // Palette overlay if open.
+    // ─── Help bar (bottom row, always visible) ────────────────────────────
+    let help_rect = Rect {
+        x: 0,
+        y: size.height.saturating_sub(help_height),
+        width: size.width,
+        height: help_height,
+    };
+    let help = Paragraph::new(help_line());
+    frame.render_widget(help, help_rect);
+
+    // ─── Palette overlay if open ──────────────────────────────────────────
     if app.palette().is_open() {
         let overlay_rect = centered(size, 60, 40);
         let mut lines = vec![format!("> {}", app.palette().query())];
@@ -302,6 +349,70 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         let p = Paragraph::new(lines.join("\n")).block(styled_block(&theme, "command palette"));
         frame.render_widget(p, overlay_rect);
     }
+}
+
+/// Render a stub panel body for tabs whose plan hasn't shipped yet.
+fn stub_panel(title: &str, hint: &str) -> String {
+    format!(
+        "{title}\n\n{hint}\n\n(this tab's implementation lands in a future plan — \
+the foundation is in place, just not the panel body)"
+    )
+}
+
+/// Render the Workspaces tab body. Reads the registered workspaces from the
+/// store each frame and lists them as a tree (umbrella + sub-repos).
+fn render_workspaces_body(store: &dyn Store) -> String {
+    let workspaces = match store.list_workspaces() {
+        Ok(v) => v,
+        Err(e) => return format!("error reading workspaces: {e}"),
+    };
+    if workspaces.is_empty() {
+        return String::from(
+            "no workspaces registered yet\n\n\
+             try one of:\n  \
+             - sid workspace add /path/to/repo   (register a single repo)\n  \
+             - put repos under ~/vcs/ and relaunch (auto-discovered)\n\n\
+             once registered, j/k to navigate, Enter to expand umbrellas, Tab to cycle sub-views",
+        );
+    }
+    let mut lines: Vec<String> = Vec::with_capacity(workspaces.len() + 2);
+    lines.push(format!("{} workspace(s) registered:", workspaces.len()));
+    lines.push(String::new());
+    // Group by parent for tree-ish display.
+    let parents: Vec<&Workspace> = workspaces.iter().filter(|w| w.parent.is_none()).collect();
+    for w in &parents {
+        let glyph = match w.kind {
+            WorkspaceKind::Umbrella => '▾',
+            WorkspaceKind::Repo => '·',
+        };
+        lines.push(format!("  {glyph} {:<28}  {}", w.name, w.path.display()));
+        // Children
+        for child in workspaces.iter().filter(|c| c.parent.as_deref() == Some(&w.path)) {
+            lines.push(format!("      · {:<24}  {}", child.name, child.path.display()));
+        }
+    }
+    // Loose children (parent set but parent not registered): show under "orphans"
+    let orphans: Vec<&Workspace> = workspaces
+        .iter()
+        .filter(|w| {
+            w.parent
+                .as_ref()
+                .is_some_and(|p| !workspaces.iter().any(|q| &q.path == p))
+        })
+        .collect();
+    if !orphans.is_empty() {
+        lines.push(String::new());
+        lines.push(String::from("  (orphan children — parent not registered):"));
+        for w in orphans {
+            lines.push(format!("      · {:<24}  {}", w.name, w.path.display()));
+        }
+    }
+    lines.join("\n")
+}
+
+/// One-line help bar shown at the bottom of every frame.
+fn help_line() -> &'static str {
+    " Ctrl+Q quit  ·  Ctrl+F palette  ·  Ctrl+←/→ tabs  ·  Ctrl+1..6 jump  ·  Ctrl+, settings"
 }
 
 /// Return a [`Rect`] centred within `area` that is `pct_w`% wide and `pct_h`%
@@ -480,7 +591,7 @@ where
 {
     let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
     loop {
-        terminal.draw(|f| draw(f, &sid_app.app))?;
+        terminal.draw(|f| draw(f, sid_app))?;
         let ev = match rx.recv().await {
             Some(e) => e,
             None => break,
@@ -1049,10 +1160,10 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None, vec![]);
+        let sid_app = build_test_sid_app(None);
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
     }
 
     /// `draw` renders without panicking on a very small (1×1) terminal.
@@ -1061,10 +1172,10 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None, vec![]);
+        let sid_app = build_test_sid_app(None);
         let backend = TestBackend::new(1, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
     }
 
     /// `draw` renders without panicking when the terminal is smaller than the
@@ -1074,11 +1185,11 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let app = build_app(None, vec![]);
+        let sid_app = build_test_sid_app(None);
         // Height 2 < bar height 3; body_rect will have saturating_sub(3) = 0 height.
         let backend = TestBackend::new(80, 2);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
     }
 
     /// `draw` renders all six tabs without panicking.
@@ -1095,12 +1206,27 @@ mod tests {
             "system",
             "settings",
         ] {
-            let app = build_app(Some(tab_id), vec![]);
+            let sid_app = build_test_sid_app(Some(tab_id));
             let backend = TestBackend::new(120, 40);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| draw(frame, &app))
+                .draw(|frame| draw(frame, &sid_app))
                 .unwrap_or_else(|e| panic!("draw panicked for tab '{tab_id}': {e}"));
+        }
+    }
+
+    /// Build a `SidApp` with a fresh tempdir-backed store for draw tests.
+    /// Each call uses a unique temp file so tests can run in parallel.
+    fn build_test_sid_app(start_tab: Option<&str>) -> SidApp {
+        let dir = tempdir().unwrap();
+        let db_file = dir.path().join("draw_test.redb");
+        let store = Arc::new(RedbStore::open(&db_file).unwrap());
+        // Leak tempdir so it isn't deleted before draw runs — only used in tests.
+        std::mem::forget(dir);
+        SidApp {
+            app: build_app(start_tab, vec![]),
+            store,
+            session_id: "draw-test-sess".into(),
         }
     }
 }
