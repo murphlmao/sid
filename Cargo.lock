@@ -2419,6 +2419,7 @@ dependencies = [
  "proptest",
  "ratatui",
  "serde",
+ "serde_json",
  "sid-core",
  "sid-job",
  "sid-store",
