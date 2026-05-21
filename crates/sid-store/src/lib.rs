@@ -6,7 +6,7 @@
 //! Opening and using the store (requires a filesystem path — see the
 //! integration tests in `crates/sid-store/tests/` for runnable examples).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -115,6 +115,63 @@ pub struct WidgetState {
     pub widget_id: WidgetId,
     pub blob: Vec<u8>,
 }
+
+// ─── Workspace domain types ──────────────────────────────────────────────────
+
+/// Re-export `WorkspaceKind` from `sid-core` for consumers of `sid-store`
+/// who need the type without a direct `sid-core` dep.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::WorkspaceKind;
+///
+/// let kind = WorkspaceKind::Repo;
+/// assert_eq!(kind, WorkspaceKind::Repo);
+/// assert_ne!(kind, WorkspaceKind::Umbrella);
+/// ```
+pub use sid_core::workspace_metadata::WorkspaceKind;
+
+/// A workspace registered in the sid registry.
+///
+/// Workspaces are keyed by their absolute filesystem path. The `kind` field
+/// classifies whether this is a plain git repo, an umbrella, or other.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use sid_store::{Workspace, WorkspaceKind, now_epoch};
+///
+/// let w = Workspace {
+///     path: PathBuf::from("/home/user/vcs/myproject"),
+///     name: "myproject".into(),
+///     kind: WorkspaceKind::Repo,
+///     manifest_hash: 0,
+///     last_seen: now_epoch(),
+///     parent: None,
+/// };
+/// assert_eq!(w.name, "myproject");
+/// assert!(w.parent.is_none());
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// Absolute path. Acts as the primary key.
+    pub path: PathBuf,
+    /// Human-readable name (usually the directory basename).
+    pub name: String,
+    /// Classification of this workspace.
+    pub kind: WorkspaceKind,
+    /// Fast cache-invalidation hint for manifest files (computed via xxhash3).
+    /// `0` means "not computed / unknown".
+    pub manifest_hash: u64,
+    /// Wall-clock nanoseconds when this workspace was last observed on disk.
+    pub last_seen: Epoch,
+    /// For child workspaces of an umbrella, the parent's absolute path.
+    pub parent: Option<PathBuf>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// The domain storage trait. `sid-store` is the only crate that provides an
 /// implementation (`RedbStore`); other crates depend on this trait only.
