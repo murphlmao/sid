@@ -11,6 +11,7 @@ pub mod layout;
 pub mod palette;
 pub mod persister;
 pub mod restore;
+pub mod sys_probe;
 pub mod tab;
 pub mod widget;
 pub mod workspace_discovery;
