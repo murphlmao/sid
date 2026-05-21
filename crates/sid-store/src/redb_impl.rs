@@ -105,6 +105,25 @@ impl Store for RedbStore {
         }
     }
 
+    fn list_setting_keys(&self) -> Result<Vec<String>, SidError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| SidError::Storage(format!("read txn: {e}")))?;
+        let tbl = txn
+            .open_table(SETTINGS)
+            .map_err(|e| SidError::Storage(format!("open settings: {e}")))?;
+        let mut out = Vec::new();
+        let iter = tbl
+            .iter()
+            .map_err(|e| SidError::Storage(format!("iter settings: {e}")))?;
+        for entry in iter {
+            let (k, _v) = entry.map_err(|e| SidError::Storage(format!("iter step: {e}")))?;
+            out.push(k.value().to_string());
+        }
+        Ok(out)
+    }
+
     fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
         let txn = self
             .db

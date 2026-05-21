@@ -594,6 +594,9 @@ pub enum QuickActionScope {
 ///     fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
 ///         Ok(self.settings.lock().unwrap().remove(key).is_some())
 ///     }
+///     fn list_setting_keys(&self) -> Result<Vec<String>, SidError> {
+///         Ok(self.settings.lock().unwrap().keys().cloned().collect())
+///     }
 ///     fn current_session(&self) -> Result<Option<SessionRecord>, SidError> { Ok(None) }
 ///     fn upsert_session(&self, _: &SessionRecord) -> Result<(), SidError> { Ok(()) }
 ///     fn end_session(&self, _: &str, _: Epoch) -> Result<(), SidError> { Ok(()) }
@@ -657,6 +660,25 @@ pub trait Store: Send + Sync {
     /// assert_eq!(store.get_setting("key").unwrap().unwrap().0, b"v2");
     /// ```
     fn put_setting(&self, key: &str, val: &SettingValue) -> Result<(), SidError>;
+
+    /// List every setting key currently present in the `settings` table.
+    ///
+    /// Order is implementation-defined (redb returns keys in lexicographic
+    /// order).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{OpenStore, RedbStore, SettingValue, Store};
+    /// use tempfile::tempdir;
+    ///
+    /// let dir = tempdir().unwrap();
+    /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    /// assert!(store.list_setting_keys().unwrap().is_empty());
+    /// store.put_setting("k", &SettingValue(b"v".to_vec())).unwrap();
+    /// assert_eq!(store.list_setting_keys().unwrap(), vec!["k".to_string()]);
+    /// ```
+    fn list_setting_keys(&self) -> Result<Vec<String>, SidError>;
 
     /// Delete a setting by key. Returns `Ok(true)` if a value was removed and
     /// `Ok(false)` if the key did not exist. Idempotent.
@@ -1300,6 +1322,9 @@ mod tests {
             }
             fn delete_setting(&self, key: &str) -> Result<bool, SidError> {
                 Ok(self.settings.lock().unwrap().remove(key).is_some())
+            }
+            fn list_setting_keys(&self) -> Result<Vec<String>, SidError> {
+                Ok(self.settings.lock().unwrap().keys().cloned().collect())
             }
             fn current_session(&self) -> Result<Option<SessionRecord>, SidError> {
                 Ok(None)
