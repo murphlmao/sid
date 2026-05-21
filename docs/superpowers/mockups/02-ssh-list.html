@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>sid — SSH (Key Manager drawer)</title>
+<style>
+  :root {
+    --bg-deep: #07060f;
+    --bg-surface: rgba(15, 13, 28, 0.85);
+    --bg-dim-overlay: rgba(7, 6, 15, 0.6);
+    --border-dim: #4a3f6e;
+    --border-bright: #8a76c2;
+    --text-primary: #e0d8f5;
+    --text-muted: #7a6f9c;
+    --accent: #e85a87;
+    --accent-warning: #f5b48a;
+    --star-cream: #e8d8b9;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* -------- starfield -------- */
+  .starfield {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    /* slightly dimmed because the drawer is open */
+    opacity: 0.75;
+  }
+  .star {
+    position: absolute;
+    border-radius: 50%;
+    background: var(--star-cream);
+    opacity: 0.55;
+    animation: twinkle 4s ease-in-out infinite;
+  }
+  .star.s1 { width: 1px; height: 1px; }
+  .star.s2 { width: 2px; height: 2px; }
+  .star.s3 { width: 3px; height: 3px; box-shadow: 0 0 4px rgba(232, 216, 185, 0.55); }
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.25; }
+    50%      { opacity: 0.9; }
+  }
+  .star.accent { background: var(--accent); box-shadow: 0 0 6px rgba(232, 90, 135, 0.7); }
+  .star.violet { background: var(--border-bright); box-shadow: 0 0 5px rgba(138, 118, 194, 0.6); }
+
+  /* -------- outer container -------- */
+  .terminal {
+    position: relative;
+    z-index: 1;
+    max-width: 1280px;
+    margin: 28px auto;
+    background: var(--bg-surface);
+    border: 2px double var(--border-bright);
+    border-radius: 4px;
+    box-shadow:
+      0 0 0 1px rgba(138, 118, 194, 0.18),
+      0 24px 60px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+  }
+
+  .title-bar {
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text-primary);
+    letter-spacing: 0.05em;
+  }
+  .title-bar .title { color: var(--text-primary); }
+  .title-bar .title .glyph { color: var(--accent); margin-right: 6px; }
+  .title-bar .meta { color: var(--text-muted); font-size: 12px; }
+
+  /* -------- tab strip -------- */
+  .tab-strip {
+    display: flex;
+    align-items: stretch;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-dim);
+    background: rgba(10, 8, 20, 0.55);
+  }
+  .tab {
+    padding: 8px 16px;
+    color: var(--text-muted);
+    border-right: 1px solid rgba(74, 63, 110, 0.4);
+    user-select: none;
+  }
+  .tab.active {
+    color: var(--text-primary);
+    background: rgba(138, 118, 194, 0.12);
+    border-bottom: 2px solid var(--accent);
+    box-shadow: inset 0 -1px 0 var(--accent);
+  }
+  .tab .key { color: var(--accent); margin-right: 4px; }
+
+  /* -------- main stage (body + drawer share this) -------- */
+  .stage {
+    position: relative;
+    min-height: 520px;
+  }
+
+  .body {
+    display: grid;
+    grid-template-columns: 40% 60%;
+    min-height: 520px;
+  }
+
+  .pane {
+    padding: 14px 18px;
+    border-right: 1px solid var(--border-dim);
+  }
+  .pane:last-child { border-right: none; }
+
+  .pane h3 {
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    font-weight: normal;
+    color: var(--text-muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  /* -------- host list -------- */
+  .host-list { font-size: 13px; }
+  .host-row {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    align-items: baseline;
+    padding: 4px 6px;
+    border-radius: 2px;
+    color: var(--text-primary);
+  }
+  .host-row .bullet { color: transparent; }
+  .host-row .name { letter-spacing: 0.02em; }
+  .host-row .ktype { color: var(--text-muted); font-size: 12px; }
+  .host-row.selected {
+    background: rgba(138, 118, 194, 0.15);
+    border-left: 2px solid var(--accent);
+    padding-left: 4px;
+  }
+  .host-row.selected .bullet { color: var(--accent); }
+  .host-row.selected .name { color: var(--text-primary); }
+
+  .host-row.readonly .name,
+  .host-row.readonly .ktype { color: var(--text-muted); }
+  .host-row .cfg-tag {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-left: 8px;
+    opacity: 0.85;
+  }
+
+  .divider {
+    margin: 12px 0 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+    user-select: none;
+  }
+
+  /* -------- detail pane -------- */
+  .detail h3 .host-name {
+    color: var(--text-primary);
+    font-size: 14px;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    margin-left: 4px;
+  }
+  .detail .kv {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    row-gap: 3px;
+    margin-bottom: 10px;
+  }
+  .detail .kv .k { color: var(--text-muted); }
+  .detail .kv .v { color: var(--text-primary); }
+  .detail .kv .v .ok    { color: #9be29b; }
+  .detail .kv .v .sep   { color: var(--text-muted); margin: 0 6px; }
+  .detail .kv .v.fingerprint { font-size: 12.5px; }
+
+  .detail .sub-section { margin-top: 6px; }
+
+  .action-grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 14px;
+    row-gap: 6px;
+  }
+  .action {
+    color: var(--text-primary);
+    padding: 4px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: 2px;
+    background: rgba(15, 13, 28, 0.4);
+    white-space: nowrap;
+  }
+  .action .key { color: var(--accent); margin-right: 4px; }
+
+  /* -------- dim overlay over body (because drawer is open) -------- */
+  .dim-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-dim-overlay);
+    pointer-events: none;
+    z-index: 5;
+  }
+  /* keep the leftmost area (host list) more legible: gradient fade toward the drawer side */
+  .dim-overlay::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to right,
+      rgba(7, 6, 15, 0.0) 0%,
+      rgba(7, 6, 15, 0.0) 20%,
+      rgba(7, 6, 15, 0.35) 55%
+    );
+  }
+
+  /* -------- right drawer -------- */
+  .drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 45%;
+    background: rgba(13, 11, 24, 0.97);
+    border-left: 1px solid var(--border-bright);
+    box-shadow: -20px 0 40px rgba(0, 0, 0, 0.4);
+    z-index: 10;
+    padding: 14px 18px 16px;
+    animation: slideIn 350ms ease-out;
+  }
+  @keyframes slideIn {
+    from { transform: translateX(20%); opacity: 0; }
+    to   { transform: translateX(0);   opacity: 1; }
+  }
+
+  .drawer .drawer-title {
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+    margin-bottom: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .drawer .drawer-title .glyph { color: var(--border-bright); }
+  .drawer .drawer-title .label { color: var(--text-primary); margin: 0 6px; }
+  .drawer .drawer-title .rule { color: var(--border-dim); }
+
+  .drawer .section-label {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+    letter-spacing: 0.05em;
+  }
+
+  .key-list { display: flex; flex-direction: column; gap: 12px; }
+
+  .key-entry {
+    padding: 6px 10px;
+    border-left: 2px solid transparent;
+    border-radius: 2px;
+  }
+  .key-entry.selected {
+    background: rgba(138, 118, 194, 0.16);
+    border-left-color: var(--accent);
+  }
+  .key-entry .row1 {
+    display: grid;
+    grid-template-columns: 16px 1fr auto auto;
+    align-items: baseline;
+    column-gap: 8px;
+  }
+  .key-entry .caret { color: var(--accent); }
+  .key-entry.unselected .caret { color: transparent; }
+  .key-entry .keyname { color: var(--text-primary); letter-spacing: 0.02em; }
+  .key-entry .ktype { color: var(--text-muted); font-size: 12px; }
+  .key-entry .legacy {
+    color: var(--accent-warning);
+    font-size: 12px;
+    margin-left: 8px;
+    letter-spacing: 0.04em;
+  }
+  .key-entry .legacy .warn-sym { margin-right: 3px; }
+
+  .key-entry .meta {
+    margin-top: 4px;
+    margin-left: 24px;
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    row-gap: 2px;
+    font-size: 12.5px;
+  }
+  .key-entry .meta .k { color: var(--text-muted); }
+  .key-entry .meta .v { color: var(--text-primary); }
+  .key-entry .meta .v.none { color: var(--text-muted); }
+  .key-entry .meta .v.fp { font-size: 12px; }
+
+  .drawer .actions-grid {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    column-gap: 12px;
+    row-gap: 6px;
+  }
+  .drawer .actions-grid .action { background: rgba(15, 13, 28, 0.5); }
+
+  /* -------- status line + footer -------- */
+  .status-line {
+    border-top: 1px solid var(--border-dim);
+    padding: 7px 18px;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    background: rgba(10, 8, 20, 0.55);
+    position: relative;
+    z-index: 20;
+  }
+  .status-line .sep { color: var(--border-dim); }
+  .status-line .ok { color: #9be29b; }
+  .status-line .accent { color: var(--accent); }
+
+  .footer-hints {
+    border-top: 1px solid var(--border-dim);
+    padding: 7px 18px;
+    color: var(--text-muted);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: rgba(10, 8, 20, 0.65);
+    position: relative;
+    z-index: 20;
+  }
+  .footer-hints .row { display: flex; flex-wrap: wrap; gap: 14px; }
+  .footer-hints .row .hint { color: var(--text-muted); }
+  .footer-hints .row .hint .key { color: var(--accent); margin-right: 4px; }
+  .footer-hints .row.lower { color: var(--text-muted); opacity: 0.85; }
+
+  /* -------- explainer below mockup -------- */
+  .explainer {
+    max-width: 1280px;
+    margin: 16px auto 40px;
+    padding: 14px 18px;
+    background: rgba(15, 13, 28, 0.75);
+    border: 1px solid var(--border-dim);
+    border-radius: 3px;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.5;
+    white-space: pre;
+    position: relative;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<!-- starfield -->
+<div class="starfield" id="starfield"></div>
+
+<div class="terminal">
+
+  <!-- title bar -->
+  <div class="title-bar">
+    <div class="title"><span class="glyph">✦</span>sid — SSH</div>
+    <div class="meta">cosmos · 23:14</div>
+  </div>
+
+  <!-- tab strip -->
+  <div class="tab-strip">
+    <div class="tab"><span class="key">G</span>Git</div>
+    <div class="tab active"><span class="key">S</span>SSH</div>
+    <div class="tab"><span class="key">D</span>Database</div>
+    <div class="tab"><span class="key">P</span>Process</div>
+    <div class="tab"><span class="key">L</span>Logs</div>
+    <div class="tab"><span class="key">N</span>Network</div>
+  </div>
+
+  <!-- main stage -->
+  <div class="stage">
+
+    <!-- two-pane body -->
+    <div class="body">
+
+      <!-- left: hosts -->
+      <div class="pane host-list-pane">
+        <h3>Hosts</h3>
+        <div class="host-list">
+
+          <div class="host-row selected">
+            <span class="bullet">●</span>
+            <span class="name">my-prod-server</span>
+            <span class="ktype">ed25519</span>
+          </div>
+          <div class="host-row">
+            <span class="bullet">●</span>
+            <span class="name">staging-bastion</span>
+            <span class="ktype">ed25519</span>
+          </div>
+          <div class="host-row">
+            <span class="bullet">●</span>
+            <span class="name">dev-laptop</span>
+            <span class="ktype">rsa-4096</span>
+          </div>
+
+          <div class="divider">──── ssh-config (read-only) ────────────</div>
+
+          <div class="host-row readonly">
+            <span class="bullet">●</span>
+            <span class="name">github.com<span class="cfg-tag">(cfg)</span></span>
+            <span class="ktype">ed25519</span>
+          </div>
+          <div class="host-row readonly">
+            <span class="bullet">●</span>
+            <span class="name">gitlab.com<span class="cfg-tag">(cfg)</span></span>
+            <span class="ktype">ed25519</span>
+          </div>
+          <div class="host-row readonly">
+            <span class="bullet">●</span>
+            <span class="name">hpc-cluster<span class="cfg-tag">(cfg)</span></span>
+            <span class="ktype">rsa-2048</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- right: detail -->
+      <div class="pane detail">
+        <h3>Host<span class="host-name">my-prod-server</span></h3>
+
+        <div class="kv">
+          <span class="k">host:</span>        <span class="v">prod.example.com</span>
+          <span class="k">user:</span>        <span class="v">root</span>
+          <span class="k">port:</span>        <span class="v">22</span>
+          <span class="k">identity:</span>    <span class="v">~/.ssh/id_ed25519</span>
+          <span class="k">fingerprint:</span> <span class="v fingerprint">SHA256:AbCdEf...XyZ</span>
+          <span class="k">state:</span>
+          <span class="v">
+            <span class="ok">connected</span>
+            <span class="sep">·</span>00:14:32<span class="sep">·</span>1 session
+          </span>
+        </div>
+
+        <div class="kv sub-section">
+          <span class="k">last sftp:</span>   <span class="v">/var/log/nginx</span>
+          <span class="k">last cmd:</span>    <span class="v">journalctl -u nginx -f</span>
+        </div>
+
+        <div class="action-grid">
+          <div class="action"><span class="key">C:</span>connect</div>
+          <div class="action"><span class="key">F:</span>sftp</div>
+          <div class="action"><span class="key">K:</span>keys</div>
+          <div class="action"><span class="key">X:</span>debug</div>
+          <div class="action"><span class="key">E:</span>edit</div>
+          <div class="action"><span class="key">Del:</span>remove</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dim overlay (behind drawer) -->
+    <div class="dim-overlay"></div>
+
+    <!-- key manager drawer -->
+    <aside class="drawer" aria-label="Key Manager">
+
+      <div class="drawer-title">
+        <span class="rule">──</span>
+        <span class="label">Key Manager</span>
+        <span class="rule">────────</span>
+      </div>
+
+      <div class="section-label">Keys in ~/.ssh/:</div>
+
+      <div class="key-list">
+
+        <!-- selected -->
+        <div class="key-entry selected">
+          <div class="row1">
+            <span class="caret">&gt;</span>
+            <span class="keyname">id_ed25519</span>
+            <span class="ktype">(ed25519)</span>
+          </div>
+          <div class="meta">
+            <span class="k">fingerprint:</span><span class="v fp">SHA256:AbCdEf...XyZ</span>
+            <span class="k">used by:</span>    <span class="v">my-prod-server, staging-bastion</span>
+            <span class="k">comment:</span>    <span class="v">murphy@galaxy</span>
+          </div>
+        </div>
+
+        <div class="key-entry unselected">
+          <div class="row1">
+            <span class="caret">&gt;</span>
+            <span class="keyname">id_ed25519_work</span>
+            <span class="ktype">(ed25519)</span>
+          </div>
+          <div class="meta">
+            <span class="k">fingerprint:</span><span class="v fp">SHA256:GhIjKl...MnO</span>
+            <span class="k">used by:</span>    <span class="v none">none</span>
+            <span class="k">comment:</span>    <span class="v">work-laptop</span>
+          </div>
+        </div>
+
+        <div class="key-entry unselected">
+          <div class="row1">
+            <span class="caret">&gt;</span>
+            <span class="keyname">id_rsa</span>
+            <span class="ktype">(rsa 2048)</span>
+            <span class="legacy"><span class="warn-sym">⚠</span>legacy</span>
+          </div>
+          <div class="meta">
+            <span class="k">fingerprint:</span><span class="v fp">SHA256:PqRsTu...VwX</span>
+            <span class="k">used by:</span>    <span class="v">hpc-cluster</span>
+            <span class="k">comment:</span>    <span class="v">murphy@old-mbp</span>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="actions-grid">
+        <div class="action"><span class="key">G:</span>generate new</div>
+        <div class="action"><span class="key">S:</span>show public</div>
+        <div class="action"><span class="key">R:</span>regenerate</div>
+        <div class="action"><span class="key">Del:</span>delete (confirm)</div>
+        <div class="action"><span class="key">Esc:</span>close</div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <!-- status line -->
+  <div class="status-line">
+    <span>disk: <span style="color:var(--text-primary)">23.4 GB</span> free</span>
+    <span class="sep">·</span>
+    <span><span style="color:var(--text-primary)">0</span> jobs</span>
+    <span class="sep">·</span>
+    <span>ssh: <span class="ok">1 active</span></span>
+    <span class="sep">·</span>
+    <span>network: idle</span>
+  </div>
+
+  <!-- footer hints -->
+  <div class="footer-hints">
+    <div class="row upper">
+      <span class="hint"><span class="key">N:</span>new host</span>
+      <span class="hint"><span class="key">G:</span>gen key</span>
+      <span class="hint"><span class="key">S:</span>setup remote</span>
+      <span class="hint"><span class="key">K:</span>keys</span>
+      <span class="hint"><span class="key">X:</span>debug</span>
+      <span class="hint"><span class="key">?:</span>help</span>
+    </div>
+    <div class="row lower">
+      <span class="hint"><span class="key">Ctrl+P:</span>palette</span>
+      <span class="hint"><span class="key">Ctrl+Tab:</span>next tab</span>
+      <span class="hint"><span class="key">Ctrl+D:</span>detach</span>
+      <span class="hint"><span class="key">Ctrl+Q:</span>quit</span>
+    </div>
+  </div>
+
+</div>
+
+<pre class="explainer">SSH tab — Key Manager drawer open over the host detail pane.
+Answers "how do I manage SSH keys for each connection?" — the [K: keys] action on a host opens this drawer, which lists every key in ~/.ssh/, shows which hosts each is used by, flags weak/legacy keys (rsa-2048), and exposes generate / show / regenerate / delete.
+Answers "how do I reset my known_hosts?" — not on this view; lives under [X: debug] (next to [K: keys]), which opens a debug pane with "prune known_hosts entry for selected host" and "reset known_hosts" actions, so a stale fingerprint is one keystroke away from being cleared.
+Read-only ssh-config hosts are marked (cfg) and dimmed so it's obvious which entries sid owns vs which come from ~/.ssh/config.</pre>
+
+<script>
+  // generate starfield
+  (function () {
+    const field = document.getElementById('starfield');
+    const W = window.innerWidth;
+    const H = Math.max(window.innerHeight, 800);
+    const N = 140;
+    const variants = ['s1', 's1', 's1', 's2', 's2', 's3'];
+    const tints    = ['', '', '', '', 'violet', 'accent'];
+    for (let i = 0; i < N; i++) {
+      const s = document.createElement('div');
+      s.className = 'star ' + variants[Math.floor(Math.random() * variants.length)];
+      const tint = tints[Math.floor(Math.random() * tints.length)];
+      if (tint) s.classList.add(tint);
+      s.style.left = Math.random() * W + 'px';
+      s.style.top  = Math.random() * H + 'px';
+      s.style.animationDelay = (Math.random() * 4) + 's';
+      s.style.animationDuration = (3 + Math.random() * 4) + 's';
+      field.appendChild(s);
+    }
+  })();
+</script>
+
+</body>
+</html>

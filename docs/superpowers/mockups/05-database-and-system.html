@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>sid — Database &amp; System (add-connection / pin-config modals)</title>
+<style>
+  :root {
+    --bg-deep: #07060f;
+    --bg-surface: rgba(15, 13, 28, 0.85);
+    --bg-dim-modal-backdrop: rgba(7, 6, 15, 0.78);
+    --border-dim: #4a3f6e;
+    --border-bright: #8a76c2;
+    --text-primary: #e0d8f5;
+    --text-muted: #7a6f9c;
+    --accent: #e85a87;
+    --accent-success: #8cdba0;
+    --star-cream: #e8d8b9;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.4;
+    overflow-x: hidden;
+  }
+
+  body {
+    background:
+      radial-gradient(ellipse at 22% 12%, rgba(74, 63, 110, 0.32) 0%, transparent 55%),
+      radial-gradient(ellipse at 78% 92%, rgba(138, 118, 194, 0.18) 0%, transparent 60%),
+      radial-gradient(ellipse at 50% 50%, rgba(232, 90, 135, 0.05) 0%, transparent 70%),
+      var(--bg-deep);
+    padding: 32px 24px 40px;
+    position: relative;
+  }
+
+  /* ---------- starfield (single, spans whole page) ---------- */
+  .starfield {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .star {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    background: var(--star-cream);
+    border-radius: 50%;
+    opacity: 0.6;
+    animation: twinkle 4s infinite ease-in-out;
+  }
+
+  .star.tiny { width: 1px; height: 1px; opacity: 0.4; }
+  .star.bright { width: 2.5px; height: 2.5px; box-shadow: 0 0 4px var(--star-cream); }
+
+  .accent-star {
+    position: absolute;
+    color: var(--star-cream);
+    font-size: 12px;
+    opacity: 0.78;
+    text-shadow: 0 0 8px rgba(232, 216, 185, 0.55);
+    animation: pulse 5s infinite ease-in-out;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.2; }
+    50%      { opacity: 0.85; }
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.45; transform: scale(1); }
+    50%      { opacity: 0.95; transform: scale(1.15); }
+  }
+
+  /* ---------- supernova (single, page corner) ---------- */
+  .supernova {
+    position: fixed;
+    top: 7%;
+    right: 6%;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #fff5d4 0%, var(--star-cream) 30%, var(--accent) 60%, transparent 80%);
+    box-shadow:
+      0 0 14px var(--star-cream),
+      0 0 32px var(--accent),
+      0 0 64px rgba(232, 90, 135, 0.35);
+    animation: supernova 7s infinite ease-in-out;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  @keyframes supernova {
+    0%   { transform: scale(0.3); opacity: 0.35; }
+    25%  { transform: scale(1.0); opacity: 0.95; }
+    50%  { transform: scale(2.2); opacity: 0.55; }
+    75%  { transform: scale(1.4); opacity: 0.80; }
+    100% { transform: scale(0.3); opacity: 0.35; }
+  }
+
+  /* ---------- terminal chrome ---------- */
+  .terminal {
+    position: relative;
+    z-index: 2;
+    max-width: 1180px;
+    margin: 0 auto;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    padding: 0;
+    white-space: pre;
+    font-family: inherit;
+    box-shadow:
+      0 0 30px rgba(74, 63, 110, 0.45),
+      0 0 80px rgba(7, 6, 15, 0.7);
+  }
+
+  .term-row { display: block; padding: 0 12px; }
+  .term-row.tight { line-height: 1.2; }
+
+  .border-color { color: var(--border-bright); }
+  .border-dim   { color: var(--border-dim); }
+  .muted        { color: var(--text-muted); }
+  .accent       { color: var(--accent); }
+  .accent-success { color: var(--accent-success); }
+  .star-c       { color: var(--star-cream); }
+  .primary      { color: var(--text-primary); }
+
+  /* ---------- title row ---------- */
+  .title-row {
+    display: flex;
+    align-items: center;
+  }
+  .title-text {
+    color: var(--text-primary);
+    margin-left: 4px;
+  }
+  .title-text .accent-mark {
+    color: var(--accent);
+    margin-right: 6px;
+  }
+
+  /* ---------- tabs ---------- */
+  .tab-strip {
+    padding: 6px 14px;
+    font-family: inherit;
+    color: var(--text-muted);
+  }
+  .tab { padding: 0 6px; }
+  .tab.active {
+    color: var(--text-primary);
+    background: rgba(138, 118, 194, 0.18);
+    border-bottom: 1px solid var(--border-bright);
+  }
+  .tab-sep { color: var(--border-dim); }
+
+  /* ---------- body wrapper (so we can dim it behind modal) ---------- */
+  .body-wrap {
+    position: relative;
+  }
+  .body-dimmed {
+    opacity: 0.42;
+    filter: blur(0.4px) saturate(0.7);
+    transition: opacity 0.2s ease;
+  }
+
+  /* ---------- side borders helper column ---------- */
+  .side-bars-grid {
+    display: grid;
+    grid-template-columns: 14px 1fr 14px;
+    align-items: stretch;
+  }
+  .side-bar-col {
+    background: transparent;
+    color: var(--border-bright);
+    padding-top: 8px;
+  }
+  .side-bar-col pre {
+    margin: 0;
+    white-space: pre;
+    line-height: 1.4;
+    font-family: inherit;
+    font-size: inherit;
+  }
+
+  /* ---------- Database three-pane body ---------- */
+  .db-body-grid {
+    display: grid;
+    grid-template-columns: 25% 75%;
+    color: var(--text-primary);
+    font-family: inherit;
+  }
+
+  .pane {
+    padding: 10px 14px 14px 14px;
+    white-space: pre;
+  }
+
+  .pane.left {
+    border-right: 1px solid var(--border-dim);
+    min-height: 460px;
+  }
+
+  .pane-title {
+    color: var(--border-bright);
+    text-transform: lowercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .conn-row {
+    display: block;
+    padding: 2px 6px;
+    color: var(--text-primary);
+  }
+  .conn-row .indicator {
+    display: inline-block;
+    width: 1.5ch;
+    color: var(--text-muted);
+  }
+  .conn-row.active {
+    color: var(--accent);
+    background: rgba(232, 90, 135, 0.14);
+  }
+  .conn-row.active .indicator { color: var(--accent); }
+  .conn-row .kind {
+    color: var(--text-muted);
+    margin-left: 1.5ch;
+  }
+
+  .db-right {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding: 0;
+  }
+
+  .editor-wrap {
+    padding: 10px 14px 8px 14px;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+  .editor-frame {
+    color: var(--border-dim);
+    white-space: pre;
+    display: block;
+  }
+  .editor-frame .label {
+    color: var(--border-bright);
+  }
+  .editor-frame .sql-kw { color: var(--accent); }
+  .editor-frame .sql-id { color: var(--text-primary); }
+  .editor-frame .sql-num { color: var(--star-cream); }
+  .editor-frame .sql-op { color: var(--text-muted); }
+
+  .results-wrap {
+    padding: 4px 14px 8px 14px;
+    border-top: 1px dashed var(--border-dim);
+    white-space: pre;
+  }
+  .results-title {
+    color: var(--border-bright);
+    margin-bottom: 4px;
+    display: block;
+  }
+  .results-table {
+    white-space: pre;
+    color: var(--text-primary);
+  }
+  .results-table .col { color: var(--border-bright); }
+  .results-table .sep { color: var(--border-dim); }
+  .results-table .dim { color: var(--text-muted); }
+
+  .inner-status {
+    padding: 4px 14px;
+    border-top: 1px dashed var(--border-dim);
+    color: var(--text-muted);
+    display: block;
+  }
+  .inner-status .key { color: var(--accent); }
+  .inner-status .sep { color: var(--border-dim); margin: 0 6px; }
+  .inner-status .pane-active { color: var(--text-primary); }
+
+  /* ---------- System body ---------- */
+  .system-strip {
+    padding: 10px 14px 6px 14px;
+    color: var(--text-primary);
+  }
+  .system-strip .seg-active { color: var(--accent); }
+  .system-strip .seg-muted  { color: var(--text-muted); }
+  .system-strip .seg-dot-active { color: var(--accent); margin-right: 6px; }
+  .system-strip .seg-dot-muted  { color: var(--text-muted); margin-right: 6px; }
+  .system-strip .pipe { color: var(--border-dim); margin: 0 6px; }
+  .system-strip .hint { color: var(--text-muted); margin-left: 14px; }
+
+  .system-body {
+    padding: 8px 14px 16px 14px;
+    min-height: 360px;
+    color: var(--text-primary);
+    white-space: pre;
+  }
+
+  .system-body .pin-row {
+    display: block;
+    padding: 2px 6px;
+  }
+  .system-body .pin-row.focused {
+    color: var(--accent);
+    background: rgba(232, 90, 135, 0.14);
+  }
+  .system-body .pin-row .indicator {
+    display: inline-block;
+    width: 1.5ch;
+    color: var(--text-muted);
+  }
+  .system-body .pin-row.focused .indicator { color: var(--accent); }
+
+  .system-body .footnote {
+    color: var(--text-muted);
+    margin-top: 22px;
+    display: block;
+  }
+
+  /* ---------- status line + footer (shared) ---------- */
+  .status-line {
+    padding: 4px 14px;
+    color: var(--text-muted);
+    background: rgba(74, 63, 110, 0.18);
+    display: block;
+  }
+  .status-line .sep { color: var(--border-dim); margin: 0 6px; }
+  .status-line .accent-tag { color: var(--accent); }
+
+  .footer-row {
+    padding: 2px 14px;
+    color: var(--text-muted);
+    display: block;
+  }
+  .footer-row.tab-hints { color: var(--text-primary); }
+  .footer-row .key { color: var(--accent); }
+  .footer-row .bracket { color: var(--border-dim); }
+  .footer-row .global-key { color: var(--border-bright); }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-dim-modal-backdrop);
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  .modal {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    min-width: 560px;
+    max-width: 660px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 0;
+    white-space: pre;
+    box-shadow:
+      0 0 24px rgba(7, 6, 15, 0.85),
+      0 0 60px rgba(74, 63, 110, 0.55);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+
+  .modal-frame {
+    color: var(--border-bright);
+    white-space: pre;
+    line-height: 1.2;
+    display: block;
+  }
+
+  .modal-title-row {
+    padding: 4px 16px 8px 16px;
+    color: var(--border-bright);
+    letter-spacing: 0.5px;
+  }
+  .modal-title-row .accent-prefix { color: var(--accent); }
+
+  .modal-content {
+    padding: 0 18px 14px 18px;
+    color: var(--text-primary);
+  }
+
+  .field-row {
+    display: flex;
+    align-items: center;
+    margin: 6px 0;
+    gap: 8px;
+  }
+  .field-label {
+    color: var(--text-muted);
+    min-width: 9ch;
+    text-align: left;
+  }
+  .input-box {
+    color: var(--text-primary);
+    background: rgba(74, 63, 110, 0.16);
+    border-top: 1px solid var(--border-dim);
+    border-bottom: 1px solid var(--border-dim);
+    border-left: 1px solid var(--border-dim);
+    border-right: 1px solid var(--border-dim);
+    padding: 2px 8px;
+    min-width: 0;
+    flex: 1;
+    font-family: inherit;
+    font-size: inherit;
+    white-space: pre;
+  }
+  .input-box.short {
+    flex: 0 0 12ch;
+  }
+  .input-box .caret {
+    color: var(--accent);
+    animation: caret-blink 1s steps(2) infinite;
+  }
+
+  @keyframes caret-blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+
+  .radio-row {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    margin: 8px 0 12px 0;
+  }
+  .radio-row .label {
+    color: var(--text-muted);
+    min-width: 9ch;
+  }
+  .radio {
+    color: var(--text-primary);
+  }
+  .radio .marker { color: var(--text-muted); }
+  .radio.selected .marker { color: var(--accent); }
+  .radio.selected { color: var(--accent); }
+
+  .modal-hint {
+    color: var(--text-muted);
+    padding: 0 0 8px 9ch;
+    font-size: 12.5px;
+    display: block;
+  }
+
+  .test-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 10px 0 4px 0;
+    padding-left: 9ch;
+  }
+  .pill {
+    color: var(--text-primary);
+    border-top: 1px solid var(--border-dim);
+    border-bottom: 1px solid var(--border-dim);
+    border-left: 1px solid var(--border-dim);
+    border-right: 1px solid var(--border-dim);
+    padding: 2px 10px;
+    background: rgba(138, 118, 194, 0.14);
+    white-space: pre;
+  }
+  .pill .key { color: var(--accent); }
+  .check-ok {
+    color: var(--accent-success);
+    font-weight: bold;
+  }
+
+  .button-row {
+    display: flex;
+    gap: 16px;
+    margin-top: 14px;
+    padding-left: 9ch;
+  }
+  .button {
+    color: var(--text-primary);
+    border-top: 1px solid var(--border-bright);
+    border-bottom: 1px solid var(--border-bright);
+    border-left: 1px solid var(--border-bright);
+    border-right: 1px solid var(--border-bright);
+    padding: 2px 12px;
+    background: rgba(138, 118, 194, 0.22);
+    white-space: pre;
+  }
+  .button .key { color: var(--accent); }
+  .button.dim {
+    border-color: var(--border-dim);
+    background: rgba(74, 63, 110, 0.12);
+    color: var(--text-muted);
+  }
+  .button.dim .key { color: var(--text-primary); }
+
+  /* ---------- file picker dropdown ---------- */
+  .picker-wrap {
+    margin: 4px 0 12px 9ch;
+  }
+  .picker {
+    color: var(--border-dim);
+    white-space: pre;
+    line-height: 1.2;
+    display: block;
+  }
+  .picker .pick-row {
+    color: var(--text-primary);
+  }
+  .picker .pick-row.focused {
+    color: var(--accent);
+    background: rgba(232, 90, 135, 0.14);
+  }
+  .picker .pick-row .indicator {
+    display: inline-block;
+    width: 2ch;
+    color: var(--text-muted);
+  }
+  .picker .pick-row.focused .indicator { color: var(--accent); }
+  .picker .pick-label { color: var(--border-bright); }
+
+  /* ---------- divider between mockups ---------- */
+  .mockup-divider {
+    max-width: 1180px;
+    margin: 36px auto 24px;
+    color: var(--border-bright);
+    text-align: center;
+    letter-spacing: 1px;
+    position: relative;
+    z-index: 2;
+  }
+  .mockup-divider .dash { color: var(--border-dim); }
+  .mockup-divider .label {
+    color: var(--text-primary);
+    margin: 0 8px;
+  }
+
+  /* ---------- description ---------- */
+  .description {
+    max-width: 1180px;
+    margin: 24px auto 0;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.55;
+    background: rgba(15, 13, 28, 0.55);
+    padding: 12px 16px;
+    white-space: pre;
+    position: relative;
+    z-index: 2;
+    border-left: 2px solid var(--border-dim);
+  }
+</style>
+</head>
+<body>
+
+<!-- ============== starfield (one, spans full page) ============== -->
+<div class="starfield" aria-hidden="true">
+  <!-- tiny background twinkles -->
+  <div class="star tiny" style="top:  3%; left:  6%; animation-delay: 0.2s;"></div>
+  <div class="star tiny" style="top:  5%; left: 18%; animation-delay: 1.1s;"></div>
+  <div class="star tiny" style="top:  2%; left: 32%; animation-delay: 2.4s;"></div>
+  <div class="star tiny" style="top:  8%; left: 43%; animation-delay: 0.7s;"></div>
+  <div class="star tiny" style="top:  4%; left: 55%; animation-delay: 3.2s;"></div>
+  <div class="star tiny" style="top: 10%; left: 67%; animation-delay: 1.6s;"></div>
+  <div class="star tiny" style="top:  6%; left: 77%; animation-delay: 0.9s;"></div>
+  <div class="star tiny" style="top:  4%; left: 90%; animation-delay: 2.0s;"></div>
+
+  <div class="star" style="top: 13%; left:  4%; animation-delay: 0.6s;"></div>
+  <div class="star" style="top: 16%; left: 13%; animation-delay: 2.1s;"></div>
+  <div class="star" style="top: 20%; left: 25%; animation-delay: 1.4s;"></div>
+  <div class="star bright" style="top: 23%; left: 37%; animation-delay: 3.0s;"></div>
+  <div class="star" style="top: 18%; left: 50%; animation-delay: 0.4s;"></div>
+  <div class="star" style="top: 22%; left: 62%; animation-delay: 2.7s;"></div>
+  <div class="star tiny" style="top: 25%; left: 72%; animation-delay: 1.9s;"></div>
+  <div class="star" style="top: 20%; left: 85%; animation-delay: 0.5s;"></div>
+
+  <div class="star tiny" style="top: 30%; left:  8%; animation-delay: 1.7s;"></div>
+  <div class="star" style="top: 34%; left: 21%; animation-delay: 2.6s;"></div>
+  <div class="star bright" style="top: 37%; left: 40%; animation-delay: 0.3s;"></div>
+  <div class="star tiny" style="top: 32%; left: 57%; animation-delay: 3.4s;"></div>
+  <div class="star" style="top: 35%; left: 74%; animation-delay: 1.2s;"></div>
+  <div class="star tiny" style="top: 31%; left: 93%; animation-delay: 2.3s;"></div>
+
+  <div class="star" style="top: 44%; left:  3%; animation-delay: 0.8s;"></div>
+  <div class="star tiny" style="top: 47%; left: 16%; animation-delay: 1.5s;"></div>
+  <div class="star" style="top: 42%; left: 29%; animation-delay: 2.9s;"></div>
+  <div class="star tiny" style="top: 45%; left: 46%; animation-delay: 0.6s;"></div>
+  <div class="star bright" style="top: 49%; left: 65%; animation-delay: 2.2s;"></div>
+  <div class="star" style="top: 47%; left: 80%; animation-delay: 1.0s;"></div>
+  <div class="star tiny" style="top: 51%; left: 89%; animation-delay: 3.5s;"></div>
+
+  <div class="star tiny" style="top: 58%; left: 11%; animation-delay: 1.8s;"></div>
+  <div class="star" style="top: 60%; left: 24%; animation-delay: 0.4s;"></div>
+  <div class="star" style="top: 62%; left: 38%; animation-delay: 2.5s;"></div>
+  <div class="star tiny" style="top: 64%; left: 53%; animation-delay: 1.3s;"></div>
+  <div class="star bright" style="top: 61%; left: 70%; animation-delay: 3.1s;"></div>
+  <div class="star" style="top: 63%; left: 84%; animation-delay: 0.7s;"></div>
+
+  <div class="star" style="top: 72%; left:  5%; animation-delay: 2.0s;"></div>
+  <div class="star tiny" style="top: 75%; left: 20%; animation-delay: 1.1s;"></div>
+  <div class="star" style="top: 73%; left: 34%; animation-delay: 3.3s;"></div>
+  <div class="star tiny" style="top: 76%; left: 47%; animation-delay: 0.5s;"></div>
+  <div class="star" style="top: 74%; left: 61%; animation-delay: 2.4s;"></div>
+  <div class="star tiny" style="top: 78%; left: 76%; animation-delay: 1.6s;"></div>
+  <div class="star" style="top: 75%; left: 88%; animation-delay: 0.9s;"></div>
+
+  <div class="star tiny" style="top: 86%; left: 10%; animation-delay: 2.8s;"></div>
+  <div class="star" style="top: 88%; left: 27%; animation-delay: 1.4s;"></div>
+  <div class="star tiny" style="top: 87%; left: 44%; animation-delay: 0.3s;"></div>
+  <div class="star" style="top: 91%; left: 59%; animation-delay: 2.1s;"></div>
+  <div class="star tiny" style="top: 89%; left: 78%; animation-delay: 3.0s;"></div>
+  <div class="star" style="top: 94%; left: 92%; animation-delay: 1.7s;"></div>
+
+  <!-- accent ✦ stars (5 of them) -->
+  <div class="accent-star" style="top:  9%; left: 10%; animation-delay: 0.5s;">✦</div>
+  <div class="accent-star" style="top: 27%; left: 69%; animation-delay: 2.2s;">✦</div>
+  <div class="accent-star" style="top: 52%; left: 13%; animation-delay: 1.4s;">✦</div>
+  <div class="accent-star" style="top: 70%; left: 52%; animation-delay: 3.1s;">✦</div>
+  <div class="accent-star" style="top: 92%; left: 36%; animation-delay: 0.9s;">✦</div>
+
+  <!-- one supernova in page corner (not inside a mockup) -->
+  <div class="supernova"></div>
+</div>
+
+
+<!-- ============================================================== -->
+<!-- ============== MOCKUP 1: Database + Add Conn modal ============-->
+<!-- ============================================================== -->
+<div class="terminal" role="img" aria-label="sid Database tab mockup with Add Connection modal">
+
+  <!-- top border -->
+  <div class="term-row tight border-color">╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗</div>
+
+  <!-- title -->
+  <div class="term-row title-row">
+    <span class="border-color">║</span>
+    <span class="title-text"><span class="accent-mark">✦</span>sid — Database</span>
+    <span style="flex:1"></span>
+    <span class="border-color">║</span>
+  </div>
+
+  <!-- divider under title -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- tab strip -->
+  <div class="term-row tab-strip">
+    <span class="border-color">║ </span>
+    <span class="tab">Workspaces</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">SSH</span>
+    <span class="tab-sep">·</span>
+    <span class="tab active">Database</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">Network</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">System</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">Settings</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- divider above body -->
+  <div class="term-row tight border-color">╠══════════════════════════════╤═══════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- body wrap (body + modal layer) -->
+  <div class="body-wrap">
+
+    <!-- body itself (dimmed) -->
+    <div class="body-dimmed">
+      <div class="side-bars-grid">
+        <!-- left border bar -->
+        <div class="side-bar-col" aria-hidden="true"><pre>║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║</pre></div>
+
+        <!-- body grid -->
+        <div class="db-body-grid">
+          <!-- left pane: connections -->
+          <div class="pane left">
+            <div class="pane-title">Connections</div>
+
+            <div class="conn-row active"><span class="indicator">●</span> prod-db<span class="kind">(postgres)</span></div>
+            <div class="conn-row"><span class="indicator"> </span> analytics<span class="kind">(sqlite)</span></div>
+            <div class="conn-row"><span class="indicator"> </span> scratch<span class="kind">(sqlite)</span></div>
+
+            <div style="margin-top: 22px;" class="muted">
+3 connections
+(Tab to switch pane)
+            </div>
+          </div>
+
+          <!-- right pane: editor / results / status -->
+          <div class="pane db-right">
+
+            <!-- editor -->
+            <div class="editor-wrap">
+              <div class="editor-frame">┌─ <span class="label">SQL</span> ──────────────────────────────────────────────────────────────────────┐
+│ <span class="sql-kw">SELECT</span> <span class="sql-op">*</span> <span class="sql-kw">FROM</span> <span class="sql-id">users</span> <span class="sql-kw">WHERE</span> <span class="sql-id">id</span> <span class="sql-op">&gt;</span> <span class="sql-num">100</span><span class="sql-op">;</span>                                            │
+└──────────────────────────────────────────────────────────────────────────┘</div>
+            </div>
+
+            <!-- results -->
+            <div class="results-wrap">
+              <div class="results-title">Results · 3 rows · 4 cols</div>
+<div class="results-table"><span class="col">  id  </span><span class="sep">│</span><span class="col"> name        </span><span class="sep">│</span><span class="col"> email                  </span><span class="sep">│</span><span class="col"> created             </span>
+<span class="sep">──────┼─────────────┼────────────────────────┼─────────────────────</span>
+ <span class="dim">101</span>  <span class="sep">│</span> alice       <span class="sep">│</span> alice@example.com      <span class="sep">│</span> 2025-09-14 11:02:14
+ <span class="dim">102</span>  <span class="sep">│</span> bjorn       <span class="sep">│</span> bjorn@example.com      <span class="sep">│</span> 2025-10-03 08:41:22
+ <span class="dim">103</span>  <span class="sep">│</span> chiamaka    <span class="sep">│</span> chiamaka@example.com   <span class="sep">│</span> 2025-11-19 19:55:07</div>
+            </div>
+
+            <!-- inner status (per the spec: 1 line) -->
+            <div class="inner-status">
+              <span class="key">Tab</span>: cycle <span class="sep">·</span>
+              <span class="key">Ctrl+R</span> run <span class="sep">·</span>
+              <span class="key">Ctrl+E</span> csv <span class="sep">·</span>
+              pane: <span class="pane-active">Editor</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- right border bar -->
+        <div class="side-bar-col" aria-hidden="true"><pre>║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║</pre></div>
+      </div>
+    </div>
+
+    <!-- modal backdrop (sits over the dimmed body) -->
+    <div class="modal-backdrop" aria-hidden="true"></div>
+
+    <!-- modal -->
+    <div class="modal" role="dialog" aria-label="Add Connection">
+
+      <div class="modal-frame">┌──────────────────────────────────────────────────────────────────────┐</div>
+
+      <div class="modal-title-row">
+        <span class="modal-frame">│ </span>
+        <span><span class="accent-prefix">──</span> New Connection <span class="border-color">─────────────────────────────────────</span></span>
+        <span style="float:right" class="modal-frame"> │</span>
+      </div>
+
+      <div class="modal-frame">│                                                                      │</div>
+
+      <div class="modal-content">
+
+        <!-- kind radios -->
+        <div class="radio-row">
+          <span class="label">Kind:</span>
+          <span class="radio selected"><span class="marker">(●)</span> Postgres</span>
+          <span class="radio"><span class="marker">( )</span> SQLite</span>
+        </div>
+
+        <!-- name -->
+        <div class="field-row">
+          <span class="field-label">Name:</span>
+          <span class="input-box">prod-replica<span class="caret">│</span></span>
+        </div>
+
+        <!-- host -->
+        <div class="field-row">
+          <span class="field-label">Host:</span>
+          <span class="input-box">replica.example.com</span>
+        </div>
+
+        <!-- port -->
+        <div class="field-row">
+          <span class="field-label">Port:</span>
+          <span class="input-box short">5432</span>
+          <span style="flex:1"></span>
+        </div>
+
+        <!-- user -->
+        <div class="field-row">
+          <span class="field-label">User:</span>
+          <span class="input-box">analytics</span>
+        </div>
+
+        <!-- db -->
+        <div class="field-row">
+          <span class="field-label">Database:</span>
+          <span class="input-box">events_db</span>
+        </div>
+
+        <!-- password -->
+        <div class="field-row">
+          <span class="field-label">Password:</span>
+          <span class="input-box">•••••••••••</span>
+        </div>
+
+        <span class="modal-hint">(stored via SecretStore, never logged)</span>
+
+        <!-- test row -->
+        <div class="test-row">
+          <span class="pill">[ <span class="key">T</span>: test connection ]</span>
+          <span class="check-ok">✓ reachable</span>
+        </div>
+
+        <!-- button row -->
+        <div class="button-row">
+          <span class="button">[ <span class="key">Enter</span>: Save ]</span>
+          <span class="button dim">[ <span class="key">Esc</span>: Cancel ]</span>
+        </div>
+
+      </div>
+
+      <div class="modal-frame">└──────────────────────────────────────────────────────────────────────┘</div>
+    </div>
+
+  </div>
+  <!-- /body-wrap -->
+
+  <!-- divider above status -->
+  <div class="term-row tight border-color">╠══════════════════════════════╧═══════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- status line -->
+  <div class="term-row status-line">
+    <span class="border-color">║ </span>
+    db: <span class="primary">prod-db</span>
+    <span class="sep">·</span>
+    <span class="primary">postgres 16.2</span>
+    <span class="sep">·</span>
+    <span class="accent-tag">add connection</span>
+    <span class="sep">·</span>
+    secret: <span class="accent-success">unlocked</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- divider above footer -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- footer: per-tab hints (database) -->
+  <div class="term-row footer-row tab-hints">
+    <span class="border-color">║ </span>
+    <span class="bracket">[</span> <span class="key">N</span>: new <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">E</span>: edit <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">D</span>: delete <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">T</span>: test <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">Tab</span>: pane <span class="bracket">]</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- footer: global -->
+  <div class="term-row footer-row">
+    <span class="border-color">║ </span>
+    <span class="global-key">Ctrl+Q</span> quit
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+F</span> palette
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+←/→</span> tabs
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+1..6</span> jump
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+,</span> settings
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- bottom border -->
+  <div class="term-row tight border-color">╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝</div>
+
+</div>
+
+
+<!-- ============== divider between the two mockups ============== -->
+<div class="mockup-divider">
+  <span class="dash">─────</span><span class="label">second mockup: System tab</span><span class="dash">─────</span>
+</div>
+
+
+<!-- ============================================================== -->
+<!-- ============== MOCKUP 2: System + Pin Config modal ============-->
+<!-- ============================================================== -->
+<div class="terminal" role="img" aria-label="sid System tab mockup with Add Pinned Config modal">
+
+  <!-- top border -->
+  <div class="term-row tight border-color">╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗</div>
+
+  <!-- title -->
+  <div class="term-row title-row">
+    <span class="border-color">║</span>
+    <span class="title-text"><span class="accent-mark">✦</span>sid — System</span>
+    <span style="flex:1"></span>
+    <span class="border-color">║</span>
+  </div>
+
+  <!-- divider under title -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- tab strip -->
+  <div class="term-row tab-strip">
+    <span class="border-color">║ </span>
+    <span class="tab">Workspaces</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">SSH</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">Database</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">Network</span>
+    <span class="tab-sep">·</span>
+    <span class="tab active">System</span>
+    <span class="tab-sep">·</span>
+    <span class="tab">Settings</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- divider above body -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- body wrap with modal layer -->
+  <div class="body-wrap">
+
+    <!-- body itself (dimmed) -->
+    <div class="body-dimmed">
+      <div class="side-bars-grid">
+        <!-- left border bar -->
+        <div class="side-bar-col" aria-hidden="true"><pre>║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║</pre></div>
+
+        <!-- system body content -->
+        <div>
+          <!-- top segment strip -->
+          <div class="system-strip">
+            <span class="seg-dot-active">●</span><span class="seg-active">Pinned configs</span>
+            <span class="pipe">·</span>
+            <span class="seg-dot-muted">○</span><span class="seg-muted">Services</span>
+            <span class="pipe">·</span>
+            <span class="seg-dot-muted">○</span><span class="seg-muted">Quick actions</span>
+            <span class="hint">(Tab cycles)</span>
+          </div>
+
+          <!-- list of pinned configs -->
+          <div class="system-body">
+            <div class="pin-row focused"><span class="indicator">&gt;</span> ~/.zshrc</div>
+            <div class="pin-row"><span class="indicator"> </span> ~/.config/nvim/init.lua</div>
+            <div class="pin-row"><span class="indicator"> </span> /etc/hosts</div>
+            <div class="pin-row"><span class="indicator"> </span> ~/.config/sid/sid.toml</div>
+
+            <span class="footnote">4 pinned configs · Enter opens in $EDITOR</span>
+          </div>
+        </div>
+
+        <!-- right border bar -->
+        <div class="side-bar-col" aria-hidden="true"><pre>║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║
+║</pre></div>
+      </div>
+    </div>
+
+    <!-- modal backdrop -->
+    <div class="modal-backdrop" aria-hidden="true"></div>
+
+    <!-- modal -->
+    <div class="modal" role="dialog" aria-label="Pin a config file">
+
+      <div class="modal-frame">┌──────────────────────────────────────────────────────────────────────┐</div>
+
+      <div class="modal-title-row">
+        <span class="modal-frame">│ </span>
+        <span><span class="accent-prefix">──</span> Pin a config file <span class="border-color">──────────────────────────────────</span></span>
+        <span style="float:right" class="modal-frame"> │</span>
+      </div>
+
+      <div class="modal-frame">│                                                                      │</div>
+
+      <div class="modal-content">
+
+        <!-- path field -->
+        <div style="color: var(--text-muted); margin: 0 0 4px 0;">Path:</div>
+        <div class="field-row" style="margin-top: 0;">
+          <span class="input-box">/home/murphy/.config/<span class="caret">│</span></span>
+        </div>
+
+        <!-- file picker dropdown -->
+        <div class="picker-wrap" style="padding-left: 0;">
+          <div class="picker">┌─ <span class="pick-label">matches</span> ──────────────────────────────────────┐
+<span class="pick-row focused"><span class="indicator">&gt;</span> sid/sid.toml                              </span>│
+<span class="pick-row"><span class="indicator"> </span> nvim/init.lua                             </span>│
+<span class="pick-row"><span class="indicator"> </span> alacritty/alacritty.yml                   </span>│
+<span class="pick-row"><span class="indicator"> </span> zsh/aliases.zsh                           </span>│
+└─────────────────────────────────────────────┘</div>
+        </div>
+
+        <!-- label field -->
+        <div style="color: var(--text-muted); margin: 4px 0 4px 0;">Label (optional):</div>
+        <div class="field-row" style="margin-top: 0;">
+          <span class="input-box">sid config</span>
+        </div>
+
+        <!-- open-with radios -->
+        <div class="radio-row" style="margin-top: 14px;">
+          <span class="label">Open with:</span>
+          <span class="radio selected"><span class="marker">(●)</span> $EDITOR</span>
+          <span class="radio"><span class="marker">( )</span> external</span>
+        </div>
+
+        <!-- buttons -->
+        <div class="button-row" style="padding-left: 0;">
+          <span class="button">[ <span class="key">Enter</span>: Save ]</span>
+          <span class="button dim">[ <span class="key">Esc</span>: Cancel ]</span>
+        </div>
+
+      </div>
+
+      <div class="modal-frame">└──────────────────────────────────────────────────────────────────────┘</div>
+    </div>
+
+  </div>
+  <!-- /body-wrap -->
+
+  <!-- divider above status -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- status line -->
+  <div class="term-row status-line">
+    <span class="border-color">║ </span>
+    pinned: <span class="primary">4 configs</span>
+    <span class="sep">·</span>
+    services: <span class="primary">12 running</span>
+    <span class="sep">·</span>
+    <span class="accent-tag">add pin</span>
+    <span class="sep">·</span>
+    EDITOR: <span class="primary">nvim</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- divider above footer -->
+  <div class="term-row tight border-color">╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣</div>
+
+  <!-- footer: per-tab hints (system) -->
+  <div class="term-row footer-row tab-hints">
+    <span class="border-color">║ </span>
+    <span class="bracket">[</span> <span class="key">N</span>: new pin <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">E</span>: edit <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">D</span>: remove <span class="bracket">]</span>
+    <span class="bracket">[</span> <span class="key">Enter</span>: open <span class="bracket">]</span>
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- footer: global -->
+  <div class="term-row footer-row">
+    <span class="border-color">║ </span>
+    <span class="global-key">Ctrl+Q</span> quit
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+F</span> palette
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+←/→</span> tabs
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+1..6</span> jump
+    <span class="muted">·</span>
+    <span class="global-key">Ctrl+,</span> settings
+    <span style="float:right" class="border-color"> ║</span>
+  </div>
+
+  <!-- bottom border -->
+  <div class="term-row tight border-color">╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝</div>
+
+</div>
+
+
+<!-- description below the page -->
+<pre class="description">Top: Database tab with the "Add Connection" modal — radio Postgres/SQLite, host/port/user/db/password
+fields with SecretStore hint, inline "T: test connection" + "✓ reachable" feedback, Enter/Esc save/cancel.
+Bottom: System tab with the "Pin a config file" modal — path input with a live file-picker dropdown
+hanging beneath it (sub-panel), optional label, $EDITOR/external radio. Both modals make first-class
+TUI flows for adding connections and pinned configs — no shelling out to CLI subcommands required.</pre>
+
+</body>
+</html>
