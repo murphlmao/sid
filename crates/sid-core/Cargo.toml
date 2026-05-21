@@ -10,8 +10,11 @@ repository.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde = { workspace = true }
+serde_json.workspace = true
+toml.workspace = true
+walkdir.workspace = true
 crossterm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true
+tempfile.workspace = true
