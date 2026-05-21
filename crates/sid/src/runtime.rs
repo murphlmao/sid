@@ -3,10 +3,6 @@
 //! The event pump runs in a separate Tokio task, forwarding crossterm keyboard/
 //! mouse/resize events and periodic tick events to a channel that the render
 //! loop consumes.
-// The three public functions below are consumed by wire.rs / main.rs in Task 39.
-// The #[allow] is removed then.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use anyhow::Result;
@@ -95,6 +91,8 @@ pub fn make_channel() -> (Sender<SidEvent>, Receiver<SidEvent>) {
 /// assert_eq!(ev, Event::Tick);
 /// # });
 /// ```
+// Used by tests and one-shot drivers; not called from the main binary loop.
+#[allow(dead_code)]
 pub async fn next_event(rx: &mut Receiver<SidEvent>) -> Result<SidEvent> {
     rx.recv().await.ok_or_else(|| anyhow::anyhow!("event stream closed"))
 }
