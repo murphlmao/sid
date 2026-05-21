@@ -1,7 +1,5 @@
 //! `RusshClient` core — connect/disconnect/exec. Filled in over Tasks 6–8.
 
-use sid_core::adapters::ssh::SshClient;
-
 /// Stateless factory; per-host clients are produced by `connect`.
 ///
 /// # Examples
@@ -45,6 +43,4 @@ pub struct RusshClient {
     pub(crate) _placeholder: (),
 }
 
-impl SshClient for RusshClient {
-    // Methods filled in over Tasks 6-10.
-}
+// SshClient impl arrives in Task 6 once auth/exec/shell/sftp are filled in.

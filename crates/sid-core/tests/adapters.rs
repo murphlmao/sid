@@ -11,7 +11,9 @@ use sid_core::adapters::git::{
 };
 use sid_core::adapters::notifier::{Notifier, NotifyLevel};
 use sid_core::adapters::pty::PtyProvider;
-use sid_core::adapters::ssh::SshClient;
+use sid_core::adapters::ssh::{
+    ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
+};
 use sid_core::adapters::sys::{
     ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
 };
@@ -56,7 +58,36 @@ impl GitProvider for NoopGit {
 }
 
 struct NoopSsh;
-impl SshClient for NoopSsh {}
+#[async_trait::async_trait]
+impl SshClient for NoopSsh {
+    async fn connect(&mut self, _host: &SshHostSpec, _auth: &SshAuth) -> Result<(), SshError> {
+        Ok(())
+    }
+    async fn disconnect(&mut self) -> Result<(), SshError> {
+        Ok(())
+    }
+    fn is_connected(&self) -> bool {
+        false
+    }
+    async fn exec(&mut self, _cmd: &str) -> Result<ExecResult, SshError> {
+        Ok(ExecResult {
+            stdout: vec![],
+            stderr: vec![],
+            exit_code: 0,
+        })
+    }
+    async fn open_shell(
+        &mut self,
+        _term: &str,
+        _rows: u16,
+        _cols: u16,
+    ) -> Result<Box<dyn SshShell>, SshError> {
+        Err(SshError::Other("noop".into()))
+    }
+    async fn open_sftp(&mut self) -> Result<Box<dyn SftpSession>, SshError> {
+        Err(SshError::Other("noop".into()))
+    }
+}
 
 struct NoopPty;
 impl PtyProvider for NoopPty {}
