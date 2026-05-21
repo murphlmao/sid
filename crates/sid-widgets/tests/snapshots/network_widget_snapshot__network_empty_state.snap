@@ -2,7 +2,7 @@
 source: crates/sid-widgets/tests/network_widget_snapshot.rs
 expression: s
 ---
-┌   Interfaces ──────┐┌ * Listening ports ─────────────────────────────────────┐
+┌ Interfaces ────────┐┌ Listening ports ───────────────────────────────────────┐
 │                    ││PORT    PID     PROTO  COMMAND        ADDR              │
 │                    ││                                                        │
 │                    ││                                                        │
@@ -13,7 +13,7 @@ expression: s
 │                    ││                                                        │
 │                    ││                                                        │
 │                    │└────────────────────────────────────────────────────────┘
-│                    │┌   Processes ───────────────────────────────────────────┐
+│                    │┌ Processes ─────────────────────────────────────────────┐
 │                    ││PID     NAME                    CPU%   RSS      USER    │
 │                    ││                                                        │
 │                    ││                                                        │

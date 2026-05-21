@@ -780,9 +780,13 @@ impl SystemWidget {
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.accent_primary.into()))
             .title(" Pinned configs ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
 
@@ -828,9 +832,13 @@ impl SystemWidget {
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.accent_primary.into()))
             .title(" Services ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         let table = Table::new(
             body,
             [
@@ -917,9 +925,13 @@ impl SystemWidget {
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.accent_primary.into()))
             .title(" Quick actions ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
         let table = Table::new(
             body,
             [

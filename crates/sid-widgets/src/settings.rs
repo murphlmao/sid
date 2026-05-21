@@ -231,7 +231,7 @@ impl SettingsWidget {
         if self.categories.is_empty() {
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border.into()))
+                .border_style(Style::default().fg(theme.muted.into()))
                 .title(" Settings ")
                 .title_style(Style::default().fg(theme.foreground.into()));
             let inner = block.inner(area);
@@ -254,7 +254,7 @@ impl SettingsWidget {
         // Left pane: category list.
         let left_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border.into()))
+            .border_style(Style::default().fg(theme.muted.into()))
             .title(" Categories ")
             .title_style(Style::default().fg(theme.foreground.into()));
         let left_inner = left_block.inner(left);
@@ -292,7 +292,7 @@ impl SettingsWidget {
             None => {
                 let block = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border.into()));
+                    .border_style(Style::default().fg(theme.muted.into()));
                 frame.render_widget(block, right);
             }
         }

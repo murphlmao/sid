@@ -28,12 +28,18 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::adapters::git::{Branch, CommitInfo, DiffEntry, GitProvider, GitStatus};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
 use sid_core::workspace_metadata::{WorkspaceAction, WorkspaceKind};
 use sid_store::Workspace;
+use sid_ui::Theme;
 
 // ─── EditorRunner trait ───────────────────────────────────────────────────────
 
@@ -1279,6 +1285,243 @@ impl WorkspacesWidget {
     /// Mutably borrow the inner state.
     pub fn state_mut(&mut self) -> &mut WorkspacesState {
         &mut self.state
+    }
+
+    /// Render the widget into a ratatui [`Frame`]. Used by the binary's wire
+    /// layer (`crates/sid/src/wire.rs`) so the Workspaces tab has the same
+    /// bordered, multi-pane look as every other per-tab widget.
+    ///
+    /// Layout: a 30/70 horizontal split. The left pane shows the visible
+    /// workspaces as a tree, bordered and titled `" Workspaces "` (accent
+    /// border — the tree is the always-focused navigation surface). The right
+    /// pane is a single bordered block titled with the active sub-view label
+    /// (`Branches`, `Status`, `Log`, …) and is rendered with a muted border
+    /// because pane-internal rendering is still Plan-2 territory.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(area);
+        let left = split[0];
+        let right = split[1];
+
+        self.render_tree(frame, left, theme);
+        self.render_right_pane(frame, right, theme);
+    }
+
+    fn render_tree(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let workspaces = self.state.workspaces();
+        let visible = self.state.visible_workspaces();
+        let selected_path = self.state.selected_path();
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .title(" Workspaces ")
+            .title_style(
+                Style::default()
+                    .fg(theme.foreground.into())
+                    .add_modifier(Modifier::BOLD),
+            );
+
+        if workspaces.is_empty() {
+            let body = vec![
+                Line::from(Span::styled(
+                    "no workspaces registered yet",
+                    Style::default().fg(theme.muted.into()),
+                )),
+                Line::from(Span::raw("")),
+                Line::from(Span::styled(
+                    "  sid workspace add /path/to/repo",
+                    Style::default().fg(theme.foreground.into()),
+                )),
+                Line::from(Span::styled(
+                    "  (or put repos under ~/vcs/)",
+                    Style::default().fg(theme.muted.into()),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(body).block(block), rect);
+            return;
+        }
+
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible.len());
+        for w in &visible {
+            let is_selected = selected_path
+                .map(|p| p == w.path.as_path())
+                .unwrap_or(false);
+            let indent = if w.parent.is_some() { "    " } else { "" };
+            let glyph = match w.kind {
+                WorkspaceKind::Umbrella => '▾',
+                WorkspaceKind::Repo => '·',
+            };
+            let marker = if is_selected { '>' } else { ' ' };
+            let label = format!("{marker} {indent}{glyph} {}", w.name);
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.foreground.into())
+            };
+            lines.push(Line::from(Span::styled(label, style)));
+        }
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+    }
+
+    fn render_right_pane(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let label = self.state.right_pane().label();
+        let title = format!(" {label} ");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.muted.into()))
+            .title(title)
+            .title_style(Style::default().fg(theme.foreground.into()));
+
+        let body: Vec<Line<'_>> = match self.state.right_pane() {
+            RightPane::Branches(s) => {
+                if s.branches().is_empty() {
+                    vec![Line::from(Span::styled(
+                        "(no branches loaded — select a workspace)",
+                        Style::default().fg(theme.muted.into()),
+                    ))]
+                } else {
+                    let sel = s.selected_idx();
+                    s.branches()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| {
+                            let marker = if b.is_current { '●' } else { '○' };
+                            let cursor = if i == sel { '>' } else { ' ' };
+                            let label = format!("{cursor} {marker} {}", b.name);
+                            let style = if i == sel {
+                                Style::default()
+                                    .fg(theme.background.into())
+                                    .bg(theme.accent_primary.into())
+                            } else {
+                                Style::default().fg(theme.foreground.into())
+                            };
+                            Line::from(Span::styled(label, style))
+                        })
+                        .collect()
+                }
+            }
+            RightPane::Status(s) => {
+                if s.status().entries.is_empty() {
+                    vec![Line::from(Span::styled(
+                        if s.status().is_clean {
+                            "(clean — nothing to commit)"
+                        } else {
+                            "(no status loaded)"
+                        },
+                        Style::default().fg(theme.muted.into()),
+                    ))]
+                } else {
+                    let sel = s.selected_idx();
+                    s.status()
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .map(|(i, e)| {
+                            let marker = if i == sel { '>' } else { ' ' };
+                            let label = format!("{marker} {:?}  {}", e.kind, e.path);
+                            let style = if i == sel {
+                                Style::default()
+                                    .fg(theme.background.into())
+                                    .bg(theme.accent_primary.into())
+                            } else {
+                                Style::default().fg(theme.foreground.into())
+                            };
+                            Line::from(Span::styled(label, style))
+                        })
+                        .collect()
+                }
+            }
+            RightPane::Log(s) => {
+                if s.entries().is_empty() {
+                    vec![Line::from(Span::styled(
+                        "(no commits loaded)",
+                        Style::default().fg(theme.muted.into()),
+                    ))]
+                } else {
+                    s.entries()
+                        .iter()
+                        .map(|c| {
+                            let short = c.oid.chars().take(8).collect::<String>();
+                            Line::from(vec![
+                                Span::styled(
+                                    short,
+                                    Style::default().fg(theme.accent_warning.into()),
+                                ),
+                                Span::raw("  "),
+                                Span::styled(
+                                    c.summary.clone(),
+                                    Style::default().fg(theme.foreground.into()),
+                                ),
+                            ])
+                        })
+                        .collect()
+                }
+            }
+            RightPane::Diff(s) => {
+                if s.entries().is_empty() {
+                    vec![Line::from(Span::styled(
+                        if s.staged() {
+                            "(no staged changes)"
+                        } else {
+                            "(no unstaged changes)"
+                        },
+                        Style::default().fg(theme.muted.into()),
+                    ))]
+                } else {
+                    s.visible_patch_lines()
+                        .into_iter()
+                        .map(|l| Line::from(Span::raw(l.to_string())))
+                        .collect()
+                }
+            }
+            RightPane::Commit(s) => {
+                let phase = format!("{:?}", s.phase());
+                vec![
+                    Line::from(Span::styled(
+                        format!("phase: {phase}"),
+                        Style::default().fg(theme.muted.into()),
+                    )),
+                    Line::from(Span::styled(
+                        s.draft_message().to_string(),
+                        Style::default().fg(theme.foreground.into()),
+                    )),
+                ]
+            }
+            RightPane::Actions(s) => {
+                if s.actions().is_empty() {
+                    vec![Line::from(Span::styled(
+                        "(no actions registered for this workspace)",
+                        Style::default().fg(theme.muted.into()),
+                    ))]
+                } else {
+                    let sel = s.selected_idx();
+                    s.actions()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let marker = if i == sel { '>' } else { ' ' };
+                            let key = a.key.map(|c| format!(" [{c}]")).unwrap_or_default();
+                            let label = format!("{marker} {}{key}  {}", a.label, a.cmd);
+                            let style = if i == sel {
+                                Style::default()
+                                    .fg(theme.background.into())
+                                    .bg(theme.accent_primary.into())
+                            } else {
+                                Style::default().fg(theme.foreground.into())
+                            };
+                            Line::from(Span::styled(label, style))
+                        })
+                        .collect()
+                }
+            }
+        };
+        frame.render_widget(Paragraph::new(body).block(block), rect);
     }
 
     /// Open (or return cached) a git provider for the given path.

@@ -1,0 +1,16 @@
+---
+source: crates/sid-widgets/tests/workspaces_render.rs
+expression: s
+---
+┌ Workspaces ──────────┐┌ Branches ────────────────────────────────────────────┐
+│> · myrepo            ││(no branches loaded — select a workspace)             │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+└──────────────────────┘└──────────────────────────────────────────────────────┘
