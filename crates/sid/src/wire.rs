@@ -396,7 +396,7 @@ pub fn build_app(start_tab: Option<&str>, workspaces: Vec<Workspace>) -> App {
         tab(
             "database",
             "Database",
-            Box::new(DatabaseWidget::new()),
+            Box::new(DatabaseWidget::new(vec![])),
             Some('3'),
         ),
         tab(
