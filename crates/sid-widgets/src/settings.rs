@@ -5,9 +5,11 @@
 //! state types that the composer (Task 20) will glue together.
 
 pub mod behavior_toggles;
+pub mod db_path;
 pub mod keybind_editor;
 pub mod live_preview;
 pub mod quick_actions;
+pub mod reset;
 pub mod theme_picker;
 pub mod workspace_roots;
 
