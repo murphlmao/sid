@@ -2293,10 +2293,12 @@ dependencies = [
  "directories",
  "futures",
  "ratatui",
+ "serde_json",
  "sid-core",
  "sid-git",
  "sid-job",
  "sid-store",
+ "sid-sysinfo",
  "sid-ui",
  "sid-widgets",
  "tempfile",
@@ -2311,11 +2313,13 @@ name = "sid-core"
 version = "0.0.1"
 dependencies = [
  "crossterm",
+ "loom",
  "proptest",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
  "tracing",
  "walkdir",
@@ -2379,6 +2383,7 @@ dependencies = [
 name = "sid-sysinfo"
 version = "0.0.1"
 dependencies = [
+ "criterion",
  "insta",
  "netstat2",
  "nix",
@@ -2408,8 +2413,11 @@ name = "sid-widgets"
 version = "0.0.1"
 dependencies = [
  "crossterm",
+ "insta",
+ "postcard",
  "proptest",
  "ratatui",
+ "serde",
  "sid-core",
  "sid-job",
  "sid-store",

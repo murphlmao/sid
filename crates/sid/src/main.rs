@@ -129,17 +129,19 @@ async fn main() -> Result<()> {
     install_tracing();
     let cli = Cli::parse();
 
+    // Handle network subcommands first: they don't need the redb store, so
+    // we avoid opening sid.redb (and its single-process lock) for parallel
+    // CLI invocations and one-shot scripts.
+    if let Some(Cmd::Net { op }) = cli.cmd {
+        return handle_net_cmd(op).await;
+    }
+
     let path = wire::db_path(cli.db);
     let store = Arc::new(RedbStore::open(&path)?);
 
     // Handle workspace subcommands (exit before launching TUI).
     if let Some(Cmd::Workspace { op }) = cli.cmd {
         return handle_workspace_cmd(&*store, op);
-    }
-
-    // Handle network subcommands (exit before launching TUI).
-    if let Some(Cmd::Net { op }) = cli.cmd {
-        return handle_net_cmd(op).await;
     }
 
     // Startup workspace discovery (scan ~/vcs/ by default).
