@@ -14,6 +14,7 @@ serde_json.workspace = true
 toml.workspace = true
 walkdir.workspace = true
 crossterm.workspace = true
+async-trait.workspace = true
 # Tokio is allowed in sid-core ONLY for the App event loop, JobQueue handoff,
 # and SysProbe — same carve-out as for crossterm. Widgets and adapters must
 # never depend on tokio directly.
@@ -24,6 +25,7 @@ proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "test-util"] }
 loom = { workspace = true }
+async-trait.workspace = true
 
 [features]
 # Enables `loom` model-check tests. Run with:

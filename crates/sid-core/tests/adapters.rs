@@ -55,7 +55,54 @@ struct NoopPty;
 impl PtyProvider for NoopPty {}
 
 struct NoopDb;
-impl DbClient for NoopDb {}
+#[async_trait::async_trait]
+impl DbClient for NoopDb {
+    async fn open(
+        &self,
+        _p: sid_core::adapters::db_client::OpenParams,
+    ) -> Result<std::sync::Arc<dyn DbClient>, sid_core::adapters::db_client::DbError> {
+        Ok(std::sync::Arc::new(NoopDb))
+    }
+    async fn close(&self) -> Result<(), sid_core::adapters::db_client::DbError> {
+        Ok(())
+    }
+    async fn execute(
+        &self,
+        _sql: &str,
+    ) -> Result<sid_core::adapters::db_client::ExecResult, sid_core::adapters::db_client::DbError>
+    {
+        Ok(sid_core::adapters::db_client::ExecResult {
+            rows_affected: 0,
+            duration_ms: 0,
+        })
+    }
+    async fn query_paged(
+        &self,
+        _sql: &str,
+        _cursor: Option<sid_core::adapters::db_client::PageCursor>,
+        _page_size: u32,
+    ) -> Result<sid_core::adapters::db_client::QueryPage, sid_core::adapters::db_client::DbError>
+    {
+        Ok(sid_core::adapters::db_client::QueryPage {
+            columns: vec![],
+            rows: vec![],
+            next_cursor: None,
+            duration_ms: 0,
+        })
+    }
+    async fn schema_introspect(
+        &self,
+    ) -> Result<sid_core::adapters::db_client::SchemaInfo, sid_core::adapters::db_client::DbError>
+    {
+        Ok(sid_core::adapters::db_client::SchemaInfo { tables: vec![] })
+    }
+    async fn cancel(&self) -> Result<(), sid_core::adapters::db_client::DbError> {
+        Ok(())
+    }
+    fn kind(&self) -> sid_core::adapters::db_client::DbKind {
+        sid_core::adapters::db_client::DbKind::Sqlite
+    }
+}
 
 struct NoopSys;
 impl SysProvider for NoopSys {
