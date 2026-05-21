@@ -190,6 +190,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Resolve the active theme + keybind profile from the store. The full
+    // wiring of these into the running App is incremental — for now the call
+    // validates that the on-disk state parses cleanly and seeds the cosmos
+    // keybind profile on first run.
+    let (_active_theme, _theme_registry) = wire::load_active_theme(&*store);
+    let _active_keybinds = wire::load_active_keybinds(&*store);
+
     // Start a new session record.
     let session_id = format!("sess-{}", now_epoch());
     let workspaces = store.list_workspaces().unwrap_or_default();
