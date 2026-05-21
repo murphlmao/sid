@@ -17,7 +17,16 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::adapters::sys::{ListeningPort, NetInterface, ProcessInfo, SysProvider};
+use tokio::sync::broadcast;
+
+use crate::adapters::sys::{ListeningPort, NetInterface, ProcessInfo, SysError, SysProvider};
+
+/// Capacity of the broadcast channel used to fan snapshots out to widgets,
+/// CLI consumers, and detached views. Sized for a small number of slow
+/// consumers — if a consumer falls more than this many ticks behind, it will
+/// observe `broadcast::error::RecvError::Lagged` and should re-sync against
+/// the latest snapshot.
+const SNAPSHOT_CHANNEL_CAPACITY: usize = 16;
 
 /// A single point-in-time snapshot of all three lists produced by a
 /// [`SysProvider`].
@@ -98,6 +107,7 @@ impl SysSnapshot {
 pub struct SysProbe {
     pub(crate) provider: Arc<Mutex<dyn SysProvider>>,
     pub(crate) interval: Duration,
+    pub(crate) tx: broadcast::Sender<SysSnapshot>,
 }
 
 impl SysProbe {
@@ -129,7 +139,72 @@ impl SysProbe {
     /// assert_eq!(probe.interval(), Duration::from_millis(500));
     /// ```
     pub fn new(provider: Arc<Mutex<dyn SysProvider>>, interval: Duration) -> Self {
-        Self { provider, interval }
+        let (tx, _rx) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
+        Self {
+            provider,
+            interval,
+            tx,
+        }
+    }
+
+    /// Subscribe to broadcast snapshots. The returned receiver will yield
+    /// `broadcast::error::RecvError::Lagged` if a subscriber consumes too
+    /// slowly; widgets should treat lag as "fetch the latest snapshot on the
+    /// next tick" rather than as a fatal error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use std::time::Duration;
+    ///
+    /// use sid_core::adapters::sys::{
+    ///     ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+    /// };
+    /// use sid_core::sys_probe::SysProbe;
+    ///
+    /// struct Noop;
+    /// impl SysProvider for Noop {
+    ///     fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> { Ok(vec![]) }
+    ///     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> { Ok(vec![]) }
+    ///     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> { Ok(vec![]) }
+    ///     fn kill_process(&mut self, _: Pid, _: Signal) -> Result<(), SysError> { Ok(()) }
+    /// }
+    ///
+    /// let provider: Arc<Mutex<dyn SysProvider>> = Arc::new(Mutex::new(Noop));
+    /// let probe = SysProbe::new(provider, Duration::from_secs(1));
+    /// let _rx = probe.subscribe();
+    /// ```
+    pub fn subscribe(&self) -> broadcast::Receiver<SysSnapshot> {
+        self.tx.subscribe()
+    }
+
+    /// Run the polling loop. Loops forever, ticking on the configured
+    /// interval, capturing a snapshot from the provider, and broadcasting it
+    /// to all subscribers. Designed to be spawned on a Tokio task:
+    ///
+    /// ```ignore
+    /// tokio::spawn(async move { probe.run().await });
+    /// ```
+    ///
+    /// Returns only when the spawned task is cancelled — `run` itself never
+    /// returns `Ok(())`. The `Err` arm is reserved for future infrastructure
+    /// errors (none reachable today).
+    pub async fn run(self) {
+        let mut interval = tokio::time::interval(self.interval);
+        // Skip missed ticks rather than catching up; sysinfo poll loops
+        // should not "burst" after a long sleep.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let snapshot = collect_snapshot(&self.provider).unwrap_or_else(|e| {
+                tracing::warn!("SysProbe snapshot failed: {e}");
+                SysSnapshot::empty()
+            });
+            // If there are no receivers, `send` returns an error; ignore it
+            // — the next tick will retry once a subscriber appears.
+            let _ = self.tx.send(snapshot);
+        }
     }
 
     /// Borrow a clone of the provider handle. Used by one-shot consumers
@@ -148,6 +223,40 @@ impl SysProbe {
     pub fn set_interval(&mut self, interval: Duration) {
         self.interval = interval;
     }
+}
+
+/// Lock the provider, capture all three lists, and stamp a timestamp.
+///
+/// Pulled out of `SysProbe::run` so adversarial tests can drive failure
+/// scenarios (poisoned mutex, provider returning `Err`) deterministically.
+fn collect_snapshot(provider: &Arc<Mutex<dyn SysProvider>>) -> Result<SysSnapshot, SysProbeError> {
+    let mut guard = provider.lock().map_err(|_| SysProbeError::PoisonedMutex)?;
+    let processes = guard.list_processes().map_err(SysProbeError::Sys)?;
+    let listening_ports = guard.list_listening_ports().map_err(SysProbeError::Sys)?;
+    let interfaces = guard.list_interfaces().map_err(SysProbeError::Sys)?;
+    let captured_at_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(SysSnapshot {
+        processes,
+        listening_ports,
+        interfaces,
+        captured_at_unix_secs,
+    })
+}
+
+/// Errors produced while assembling a snapshot.
+#[derive(Debug, thiserror::Error)]
+pub enum SysProbeError {
+    /// The provider mutex was poisoned by a panicking task that held the
+    /// lock. Treated as an internal bug; recovery requires restarting the
+    /// process holding the probe.
+    #[error("provider mutex poisoned")]
+    PoisonedMutex,
+    /// The underlying [`SysProvider`] returned an error.
+    #[error("provider error: {0}")]
+    Sys(#[from] SysError),
 }
 
 #[cfg(test)]
