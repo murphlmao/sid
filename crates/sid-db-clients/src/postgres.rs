@@ -97,11 +97,7 @@ impl DbClient for PostgresClient {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
-        let rows_affected = guard
-            .client
-            .execute(sql, &[])
-            .await
-            .map_err(map_pg_error)?;
+        let rows_affected = guard.client.execute(sql, &[]).await.map_err(map_pg_error)?;
         Ok(ExecResult {
             rows_affected,
             duration_ms: start.elapsed().as_millis() as u64,
@@ -118,9 +114,8 @@ impl DbClient for PostgresClient {
         let offset = cursor.map(|c| c.offset).unwrap_or(0);
         let page_size = page_size.max(1) as u64;
         let trimmed = sql.trim().trim_end_matches(';');
-        let wrapped = format!(
-            "SELECT * FROM ( {trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}"
-        );
+        let wrapped =
+            format!("SELECT * FROM ( {trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
         let rows = guard
@@ -148,8 +143,9 @@ impl DbClient for PostgresClient {
         };
         let mut rows_out: Vec<Row> = Vec::with_capacity(rows.len());
         for r in &rows {
-            let values: Vec<String> =
-                (0..r.columns().len()).map(|i| render_pg_value(r, i)).collect();
+            let values: Vec<String> = (0..r.columns().len())
+                .map(|i| render_pg_value(r, i))
+                .collect();
             rows_out.push(Row { values });
         }
         let fetched = rows_out.len() as u64;
@@ -290,7 +286,10 @@ pub(crate) fn render_pg_value(row: &tokio_postgres::Row, idx: usize) -> String {
     let col = &row.columns()[idx];
     macro_rules! try_get {
         ($t:ty) => {
-            row.try_get::<_, Option<$t>>(idx).ok().flatten().map(|v| v.to_string())
+            row.try_get::<_, Option<$t>>(idx)
+                .ok()
+                .flatten()
+                .map(|v| v.to_string())
         };
     }
     let s = match *col.type_() {

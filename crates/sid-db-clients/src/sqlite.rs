@@ -117,9 +117,8 @@ impl DbClient for SqliteClient {
                     .lock()
                     .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
                 let trimmed = sql.trim().trim_end_matches(';');
-                let wrapped = format!(
-                    "SELECT * FROM ( {trimmed} ) LIMIT {page_size} OFFSET {offset}"
-                );
+                let wrapped =
+                    format!("SELECT * FROM ( {trimmed} ) LIMIT {page_size} OFFSET {offset}");
                 let mut stmt = guard.prepare(&wrapped).map_err(map_rusqlite_error)?;
                 let columns: Vec<Column> = stmt
                     .columns()
@@ -138,8 +137,7 @@ impl DbClient for SqliteClient {
                 while let Some(row) = rs.next().map_err(map_rusqlite_error)? {
                     let mut values = Vec::with_capacity(col_count);
                     for i in 0..col_count {
-                        let v: rusqlite::types::Value =
-                            row.get(i).map_err(map_rusqlite_error)?;
+                        let v: rusqlite::types::Value = row.get(i).map_err(map_rusqlite_error)?;
                         values.push(render_sqlite_value(&v));
                     }
                     rows_out.push(Row { values });
@@ -242,10 +240,7 @@ fn map_rusqlite_error(e: rusqlite::Error) -> DbError {
 
 // Helper used by Tasks 7 and 8.
 #[allow(dead_code)]
-fn rusqlite_type_to_column_type(
-    decl: Option<&str>,
-    value_ty: rusqlite::types::Type,
-) -> ColumnType {
+fn rusqlite_type_to_column_type(decl: Option<&str>, value_ty: rusqlite::types::Type) -> ColumnType {
     if let Some(d) = decl {
         let d = d.to_ascii_uppercase();
         if d.contains("INT") {

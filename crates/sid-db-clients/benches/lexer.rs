@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
 use sid_db_clients::lexer::tokenize;
+use std::hint::black_box;
 
 const SMALL: &str = "SELECT id, name FROM users WHERE id = 1";
 const LARGE: &str = include_str!("../tests/fixtures/large_query.sql");

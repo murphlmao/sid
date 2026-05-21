@@ -9,7 +9,7 @@ use sid_core::adapters::db_client::DbClient;
 use sid_core::adapters::git::{
     Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
 };
-use sid_core::adapters::notifier::{NotifyLevel, Notifier};
+use sid_core::adapters::notifier::{Notifier, NotifyLevel};
 use sid_core::adapters::pty::PtyProvider;
 use sid_core::adapters::ssh::SshClient;
 use sid_core::adapters::sys::{
@@ -32,9 +32,16 @@ impl GitProvider for NoopGit {
         Ok(None)
     }
     fn status(&self) -> Result<GitStatus, GitError> {
-        Ok(GitStatus { entries: vec![], is_clean: true })
+        Ok(GitStatus {
+            entries: vec![],
+            is_clean: true,
+        })
     }
-    fn commit_log(&self, _max: usize, _from_oid: Option<&str>) -> Result<Vec<CommitInfo>, GitError> {
+    fn commit_log(
+        &self,
+        _max: usize,
+        _from_oid: Option<&str>,
+    ) -> Result<Vec<CommitInfo>, GitError> {
         Ok(vec![])
     }
     fn diff(&self, _staged: bool) -> Result<Vec<DiffEntry>, GitError> {
