@@ -153,6 +153,52 @@ impl ActionRegistry {
         self.by_id.insert(a.id.clone(), a);
     }
 
+    /// Remove an action by id. Returns the removed action if present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::action::{Action, ActionRegistry};
+    ///
+    /// let mut reg = ActionRegistry::new();
+    /// reg.register(Action::new("foo", "Foo"));
+    /// assert!(reg.unregister(&"foo".into()).is_some());
+    /// assert!(reg.unregister(&"foo".into()).is_none());
+    /// ```
+    pub fn unregister(&mut self, id: &ActionId) -> Option<Action> {
+        self.by_id.remove(id)
+    }
+
+    /// Remove all actions whose id begins with `prefix`. Returns the count
+    /// removed. Used by Plan 6 to drop globally-scoped quick-actions before
+    /// re-hydrating from the store.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::action::{Action, ActionRegistry};
+    ///
+    /// let mut reg = ActionRegistry::new();
+    /// reg.register(Action::new("qa-1", "X"));
+    /// reg.register(Action::new("qa-2", "Y"));
+    /// reg.register(Action::new("app.quit", "Quit"));
+    /// assert_eq!(reg.unregister_with_prefix("qa-"), 2);
+    /// assert!(reg.get(&"app.quit".into()).is_some());
+    /// ```
+    pub fn unregister_with_prefix(&mut self, prefix: &str) -> usize {
+        let to_drop: Vec<ActionId> = self
+            .by_id
+            .keys()
+            .filter(|k| k.as_str().starts_with(prefix))
+            .cloned()
+            .collect();
+        let n = to_drop.len();
+        for k in to_drop {
+            self.by_id.remove(&k);
+        }
+        n
+    }
+
     /// Look up an action by id.
     ///
     /// Returns `None` if no action with that id has been registered.

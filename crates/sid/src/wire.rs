@@ -797,6 +797,52 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Plan 6 — System tab integration
+// ---------------------------------------------------------------------------
+
+/// Register every global [`sid_store::QuickAction`] from `store` into
+/// `registry`. Workspace-scoped actions are ignored (the Workspaces tab owns
+/// that surface).
+///
+/// Returns the number of actions added.
+pub fn hydrate_quick_actions_into_registry(
+    store: &dyn Store,
+    registry: &mut ActionRegistry,
+) -> anyhow::Result<usize> {
+    use sid_store::QuickActionScope;
+    let actions = store.list_quick_actions()?;
+    let mut n = 0;
+    for qa in actions {
+        if !matches!(qa.scope, QuickActionScope::Global) {
+            continue;
+        }
+        let mut action = Action::new(qa.id.clone(), qa.label.clone());
+        if let Some(kb) = qa.keybind.clone() {
+            action.keybind_hint = Some(kb);
+        }
+        registry.register(action);
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Clear all globally-scoped quick-actions from `registry` (identified by the
+/// `qa-` id prefix) and re-add from `store`. Called after any QuickAction CRUD
+/// in the System / Settings widgets.
+///
+/// The widget-side event wiring that calls this is added in Plan 6 Task 24
+/// alongside the System widget render harness; until then this helper is
+/// exercised only by unit tests in this module and CLI subcommand handlers.
+#[allow(dead_code)]
+pub fn rehydrate_global_quick_actions(
+    store: &dyn Store,
+    registry: &mut ActionRegistry,
+) -> anyhow::Result<usize> {
+    registry.unregister_with_prefix("qa-");
+    hydrate_quick_actions_into_registry(store, registry)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1509,5 +1555,90 @@ mod tests {
         // Should not panic; returns cosmos default (and seeds 'cosmos').
         let map = load_active_keybinds(&store);
         assert!(map.iter().count() > 0);
+    }
+
+    // ─── Plan 6 — palette hydration ──────────────────────────────────────────
+
+    #[test]
+    fn hydrate_quick_actions_into_registry_adds_globals() {
+        use sid_store::{QuickAction, QuickActionScope};
+
+        let (_d, store) = fresh_store();
+        let a = QuickAction {
+            id: QuickAction::new_id(),
+            label: "kill 5432".into(),
+            scope: QuickActionScope::Global,
+            cmd: "fuser -k 5432/tcp".into(),
+            keybind: None,
+        };
+        store.upsert_quick_action(&a).unwrap();
+
+        let mut reg = sid_core::action::ActionRegistry::new();
+        let n = super::hydrate_quick_actions_into_registry(&store, &mut reg).unwrap();
+        assert_eq!(n, 1);
+        assert!(!reg.fuzzy("kill").is_empty());
+    }
+
+    #[test]
+    fn hydrate_skips_workspace_scoped_actions() {
+        use sid_store::{QuickAction, QuickActionScope};
+
+        let (_d, store) = fresh_store();
+        store
+            .upsert_quick_action(&QuickAction {
+                id: QuickAction::new_id(),
+                label: "ws-only".into(),
+                scope: QuickActionScope::Workspace,
+                cmd: "echo".into(),
+                keybind: None,
+            })
+            .unwrap();
+        let mut reg = sid_core::action::ActionRegistry::new();
+        let n = super::hydrate_quick_actions_into_registry(&store, &mut reg).unwrap();
+        assert_eq!(n, 0);
+        assert!(reg.fuzzy("ws-only").is_empty());
+    }
+
+    #[test]
+    fn rehydrate_drops_old_qa_entries_and_adds_new() {
+        use sid_store::{QuickAction, QuickActionScope};
+
+        let (_d, store) = fresh_store();
+        let a = QuickAction {
+            id: QuickAction::new_id(),
+            label: "before".into(),
+            scope: QuickActionScope::Global,
+            cmd: "echo".into(),
+            keybind: None,
+        };
+        store.upsert_quick_action(&a).unwrap();
+        let mut reg = sid_core::action::ActionRegistry::new();
+        super::hydrate_quick_actions_into_registry(&store, &mut reg).unwrap();
+        assert!(!reg.fuzzy("before").is_empty());
+
+        // Replace with a different action and rehydrate.
+        store.remove_quick_action(&a.id).unwrap();
+        let b = QuickAction {
+            id: QuickAction::new_id(),
+            label: "after".into(),
+            scope: QuickActionScope::Global,
+            cmd: "echo".into(),
+            keybind: None,
+        };
+        store.upsert_quick_action(&b).unwrap();
+        super::rehydrate_global_quick_actions(&store, &mut reg).unwrap();
+        assert!(reg.fuzzy("before").is_empty());
+        assert!(!reg.fuzzy("after").is_empty());
+    }
+
+    #[test]
+    fn rehydrate_preserves_non_qa_actions() {
+        use sid_core::action::Action;
+
+        let (_d, store) = fresh_store();
+        let mut reg = sid_core::action::ActionRegistry::new();
+        reg.register(Action::new("app.quit", "Quit"));
+        super::rehydrate_global_quick_actions(&store, &mut reg).unwrap();
+        assert!(reg.get(&"app.quit".into()).is_some());
     }
 }

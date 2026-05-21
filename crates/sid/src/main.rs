@@ -202,6 +202,11 @@ async fn main() -> Result<()> {
     let workspaces = store.list_workspaces().unwrap_or_default();
     let mut app = wire::build_app(cli.start_tab.as_deref(), workspaces);
 
+    // Hydrate global quick-actions into the palette registry (Plan 6).
+    if let Err(e) = wire::hydrate_quick_actions_into_registry(&*store, app.actions_mut()) {
+        tracing::warn!("hydrate quick-actions failed: {e}");
+    }
+
     // Restore last active tab from the previous session, if any.
     if let Ok(Some(prev)) = store.current_session() {
         if let Some(tab_id) = prev.active_tab {
