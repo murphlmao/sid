@@ -71,6 +71,18 @@ pub struct JobQueue<T: Send + Clone + 'static> {
 }
 
 impl<T: Send + Clone + 'static> Default for JobQueue<T> {
+    /// Create a new empty `JobQueue` using the `Default` trait.
+    ///
+    /// Equivalent to [`JobQueue::new`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sid_job::JobQueue;
+    /// let queue: JobQueue<i32> = JobQueue::default();
+    /// // drain_completed on a fresh queue is always empty.
+    /// assert!(queue.drain_completed().is_empty());
+    /// ```
     fn default() -> Self {
         Self::new()
     }
@@ -153,6 +165,23 @@ impl<T: Send + Clone + 'static> JobQueue<T> {
 /// Call [`JobHandle::await_result`] to wait for the job to finish and retrieve
 /// its result. Dropping the handle without awaiting is safe — the underlying
 /// future continues running on the Tokio runtime.
+///
+/// # Example
+///
+/// ```no_run
+/// use sid_job::JobQueue;
+///
+/// # async fn example() {
+/// let queue: JobQueue<String> = JobQueue::new();
+/// let handle = queue.spawn(async { "done".to_string() });
+/// // Drop the handle without awaiting — job still runs on the runtime.
+/// drop(handle);
+/// // Results are still accessible via drain_completed.
+/// tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+/// let results = queue.drain_completed();
+/// assert_eq!(results.len(), 1);
+/// # }
+/// ```
 pub struct JobHandle<T: Send + Clone + 'static> {
     rx: Option<oneshot::Receiver<Result<T, JobError>>>,
     _join: JoinHandle<()>,

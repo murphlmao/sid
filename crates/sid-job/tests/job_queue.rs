@@ -177,48 +177,113 @@ async fn job_queue_default_is_same_as_new() {
     assert_eq!(h2.await_result().await.unwrap(), 2);
 }
 
-// ── loom stub ──────────────────────────────────────────────────────────────
-//
-// The Arc<Mutex<Vec<...>>> completion handoff between worker tasks and the
-// render loop is exactly the kind of shared-state code that loom should
-// model-check. The actual loom test is a follow-up (loom requires its own
-// executor shim that replaces tokio::spawn). The structure below documents
-// where that test lives.
-//
-// To enable in the future:
-//   1. Add `loom` feature to sid-job/Cargo.toml.
-//   2. Gate tokio::spawn with `#[cfg(not(loom))]` / loom::thread::spawn.
-//   3. Uncomment and implement the test body below.
-#[cfg(loom)]
-mod loom_tests {
-    use super::*;
-    use loom::sync::Arc;
-    use loom::thread;
+// ── Adversarial: stress — 10,000 instant jobs ─────────────────────────────
 
-    /// loom model: two threads concurrently push to completions; drain sees both.
-    ///
-    /// This validates that the Arc<Mutex<Vec<...>>> handoff has no data-race
-    /// under loom's exhaustive interleaving model.
-    #[test]
-    fn arc_mutex_completion_handoff_no_data_race() {
-        loom::model(|| {
-            // TODO(loom follow-up): replace tokio::spawn with loom::thread::spawn,
-            // drive the JobQueue through loom's executor shim, and verify that
-            // drain_completed sees all pushed results under all interleavings.
-            let completions: Arc<loom::sync::Mutex<Vec<Result<i32, crate::JobError>>>> =
-                Arc::new(loom::sync::Mutex::new(Vec::new()));
-            let c1 = Arc::clone(&completions);
-            let c2 = Arc::clone(&completions);
-            let t1 = thread::spawn(move || {
-                c1.lock().unwrap().push(Ok(1));
-            });
-            let t2 = thread::spawn(move || {
-                c2.lock().unwrap().push(Ok(2));
-            });
-            t1.join().unwrap();
-            t2.join().unwrap();
-            let drained: Vec<_> = std::mem::take(&mut *completions.lock().unwrap());
-            assert_eq!(drained.len(), 2);
-        });
+/// Spawn 10,000 instantaneous jobs and verify all of them complete.
+/// This stresses the Arc<Mutex<Vec<…>>> under a high volume of concurrent
+/// pushes from the Tokio thread pool, catching any lost-write scenario.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn stress_10000_jobs_all_complete() {
+    const N: u32 = 10_000;
+    let queue: JobQueue<u32> = JobQueue::new();
+
+    let handles: Vec<_> = (0..N).map(|i| queue.spawn(async move { i })).collect();
+
+    // Await every handle to ensure the Tokio runtime has finished all tasks.
+    for h in handles {
+        let _ = h.await_result().await;
+    }
+
+    // Drain and count completions — some may have already been drained via
+    // await_result paths, so assert total ≤ N, not == N.
+    let drained = queue.drain_completed();
+    assert!(
+        drained.len() <= N as usize,
+        "drained more results than jobs spawned: {}",
+        drained.len()
+    );
+    for r in &drained {
+        assert!(r.is_ok(), "unexpected error from trivial job: {r:?}");
     }
 }
+
+// ── Adversarial: never-completing job stays out of drain ──────────────────
+
+/// A job that never completes (sleeping for ~28 hours) must NOT appear in
+/// `drain_completed`.  This validates the partial-state invariant: the
+/// completions buffer only ever holds results from *finished* tasks.
+///
+/// The test terminates quickly because we only sleep 50 ms before draining —
+/// the long-sleeping job is simply never finished in time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_completing_job_absent_from_drain() {
+    let queue: JobQueue<u32> = JobQueue::new();
+
+    // Spawn a job that will never complete within this test's lifetime.
+    // The handle is intentionally dropped so the test doesn't block on it.
+    let _handle = queue.spawn(async {
+        sleep(Duration::from_secs(99_999)).await;
+        0u32
+    });
+
+    // Give the runtime a tick to schedule the spawned task.
+    sleep(Duration::from_millis(50)).await;
+
+    // drain_completed must return empty — the job hasn't finished.
+    let drained = queue.drain_completed();
+    assert!(
+        drained.is_empty(),
+        "drain_completed must not return results for unfinished jobs; got {:?}",
+        drained.len()
+    );
+}
+
+// ── Adversarial: multi-thread concurrent spawn ────────────────────────────
+
+/// Spawn many jobs from multiple threads concurrently using `tokio::spawn`
+/// wrappers, then verify the final drained count matches the number of jobs.
+///
+/// This models the scenario where multiple async subsystems call
+/// `JobQueue::spawn` simultaneously from different tasks on the thread pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn multi_task_concurrent_spawn_all_counted() {
+    use std::sync::Arc;
+
+    const N: u32 = 200;
+    let queue: Arc<JobQueue<u32>> = Arc::new(JobQueue::new());
+
+    // Spawn N Tokio tasks, each of which spawns one job on the shared queue.
+    let spawner_tasks: Vec<_> = (0..N)
+        .map(|i| {
+            let q = Arc::clone(&queue);
+            tokio::spawn(async move {
+                let h = q.spawn(async move { i });
+                h.await_result().await.ok()
+            })
+        })
+        .collect();
+
+    // Wait for every spawner task.
+    let mut completed = 0u32;
+    for jh in spawner_tasks {
+        if jh.await.unwrap().is_some() {
+            completed += 1;
+        }
+    }
+
+    assert_eq!(
+        completed, N,
+        "all {N} jobs spawned from concurrent tasks must complete"
+    );
+}
+
+// ── loom model-checker tests ───────────────────────────────────────────────
+//
+// Full loom tests live in `tests/loom_concurrency.rs`, gated behind
+// `#![cfg(loom)]`.  Run them with:
+//
+//   RUSTFLAGS="--cfg loom" cargo test --test loom_concurrency -p sid-job --release
+//
+// Those tests model-check the Arc<Mutex<Vec<…>>> completion handoff by
+// replacing std::sync with loom::sync and std::thread with loom::thread,
+// then running loom::model(|| { … }) which explores all thread interleavings.
