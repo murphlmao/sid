@@ -43,8 +43,10 @@ pub trait RenderTarget {
 }
 
 /// A focused, self-contained UI module. In v1 each tab contains exactly one Widget.
-pub trait Widget: Send {
-    fn id(&self) -> WidgetId;
+pub trait Widget: Send + Sync {
+    /// Stable identity for state restoration. Implementations store this in a field
+    /// and return a borrow to avoid per-call allocation.
+    fn id(&self) -> &WidgetId;
     fn title(&self) -> &str;
     fn render(&self, target: &mut dyn RenderTarget);
     fn handle_event(&mut self, ev: &Event, ctx: &mut WidgetCtx) -> EventOutcome;

@@ -6,8 +6,8 @@ struct Dummy {
 }
 
 impl Widget for Dummy {
-    fn id(&self) -> WidgetId {
-        self.id.clone()
+    fn id(&self) -> &WidgetId {
+        &self.id
     }
     fn title(&self) -> &str {
         self.title
