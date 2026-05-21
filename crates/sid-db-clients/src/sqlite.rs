@@ -75,8 +75,29 @@ impl DbClient for SqliteClient {
         Ok(())
     }
 
-    async fn execute(&self, _sql: &str) -> Result<ExecResult, DbError> {
-        Err(DbError::Other("execute: not yet implemented — Task 6".into()))
+    async fn execute(&self, sql: &str) -> Result<ExecResult, DbError> {
+        let conn = self.inner.clone().ok_or(DbError::NotConnected)?;
+        let sql = sql.to_string();
+        let start = std::time::Instant::now();
+        let rows_affected: u64 = tokio::task::spawn_blocking(move || -> Result<u64, DbError> {
+            let guard = conn
+                .lock()
+                .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
+            match guard.execute(&sql, []) {
+                Ok(n) => Ok(n as u64),
+                Err(rusqlite::Error::MultipleStatement) => {
+                    guard.execute_batch(&sql).map_err(map_rusqlite_error)?;
+                    Ok(0)
+                }
+                Err(e) => Err(map_rusqlite_error(e)),
+            }
+        })
+        .await
+        .map_err(|e| DbError::Other(format!("join: {e}")))??;
+        Ok(ExecResult {
+            rows_affected,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
     }
 
     async fn query_paged(
