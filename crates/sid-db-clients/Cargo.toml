@@ -11,3 +11,22 @@ repository.workspace = true
 pg-it = []
 
 [dependencies]
+sid-core.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+insta.workspace = true
+criterion.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "lexer"
+harness = false
