@@ -435,7 +435,10 @@ async fn main() -> Result<()> {
     .ok();
     let mut settings_categories: Vec<sid_widgets::SettingsCategory> = Vec::new();
     settings_categories.push(sid_widgets::SettingsCategory::Theme(
-        sid_widgets::settings::theme_picker::ThemePickerView::new(&theme_registry, &active_theme_name),
+        sid_widgets::settings::theme_picker::ThemePickerView::new(
+            &theme_registry,
+            &active_theme_name,
+        ),
     ));
     settings_categories.push(sid_widgets::SettingsCategory::Keybinds(
         sid_widgets::settings::keybind_editor::KeybindEditorView::new(
@@ -823,6 +826,7 @@ fn handle_ssh_cmd(store: &dyn Store, op: SshOp) -> Result<()> {
                 source: SshHostSource::Manual,
                 last_connected: 0,
                 command_history: Vec::new(),
+                last_sftp_path: None,
             };
             store
                 .upsert_ssh_host(&h)

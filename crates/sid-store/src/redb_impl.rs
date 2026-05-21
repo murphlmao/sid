@@ -915,14 +915,14 @@ impl Store for RedbStore {
             .map_err(|e| SidError::Storage(format!("iter: {e}")))?;
         for entry in iter {
             let (_k, v) = entry.map_err(|e| SidError::Storage(format!("step: {e}")))?;
-            let (_v, h) = crate::codec::decode_versioned::<SshHost>(v.value())?;
+            let h = crate::decode_ssh_host(v.value())?;
             out.push(h);
         }
         Ok(out)
     }
 
     fn upsert_ssh_host(&self, h: &SshHost) -> Result<(), SidError> {
-        let bytes = crate::codec::encode_versioned(1, h)?;
+        let bytes = crate::codec::encode_versioned(crate::SSH_HOST_VERSION, h)?;
         let txn = self
             .db
             .begin_write()
@@ -952,7 +952,7 @@ impl Store for RedbStore {
             .map_err(|e| SidError::Storage(format!("get: {e}")))?;
         match got {
             Some(v) => {
-                let (_v, h) = crate::codec::decode_versioned::<SshHost>(v.value())?;
+                let h = crate::decode_ssh_host(v.value())?;
                 Ok(Some(h))
             }
             None => Ok(None),

@@ -716,6 +716,13 @@ pub enum SshHostSource {
 
 /// A registered SSH host. The `alias` is the primary key.
 ///
+/// # Versioning
+///
+/// On-disk format is `[version: u8][postcard-encoded payload]`. Version 1
+/// records lack the `last_sftp_path` field; the [`decode_ssh_host`] helper
+/// migrates them in-memory by setting that field to `None`. Going forward,
+/// new records are written with version 2.
+///
 /// # Examples
 ///
 /// ```
@@ -729,6 +736,7 @@ pub enum SshHostSource {
 ///     source: SshHostSource::Manual,
 ///     last_connected: 0,
 ///     command_history: Vec::new(),
+///     last_sftp_path: None,
 /// };
 /// assert_eq!(h.alias, "dev");
 /// ```
@@ -742,6 +750,97 @@ pub struct SshHost {
     pub source: SshHostSource,
     pub last_connected: Epoch,
     pub command_history: Vec<String>,
+    /// Last remote path browsed via the SFTP panel for this host (Phase 5,
+    /// `F` / SFTP persist). `None` for new hosts and for records written by
+    /// pre-v2 versions of sid.
+    pub last_sftp_path: Option<String>,
+}
+
+/// Current on-disk version for [`SshHost`] records. Bumped to `2` when the
+/// `last_sftp_path` field was added.
+pub const SSH_HOST_VERSION: u8 = 2;
+
+/// V1 wire layout of [`SshHost`] — kept private so the codec module can
+/// migrate older records on read. Mirrors the field layout that shipped
+/// before `last_sftp_path` was introduced.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SshHostV1 {
+    alias: String,
+    host: String,
+    port: u16,
+    user: String,
+    identity_file: Option<String>,
+    source: SshHostSource,
+    last_connected: Epoch,
+    command_history: Vec<String>,
+}
+
+impl From<SshHostV1> for SshHost {
+    fn from(v: SshHostV1) -> Self {
+        SshHost {
+            alias: v.alias,
+            host: v.host,
+            port: v.port,
+            user: v.user,
+            identity_file: v.identity_file,
+            source: v.source,
+            last_connected: v.last_connected,
+            command_history: v.command_history,
+            last_sftp_path: None,
+        }
+    }
+}
+
+/// Decode an on-disk [`SshHost`] record, transparently migrating version-1
+/// blobs (no `last_sftp_path` field) into the current shape with that field
+/// set to `None`. Unknown versions are reported as a storage error.
+///
+/// # Errors
+///
+/// - `SidError::Storage` for empty payloads.
+/// - `SidError::Storage` for unknown version bytes.
+/// - `SidError::Storage` for malformed payloads at known versions.
+///
+/// # Examples
+///
+/// Round-tripping a current (v2) record:
+/// ```
+/// use sid_store::{SshHost, SshHostSource, SSH_HOST_VERSION, decode_ssh_host};
+/// use sid_store::codec::encode_versioned;
+/// let h = SshHost {
+///     alias: "a".into(),
+///     host: "h".into(),
+///     port: 22,
+///     user: "u".into(),
+///     identity_file: None,
+///     source: SshHostSource::Manual,
+///     last_connected: 0,
+///     command_history: vec![],
+///     last_sftp_path: Some("/tmp".into()),
+/// };
+/// let bytes = encode_versioned(SSH_HOST_VERSION, &h).unwrap();
+/// let back = decode_ssh_host(&bytes).unwrap();
+/// assert_eq!(back, h);
+/// ```
+pub fn decode_ssh_host(bytes: &[u8]) -> Result<SshHost, SidError> {
+    let (&v, rest) = bytes
+        .split_first()
+        .ok_or_else(|| SidError::Storage("empty ssh_host payload".into()))?;
+    match v {
+        1 => {
+            let old: SshHostV1 = postcard::from_bytes(rest)
+                .map_err(|e| SidError::Storage(format!("ssh_host v1 decode: {e}")))?;
+            Ok(old.into())
+        }
+        2 => {
+            let cur: SshHost = postcard::from_bytes(rest)
+                .map_err(|e| SidError::Storage(format!("ssh_host v2 decode: {e}")))?;
+            Ok(cur)
+        }
+        other => Err(SidError::Storage(format!(
+            "unknown ssh_host version: {other}"
+        ))),
+    }
 }
 
 /// The domain storage trait. `sid-store` is the only crate that provides an

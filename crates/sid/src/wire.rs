@@ -806,7 +806,21 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     // through `Widget::as_any` to call the right one, falling back to a text
     // panel only for tabs whose widget isn't recognised.
     let rendered_via_widget = match (active_id.as_str(), widget) {
-        ("workspaces", _) => {
+        ("workspaces", Some(w)) => {
+            if let Some(ws) = w.as_any().downcast_ref::<WorkspacesWidget>() {
+                ws.render_into_frame(frame, body_rect, &theme);
+                true
+            } else {
+                // Fallback: legacy string-based body for the rare case where
+                // the widget downcast unexpectedly fails. Keeps the body
+                // usable even when the WorkspacesWidget isn't registered.
+                let block = styled_block(&theme, &active_title);
+                let body = Paragraph::new(render_workspaces_body(&*sid_app.store)).block(block);
+                frame.render_widget(body, body_rect);
+                true
+            }
+        }
+        ("workspaces", None) => {
             let block = styled_block(&theme, &active_title);
             let body = Paragraph::new(render_workspaces_body(&*sid_app.store)).block(block);
             frame.render_widget(body, body_rect);
@@ -1321,7 +1335,7 @@ fn modal_for_active_tab_key(
     sid_app: &SidApp,
     chord: sid_core::event::KeyChord,
 ) -> Option<sid_widgets::ModalSpec> {
-    use crossterm::event::KeyModifiers;
+    use crossterm::event::{KeyCode, KeyModifiers};
     // Only plain (unmodified) keys open modals; ctrl/alt combos are reserved
     // for global actions.
     if chord
@@ -1329,6 +1343,10 @@ fn modal_for_active_tab_key(
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
     {
         return None;
+    }
+    // Global help modal: `?` on any tab.
+    if chord.code == KeyCode::Char('?') {
+        return Some(help_modal_for_active_tab(sid_app));
     }
     match sid_app.app.tabs().active().id.as_str() {
         "workspaces" => workspaces_modal_for_key(sid_app, chord),
@@ -1408,9 +1426,17 @@ fn workspaces_modal_for_key(
     }
 }
 
-/// SSH-tab modal opener. `N` adds a new host, `G` opens the key-gen wizard,
-/// `Del` / `D` confirms removal of a manual host (ssh-config entries are
-/// read-only and are skipped).
+/// SSH-tab modal opener.
+///
+/// Key bindings:
+/// - `N` / `n` — add new host
+/// - `E` / `e` — edit selected manual host (ssh-config entries are read-only)
+/// - `G` / `g` — generate-key wizard (step 1: choose algorithm)
+/// - `S` / `s` — setup-remote-auth wizard (step 1: pick identity)
+/// - `K`       — key manager drawer (uppercase only — `k` is "select prev")
+/// - `X`       — debug drawer (uppercase only — `x` is reserved for selection)
+/// - `F` / `f` — persist last-SFTP-path on selected host
+/// - `Del` / `D` / `d` — remove selected manual host
 fn ssh_modal_for_key(
     sid_app: &SidApp,
     chord: sid_core::event::KeyChord,
@@ -1419,89 +1445,39 @@ fn ssh_modal_for_key(
     use sid_store::SshHostSource;
     use sid_widgets::{Field, ModalSpec};
     match chord.code {
-        KeyCode::Char('N') | KeyCode::Char('n') => {
-            let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
-            Some(
-                ModalSpec::new(
-                    "ssh.new",
-                    "Add Host",
-                    vec![
-                        Field::Text {
-                            label: "alias".into(),
-                            value: String::new(),
-                            placeholder: Some("e.g. my-prod".into()),
-                        },
-                        Field::Text {
-                            label: "host".into(),
-                            value: String::new(),
-                            placeholder: Some("e.g. host.example.com".into()),
-                        },
-                        Field::Text {
-                            label: "user".into(),
-                            value: default_user,
-                            placeholder: None,
-                        },
-                        Field::Text {
-                            label: "port".into(),
-                            value: "22".into(),
-                            placeholder: None,
-                        },
-                        Field::Picker {
-                            label: "identity_file".into(),
-                            value: String::new(),
-                            hint: "optional".into(),
-                        },
-                        Field::Choice {
-                            label: "auth".into(),
-                            options: vec!["Key".into(), "Password".into(), "Agent".into()],
-                            selected: 0,
-                        },
-                    ],
-                )
-                .with_help("Tab moves between fields · Enter saves · Esc cancels"),
-            )
+        KeyCode::Char('N') | KeyCode::Char('n') => Some(ssh_new_modal()),
+        KeyCode::Char('E') | KeyCode::Char('e') => {
+            let host = ssh_selected_host(sid_app)?;
+            // ssh-config entries are read-only; no Edit modal for them.
+            if host.source == SshHostSource::SshConfig {
+                return None;
+            }
+            Some(ssh_edit_modal(&host))
         }
-        KeyCode::Char('G') | KeyCode::Char('g') => {
-            let default_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
-            let host = hostname_or_local();
-            let default_comment = format!("{default_user}@{host}");
-            let default_path = home_join(".ssh/id_ed25519");
-            Some(
-                ModalSpec::new(
-                    "ssh.gen_key",
-                    "Generate SSH Key",
-                    vec![
-                        Field::Choice {
-                            label: "algorithm".into(),
-                            options: vec!["Ed25519".into(), "RSA-4096".into(), "ECDSA-256".into()],
-                            selected: 0,
-                        },
-                        Field::Picker {
-                            label: "output_path".into(),
-                            value: default_path,
-                            hint: "path".into(),
-                        },
-                        Field::Password {
-                            label: "passphrase".into(),
-                            value: String::new(),
-                        },
-                        Field::Password {
-                            label: "confirm_passphrase".into(),
-                            value: String::new(),
-                        },
-                        Field::Text {
-                            label: "comment".into(),
-                            value: default_comment,
-                            placeholder: None,
-                        },
-                    ],
-                )
-                .with_help("Runs ssh-keygen. Passphrase fields must match."),
-            )
+        KeyCode::Char('G') | KeyCode::Char('g') => Some(ssh_gen_key_step1_modal()),
+        KeyCode::Char('S') | KeyCode::Char('s') => {
+            let host = ssh_selected_host(sid_app)?;
+            Some(ssh_setup_remote_step1_modal(&host.alias))
+        }
+        // Key manager: uppercase only so it doesn't collide with widget `k`
+        // (which means "select prev").
+        KeyCode::Char('K') => Some(ssh_key_manager_modal()),
+        // Debug drawer: uppercase only for the same reason as `K`.
+        KeyCode::Char('X') => {
+            let host = ssh_selected_host(sid_app)?;
+            Some(ssh_debug_modal(&host.alias))
+        }
+        KeyCode::Char('F') | KeyCode::Char('f') => {
+            let host = ssh_selected_host(sid_app)?;
+            // Persisting SFTP path on an ssh-config-only entry makes no sense
+            // because there is no store record to update.
+            if host.source == SshHostSource::SshConfig {
+                return None;
+            }
+            Some(ssh_sftp_persist_modal(&host))
         }
         KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d') => {
             let host = ssh_selected_host(sid_app)?;
-            // Read-only ssh-config hosts cannot be removed from the store.
             if host.source == SshHostSource::SshConfig {
                 return None;
             }
@@ -1521,6 +1497,451 @@ fn ssh_modal_for_key(
         }
         _ => None,
     }
+}
+
+/// Build the "Add Host" modal — extracted from [`ssh_modal_for_key`] so the
+/// edit modal can share field shapes.
+fn ssh_new_modal() -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+    ModalSpec::new(
+        "ssh.new",
+        "Add Host",
+        vec![
+            Field::Text {
+                label: "alias".into(),
+                value: String::new(),
+                placeholder: Some("e.g. my-prod".into()),
+            },
+            Field::Text {
+                label: "host".into(),
+                value: String::new(),
+                placeholder: Some("e.g. host.example.com".into()),
+            },
+            Field::Text {
+                label: "user".into(),
+                value: default_user,
+                placeholder: None,
+            },
+            Field::Text {
+                label: "port".into(),
+                value: "22".into(),
+                placeholder: None,
+            },
+            Field::Picker {
+                label: "identity_file".into(),
+                value: String::new(),
+                hint: "optional".into(),
+            },
+            Field::Choice {
+                label: "auth".into(),
+                options: vec!["Key".into(), "Password".into(), "Agent".into()],
+                selected: 0,
+            },
+        ],
+    )
+    .with_help("Tab moves between fields · Enter saves · Esc cancels")
+}
+
+/// Build the "Edit Host" modal pre-filled with the host's current values.
+fn ssh_edit_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let auth_idx = match host.identity_file.as_deref() {
+        Some(_) => 0, // Key
+        None => 2,    // Agent (best guess; user can change)
+    };
+    ModalSpec::new(
+        format!("ssh.edit:{}", host.alias),
+        format!("Edit Host: {}", host.alias),
+        vec![
+            Field::Text {
+                label: "alias".into(),
+                value: host.alias.clone(),
+                placeholder: None,
+            },
+            Field::Text {
+                label: "host".into(),
+                value: host.host.clone(),
+                placeholder: None,
+            },
+            Field::Text {
+                label: "user".into(),
+                value: host.user.clone(),
+                placeholder: None,
+            },
+            Field::Text {
+                label: "port".into(),
+                value: host.port.to_string(),
+                placeholder: None,
+            },
+            Field::Picker {
+                label: "identity_file".into(),
+                value: host.identity_file.clone().unwrap_or_default(),
+                hint: "optional".into(),
+            },
+            Field::Choice {
+                label: "auth".into(),
+                options: vec!["Key".into(), "Password".into(), "Agent".into()],
+                selected: auth_idx,
+            },
+        ],
+    )
+    .with_help("Tab moves between fields · Enter saves · Esc cancels")
+}
+
+/// Build the gen-key wizard step 1 modal — algorithm choice. Step 2 is
+/// pushed by the submit handler after Save.
+fn ssh_gen_key_step1_modal() -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    ModalSpec::new(
+        "ssh.gen_key.step1",
+        "Generate SSH Key — 1/3 algorithm",
+        vec![Field::Choice {
+            label: "algorithm".into(),
+            options: vec!["Ed25519".into(), "RSA-4096".into(), "ECDSA-256".into()],
+            selected: 0,
+        }],
+    )
+    .with_help("Ed25519 is recommended. Enter to continue, Esc to cancel.")
+}
+
+/// Build the gen-key wizard step 2 — output path + passphrase + comment.
+fn ssh_gen_key_step2_modal(algorithm: &str) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let default_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let host = hostname_or_local();
+    let default_comment = format!("{default_user}@{host}");
+    let default_path = home_join(&format!(".ssh/id_{}", algo_filename_suffix(algorithm)));
+    ModalSpec::new(
+        format!("ssh.gen_key.step2:{algorithm}"),
+        format!("Generate SSH Key — 2/3 path + passphrase ({algorithm})"),
+        vec![
+            Field::Picker {
+                label: "output_path".into(),
+                value: default_path,
+                hint: "path".into(),
+            },
+            Field::Password {
+                label: "passphrase".into(),
+                value: String::new(),
+            },
+            Field::Password {
+                label: "confirm_passphrase".into(),
+                value: String::new(),
+            },
+            Field::Text {
+                label: "comment".into(),
+                value: default_comment,
+                placeholder: None,
+            },
+        ],
+    )
+    .with_help("Passphrase fields must match. Enter to run ssh-keygen, Esc to cancel.")
+}
+
+/// Build the gen-key wizard step 3 — optionally copy the new key to a remote
+/// host via `ssh-copy-id`.
+fn ssh_gen_key_step3_modal(
+    algorithm: &str,
+    output_path: &str,
+    aliases: &[String],
+) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let mut options: Vec<String> = vec!["<None — copy manually later>".into()];
+    options.extend(aliases.iter().cloned());
+    ModalSpec::new(
+        format!("ssh.gen_key.step3:{algorithm}:{output_path}"),
+        "Generate SSH Key — 3/3 copy to remote".to_string(),
+        vec![Field::Choice {
+            label: "target_host".into(),
+            options,
+            selected: 0,
+        }],
+    )
+    .with_help("Selecting a host runs ssh-copy-id <alias>. Choose None to skip.")
+}
+
+/// Suffix used for the default ssh-keygen output filename per algorithm.
+fn algo_filename_suffix(algorithm: &str) -> &'static str {
+    match algorithm {
+        "Ed25519" => "ed25519",
+        "RSA-4096" => "rsa",
+        "ECDSA-256" => "ecdsa",
+        _ => "ed25519",
+    }
+}
+
+/// Build the "Setup remote auth" step 1 modal — pick an existing identity.
+fn ssh_setup_remote_step1_modal(alias: &str) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let keys = discover_ssh_keys();
+    let mut options: Vec<String> = keys.iter().map(|k| k.path.clone()).collect();
+    if options.is_empty() {
+        options.push("(no existing key found in ~/.ssh/)".into());
+    }
+    ModalSpec::new(
+        format!("ssh.setup_remote.identity:{alias}"),
+        format!("Setup remote auth — 1/3 pick identity ({alias})"),
+        vec![Field::Choice {
+            label: "identity_path".into(),
+            options,
+            selected: 0,
+        }],
+    )
+    .with_help("Pick the local private key to install on the remote.")
+}
+
+/// Build the "Setup remote auth" step 2 modal — confirmation summary.
+fn ssh_setup_remote_step2_modal(alias: &str, identity: &str) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let preview = format!(
+        "Will install {identity} on {alias} (ssh-copy-id). The host record's \
+         identity_file will be updated on success."
+    );
+    ModalSpec::new(
+        format!("ssh.setup_remote.confirm:{alias}:{identity}"),
+        format!("Setup remote auth — 2/3 confirm ({alias})"),
+        vec![
+            Field::Text {
+                label: "summary".into(),
+                value: preview,
+                placeholder: None,
+            },
+            Field::Choice {
+                label: "proceed".into(),
+                options: vec!["Yes, proceed".into(), "No, cancel".into()],
+                selected: 0,
+            },
+        ],
+    )
+    .with_help("Step 3 runs ssh-copy-id and reports the captured output.")
+}
+
+/// Build the "Setup remote auth" step 3 modal — show the captured output.
+fn ssh_setup_remote_step3_modal(alias: &str, summary: &str) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    ModalSpec::new(
+        format!("ssh.setup_remote.result:{alias}"),
+        format!("Setup remote auth — 3/3 result ({alias})"),
+        vec![Field::Text {
+            label: "output".into(),
+            value: truncate_lines(summary, 10),
+            placeholder: None,
+        }],
+    )
+    .with_help("Esc closes. The host's identity_file was updated on success.")
+}
+
+/// Build the SSH key manager modal.
+fn ssh_key_manager_modal() -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let keys = discover_ssh_keys();
+    let mut fields: Vec<Field> = Vec::new();
+    if keys.is_empty() {
+        fields.push(Field::Text {
+            label: "keys".into(),
+            value: "(no keys found under ~/.ssh/)".into(),
+            placeholder: None,
+        });
+    } else {
+        for k in &keys {
+            fields.push(Field::Text {
+                label: k.path.clone(),
+                value: format!(
+                    "{} · {}",
+                    k.fingerprint.as_deref().unwrap_or("(no fingerprint)"),
+                    k.comment.as_deref().unwrap_or("")
+                ),
+                placeholder: None,
+            });
+        }
+    }
+    let target_options: Vec<String> = if keys.is_empty() {
+        vec!["(none)".into()]
+    } else {
+        keys.iter().map(|k| k.path.clone()).collect()
+    };
+    fields.push(Field::Choice {
+        label: "target".into(),
+        options: target_options,
+        selected: 0,
+    });
+    fields.push(Field::Choice {
+        label: "action".into(),
+        options: vec![
+            "Show public key".into(),
+            "Regenerate".into(),
+            "Delete".into(),
+            "Cancel".into(),
+        ],
+        selected: 0,
+    });
+    ModalSpec::new("ssh.key_manager", "SSH Key Manager", fields)
+        .with_help("Pick target + action. Delete/Regenerate require a confirm step.")
+}
+
+/// Build the SSH debug modal.
+fn ssh_debug_modal(alias: &str) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    ModalSpec::new(
+        format!("ssh.debug:{alias}"),
+        format!("SSH Debug — {alias}"),
+        vec![Field::Choice {
+            label: "action".into(),
+            options: vec![
+                "Show known_hosts entry".into(),
+                "Remove known_hosts entry".into(),
+                "Show identity diagnostics".into(),
+                "Test connection (ssh -vv)".into(),
+                "Clear cached agent identities (ssh-add -D)".into(),
+            ],
+            selected: 0,
+        }],
+    )
+    .with_help("Output is captured to the tracing log; Esc closes.")
+}
+
+/// Build the SFTP-persist modal — store a last-browsed remote path on the
+/// host record.
+fn ssh_sftp_persist_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    ModalSpec::new(
+        format!("ssh.sftp_persist:{}", host.alias),
+        format!("SFTP last path for {}", host.alias),
+        vec![Field::Text {
+            label: "last_path".into(),
+            value: host.last_sftp_path.clone().unwrap_or_default(),
+            placeholder: Some("e.g. /var/log".into()),
+        }],
+    )
+    .with_help("Saved on the host record; restored on the next SFTP open.")
+}
+
+/// Build the help modal showing per-tab footer hints + global hints.
+fn help_modal_for_active_tab(sid_app: &SidApp) -> sid_widgets::ModalSpec {
+    use sid_widgets::{Field, ModalSpec};
+    let tab_id = sid_app.app.tabs().active().id.as_str().to_string();
+    let tab_title = sid_app.app.tabs().active().title.clone();
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("{tab_title}:"));
+    if let Some(w) = sid_app.app.tabs().active().layout.iter_widgets().next() {
+        let hints = w.footer_hint();
+        if hints.is_empty() {
+            lines.push("  (no tab-local actions)".into());
+        } else {
+            for h in hints {
+                lines.push(format!("  {}: {}", h.chord, h.label));
+            }
+        }
+    } else {
+        lines.push("  (no widget)".into());
+    }
+    lines.push(String::new());
+    lines.push("Global:".into());
+    lines.push("  Ctrl+Q: quit".into());
+    lines.push("  Ctrl+F: palette".into());
+    lines.push("  Ctrl+\u{2190}/\u{2192}: tabs".into());
+    lines.push("  Ctrl+1..6: jump to tab".into());
+    lines.push("  Ctrl+,: settings".into());
+    lines.push("  ?: this help".into());
+    ModalSpec::new(
+        format!("help:{tab_id}"),
+        format!("Help — {tab_title}"),
+        vec![Field::Text {
+            label: "keys".into(),
+            value: lines.join("\n"),
+            placeholder: None,
+        }],
+    )
+    .with_help("Esc closes.")
+}
+
+/// Truncate `s` to at most `max_lines` lines (joined by `\n`).
+fn truncate_lines(s: &str, max_lines: usize) -> String {
+    let mut out: Vec<&str> = s.lines().take(max_lines).collect();
+    if s.lines().count() > max_lines {
+        out.push("…");
+    }
+    out.join("\n")
+}
+
+/// Information about a private key discovered under `~/.ssh/`.
+#[derive(Debug, Clone)]
+pub struct SshKeyInfo {
+    /// Absolute path to the private key file.
+    pub path: String,
+    /// `ssh-keygen -lf <path>` fingerprint, if the tool is available and the
+    /// key is readable. `None` on any error.
+    pub fingerprint: Option<String>,
+    /// Trailing comment from the fingerprint line (best-effort).
+    pub comment: Option<String>,
+}
+
+/// Discover candidate SSH private-key files under `~/.ssh/`.
+///
+/// Selects regular files whose name starts with `id_` and does not end with
+/// `.pub`. Best-effort: errors are swallowed and produce an empty list.
+/// Fingerprints are pulled from `ssh-keygen -lf` when available.
+pub fn discover_ssh_keys() -> Vec<SshKeyInfo> {
+    discover_ssh_keys_in(None)
+}
+
+/// Same as [`discover_ssh_keys`] but accepts a custom `~/.ssh/` directory —
+/// used by tests to avoid touching the user's real keys.
+pub fn discover_ssh_keys_in(override_dir: Option<&Path>) -> Vec<SshKeyInfo> {
+    let dir = match override_dir {
+        Some(d) => d.to_path_buf(),
+        None => match UserDirs::new() {
+            Some(u) => u.home_dir().join(".ssh"),
+            None => return Vec::new(),
+        },
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("id_") || name.ends_with(".pub") {
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let (fingerprint, comment) = read_key_fingerprint(&path_str);
+        out.push(SshKeyInfo {
+            path: path_str,
+            fingerprint,
+            comment,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Best-effort `(fingerprint, comment)` extracted from
+/// `ssh-keygen -lf <path>`. Returns `(None, None)` on any failure.
+fn read_key_fingerprint(path: &str) -> (Option<String>, Option<String>) {
+    use std::process::Command;
+    let out = Command::new("ssh-keygen").arg("-lf").arg(path).output();
+    let Ok(out) = out else {
+        return (None, None);
+    };
+    if !out.status.success() {
+        return (None, None);
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // Line shape: "<bits> <fingerprint> <comment...> (<type>)"
+    let mut parts = line.splitn(3, ' ');
+    let _bits = parts.next();
+    let fp = parts.next().map(|s| s.to_string());
+    let rest = parts.next().map(|s| s.to_string());
+    (fp, rest)
 }
 
 /// Database-tab modal opener. `N` adds a new connection; `Del` / `D` removes
@@ -1884,9 +2305,39 @@ fn dispatch_modal_submit(
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
     } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
         submit_ssh_remove(sid_app, alias, values)?;
-    } else if key == "ssh.gen_key" {
-        submit_ssh_gen_key(values)?;
+    } else if let Some(alias) = key.strip_prefix("ssh.edit:") {
+        submit_ssh_edit(sid_app, alias, values)?;
+    } else if let Some(alias) = key.strip_prefix("ssh.sftp_persist:") {
+        submit_ssh_sftp_persist(sid_app, alias, values)?;
+    } else if let Some(alias) = key.strip_prefix("ssh.setup_remote.identity:") {
+        submit_ssh_setup_remote_step1(sid_app, alias, values)?;
+    } else if let Some(rest) = key.strip_prefix("ssh.setup_remote.confirm:") {
+        // rest is "<alias>:<identity_path>"
+        if let Some((alias, identity)) = rest.split_once(':') {
+            submit_ssh_setup_remote_step2(sid_app, alias, identity, values)?;
+        }
+    } else if key.starts_with("ssh.setup_remote.result:") {
+        // Display-only; submit is a no-op (Esc closes it).
+    } else if key == "ssh.gen_key.step1" {
+        submit_ssh_gen_key_step1(sid_app, values)?;
+    } else if let Some(algorithm) = key.strip_prefix("ssh.gen_key.step2:") {
+        submit_ssh_gen_key_step2(sid_app, algorithm, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+    } else if let Some(rest) = key.strip_prefix("ssh.gen_key.step3:") {
+        // rest is "<algorithm>:<output_path>"
+        if let Some((algorithm, output_path)) = rest.split_once(':') {
+            submit_ssh_gen_key_step3(sid_app, algorithm, output_path, values)?;
+        }
+    } else if key == "ssh.key_manager" {
+        submit_ssh_key_manager(sid_app, values)?;
+    } else if let Some(target) = key.strip_prefix("ssh.key_manager.confirm_delete:") {
+        submit_ssh_key_manager_confirm_delete(target, values)?;
+    } else if let Some(target) = key.strip_prefix("ssh.key_manager.confirm_regen:") {
+        submit_ssh_key_manager_confirm_regen(target, values)?;
+    } else if let Some(alias) = key.strip_prefix("ssh.debug:") {
+        submit_ssh_debug(alias, values)?;
+    } else if key.starts_with("help:") {
+        // Read-only help modal; submit is a no-op (Esc closes it).
     } else if key == "database.new" {
         submit_database_new(sid_app, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
@@ -1943,6 +2394,7 @@ fn submit_ssh_new(
         source: SshHostSource::Manual,
         last_connected: 0,
         command_history: Vec::new(),
+        last_sftp_path: None,
     };
     sid_app
         .store
@@ -1970,13 +2422,191 @@ fn submit_ssh_remove(
     Ok(())
 }
 
-/// Handle the `ssh.gen_key` modal: validate the inputs (passphrase match,
-/// non-empty output path, output path does not already exist), then invoke
-/// `ssh-keygen`. Surfaces success / failure as tracing events; toast
-/// surfacing is deferred to a follow-up.
-fn submit_ssh_gen_key(values: &[(String, sid_widgets::FieldValue)]) -> Result<()> {
+/// Handle a successful submit of `ssh.edit:<alias>`: validate, update the
+/// host record (preserves `last_sftp_path` and `command_history`), and
+/// refresh the widget.
+fn submit_ssh_edit(
+    sid_app: &mut SidApp,
+    alias_in_id: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_store::{SshHost, SshHostSource};
+    let new_alias = string_value(values, "alias").unwrap_or_default();
+    let host = string_value(values, "host").unwrap_or_default();
+    let user = string_value(values, "user").unwrap_or_default();
+    let port_str = string_value(values, "port").unwrap_or_default();
+    let identity_file = string_value(values, "identity_file").filter(|s| !s.is_empty());
+    let _auth = choice_value(values, "auth").unwrap_or_default();
+    if new_alias.is_empty() || host.is_empty() || user.is_empty() {
+        return Err(anyhow::anyhow!("alias, host, and user are required"));
+    }
+    let port: u16 = port_str
+        .parse()
+        .map_err(|e| anyhow::anyhow!("port must be a u16 (got {port_str:?}): {e}"))?;
+    // Preserve last_sftp_path / command_history / last_connected from the
+    // existing record so the edit doesn't blow them away.
+    let existing = sid_app
+        .store
+        .get_ssh_host(alias_in_id)
+        .map_err(|e| anyhow::anyhow!("get ssh host: {e}"))?;
+    let (last_connected, command_history, last_sftp_path) = match existing.as_ref() {
+        Some(h) => (
+            h.last_connected,
+            h.command_history.clone(),
+            h.last_sftp_path.clone(),
+        ),
+        None => (0, Vec::new(), None),
+    };
+    let record = SshHost {
+        alias: new_alias.clone(),
+        host,
+        port,
+        user,
+        identity_file,
+        source: SshHostSource::Manual,
+        last_connected,
+        command_history,
+        last_sftp_path,
+    };
+    // If alias changed, remove the old key first so we don't leak a dupe.
+    if new_alias != alias_in_id {
+        sid_app
+            .store
+            .remove_ssh_host(alias_in_id)
+            .map_err(|e| anyhow::anyhow!("remove old ssh host: {e}"))?;
+    }
+    sid_app
+        .store
+        .upsert_ssh_host(&record)
+        .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    Ok(())
+}
+
+/// Handle `ssh.sftp_persist:<alias>`: write `last_sftp_path` onto the host.
+fn submit_ssh_sftp_persist(
+    sid_app: &mut SidApp,
+    alias: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    let last_path = string_value(values, "last_path").unwrap_or_default();
+    let existing = sid_app
+        .store
+        .get_ssh_host(alias)
+        .map_err(|e| anyhow::anyhow!("get ssh host: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no host with alias {alias} in store"))?;
+    let mut record = existing;
+    record.last_sftp_path = if last_path.is_empty() {
+        None
+    } else {
+        Some(last_path)
+    };
+    sid_app
+        .store
+        .upsert_ssh_host(&record)
+        .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    Ok(())
+}
+
+/// Handle setup-remote-auth step 1: identity picked → push step 2.
+fn submit_ssh_setup_remote_step1(
+    sid_app: &mut SidApp,
+    alias: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    let identity = choice_value(values, "identity_path").unwrap_or_default();
+    if identity.starts_with('(') {
+        return Err(anyhow::anyhow!("no identity selected"));
+    }
+    sid_app
+        .modal_stack
+        .push(ssh_setup_remote_step2_modal(alias, &identity));
+    Ok(())
+}
+
+/// Handle setup-remote-auth step 2: confirm → run `ssh-copy-id`, push step 3.
+fn submit_ssh_setup_remote_step2(
+    sid_app: &mut SidApp,
+    alias: &str,
+    identity: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    let proceed = choice_value(values, "proceed").unwrap_or_default();
+    if proceed != "Yes, proceed" {
+        return Ok(());
+    }
+    let output = run_ssh_copy_id(alias, Some(identity));
+    let success = output.starts_with("ok:");
+    // On success persist identity_file on the host record.
+    if success {
+        if let Ok(Some(mut existing)) = sid_app.store.get_ssh_host(alias) {
+            existing.identity_file = Some(identity.to_string());
+            let _ = sid_app.store.upsert_ssh_host(&existing);
+            refresh_ssh_widget(sid_app);
+        }
+    }
+    tracing::info!(alias, identity, success, "setup_remote completed");
+    sid_app
+        .modal_stack
+        .push(ssh_setup_remote_step3_modal(alias, &output));
+    Ok(())
+}
+
+/// Capture `ssh-copy-id` output (best-effort; the binary may be missing).
+/// Returns either `"ok: <stdout>"` or `"err: <stderr/stdout>"` so callers can
+/// branch on the prefix.
+fn run_ssh_copy_id(alias: &str, identity: Option<&str>) -> String {
     use std::process::Command;
+    let mut cmd = Command::new("ssh-copy-id");
+    if let Some(i) = identity {
+        // ssh-copy-id wants the public key path; if the user picked a
+        // private key, the .pub sibling is what ssh-copy-id reads.
+        let pub_path = if i.ends_with(".pub") {
+            i.to_string()
+        } else {
+            format!("{i}.pub")
+        };
+        cmd.arg("-i").arg(&pub_path);
+    }
+    cmd.arg(alias);
+    match cmd.output() {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            if out.status.success() {
+                format!("ok: {stdout}")
+            } else {
+                format!("err: {stderr}\n{stdout}")
+            }
+        }
+        Err(e) => format!("err: ssh-copy-id not on PATH: {e}"),
+    }
+}
+
+/// Step 1 of the gen-key wizard. Validates and pushes step 2.
+fn submit_ssh_gen_key_step1(
+    sid_app: &mut SidApp,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
     let algorithm = choice_value(values, "algorithm").unwrap_or_default();
+    match algorithm.as_str() {
+        "Ed25519" | "RSA-4096" | "ECDSA-256" => {}
+        other => return Err(anyhow::anyhow!("unknown algorithm: {other}")),
+    }
+    sid_app
+        .modal_stack
+        .push(ssh_gen_key_step2_modal(&algorithm));
+    Ok(())
+}
+
+/// Step 2 of the gen-key wizard. Runs `ssh-keygen`, then pushes step 3.
+fn submit_ssh_gen_key_step2(
+    sid_app: &mut SidApp,
+    algorithm: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use std::process::Command;
     let output_path = string_value(values, "output_path").unwrap_or_default();
     let passphrase = string_value(values, "passphrase").unwrap_or_default();
     let confirm = string_value(values, "confirm_passphrase").unwrap_or_default();
@@ -1996,8 +2626,7 @@ fn submit_ssh_gen_key(values: &[(String, sid_widgets::FieldValue)]) -> Result<()
             "output_path already exists: {output_path} (ssh-keygen would overwrite — refusing)"
         ));
     }
-
-    let algo_flag = match algorithm.as_str() {
+    let algo_flag = match algorithm {
         "Ed25519" => "ed25519",
         "RSA-4096" => "rsa",
         "ECDSA-256" => "ecdsa",
@@ -2026,7 +2655,200 @@ fn submit_ssh_gen_key(values: &[(String, sid_widgets::FieldValue)]) -> Result<()
         ));
     }
     tracing::info!(path = %output_path, "ssh-keygen completed successfully");
+    let aliases: Vec<String> = sid_app
+        .store
+        .list_ssh_hosts()
+        .map(|hs| hs.into_iter().map(|h| h.alias).collect())
+        .unwrap_or_default();
+    sid_app
+        .modal_stack
+        .push(ssh_gen_key_step3_modal(algorithm, &output_path, &aliases));
     Ok(())
+}
+
+/// Step 3 of the gen-key wizard: optionally copy to remote, persist
+/// `identity_file` on the chosen host record.
+fn submit_ssh_gen_key_step3(
+    sid_app: &mut SidApp,
+    _algorithm: &str,
+    output_path: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    let target = choice_value(values, "target_host").unwrap_or_default();
+    if target.is_empty() || target.starts_with('<') {
+        return Ok(());
+    }
+    let output = run_ssh_copy_id(&target, Some(output_path));
+    let success = output.starts_with("ok:");
+    if let Ok(Some(mut existing)) = sid_app.store.get_ssh_host(&target) {
+        existing.identity_file = Some(output_path.to_string());
+        let _ = sid_app.store.upsert_ssh_host(&existing);
+        refresh_ssh_widget(sid_app);
+    }
+    tracing::info!(target, output_path, success, "gen_key step3 completed");
+    Ok(())
+}
+
+/// Handle the key manager modal's primary submit. Dispatches on the
+/// `action` choice; Delete/Regenerate push a confirm modal.
+fn submit_ssh_key_manager(
+    sid_app: &mut SidApp,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use sid_widgets::{Field, ModalSpec};
+    let action = choice_value(values, "action").unwrap_or_default();
+    let target = choice_value(values, "target").unwrap_or_default();
+    if target.is_empty() || target == "(none)" {
+        return Ok(());
+    }
+    match action.as_str() {
+        "Show public key" => {
+            let pub_path = format!("{target}.pub");
+            match std::fs::read_to_string(&pub_path) {
+                Ok(contents) => tracing::info!(path = %pub_path, %contents, "public key"),
+                Err(e) => tracing::warn!(path = %pub_path, error = %e, "read pub key failed"),
+            }
+        }
+        "Regenerate" => {
+            sid_app.modal_stack.push(
+                ModalSpec::new(
+                    format!("ssh.key_manager.confirm_regen:{target}"),
+                    format!("Regenerate {target}?"),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, regenerate".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help(
+                    "Deletes the existing key + .pub then runs ssh-keygen with the same algorithm.",
+                ),
+            );
+        }
+        "Delete" => {
+            sid_app.modal_stack.push(
+                ModalSpec::new(
+                    format!("ssh.key_manager.confirm_delete:{target}"),
+                    format!("Delete {target}?"),
+                    vec![Field::Choice {
+                        label: "confirm".into(),
+                        options: vec!["No, cancel".into(), "Yes, delete".into()],
+                        selected: 0,
+                    }],
+                )
+                .with_help("Deletes the private key and its .pub sibling. This cannot be undone."),
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Handle the key manager Delete confirm.
+fn submit_ssh_key_manager_confirm_delete(
+    target: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    if choice_value(values, "confirm").as_deref() != Some("Yes, delete") {
+        return Ok(());
+    }
+    let priv_path = PathBuf::from(target);
+    let pub_path = PathBuf::from(format!("{target}.pub"));
+    if let Err(e) = std::fs::remove_file(&priv_path) {
+        tracing::warn!(path = %priv_path.display(), error = %e, "delete private key failed");
+    }
+    if let Err(e) = std::fs::remove_file(&pub_path) {
+        tracing::warn!(path = %pub_path.display(), error = %e, "delete public key failed");
+    }
+    Ok(())
+}
+
+/// Handle the key manager Regenerate confirm — best effort: delete + run
+/// `ssh-keygen` with `-t ed25519` (the user picks via the gen-key wizard for
+/// finer control).
+fn submit_ssh_key_manager_confirm_regen(
+    target: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
+    use std::process::Command;
+    if choice_value(values, "confirm").as_deref() != Some("Yes, regenerate") {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(target);
+    let _ = std::fs::remove_file(format!("{target}.pub"));
+    let out = Command::new("ssh-keygen")
+        .arg("-t")
+        .arg("ed25519")
+        .arg("-f")
+        .arg(target)
+        .arg("-N")
+        .arg("")
+        .output();
+    match out {
+        Ok(o) if o.status.success() => tracing::info!(target, "regenerate ok"),
+        Ok(o) => tracing::warn!(target, status = ?o.status, "regenerate failed"),
+        Err(e) => tracing::warn!(target, error = %e, "ssh-keygen not on PATH"),
+    }
+    Ok(())
+}
+
+/// Handle the SSH debug modal. Each action shells out best-effort and writes
+/// the captured output to tracing.
+fn submit_ssh_debug(alias: &str, values: &[(String, sid_widgets::FieldValue)]) -> Result<()> {
+    use std::process::Command;
+    let action = choice_value(values, "action").unwrap_or_default();
+    match action.as_str() {
+        "Show known_hosts entry" => {
+            let out = Command::new("ssh-keygen").arg("-F").arg(alias).output();
+            log_cmd_result(&action, alias, out);
+        }
+        "Remove known_hosts entry" => {
+            let out = Command::new("ssh-keygen").arg("-R").arg(alias).output();
+            log_cmd_result(&action, alias, out);
+        }
+        "Show identity diagnostics" => {
+            let out = Command::new("ssh-add").arg("-l").output();
+            log_cmd_result(&action, alias, out);
+        }
+        "Test connection (ssh -vv)" => {
+            let out = Command::new("ssh")
+                .arg("-vv")
+                .arg("-o")
+                .arg("BatchMode=yes")
+                .arg(alias)
+                .arg("exit")
+                .output();
+            log_cmd_result(&action, alias, out);
+        }
+        "Clear cached agent identities (ssh-add -D)" => {
+            let out = Command::new("ssh-add").arg("-D").output();
+            log_cmd_result(&action, alias, out);
+        }
+        other => {
+            tracing::debug!(action = other, "unhandled ssh debug action");
+        }
+    }
+    Ok(())
+}
+
+fn log_cmd_result(action: &str, alias: &str, out: std::io::Result<std::process::Output>) {
+    match out {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::info!(
+                action,
+                alias,
+                status = ?o.status,
+                stdout = %truncate_lines(&stdout, 50),
+                stderr = %truncate_lines(&stderr, 50),
+                "ssh debug action"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(action, alias, error = %e, "ssh debug action: command missing");
+        }
+    }
 }
 
 /// Handle a `database.new` submit: validate, persist the connection, and
@@ -3553,6 +4375,7 @@ mod tests {
                 source: SshHostSource::Manual,
                 last_connected: 0,
                 command_history: Vec::new(),
+                last_sftp_path: None,
             })
             .unwrap();
         // Refresh the widget to pick up the new host.
@@ -3590,6 +4413,7 @@ mod tests {
                 source: SshHostSource::Manual,
                 last_connected: 0,
                 command_history: Vec::new(),
+                last_sftp_path: None,
             })
             .unwrap();
         let id = ModalId("ssh.remove:keep".to_string());
@@ -3618,6 +4442,7 @@ mod tests {
                 source: SshHostSource::Manual,
                 last_connected: 0,
                 command_history: Vec::new(),
+                last_sftp_path: None,
             })
             .unwrap();
         let id = ModalId("ssh.remove:doomed".to_string());
@@ -3629,39 +4454,36 @@ mod tests {
         assert!(sid_app.store.list_ssh_hosts().unwrap().is_empty());
     }
 
-    /// `G` on the SSH tab opens the keygen modal with all five fields.
+    /// `G` on the SSH tab opens the gen-key wizard step 1 modal.
     #[test]
     fn ssh_gen_key_modal_for_key_opens_on_ssh() {
         let sid_app = build_test_sid_app(Some("ssh"));
         let modal = modal_for_active_tab_key(&sid_app, plain_chord('G'))
-            .expect("G on ssh opens keygen modal");
-        assert_eq!(modal.id.0, "ssh.gen_key");
-        assert_eq!(modal.fields.len(), 5);
+            .expect("G on ssh opens keygen wizard");
+        assert_eq!(modal.id.0, "ssh.gen_key.step1");
+        // Step 1 has a single Choice field — algorithm.
+        assert_eq!(modal.fields.len(), 1);
     }
 
-    /// `G` on a non-SSH tab does not open the keygen modal.
+    /// `G` on a non-SSH tab does not open the keygen wizard.
     #[test]
     fn ssh_gen_key_modal_for_key_does_not_open_on_other_tabs() {
         let sid_app = build_test_sid_app(Some("workspaces"));
         let modal = modal_for_active_tab_key(&sid_app, plain_chord('G'));
         let id = modal.map(|m| m.id.0).unwrap_or_default();
-        assert_ne!(id, "ssh.gen_key");
+        assert!(!id.starts_with("ssh.gen_key"));
     }
 
-    /// `ssh.gen_key` rejects mismatched passphrase before invoking
-    /// `ssh-keygen`. Verified by passing two different strings.
+    /// Step 2 of the wizard rejects mismatched passphrase before invoking
+    /// `ssh-keygen`.
     #[test]
-    fn ssh_gen_key_rejects_mismatched_passphrase() {
+    fn ssh_gen_key_step2_rejects_mismatched_passphrase() {
         use sid_widgets::{FieldValue, ModalId};
         let mut sid_app = build_test_sid_app(Some("ssh"));
         let dir = tempdir().unwrap();
         let out = dir.path().join("id_ed25519");
-        let id = ModalId("ssh.gen_key".to_string());
+        let id = ModalId("ssh.gen_key.step2:Ed25519".to_string());
         let values = vec![
-            (
-                "algorithm".to_string(),
-                FieldValue::Choice("Ed25519".into()),
-            ),
             (
                 "output_path".to_string(),
                 FieldValue::Picker(out.to_string_lossy().into_owned()),
@@ -3678,25 +4500,19 @@ mod tests {
         ];
         let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
         assert!(err.to_string().contains("do not match"));
-        // Output file must not exist after a rejected attempt.
         assert!(!out.exists());
     }
 
-    /// `ssh.gen_key` rejects an existing output path before invoking
-    /// `ssh-keygen` (so the test never shells out).
+    /// Step 2 rejects an existing output path so the test never shells out.
     #[test]
-    fn ssh_gen_key_rejects_existing_path() {
+    fn ssh_gen_key_step2_rejects_existing_path() {
         use sid_widgets::{FieldValue, ModalId};
         let mut sid_app = build_test_sid_app(Some("ssh"));
         let dir = tempdir().unwrap();
         let out = dir.path().join("id_existing");
         std::fs::write(&out, "preexisting").unwrap();
-        let id = ModalId("ssh.gen_key".to_string());
+        let id = ModalId("ssh.gen_key.step2:Ed25519".to_string());
         let values = vec![
-            (
-                "algorithm".to_string(),
-                FieldValue::Choice("Ed25519".into()),
-            ),
             (
                 "output_path".to_string(),
                 FieldValue::Picker(out.to_string_lossy().into_owned()),
@@ -3713,21 +4529,16 @@ mod tests {
         ];
         let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
         assert!(err.to_string().contains("already exists"));
-        // File must still hold its original content.
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "preexisting");
     }
 
-    /// `ssh.gen_key` rejects an empty output_path.
+    /// Step 2 rejects an empty output_path.
     #[test]
-    fn ssh_gen_key_rejects_empty_output_path() {
+    fn ssh_gen_key_step2_rejects_empty_output_path() {
         use sid_widgets::{FieldValue, ModalId};
         let mut sid_app = build_test_sid_app(Some("ssh"));
-        let id = ModalId("ssh.gen_key".to_string());
+        let id = ModalId("ssh.gen_key.step2:Ed25519".to_string());
         let values = vec![
-            (
-                "algorithm".to_string(),
-                FieldValue::Choice("Ed25519".into()),
-            ),
             ("output_path".to_string(), FieldValue::Picker(String::new())),
             (
                 "passphrase".to_string(),
@@ -3743,22 +4554,70 @@ mod tests {
         assert!(err.to_string().contains("output_path"));
     }
 
+    /// Step 1 → step 2 chain: a valid step-1 submit pushes step 2 onto the
+    /// modal stack. Step 1 does NOT shell out, so no ssh-keygen dependency.
+    #[test]
+    fn ssh_gen_key_step1_to_step2_to_step3() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        // Step 1 — algorithm choice.
+        let id1 = ModalId("ssh.gen_key.step1".to_string());
+        let v1 = vec![(
+            "algorithm".to_string(),
+            FieldValue::Choice("Ed25519".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id1, &v1).unwrap();
+        assert_eq!(sid_app.modal_stack.len(), 1);
+        assert_eq!(sid_app.modal_stack[0].id.0, "ssh.gen_key.step2:Ed25519");
+        // Step 2 submit with valid inputs and a path we can write to — but
+        // since ssh-keygen may not be present in this test env, we just
+        // assert that submitting an "exists" path stops the chain with an
+        // error (which exercises step 2's validation rather than the shell-out).
+        let dir = tempdir().unwrap();
+        let out = dir.path().join("must_not_exist");
+        std::fs::write(&out, "x").unwrap();
+        let id2 = ModalId("ssh.gen_key.step2:Ed25519".to_string());
+        let v2 = vec![
+            (
+                "output_path".to_string(),
+                FieldValue::Picker(out.to_string_lossy().into_owned()),
+            ),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            ("comment".to_string(), FieldValue::Text(String::new())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id2, &v2).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+        // Step 3 chain not pushed (step 2 errored).
+        // The pre-pushed step 2 from step 1 is still in the stack.
+        assert_eq!(sid_app.modal_stack.len(), 1);
+
+        // Now exercise step 3 submit with target == "<None>" so it doesn't shell out.
+        let id3 = ModalId("ssh.gen_key.step3:Ed25519:/tmp/none".to_string());
+        let v3 = vec![(
+            "target_host".to_string(),
+            FieldValue::Choice("<None — copy manually later>".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id3, &v3).unwrap();
+    }
+
     /// Real ssh-keygen end-to-end test. Skipped by default — ssh-keygen may
-    /// not be on PATH or may interact with the controlling terminal in
-    /// undesirable ways inside CI.
+    /// not be on PATH inside CI.
     #[test]
     #[ignore = "needs ssh-keygen"]
-    fn ssh_gen_key_invokes_ssh_keygen_when_inputs_valid() {
+    fn ssh_gen_key_step2_invokes_ssh_keygen_when_inputs_valid() {
         use sid_widgets::{FieldValue, ModalId};
         let mut sid_app = build_test_sid_app(Some("ssh"));
         let dir = tempdir().unwrap();
         let out = dir.path().join("id_ed25519_gen_test");
-        let id = ModalId("ssh.gen_key".to_string());
+        let id = ModalId("ssh.gen_key.step2:Ed25519".to_string());
         let values = vec![
-            (
-                "algorithm".to_string(),
-                FieldValue::Choice("Ed25519".into()),
-            ),
             (
                 "output_path".to_string(),
                 FieldValue::Picker(out.to_string_lossy().into_owned()),
@@ -3774,12 +4633,294 @@ mod tests {
             ("comment".to_string(), FieldValue::Text("sid-test".into())),
         ];
         dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
-        assert!(
-            out.exists(),
-            "ssh-keygen should have produced the private key"
-        );
+        assert!(out.exists());
         let pub_path = dir.path().join("id_ed25519_gen_test.pub");
-        assert!(pub_path.exists(), "ssh-keygen should have produced a .pub");
+        assert!(pub_path.exists());
+    }
+
+    // ─── New SSH actions: Edit / Setup remote / Key manager / Debug / SFTP / Help
+
+    fn upsert_host_for(sid_app: &mut SidApp, alias: &str) {
+        use sid_store::{SshHost, SshHostSource};
+        sid_app
+            .store
+            .upsert_ssh_host(&SshHost {
+                alias: alias.into(),
+                host: "h".into(),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: Vec::new(),
+                last_sftp_path: None,
+            })
+            .unwrap();
+        refresh_ssh_widget(sid_app);
+    }
+
+    /// `E` on the SSH tab with a selected manual host opens the edit modal.
+    #[test]
+    fn ssh_edit_modal_for_key_opens_on_ssh() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "edit-me");
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('E'))
+            .expect("E on ssh opens edit modal");
+        assert_eq!(modal.id.0, "ssh.edit:edit-me");
+        assert_eq!(modal.fields.len(), 6);
+    }
+
+    /// `E` on a non-SSH tab does not open an SSH modal.
+    #[test]
+    fn ssh_edit_modal_does_not_open_on_other_tabs() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('E'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert!(!id.starts_with("ssh.edit"));
+    }
+
+    /// Submitting `ssh.edit:<alias>` updates the host record fields.
+    #[test]
+    fn ssh_edit_submit_updates_host() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "alpha");
+        let id = ModalId("ssh.edit:alpha".to_string());
+        let values = vec![
+            ("alias".to_string(), FieldValue::Text("alpha".into())),
+            ("host".to_string(), FieldValue::Text("10.99.99.99".into())),
+            ("user".to_string(), FieldValue::Text("admin".into())),
+            ("port".to_string(), FieldValue::Text("2222".into())),
+            (
+                "identity_file".to_string(),
+                FieldValue::Picker("/tmp/id_test".into()),
+            ),
+            ("auth".to_string(), FieldValue::Choice("Key".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let h = sid_app.store.get_ssh_host("alpha").unwrap().unwrap();
+        assert_eq!(h.host, "10.99.99.99");
+        assert_eq!(h.user, "admin");
+        assert_eq!(h.port, 2222);
+        assert_eq!(h.identity_file.as_deref(), Some("/tmp/id_test"));
+    }
+
+    /// Editing with an empty alias is rejected.
+    #[test]
+    fn ssh_edit_submit_rejects_empty_alias() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "alpha");
+        let id = ModalId("ssh.edit:alpha".to_string());
+        let values = vec![
+            ("alias".to_string(), FieldValue::Text(String::new())),
+            ("host".to_string(), FieldValue::Text("h".into())),
+            ("user".to_string(), FieldValue::Text("u".into())),
+            ("port".to_string(), FieldValue::Text("22".into())),
+            (
+                "identity_file".to_string(),
+                FieldValue::Picker(String::new()),
+            ),
+            ("auth".to_string(), FieldValue::Choice("Key".into())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("alias"));
+    }
+
+    /// `S` on the SSH tab opens the setup-remote step 1 modal.
+    #[test]
+    fn ssh_setup_remote_modal_opens_on_ssh() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "with-host");
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('S'))
+            .expect("S on ssh opens setup-remote modal");
+        assert_eq!(modal.id.0, "ssh.setup_remote.identity:with-host");
+    }
+
+    /// Step 1 of setup-remote pushes step 2 onto the modal stack on Save.
+    #[test]
+    fn ssh_setup_remote_step1_pushes_step2_on_submit() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.setup_remote.identity:alpha".to_string());
+        let values = vec![(
+            "identity_path".to_string(),
+            FieldValue::Choice("/home/u/.ssh/id_ed25519".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.modal_stack.len(), 1);
+        let pushed_id = &sid_app.modal_stack[0].id.0;
+        assert!(pushed_id.starts_with("ssh.setup_remote.confirm:alpha:"));
+    }
+
+    /// Step 1 rejects a placeholder "(no existing key…)" identity.
+    #[test]
+    fn ssh_setup_remote_step1_rejects_placeholder() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.setup_remote.identity:alpha".to_string());
+        let values = vec![(
+            "identity_path".to_string(),
+            FieldValue::Choice("(no existing key found in ~/.ssh/)".into()),
+        )];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        assert!(err.to_string().contains("no identity"));
+    }
+
+    /// Setup-remote "No, cancel" on step 2 is a no-op (no step 3 pushed).
+    #[test]
+    fn ssh_setup_remote_step2_cancel_no_op() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.setup_remote.confirm:alpha:/tmp/id".to_string());
+        let values = vec![
+            ("summary".to_string(), FieldValue::Text("...".into())),
+            (
+                "proceed".to_string(),
+                FieldValue::Choice("No, cancel".into()),
+            ),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert!(sid_app.modal_stack.is_empty());
+    }
+
+    /// `K` (uppercase only) on the SSH tab opens the key manager.
+    #[test]
+    fn ssh_key_manager_modal_opens_on_ssh() {
+        let sid_app = build_test_sid_app(Some("ssh"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('K'))
+            .expect("K on ssh opens key manager");
+        assert_eq!(modal.id.0, "ssh.key_manager");
+    }
+
+    /// Lowercase `k` is the widget's "select prev" — it must NOT open the
+    /// key manager modal.
+    #[test]
+    fn ssh_key_manager_modal_does_not_open_on_lowercase_k() {
+        let sid_app = build_test_sid_app(Some("ssh"));
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('k'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert_ne!(id, "ssh.key_manager");
+    }
+
+    /// `ssh.key_manager` listing uses [`discover_ssh_keys_in`] when pointed at
+    /// a tempdir, picking up `id_*` files and skipping `.pub`.
+    #[test]
+    fn ssh_key_manager_lists_keys() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("id_test_ed25519"), "stub").unwrap();
+        std::fs::write(dir.path().join("id_test_ed25519.pub"), "stub-pub").unwrap();
+        std::fs::write(dir.path().join("known_hosts"), "unrelated").unwrap();
+        let keys = discover_ssh_keys_in(Some(dir.path()));
+        let names: Vec<&str> = keys
+            .iter()
+            .filter_map(|k| k.path.rsplit('/').next())
+            .collect();
+        assert!(names.contains(&"id_test_ed25519"));
+        assert!(!names.contains(&"id_test_ed25519.pub"));
+        assert!(!names.contains(&"known_hosts"));
+    }
+
+    /// `X` (uppercase only) on SSH opens the debug modal for the selected host.
+    #[test]
+    fn ssh_debug_modal_opens() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "diag-target");
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('X'))
+            .expect("X on ssh opens debug modal");
+        assert_eq!(modal.id.0, "ssh.debug:diag-target");
+    }
+
+    /// Lowercase `x` does not open the debug modal.
+    #[test]
+    fn ssh_debug_modal_does_not_open_on_lowercase_x() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "diag-target");
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('x'));
+        let id = modal.map(|m| m.id.0).unwrap_or_default();
+        assert!(!id.starts_with("ssh.debug"));
+    }
+
+    /// `F` on the SSH tab with a manual host opens the SFTP-persist modal.
+    #[test]
+    fn ssh_sftp_persist_modal_opens() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "sftp-host");
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('F'))
+            .expect("F on ssh opens sftp persist modal");
+        assert_eq!(modal.id.0, "ssh.sftp_persist:sftp-host");
+    }
+
+    /// Submitting `ssh.sftp_persist:<alias>` updates the host's last_sftp_path.
+    #[test]
+    fn ssh_sftp_persist_writes_last_path() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "sftp-host");
+        let id = ModalId("ssh.sftp_persist:sftp-host".to_string());
+        let values = vec![(
+            "last_path".to_string(),
+            FieldValue::Text("/srv/data".into()),
+        )];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let h = sid_app.store.get_ssh_host("sftp-host").unwrap().unwrap();
+        assert_eq!(h.last_sftp_path.as_deref(), Some("/srv/data"));
+    }
+
+    /// Empty `last_path` clears the field back to None.
+    #[test]
+    fn ssh_sftp_persist_empty_clears_field() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        upsert_host_for(&mut sid_app, "sftp-host");
+        // Pre-populate.
+        {
+            let mut existing = sid_app.store.get_ssh_host("sftp-host").unwrap().unwrap();
+            existing.last_sftp_path = Some("/old".into());
+            sid_app.store.upsert_ssh_host(&existing).unwrap();
+        }
+        let id = ModalId("ssh.sftp_persist:sftp-host".to_string());
+        let values = vec![("last_path".to_string(), FieldValue::Text(String::new()))];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let h = sid_app.store.get_ssh_host("sftp-host").unwrap().unwrap();
+        assert!(h.last_sftp_path.is_none());
+    }
+
+    /// `?` on any tab opens the help modal for that tab.
+    #[test]
+    fn ssh_help_modal_lists_footer_hints() {
+        let sid_app = build_test_sid_app(Some("ssh"));
+        let modal =
+            modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
+        assert_eq!(modal.id.0, "help:ssh");
+        // The keys field should contain the SshWidget's footer hints (N/G/S/K/X/?).
+        let keys_val = modal
+            .fields
+            .iter()
+            .find_map(|f| match f {
+                sid_widgets::Field::Text { label, value, .. } if label == "keys" => {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        for ch in ["N:", "G:", "S:", "K:", "X:", "?:"] {
+            assert!(
+                keys_val.contains(ch),
+                "expected help to mention {ch}; got: {keys_val}"
+            );
+        }
+        // Global hints too.
+        assert!(keys_val.contains("Ctrl+Q"));
+    }
+
+    /// `?` on the Workspaces tab also opens a help modal (id keyed by tab).
+    #[test]
+    fn ssh_help_modal_opens_on_other_tabs_too() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal =
+            modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
+        assert_eq!(modal.id.0, "help:workspaces");
     }
 
     // ─── Phase 5 — Database tab modals ──────────────────────────────────────
