@@ -128,3 +128,18 @@ pub trait PtyHandle: Send + Sync {
 pub trait PtyProvider: Send + Sync {
     fn open_pty(&self, spec: &PtySpawn) -> Result<Box<dyn PtyHandle>, PtyError>;
 }
+
+/// A render-friendly snapshot of a terminal screen. Implementations live in
+/// `sid-pty` (e.g. `Vt100Screen`).
+pub trait TerminalScreen: Send + Sync {
+    /// Feed bytes from the remote (or local PTY) into the screen.
+    fn feed(&mut self, bytes: &[u8]);
+    /// Resize the screen.
+    fn resize(&mut self, rows: u16, cols: u16);
+    /// Current size as `(rows, cols)`.
+    fn size(&self) -> (u16, u16);
+    /// Cursor position as `(row, col)`.
+    fn cursor_position(&self) -> (u16, u16);
+    /// Current screen contents as one string per row.
+    fn lines(&self) -> Vec<String>;
+}
