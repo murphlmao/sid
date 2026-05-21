@@ -9,6 +9,7 @@ members = [
     "crates/sid-widgets",
     "crates/sid-git",
     "crates/sid-secrets",
+    "crates/sid-sysinfo",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ sid-job = { path = "crates/sid-job" }
 sid-widgets = { path = "crates/sid-widgets" }
 sid-git = { path = "crates/sid-git" }
 sid-secrets = { path = "crates/sid-secrets" }
+sid-sysinfo = { path = "crates/sid-sysinfo" }
 
 # TUI
 ratatui = "0.30"
@@ -61,6 +63,11 @@ tracing-appender = "0.2"
 # Git
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 walkdir = "2"
+
+# System / network
+sysinfo = { version = "0.32", default-features = false, features = ["system", "network", "disk", "user"] }
+netstat2 = "0.10"
+nix = { version = "0.29", features = ["signal", "process"] }
 
 # Paths
 directories = "5"
