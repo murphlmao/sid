@@ -209,6 +209,7 @@ impl FooterHint {
 ///         EventOutcome::Bubble
 ///     }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
+///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 /// }
 ///
 /// let w = MyWidget { id: WidgetId::new("my-widget") };
@@ -242,4 +243,12 @@ pub trait Widget: std::any::Any + Send + Sync {
     /// rendering helpers (which take ratatui types, not allowed in this crate).
     /// Each impl is one line: `fn as_any(&self) -> &dyn std::any::Any { self }`.
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Mutable downcasting hook. Each impl is one line:
+    /// `fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }`.
+    ///
+    /// Used by the binary's wire layer to mutate a widget's state from a
+    /// background job (e.g., applying a completed sub-repo scan to the
+    /// matching `WorkspaceDetailWidget`).
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }

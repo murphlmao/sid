@@ -103,6 +103,7 @@ pub enum TabKind {
 /// #     fn render(&self, _: &mut dyn RenderTarget) {}
 /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
 /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+/// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 /// # }
 /// let t = Tab {
 ///     id: TabId::new("workspaces"),
@@ -138,6 +139,7 @@ pub struct Tab {
 /// #     fn render(&self, _: &mut dyn RenderTarget) {}
 /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
 /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+/// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 /// # }
 ///
 /// use sid_core::tab::TabKind;
@@ -212,6 +214,7 @@ impl TabManager {
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// # }
     /// # fn make_tab(s: &'static str) -> Tab {
     /// #     Tab { id: TabId::new(s), title: s.into(), layout: Layout::Single(Box::new(W { id: WidgetId::new(s) })), hotkey: None, kind: sid_core::tab::TabKind::Core }
@@ -251,6 +254,7 @@ impl TabManager {
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// # }
     /// # fn make_tab(s: &'static str) -> Tab {
     /// #     Tab { id: TabId::new(s), title: s.into(), layout: Layout::Single(Box::new(W { id: WidgetId::new(s) })), hotkey: None, kind: sid_core::tab::TabKind::Core }
@@ -290,6 +294,7 @@ impl TabManager {
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// # }
     /// # fn mk(id: &'static str, k: TabKind) -> Tab {
     /// #     Tab { id: TabId::new(id), title: id.into(),
@@ -334,6 +339,7 @@ impl TabManager {
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// # }
     /// # fn mk(id: &'static str, k: TabKind) -> Tab {
     /// #     Tab { id: TabId::new(id), title: id.into(),
@@ -377,6 +383,7 @@ impl TabManager {
     /// #     fn render(&self, _: &mut dyn RenderTarget) {}
     /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// # }
     /// # fn mk(id: &'static str, k: TabKind) -> Tab {
     /// #     Tab { id: TabId::new(id), title: id.into(),

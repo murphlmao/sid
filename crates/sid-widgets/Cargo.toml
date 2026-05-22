@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "visible_workspaces"
 harness = false
+
+[[bench]]
+name = "workspace_detail_open"
+harness = false
