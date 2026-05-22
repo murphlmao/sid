@@ -8,7 +8,8 @@ use std::sync::Arc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use sid::wire::{NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
+use sid::toast::ToastQueue;
+use sid::wire::{JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
 use sid_store::{OpenStore, RedbStore, Store};
 use tempfile::tempdir;
 
@@ -26,6 +27,7 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         store,
         session_id: "bench-sess".into(),
         sys_probe: None,
+        sys_rx: None,
         systemctl: Arc::new(NoopSystemctlClient),
         spawner: Arc::new(NoopTerminalSpawner),
         postgres: sid_db_clients::PostgresClient::factory(),
@@ -35,6 +37,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         fx_state: None,
         modal_stack: Vec::new(),
         pending_submits: Vec::new(),
+        toasts: ToastQueue::new(4),
+        jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
     }
 }
 

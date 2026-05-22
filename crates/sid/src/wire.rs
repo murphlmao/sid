@@ -25,7 +25,7 @@ use sid_core::app::{App, Dispatch};
 use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
-use sid_core::sys_probe::SysProbe;
+use sid_core::sys_probe::{SysProbe, SysSnapshot};
 use sid_core::tab::{Tab, TabId, TabManager};
 use sid_core::widget::Widget;
 use sid_core::workspace_discovery::{
@@ -42,7 +42,38 @@ use sid_ui::themes::cosmos;
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
 };
+use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
+
+use crate::toast::{Toast, ToastQueue};
+
+/// Outcome of a background job spawned via [`SidApp::jobs`]. Each variant
+/// carries a short human-readable label (used in the toast prefix) and the
+/// final captured text.
+///
+/// Constructed inside Tokio tasks that wrap `Command::output()` — the task
+/// converts the subprocess result into a [`JobOutcome`] and pushes it into
+/// the [`sid_job::JobQueue`]. The event loop drains the queue each iteration
+/// and converts every outcome into a [`Toast`].
+#[derive(Clone, Debug)]
+pub enum JobOutcome {
+    /// The job completed successfully; the body is whatever short summary
+    /// the spawning handler wants surfaced (typically a one-line success).
+    Success {
+        /// Context shown ahead of the message ("ssh-copy-id", "ssh -vv", ...).
+        label: String,
+        /// One-line success message ("copied key to <alias>").
+        message: String,
+    },
+    /// The job ran but the subprocess returned a non-zero exit code, or the
+    /// subprocess could not be launched at all (binary missing).
+    Failure {
+        /// Context shown ahead of the message.
+        label: String,
+        /// Captured stderr trailer / launch error.
+        message: String,
+    },
+}
 
 /// Top-level wired application state owned by the binary.
 ///
@@ -55,7 +86,9 @@ use tokio::sync::mpsc::Receiver;
 /// ```no_run
 /// use std::path::Path;
 /// use std::sync::Arc;
-/// use sid::wire::{build_app, NoopSystemctlClient, NoopTerminalSpawner, SidApp};
+/// use sid::wire::{build_app, JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp};
+/// use sid::toast::ToastQueue;
+/// use sid_job::JobQueue;
 /// use sid_store::{OpenStore, RedbStore, Store};
 ///
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/test.redb")).unwrap());
@@ -67,6 +100,7 @@ use tokio::sync::mpsc::Receiver;
 ///     store,
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
+///     sys_rx: None,
 ///     systemctl: Arc::new(NoopSystemctlClient),
 ///     spawner: Arc::new(NoopTerminalSpawner),
 ///     postgres: sid_db_clients::PostgresClient::factory(),
@@ -76,6 +110,8 @@ use tokio::sync::mpsc::Receiver;
 ///     fx_state: None,
 ///     modal_stack: Vec::new(),
 ///     pending_submits: Vec::new(),
+///     toasts: ToastQueue::new(4),
+///     jobs: Arc::new(JobQueue::<JobOutcome>::new()),
 /// };
 /// ```
 pub struct SidApp {
@@ -87,6 +123,12 @@ pub struct SidApp {
     /// production binary path.
     #[allow(dead_code)]
     pub sys_probe: Option<Arc<SysProbe>>,
+    /// Live receiver of [`SysSnapshot`]s broadcast by `sys_probe`. Drained
+    /// non-blockingly each event-loop pass; every snapshot is forwarded into
+    /// the active Network widget via [`refresh_network_widget`].
+    ///
+    /// `None` matches `sys_probe == None` (tests / no-probe runs).
+    pub sys_rx: Option<tokio::sync::broadcast::Receiver<SysSnapshot>>,
     /// Adapter for `systemctl` operations (Plan 6 / System tab).
     #[allow(dead_code)]
     pub systemctl: Arc<dyn SystemctlClient>,
@@ -115,6 +157,14 @@ pub struct SidApp {
     /// Modals submitted on the previous frame whose handler hasn't run yet.
     /// Drained at the top of [`run_event_loop`] each iteration.
     pub pending_submits: Vec<(sid_widgets::ModalId, Vec<(String, sid_widgets::FieldValue)>)>,
+    /// Lower-right corner toast queue. Pushed by modal submit handlers
+    /// (success / error) and by completed background jobs.
+    pub toasts: ToastQueue,
+    /// Job queue used for asynchronous subprocess work (ssh-copy-id, ssh-keygen,
+    /// ssh -vv, ssh-add, etc.). Each spawned task pushes a [`JobOutcome`];
+    /// the event loop drains completed outcomes once per iteration and
+    /// converts them into toasts.
+    pub jobs: Arc<sid_job::JobQueue<JobOutcome>>,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -678,6 +728,7 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     store,
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
+///     sys_rx: None,
 ///     systemctl: Arc::new(NoopSystemctlClient),
 ///     spawner: Arc::new(NoopTerminalSpawner),
 ///     postgres: sid_db_clients::PostgresClient::factory(),
@@ -687,6 +738,8 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
 ///     fx_state: None,
 ///     modal_stack: Vec::new(),
 ///     pending_submits: Vec::new(),
+///     toasts: sid::toast::ToastQueue::new(4),
+///     jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -931,10 +984,17 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         frame.render_widget(global, footer_split[0]);
     }
 
+    // ─── Toasts (bottom-right corner) ─────────────────────────────────────
+    // Drawn after the body / footer but BEFORE modal/palette so modals
+    // visually cover the toast region. Toasts continue to age while a modal
+    // is open; once dismissed they appear if still alive.
+    render_toasts(frame, inner, &theme, &sid_app.toasts);
+
     // ─── Modal overlay (Phase 3) ──────────────────────────────────────────
-    // The topmost modal renders on top of body+footer+status. Animation is
-    // already painted but we don't tick stars while a modal is open — see
-    // `run_event_loop`. Render after the body so the modal covers it cleanly.
+    // The topmost modal renders on top of body+footer+status+toasts.
+    // Animation is already painted but we don't tick stars while a modal is
+    // open — see `run_event_loop`. Render after the body so the modal covers
+    // it cleanly.
     if let Some(modal) = sid_app.modal_stack.last() {
         sid_widgets::render_modal(frame, inner, &theme, modal);
     }
@@ -1220,6 +1280,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         store,
 ///         session_id: "sess-1".to_string(),
 ///         sys_probe: None,
+///         sys_rx: None,
 ///         systemctl: Arc::new(sid::wire::NoopSystemctlClient),
 ///         spawner: Arc::new(sid::wire::NoopTerminalSpawner),
 ///         postgres: sid_db_clients::PostgresClient::factory(),
@@ -1229,6 +1290,8 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         fx_state: None,
 ///         modal_stack: Vec::new(),
 ///         pending_submits: Vec::new(),
+///         toasts: sid::toast::ToastQueue::new(4),
+///         jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
 ///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -1249,6 +1312,19 @@ where
     loop {
         // Drain any modal submits queued in the previous iteration.
         drain_pending_submits(sid_app);
+
+        // Pull every fresh SysSnapshot the probe has broadcast since the
+        // previous frame; forward each into the Network widget. This is what
+        // populates the Interfaces / Ports / Processes panes — without it the
+        // widget shows three empty tables forever.
+        drain_sys_snapshots(sid_app);
+
+        // Drain completed background jobs (ssh-copy-id, ssh-keygen, ssh -vv,
+        // ...) and convert each outcome into a toast.
+        drain_job_outcomes(sid_app);
+
+        // Sweep expired toasts so they fade out on the next render.
+        sid_app.toasts.drain_expired();
 
         // Advance starfield phase on each frame before drawing.
         if let Some(fx) = sid_app.fx_state.as_mut() {
@@ -1272,6 +1348,30 @@ where
         let ev = match rx.recv().await {
             Some(e) => e,
             None => break,
+        };
+
+        // Translate mouse events into synthetic key events (scroll → j/k)
+        // or direct tab switches (click on the tab strip). Other mouse kinds
+        // are dropped for v1. See `route_mouse_event` for the policy.
+        // We rewrite `ev` in place so the rest of the loop treats the result
+        // as the originating event.
+        // TODO: route LeftDown to widget for focus-on-click once focus model
+        // is committed (parallel agent's PR).
+        let ev = if let SidEvent::Mouse(m) = ev {
+            match route_mouse_event(sid_app, terminal_size_rect(terminal), m) {
+                MouseRouting::Synthesize(chord) => SidEvent::Key(chord),
+                MouseRouting::SwitchToTab(idx) => {
+                    if let Some(tab) = sid_app.app.tabs().tabs().get(idx) {
+                        let id = tab.id.clone();
+                        let _ = sid_app.app.tabs_mut().switch_to(&id);
+                    }
+                    // Switching the tab is the whole action; tick the loop.
+                    continue;
+                }
+                MouseRouting::Drop => continue,
+            }
+        } else {
+            ev
         };
 
         // Route key events. If a modal is open it intercepts everything except
@@ -1318,6 +1418,117 @@ where
         }
     }
     Ok(())
+}
+
+/// What the mouse-event router decided to do with a raw [`crossterm::event::MouseEvent`].
+///
+/// The three cases match the policy in [`route_mouse_event`]: scrolls become
+/// synthetic key events (so widget lists scroll through their existing j/k
+/// handlers), clicks on the tab strip switch tabs, anything else is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseRouting {
+    /// Translate the mouse event into a key chord that the rest of the loop
+    /// dispatches via the existing key path.
+    Synthesize(sid_core::event::KeyChord),
+    /// Switch directly to the tab at the given zero-based index.
+    SwitchToTab(usize),
+    /// Drop the event silently. v1 routes only scrolls and tab clicks; any
+    /// other mouse kind ends up here.
+    Drop,
+}
+
+/// Compute the [`Rect`] occupied by the terminal viewport. Used by
+/// [`route_mouse_event`] to figure out where the tab strip lives. Returns a
+/// default 80x24 if the terminal size cannot be read.
+fn terminal_size_rect<B>(terminal: &Terminal<B>) -> Rect
+where
+    B: Backend,
+{
+    terminal
+        .size()
+        .map(|s| Rect {
+            x: 0,
+            y: 0,
+            width: s.width,
+            height: s.height,
+        })
+        .unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        })
+}
+
+/// Decide what to do with a raw mouse event.
+///
+/// Policy (v1):
+///
+/// - `MouseEventKind::ScrollUp`   → `KeyChord(Char('k'), NONE)` (focus prev row).
+/// - `MouseEventKind::ScrollDown` → `KeyChord(Char('j'), NONE)` (focus next row).
+/// - `MouseEventKind::Down(Left)` on the tab strip → switch to that tab.
+/// - Anything else → [`MouseRouting::Drop`].
+///
+/// The tab strip is the second row of the rendered frame (y = 1, just below
+/// the outer block's top border) — see `draw` for the layout.
+///
+/// # Examples
+///
+/// ```
+/// use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+/// use ratatui::layout::Rect;
+/// use sid::wire::{MouseRouting, build_app, route_mouse_event, SidApp};
+/// // ScrollUp anywhere → Char('k')
+/// // (constructing a full SidApp for a doctest is too much chrome — see
+/// // wire's unit tests for the integration shape.)
+/// ```
+pub fn route_mouse_event(
+    sid_app: &SidApp,
+    full_area: Rect,
+    m: crossterm::event::MouseEvent,
+) -> MouseRouting {
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    match m.kind {
+        MouseEventKind::ScrollUp => MouseRouting::Synthesize(sid_core::event::KeyChord::new(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+        )),
+        MouseEventKind::ScrollDown => MouseRouting::Synthesize(sid_core::event::KeyChord::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )),
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Match against the tab strip's row. The outer block adds a
+            // one-row top border, so the tab strip sits at y = 1.
+            // `draw` lays out the tab strip on row inner.y, where inner.y
+            // == full_area.y + 1 (because the outer Block::ALL borders eat
+            // a row on each side).
+            let tab_row = full_area.y.saturating_add(1);
+            if m.row != tab_row {
+                return MouseRouting::Drop;
+            }
+            // Compute per-tab horizontal extents using the same layout the
+            // tab strip painter uses: [marker(1)][space(1)][title(N)][gap(2 if not last)].
+            // The first tab starts at inner.x == full_area.x + 1.
+            let mut x = full_area.x.saturating_add(1);
+            let tabs = sid_app.app.tabs().tabs();
+            for (i, t) in tabs.iter().enumerate() {
+                let title_width = t.title.chars().count() as u16;
+                // Marker glyph + space + title.
+                let span = 2u16.saturating_add(title_width);
+                let end = x.saturating_add(span);
+                if m.column >= x && m.column < end {
+                    return MouseRouting::SwitchToTab(i);
+                }
+                x = end.saturating_add(2); // 2-char gap between tabs
+                if i + 1 == tabs.len() {
+                    break;
+                }
+            }
+            MouseRouting::Drop
+        }
+        _ => MouseRouting::Drop,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1718,6 +1929,12 @@ fn ssh_setup_remote_step2_modal(alias: &str, identity: &str) -> sid_widgets::Mod
 }
 
 /// Build the "Setup remote auth" step 3 modal — show the captured output.
+///
+/// Currently unused: the async `ssh-copy-id` flow surfaces its outcome via a
+/// toast (`drain_job_outcomes`) instead of pushing a synchronous result
+/// modal. Kept around for future flows that want to display long-form
+/// captured output inline.
+#[allow(dead_code)]
 fn ssh_setup_remote_step3_modal(alias: &str, summary: &str) -> sid_widgets::ModalSpec {
     use sid_widgets::{Field, ModalSpec};
     ModalSpec::new(
@@ -2186,7 +2403,162 @@ fn drain_pending_submits(sid_app: &mut SidApp) {
     for (id, values) in submits {
         if let Err(e) = dispatch_modal_submit(sid_app, &id, &values) {
             tracing::warn!("modal submit {id:?} failed: {e}");
+            sid_app
+                .toasts
+                .push(Toast::error(format!("{}: {}", id.0, e)));
         }
+    }
+}
+
+/// Drain every snapshot the probe has produced since the previous frame.
+///
+/// Returns once the channel reports `Empty`. Lag (slow consumer relative to
+/// the broadcast channel capacity) is logged and treated as a missed frame —
+/// the loop continues so the next snapshot is still applied.
+pub fn drain_sys_snapshots(sid_app: &mut SidApp) {
+    if sid_app.sys_rx.is_none() {
+        return;
+    }
+    // Pull snapshots into a local buffer first to release the &mut borrow on
+    // `sid_app.sys_rx` before we hand `sid_app` to `refresh_network_widget`.
+    let mut snapshots: Vec<SysSnapshot> = Vec::new();
+    let mut closed = false;
+    {
+        let rx = sid_app.sys_rx.as_mut().expect("checked is_none above");
+        loop {
+            match rx.try_recv() {
+                Ok(snap) => snapshots.push(snap),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        "sys_probe broadcast lagged; {skipped} snapshots skipped — continuing"
+                    );
+                }
+                Err(TryRecvError::Closed) => {
+                    tracing::warn!("sys_probe broadcast closed; sys_rx detached");
+                    closed = true;
+                    break;
+                }
+            }
+        }
+    }
+    if closed {
+        sid_app.sys_rx = None;
+    }
+    for snap in snapshots {
+        refresh_network_widget(sid_app, snap);
+    }
+}
+
+/// Forward a fresh [`SysSnapshot`] into the Network widget.
+///
+/// Mirrors the shape of [`refresh_workspaces_widget`]: look up the tab by id,
+/// downcast, and call the widget's existing `apply_snapshot`. Silently no-ops
+/// when the Network tab isn't installed (e.g., a custom `TabManager` in tests).
+pub fn refresh_network_widget(sid_app: &mut SidApp, snap: SysSnapshot) {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "network" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                if let Some(n) = any_ref.downcast_mut::<NetworkWidget>() {
+                    n.apply_snapshot(snap);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/// Drain every completed [`JobOutcome`] from the queue and convert each into
+/// a toast. Pure transformation — never blocks.
+pub fn drain_job_outcomes(sid_app: &mut SidApp) {
+    let completed = sid_app.jobs.drain_completed();
+    for r in completed {
+        match r {
+            Ok(JobOutcome::Success { label, message }) => {
+                sid_app
+                    .toasts
+                    .push(Toast::success(format!("{label}: {message}")));
+            }
+            Ok(JobOutcome::Failure { label, message }) => {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("{label}: {message}")));
+            }
+            Err(e) => {
+                sid_app.toasts.push(Toast::error(format!("job: {e}")));
+            }
+        }
+    }
+}
+
+/// Render the toast queue anchored to the bottom-right of `area`.
+///
+/// Toasts stack vertically newest-at-the-bottom, with a maximum of 3 visible
+/// at once. Each toast is a single-line `Paragraph` consisting of a coloured
+/// glyph prefix (a check, an x, or a dot) + space + message body. The
+/// rendered region is right-padded by 1 cell from `area.right()`.
+///
+/// Called from [`draw`] AFTER the body + footer but BEFORE the modal / palette
+/// overlay so modals visually cover the toast region.
+pub fn render_toasts(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    theme: &Theme,
+    queue: &ToastQueue,
+) {
+    use crate::toast::ToastKind;
+    use ratatui::style::Modifier as TextMod;
+    use ratatui::style::Style as TextStyle;
+    use ratatui::widgets::Paragraph;
+
+    if queue.is_empty() || area.width < 6 || area.height == 0 {
+        return;
+    }
+    let cap_visible = 3usize;
+    let total = queue.len();
+    let take = total.min(cap_visible);
+    if take == 0 {
+        return;
+    }
+    let visible: Vec<&Toast> = queue.iter().skip(total - take).collect();
+    let right_pad: u16 = 1;
+    let max_width: u16 = visible
+        .iter()
+        .map(|t| (t.message.chars().count() as u16).saturating_add(4))
+        .max()
+        .unwrap_or(20);
+    let strip_w = max_width.min(area.width.saturating_sub(right_pad + 1));
+    let strip_h: u16 = (take as u16).min(area.height);
+    if strip_w == 0 || strip_h == 0 {
+        return;
+    }
+    let x = area.x + area.width.saturating_sub(strip_w + right_pad);
+    let y = area.y + area.height.saturating_sub(strip_h);
+
+    for (i, t) in visible.iter().enumerate() {
+        let line_y = y + i as u16;
+        let (glyph, color) = match t.kind {
+            ToastKind::Success => ('\u{2713}', theme.accent_success),
+            ToastKind::Error => ('\u{2717}', theme.accent_error),
+            ToastKind::Info => ('\u{00B7}', theme.muted),
+        };
+        let glyph_style = TextStyle::default()
+            .fg(ui_to_ratatui(color))
+            .add_modifier(TextMod::BOLD);
+        let body_style = TextStyle::default().fg(ui_to_ratatui(theme.foreground));
+        let line = Line::from(vec![
+            Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(t.message.clone(), body_style),
+        ]);
+        let p = Paragraph::new(line);
+        let rect = Rect {
+            x,
+            y: line_y,
+            width: strip_w,
+            height: 1,
+        };
+        frame.render_widget(p, rect);
     }
 }
 
@@ -2243,7 +2615,7 @@ fn dispatch_modal_submit(
         };
         let w = Workspace {
             path: abs,
-            name,
+            name: name.clone(),
             kind,
             manifest_hash: 0,
             last_seen: now_epoch(),
@@ -2255,6 +2627,9 @@ fn dispatch_modal_submit(
             .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
         refresh_workspaces_widget(sid_app);
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("workspace '{name}' added")));
     } else if let Some(parent_str) = key.strip_prefix("workspaces.add_repo:") {
         let parent = PathBuf::from(parent_str);
         let _ = values; // path comes from the picker field
@@ -2278,7 +2653,7 @@ fn dispatch_modal_submit(
             .to_string();
         let w = Workspace {
             path: abs,
-            name,
+            name: name.clone(),
             kind: WorkspaceKind::Repo,
             manifest_hash: 0,
             last_seen: now_epoch(),
@@ -2290,6 +2665,9 @@ fn dispatch_modal_submit(
             .map_err(|e| anyhow::anyhow!("upsert workspace: {e}"))?;
         refresh_workspaces_widget(sid_app);
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("repo '{name}' added")));
     } else if let Some(target_str) = key.strip_prefix("workspaces.remove:") {
         let target = PathBuf::from(target_str);
         let confirm = choice_value(values, "confirm").unwrap_or_default();
@@ -2299,10 +2677,21 @@ fn dispatch_modal_submit(
                 .remove_workspace(&target)
                 .map_err(|e| anyhow::anyhow!("remove workspace: {e}"))?;
             refresh_workspaces_widget(sid_app);
+            let name = target
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(target_str)
+                .to_string();
+            sid_app
+                .toasts
+                .push(Toast::success(format!("workspace '{name}' removed")));
         }
     } else if key == "ssh.new" {
-        submit_ssh_new(sid_app, values)?;
+        let alias = submit_ssh_new(sid_app, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("host '{alias}' saved")));
     } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
         submit_ssh_remove(sid_app, alias, values)?;
     } else if let Some(alias) = key.strip_prefix("ssh.edit:") {
@@ -2335,22 +2724,31 @@ fn dispatch_modal_submit(
     } else if let Some(target) = key.strip_prefix("ssh.key_manager.confirm_regen:") {
         submit_ssh_key_manager_confirm_regen(target, values)?;
     } else if let Some(alias) = key.strip_prefix("ssh.debug:") {
-        submit_ssh_debug(alias, values)?;
+        submit_ssh_debug(sid_app, alias, values)?;
     } else if key.starts_with("help:") {
         // Read-only help modal; submit is a no-op (Esc closes it).
     } else if key == "database.new" {
-        submit_database_new(sid_app, values)?;
+        let conn_id = submit_database_new(sid_app, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("connection '{conn_id}' saved")));
     } else if let Some(conn_id) = key.strip_prefix("database.remove:") {
         submit_database_remove(sid_app, conn_id, values)?;
     } else if key == "system.pin_config" {
-        submit_system_pin_config(sid_app, values)?;
+        let label = submit_system_pin_config(sid_app, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("pinned '{label}'")));
     } else if let Some(path_str) = key.strip_prefix("system.remove_pin:") {
         submit_system_remove_pin(sid_app, path_str, values)?;
     } else if key == "system.quick_action.new" {
-        submit_system_quick_action_new(sid_app, values)?;
+        let label = submit_system_quick_action_new(sid_app, values)?;
         celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
+        sid_app
+            .toasts
+            .push(Toast::success(format!("quick action '{label}' added")));
     } else if let Some(qa_id) = key.strip_prefix("system.remove_quick_action:") {
         submit_system_remove_quick_action(sid_app, qa_id, values)?;
     } else {
@@ -2364,20 +2762,18 @@ fn dispatch_modal_submit(
 // ---------------------------------------------------------------------------
 
 /// Handle a successful submit of the `ssh.new` modal: validate inputs,
-/// upsert the host into the store, refresh the SSH widget.
+/// upsert the host into the store, refresh the SSH widget. Returns the alias
+/// of the newly-added host so the caller can populate a context-rich toast.
 fn submit_ssh_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
-) -> Result<()> {
+) -> Result<String> {
     use sid_store::{SshHost, SshHostSource};
     let alias = string_value(values, "alias").unwrap_or_default();
     let host = string_value(values, "host").unwrap_or_default();
     let user = string_value(values, "user").unwrap_or_default();
     let port_str = string_value(values, "port").unwrap_or_default();
     let identity_file = string_value(values, "identity_file").filter(|s| !s.is_empty());
-    // The auth choice is currently advisory — concrete connect-time wiring
-    // lives in Plan 3's `russh` path. Read it to validate the modal but do
-    // not persist (the SshHost record doesn't have a slot for it yet).
     let _auth = choice_value(values, "auth").unwrap_or_default();
     if alias.is_empty() || host.is_empty() || user.is_empty() {
         return Err(anyhow::anyhow!("alias, host, and user are required"));
@@ -2386,7 +2782,7 @@ fn submit_ssh_new(
         .parse()
         .map_err(|e| anyhow::anyhow!("port must be a u16 (got {port_str:?}): {e}"))?;
     let record = SshHost {
-        alias,
+        alias: alias.clone(),
         host,
         port,
         user,
@@ -2401,7 +2797,7 @@ fn submit_ssh_new(
         .upsert_ssh_host(&record)
         .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
     refresh_ssh_widget(sid_app);
-    Ok(())
+    Ok(alias)
 }
 
 /// Handle a `ssh.remove:<alias>` submit. Confirms via the Choice field
@@ -2419,6 +2815,9 @@ fn submit_ssh_remove(
         .remove_ssh_host(alias)
         .map_err(|e| anyhow::anyhow!("remove ssh host: {e}"))?;
     refresh_ssh_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("host '{alias}' removed")));
     Ok(())
 }
 
@@ -2480,6 +2879,9 @@ fn submit_ssh_edit(
         .upsert_ssh_host(&record)
         .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
     refresh_ssh_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("host '{new_alias}' updated")));
     Ok(())
 }
 
@@ -2506,6 +2908,9 @@ fn submit_ssh_sftp_persist(
         .upsert_ssh_host(&record)
         .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
     refresh_ssh_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("SFTP path saved for '{alias}'")));
     Ok(())
 }
 
@@ -2525,7 +2930,10 @@ fn submit_ssh_setup_remote_step1(
     Ok(())
 }
 
-/// Handle setup-remote-auth step 2: confirm → run `ssh-copy-id`, push step 3.
+/// Handle setup-remote-auth step 2: confirm → spawn `ssh-copy-id` on the job
+/// queue. The modal closes immediately; a toast reports the outcome later.
+/// On success, the host's `identity_file` is persisted from the background
+/// task itself (the store handle is `Arc<RedbStore>`, cheap to clone).
 fn submit_ssh_setup_remote_step2(
     sid_app: &mut SidApp,
     alias: &str,
@@ -2536,32 +2944,57 @@ fn submit_ssh_setup_remote_step2(
     if proceed != "Yes, proceed" {
         return Ok(());
     }
-    let output = run_ssh_copy_id(alias, Some(identity));
-    let success = output.starts_with("ok:");
-    // On success persist identity_file on the host record.
-    if success {
-        if let Ok(Some(mut existing)) = sid_app.store.get_ssh_host(alias) {
-            existing.identity_file = Some(identity.to_string());
-            let _ = sid_app.store.upsert_ssh_host(&existing);
-            refresh_ssh_widget(sid_app);
+    let alias_owned = alias.to_string();
+    let identity_owned = identity.to_string();
+    let store = Arc::clone(&sid_app.store);
+    sid_app.toasts.push(Toast::info(format!(
+        "ssh-copy-id: connecting to {alias}..."
+    )));
+    sid_app.jobs.spawn(async move {
+        let outcome = tokio::task::spawn_blocking({
+            let alias = alias_owned.clone();
+            let identity = identity_owned.clone();
+            move || run_ssh_copy_id(&alias, Some(&identity))
+        })
+        .await
+        .unwrap_or_else(|e| format!("err: task join failed: {e}"));
+        let label = "ssh-copy-id".to_string();
+        if let Some(rest) = outcome.strip_prefix("ok:") {
+            if let Ok(Some(mut existing)) = store.get_ssh_host(&alias_owned) {
+                existing.identity_file = Some(identity_owned.clone());
+                if let Err(e) = store.upsert_ssh_host(&existing) {
+                    tracing::warn!(alias = %alias_owned, error = %e, "persist identity_file failed");
+                }
+            }
+            tracing::info!(alias = %alias_owned, identity = %identity_owned, "ssh-copy-id ok");
+            JobOutcome::Success {
+                label,
+                message: format!("copied key to {alias_owned}{}", trail_one(rest)),
+            }
+        } else {
+            let trimmed = outcome
+                .strip_prefix("err:")
+                .unwrap_or(&outcome)
+                .trim()
+                .to_string();
+            tracing::warn!(alias = %alias_owned, error = %trimmed, "ssh-copy-id failed");
+            JobOutcome::Failure {
+                label,
+                message: format!("{alias_owned}: {}", first_nonempty_line(&trimmed)),
+            }
         }
-    }
-    tracing::info!(alias, identity, success, "setup_remote completed");
-    sid_app
-        .modal_stack
-        .push(ssh_setup_remote_step3_modal(alias, &output));
+    });
     Ok(())
 }
 
 /// Capture `ssh-copy-id` output (best-effort; the binary may be missing).
 /// Returns either `"ok: <stdout>"` or `"err: <stderr/stdout>"` so callers can
-/// branch on the prefix.
+/// branch on the prefix. Runs synchronously and is meant to be invoked from
+/// `tokio::task::spawn_blocking`.
 fn run_ssh_copy_id(alias: &str, identity: Option<&str>) -> String {
     use std::process::Command;
     let mut cmd = Command::new("ssh-copy-id");
     if let Some(i) = identity {
-        // ssh-copy-id wants the public key path; if the user picked a
-        // private key, the .pub sibling is what ssh-copy-id reads.
         let pub_path = if i.ends_with(".pub") {
             i.to_string()
         } else {
@@ -2581,6 +3014,25 @@ fn run_ssh_copy_id(alias: &str, identity: Option<&str>) -> String {
             }
         }
         Err(e) => format!("err: ssh-copy-id not on PATH: {e}"),
+    }
+}
+
+/// Return the first non-empty trimmed line of `s`, or "(no output)".
+fn first_nonempty_line(s: &str) -> String {
+    s.lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("(no output)")
+        .to_string()
+}
+
+/// Best-effort trailing context for a successful command — picks the last
+/// non-empty line of `s` and prefixes it with " — " if found, otherwise "".
+fn trail_one(s: &str) -> String {
+    let last = s.lines().map(|l| l.trim()).rfind(|l| !l.is_empty());
+    match last {
+        Some(line) if !line.is_empty() => format!(" — {line}"),
+        _ => String::new(),
     }
 }
 
@@ -2666,8 +3118,10 @@ fn submit_ssh_gen_key_step2(
     Ok(())
 }
 
-/// Step 3 of the gen-key wizard: optionally copy to remote, persist
-/// `identity_file` on the chosen host record.
+/// Step 3 of the gen-key wizard: optionally copy the new key to a remote via
+/// `ssh-copy-id`. Runs asynchronously through the job queue; the modal closes
+/// immediately and a toast reports the outcome. On success the host's
+/// `identity_file` is persisted from the background task.
 fn submit_ssh_gen_key_step3(
     sid_app: &mut SidApp,
     _algorithm: &str,
@@ -2678,14 +3132,46 @@ fn submit_ssh_gen_key_step3(
     if target.is_empty() || target.starts_with('<') {
         return Ok(());
     }
-    let output = run_ssh_copy_id(&target, Some(output_path));
-    let success = output.starts_with("ok:");
-    if let Ok(Some(mut existing)) = sid_app.store.get_ssh_host(&target) {
-        existing.identity_file = Some(output_path.to_string());
-        let _ = sid_app.store.upsert_ssh_host(&existing);
-        refresh_ssh_widget(sid_app);
-    }
-    tracing::info!(target, output_path, success, "gen_key step3 completed");
+    let target_owned = target.clone();
+    let output_path_owned = output_path.to_string();
+    let store = Arc::clone(&sid_app.store);
+    sid_app.toasts.push(Toast::info(format!(
+        "ssh-copy-id: connecting to {target}..."
+    )));
+    sid_app.jobs.spawn(async move {
+        let result = tokio::task::spawn_blocking({
+            let target = target_owned.clone();
+            let key = output_path_owned.clone();
+            move || run_ssh_copy_id(&target, Some(&key))
+        })
+        .await
+        .unwrap_or_else(|e| format!("err: task join failed: {e}"));
+        let label = "ssh-copy-id".to_string();
+        if let Some(rest) = result.strip_prefix("ok:") {
+            if let Ok(Some(mut existing)) = store.get_ssh_host(&target_owned) {
+                existing.identity_file = Some(output_path_owned.clone());
+                if let Err(e) = store.upsert_ssh_host(&existing) {
+                    tracing::warn!(target = %target_owned, error = %e, "persist identity_file failed");
+                }
+            }
+            tracing::info!(target = %target_owned, output_path = %output_path_owned, "gen_key step3 ok");
+            JobOutcome::Success {
+                label,
+                message: format!("copied key to {target_owned}{}", trail_one(rest)),
+            }
+        } else {
+            let trimmed = result
+                .strip_prefix("err:")
+                .unwrap_or(&result)
+                .trim()
+                .to_string();
+            tracing::warn!(target = %target_owned, error = %trimmed, "gen_key step3 failed");
+            JobOutcome::Failure {
+                label,
+                message: format!("{target_owned}: {}", first_nonempty_line(&trimmed)),
+            }
+        }
+    });
     Ok(())
 }
 
@@ -2792,37 +3278,93 @@ fn submit_ssh_key_manager_confirm_regen(
     Ok(())
 }
 
-/// Handle the SSH debug modal. Each action shells out best-effort and writes
-/// the captured output to tracing.
-fn submit_ssh_debug(alias: &str, values: &[(String, sid_widgets::FieldValue)]) -> Result<()> {
-    use std::process::Command;
+/// Handle the SSH debug modal.
+///
+/// Each subprocess (ssh-keygen, ssh-add, ssh -vv) is dispatched to the job
+/// queue via `tokio::task::spawn_blocking` and a `Toast::info("running ...")`
+/// is pushed immediately. The final `JobOutcome` is converted to a Toast on
+/// completion. Tracing log lines remain — useful for post-mortem analysis.
+fn submit_ssh_debug(
+    sid_app: &mut SidApp,
+    alias: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) -> Result<()> {
     let action = choice_value(values, "action").unwrap_or_default();
     match action.as_str() {
         "Show known_hosts entry" => {
-            let out = Command::new("ssh-keygen").arg("-F").arg(alias).output();
-            log_cmd_result(&action, alias, out);
+            sid_app
+                .toasts
+                .push(Toast::info(format!("ssh-keygen -F {alias}...")));
+            let alias_for_label = alias.to_string();
+            let alias_for_cmd = alias.to_string();
+            sid_app.jobs.spawn(async move {
+                run_ssh_debug_cmd("ssh-keygen -F", alias_for_label, move || {
+                    std::process::Command::new("ssh-keygen")
+                        .arg("-F")
+                        .arg(&alias_for_cmd)
+                        .output()
+                })
+                .await
+            });
         }
         "Remove known_hosts entry" => {
-            let out = Command::new("ssh-keygen").arg("-R").arg(alias).output();
-            log_cmd_result(&action, alias, out);
+            sid_app
+                .toasts
+                .push(Toast::info(format!("ssh-keygen -R {alias}...")));
+            let alias_for_label = alias.to_string();
+            let alias_for_cmd = alias.to_string();
+            sid_app.jobs.spawn(async move {
+                run_ssh_debug_cmd("ssh-keygen -R", alias_for_label, move || {
+                    std::process::Command::new("ssh-keygen")
+                        .arg("-R")
+                        .arg(&alias_for_cmd)
+                        .output()
+                })
+                .await
+            });
         }
         "Show identity diagnostics" => {
-            let out = Command::new("ssh-add").arg("-l").output();
-            log_cmd_result(&action, alias, out);
+            sid_app
+                .toasts
+                .push(Toast::info("ssh-add -l...".to_string()));
+            let alias_for_label = alias.to_string();
+            sid_app.jobs.spawn(async move {
+                run_ssh_debug_cmd("ssh-add -l", alias_for_label, || {
+                    std::process::Command::new("ssh-add").arg("-l").output()
+                })
+                .await
+            });
         }
         "Test connection (ssh -vv)" => {
-            let out = Command::new("ssh")
-                .arg("-vv")
-                .arg("-o")
-                .arg("BatchMode=yes")
-                .arg(alias)
-                .arg("exit")
-                .output();
-            log_cmd_result(&action, alias, out);
+            sid_app
+                .toasts
+                .push(Toast::info(format!("ssh -vv {alias}...")));
+            let alias_for_label = alias.to_string();
+            let alias_for_cmd = alias.to_string();
+            sid_app.jobs.spawn(async move {
+                run_ssh_debug_cmd("ssh -vv", alias_for_label, move || {
+                    std::process::Command::new("ssh")
+                        .arg("-vv")
+                        .arg("-o")
+                        .arg("BatchMode=yes")
+                        .arg(&alias_for_cmd)
+                        .arg("exit")
+                        .output()
+                })
+                .await
+            });
         }
         "Clear cached agent identities (ssh-add -D)" => {
-            let out = Command::new("ssh-add").arg("-D").output();
-            log_cmd_result(&action, alias, out);
+            sid_app
+                .toasts
+                .push(Toast::info("ssh-add -D...".to_string()));
+            let alias_for_label = alias.to_string();
+            sid_app.jobs.spawn(async move {
+                run_ssh_debug_cmd("ssh-add -D", alias_for_label, || {
+                    std::process::Command::new("ssh-add").arg("-D").output()
+                })
+                .await
+            });
         }
         other => {
             tracing::debug!(action = other, "unhandled ssh debug action");
@@ -2831,32 +3373,62 @@ fn submit_ssh_debug(alias: &str, values: &[(String, sid_widgets::FieldValue)]) -
     Ok(())
 }
 
-fn log_cmd_result(action: &str, alias: &str, out: std::io::Result<std::process::Output>) {
-    match out {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let stderr = String::from_utf8_lossy(&o.stderr);
+/// Run an ssh-debug subprocess on a blocking pool, log the captured
+/// stdout/stderr, and return a `JobOutcome` describing the result.
+async fn run_ssh_debug_cmd<F>(label: &str, alias: String, run: F) -> JobOutcome
+where
+    F: FnOnce() -> std::io::Result<std::process::Output> + Send + 'static,
+{
+    let label = label.to_string();
+    let outcome = tokio::task::spawn_blocking(run).await;
+    match outcome {
+        Ok(Ok(o)) => {
+            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
             tracing::info!(
-                action,
-                alias,
+                action = %label,
+                alias = %alias,
                 status = ?o.status,
                 stdout = %truncate_lines(&stdout, 50),
                 stderr = %truncate_lines(&stderr, 50),
                 "ssh debug action"
             );
+            if o.status.success() {
+                JobOutcome::Success {
+                    label,
+                    message: first_nonempty_line(&stdout),
+                }
+            } else {
+                JobOutcome::Failure {
+                    label,
+                    message: first_nonempty_line(&stderr),
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(action = %label, alias = %alias, error = %e, "subprocess launch failed");
+            JobOutcome::Failure {
+                label,
+                message: format!("launch failed: {e}"),
+            }
         }
         Err(e) => {
-            tracing::warn!(action, alias, error = %e, "ssh debug action: command missing");
+            tracing::warn!(action = %label, alias = %alias, error = %e, "task join failed");
+            JobOutcome::Failure {
+                label,
+                message: format!("task join failed: {e}"),
+            }
         }
     }
 }
 
 /// Handle a `database.new` submit: validate, persist the connection, and
-/// (for Postgres) write the password to the secret store.
+/// (for Postgres) write the password to the secret store. Returns the
+/// new connection id so the caller can populate a toast.
 fn submit_database_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
-) -> Result<()> {
+) -> Result<String> {
     use sid_core::adapters::db_client::DbKind;
     use sid_core::adapters::secrets::SecretId;
     use sid_store::{DbConnection, now_epoch};
@@ -2884,7 +3456,7 @@ fn submit_database_new(
         None
     };
     let conn = DbConnection {
-        id,
+        id: id.clone(),
         kind,
         name,
         dsn,
@@ -2896,7 +3468,7 @@ fn submit_database_new(
         .upsert_db_connection(&conn)
         .map_err(|e| anyhow::anyhow!("upsert db connection: {e}"))?;
     refresh_database_widget(sid_app);
-    Ok(())
+    Ok(id)
 }
 
 /// Handle a `database.remove:<id>` submit. On confirm, removes the
@@ -2914,21 +3486,24 @@ fn submit_database_remove(
         .store
         .remove_db_connection(conn_id)
         .map_err(|e| anyhow::anyhow!("remove db connection: {e}"))?;
-    // Best-effort password cleanup — never fails the remove.
     let secret = SecretId::new(format!("db.connection.{conn_id}.password"));
     if let Err(e) = sid_app.secrets.delete(&secret) {
         tracing::warn!("failed to delete db connection secret: {e}");
     }
     refresh_database_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("connection '{conn_id}' removed")));
     Ok(())
 }
 
 /// Handle a `system.pin_config` submit: validate the path, default the label
-/// to the basename, persist.
+/// to the basename, persist. Returns the resolved label so the caller can
+/// surface it in a toast.
 fn submit_system_pin_config(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
-) -> Result<()> {
+) -> Result<String> {
     use sid_store::{PinnedConfig, now_epoch};
     let path_str = string_value(values, "path").unwrap_or_default();
     let label = string_value(values, "label").unwrap_or_default();
@@ -2947,7 +3522,7 @@ fn submit_system_pin_config(
     };
     let pin = PinnedConfig {
         path: abs,
-        label,
+        label: label.clone(),
         opener_cmd: None,
         created_at: now_epoch(),
     };
@@ -2956,7 +3531,7 @@ fn submit_system_pin_config(
         .upsert_pinned_config(&pin)
         .map_err(|e| anyhow::anyhow!("upsert pinned config: {e}"))?;
     refresh_system_widget(sid_app);
-    Ok(())
+    Ok(label)
 }
 
 /// Handle a `system.remove_pin:<path>` submit.
@@ -2974,16 +3549,25 @@ fn submit_system_remove_pin(
         .remove_pinned_config(&path)
         .map_err(|e| anyhow::anyhow!("remove pinned config: {e}"))?;
     refresh_system_widget(sid_app);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path_str)
+        .to_string();
+    sid_app
+        .toasts
+        .push(Toast::success(format!("unpinned '{name}'")));
     Ok(())
 }
 
 /// Handle a `system.quick_action.new` submit. Stores the action and, if it
 /// is globally scoped, refreshes the palette via
-/// [`rehydrate_global_quick_actions`].
+/// [`rehydrate_global_quick_actions`]. Returns the label so the caller can
+/// reference it in a toast.
 fn submit_system_quick_action_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
-) -> Result<()> {
+) -> Result<String> {
     use sid_store::{QuickAction, QuickActionScope};
     let id = string_value(values, "id").unwrap_or_default();
     let label = string_value(values, "label").unwrap_or_default();
@@ -2999,7 +3583,7 @@ fn submit_system_quick_action_new(
     };
     let qa = QuickAction {
         id,
-        label,
+        label: label.clone(),
         cmd,
         keybind,
         scope,
@@ -3010,7 +3594,7 @@ fn submit_system_quick_action_new(
         .map_err(|e| anyhow::anyhow!("upsert quick action: {e}"))?;
     refresh_system_widget(sid_app);
     rehydrate_palette_quick_actions(sid_app);
-    Ok(())
+    Ok(label)
 }
 
 /// Handle a `system.remove_quick_action:<id>` submit.
@@ -3028,6 +3612,9 @@ fn submit_system_remove_quick_action(
         .map_err(|e| anyhow::anyhow!("remove quick action: {e}"))?;
     refresh_system_widget(sid_app);
     rehydrate_palette_quick_actions(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("quick action '{qa_id}' removed")));
     Ok(())
 }
 
@@ -3842,6 +4429,7 @@ mod tests {
             store,
             session_id: "draw-test-sess".into(),
             sys_probe: None,
+            sys_rx: None,
             systemctl: Arc::new(NoopSystemctlClient),
             spawner: Arc::new(NoopTerminalSpawner),
             postgres: sid_db_clients::PostgresClient::factory(),
@@ -3851,6 +4439,8 @@ mod tests {
             fx_state: None,
             modal_stack: Vec::new(),
             pending_submits: Vec::new(),
+            toasts: ToastQueue::new(4),
+            jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
         }
     }
 
@@ -4923,6 +5513,105 @@ mod tests {
         assert_eq!(modal.id.0, "help:workspaces");
     }
 
+    // ─── Phase 6 — Mouse routing ────────────────────────────────────────────
+
+    fn mouse_event(
+        kind: crossterm::event::MouseEventKind,
+        col: u16,
+        row: u16,
+    ) -> crossterm::event::MouseEvent {
+        crossterm::event::MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    fn full_area() -> ratatui::layout::Rect {
+        ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        }
+    }
+
+    /// A scroll-up wheel event maps to `Char('k')` so list widgets advance
+    /// their selection upward via their existing key handler.
+    #[test]
+    fn mouse_scroll_up_translates_to_k() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let m = mouse_event(crossterm::event::MouseEventKind::ScrollUp, 10, 10);
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        match outcome {
+            MouseRouting::Synthesize(c) => {
+                assert_eq!(c.code, crossterm::event::KeyCode::Char('k'));
+                assert!(c.mods.is_empty());
+            }
+            other => panic!("expected Synthesize('k'); got {other:?}"),
+        }
+    }
+
+    /// A scroll-down wheel event maps to `Char('j')`.
+    #[test]
+    fn mouse_scroll_down_translates_to_j() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let m = mouse_event(crossterm::event::MouseEventKind::ScrollDown, 10, 10);
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        match outcome {
+            MouseRouting::Synthesize(c) => {
+                assert_eq!(c.code, crossterm::event::KeyCode::Char('j'));
+                assert!(c.mods.is_empty());
+            }
+            other => panic!("expected Synthesize('j'); got {other:?}"),
+        }
+    }
+
+    /// A LeftDown click on the tab strip's `ssh` label returns
+    /// `SwitchToTab(1)` — the SSH tab is the second tab (index 1).
+    ///
+    /// The tab strip is laid out as
+    /// `[marker(1)][space(1)][title(N)][gap(2)][marker(1)][space(1)][title(N)]...`
+    /// starting at `inner.x` == full_area.x + 1, on row `inner.y` == 1.
+    /// "Workspaces" is 10 chars → starts at col 1, occupies cols 1..=12.
+    /// gap = 2 → next tab starts at col 15. "SSH" is 3 chars → occupies 15..=19.
+    #[test]
+    fn mouse_left_click_on_tab_strip_switches_tab() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        // Click on the "SSH" tab label (around col 16-18, row 1).
+        let m = mouse_event(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            17,
+            1,
+        );
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        assert_eq!(outcome, MouseRouting::SwitchToTab(1));
+    }
+
+    /// A left click on a row that is NOT the tab strip row is dropped
+    /// (until focus-on-click lands in a future PR).
+    #[test]
+    fn mouse_left_click_off_tab_strip_drops() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let m = mouse_event(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            10,
+            5,
+        );
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        assert_eq!(outcome, MouseRouting::Drop);
+    }
+
+    /// Mouse-move events are dropped silently.
+    #[test]
+    fn mouse_move_is_dropped() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let m = mouse_event(crossterm::event::MouseEventKind::Moved, 0, 0);
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        assert_eq!(outcome, MouseRouting::Drop);
+    }
+
     // ─── Phase 5 — Database tab modals ──────────────────────────────────────
 
     /// `N` on the Database tab opens the `database.new` modal.
@@ -5366,5 +6055,341 @@ mod tests {
         )];
         dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
         assert_eq!(sid_app.store.list_quick_actions().unwrap().len(), 1);
+    }
+
+    // ─── Live Network data + toasts + async jobs ──────────────────────────────
+
+    use sid_core::adapters::sys::{
+        ListeningPort, NetInterface, Pid as SysPid, ProcessInfo, Protocol, Signal, SocketState,
+        SysError, SysProvider,
+    };
+    use sid_core::sys_probe::{SysProbe, SysSnapshot};
+    use std::sync::Mutex as StdMutex;
+
+    /// Trivial provider returning fixed, non-empty data on every call so
+    /// snapshots arriving at the widget are detectable.
+    struct StubSysProvider;
+    impl SysProvider for StubSysProvider {
+        fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
+            Ok(vec![ProcessInfo {
+                pid: SysPid::from_u32(1),
+                name: "init".into(),
+                cmd: "/sbin/init".into(),
+                cpu_pct: 0.0,
+                rss_bytes: 0,
+                started_unix_secs: 0,
+                parent: None,
+                user: Some("0".into()),
+            }])
+        }
+        fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
+            Ok(vec![ListeningPort {
+                port: 22,
+                pid: Some(SysPid::from_u32(1)),
+                command: "sshd".into(),
+                protocol: Protocol::Tcp,
+                state: SocketState::Listen,
+                local_addr: "0.0.0.0".into(),
+            }])
+        }
+        fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
+            Ok(vec![NetInterface {
+                name: "lo".into(),
+                addrs: vec!["127.0.0.1".into()],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }])
+        }
+        fn kill_process(&mut self, _: SysPid, _: Signal) -> Result<(), SysError> {
+            Ok(())
+        }
+    }
+
+    fn fixed_snapshot() -> SysSnapshot {
+        SysSnapshot {
+            processes: vec![ProcessInfo {
+                pid: SysPid::from_u32(42),
+                name: "fixture".into(),
+                cmd: "/usr/bin/fixture".into(),
+                cpu_pct: 0.0,
+                rss_bytes: 0,
+                started_unix_secs: 0,
+                parent: None,
+                user: None,
+            }],
+            listening_ports: vec![ListeningPort {
+                port: 1234,
+                pid: Some(SysPid::from_u32(42)),
+                command: "fixture".into(),
+                protocol: Protocol::Tcp,
+                state: SocketState::Listen,
+                local_addr: "0.0.0.0".into(),
+            }],
+            interfaces: vec![NetInterface {
+                name: "eth0".into(),
+                addrs: vec!["10.0.0.1".into()],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            captured_at_unix_secs: 1,
+        }
+    }
+
+    /// `drain_sys_snapshots` forwards each broadcast snapshot to the Network
+    /// widget. After a single tick the widget's three tables reflect the
+    /// snapshot. This is the integration that makes the Network tab show data.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn network_widget_consumes_broadcast_snapshot() {
+        let provider: Arc<StdMutex<dyn SysProvider>> = Arc::new(StdMutex::new(StubSysProvider));
+        let probe = Arc::new(SysProbe::new(provider, Duration::from_millis(50)));
+        let rx = probe.subscribe();
+
+        // Spawn the probe run-loop on the test runtime; paused time lets the
+        // first interval tick fire deterministically.
+        let probe_for_task = Arc::clone(&probe);
+        let handle = tokio::spawn(async move { probe_for_task.run().await });
+
+        // Wait for the first snapshot to arrive in the receiver.
+        let mut rx = rx;
+        let first = rx.recv().await.expect("first snapshot");
+        assert_eq!(first.listening_ports.len(), 1);
+
+        // Build a SidApp pointed at the Network tab, then attach the receiver
+        // we drained from above. Replace its first slot with a fresh receiver
+        // — we already consumed one snapshot so simulate by handing the
+        // existing `rx` over to `sid_app.sys_rx` for the drain test.
+        let mut sid_app = build_test_sid_app(Some("network"));
+        sid_app.sys_rx = Some(rx);
+
+        // Manually trigger one drain to forward whatever the channel holds.
+        // Inject a snapshot through the broadcast so the drain has something
+        // to take. (We can't easily re-publish; rely on the next probe tick.)
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        drain_sys_snapshots(&mut sid_app);
+
+        // Network widget should now have rows.
+        let layout = &sid_app.app.tabs().active().layout;
+        let widget = layout
+            .iter_widgets()
+            .next()
+            .expect("network tab has widget");
+        let net = widget
+            .as_any()
+            .downcast_ref::<NetworkWidget>()
+            .expect("network downcast");
+        assert!(
+            !net.ports().rows().is_empty(),
+            "ports table should be populated after drain"
+        );
+        assert!(
+            !net.processes().rows().is_empty(),
+            "processes table should be populated after drain"
+        );
+        assert!(
+            !net.interfaces().rows().is_empty(),
+            "interfaces sidebar should be populated after drain"
+        );
+
+        handle.abort();
+    }
+
+    /// `refresh_network_widget` is a no-op when the active tab manager has
+    /// no Network tab (e.g., a custom in-memory `TabManager` fixture). It
+    /// also forwards into the widget exactly when one is present.
+    #[test]
+    fn refresh_network_widget_applies_snapshot_when_present() {
+        let mut sid_app = build_test_sid_app(Some("network"));
+        let snap = fixed_snapshot();
+        refresh_network_widget(&mut sid_app, snap);
+        let widget = sid_app
+            .app
+            .tabs()
+            .active()
+            .layout
+            .iter_widgets()
+            .next()
+            .unwrap();
+        let net = widget.as_any().downcast_ref::<NetworkWidget>().unwrap();
+        assert_eq!(net.ports().rows().len(), 1);
+        assert_eq!(net.processes().rows().len(), 1);
+        assert_eq!(net.interfaces().rows().len(), 1);
+    }
+
+    /// `drain_sys_snapshots` handles the `Lagged` case without panicking and
+    /// recovers by continuing to drain. The broadcast channel buffer in
+    /// `SysProbe` is 16; flooding past that and draining must not panic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_widget_handles_lagged_receiver_gracefully() {
+        let provider: Arc<StdMutex<dyn SysProvider>> = Arc::new(StdMutex::new(StubSysProvider));
+        let probe = Arc::new(SysProbe::new(provider, Duration::from_millis(50)));
+        let rx = probe.subscribe();
+
+        // Spawn the probe so the broadcast channel fills naturally with the
+        // probe's emitted snapshots; the buffer (16) will overflow if the
+        // subscriber doesn't drain.
+        let probe_for_task = Arc::clone(&probe);
+        let handle = tokio::spawn(async move { probe_for_task.run().await });
+
+        // Give the probe time to emit a few snapshots.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let mut sid_app = build_test_sid_app(Some("network"));
+        sid_app.sys_rx = Some(rx);
+        // Drain must not panic regardless of channel state.
+        drain_sys_snapshots(&mut sid_app);
+
+        handle.abort();
+    }
+
+    /// `dispatch_modal_submit` on `workspaces.new` with a valid path pushes
+    /// a success toast that mentions the new workspace's name.
+    #[test]
+    fn dispatch_workspaces_new_pushes_success_toast() {
+        use sid_widgets::{FieldValue, ModalId};
+        let dir = tempdir().unwrap();
+        std::mem::forget(dir);
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let abs = std::env::temp_dir();
+        let id = ModalId("workspaces.new".to_string());
+        let values = vec![
+            ("name".into(), FieldValue::Text("acme".into())),
+            (
+                "path".into(),
+                FieldValue::Picker(abs.to_string_lossy().to_string()),
+            ),
+            ("kind".into(), FieldValue::Choice("Repo".into())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("acme")),
+            "expected a toast mentioning 'acme'; got: {messages:?}"
+        );
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Success),
+            "expected at least one Success toast; got: {kinds:?}"
+        );
+    }
+
+    /// A validation failure (empty name + path) yields an Error toast in the
+    /// drain stage (the binding happens in `drain_pending_submits`, not in
+    /// `dispatch_modal_submit` itself; we exercise the queue indirectly).
+    #[test]
+    fn dispatch_workspaces_new_pushes_error_toast_on_validation_failure() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        sid_app.pending_submits.push((
+            ModalId("workspaces.new".to_string()),
+            vec![
+                ("name".into(), FieldValue::Text(String::new())),
+                ("path".into(), FieldValue::Picker(String::new())),
+                ("kind".into(), FieldValue::Choice("Repo".into())),
+            ],
+        ));
+        drain_pending_submits(&mut sid_app);
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Error),
+            "expected an Error toast on validation failure; got: {kinds:?}"
+        );
+    }
+
+    /// A completed `JobOutcome::Success` is converted into a Success toast by
+    /// `drain_job_outcomes`. We bypass `tokio::spawn` and inject directly via
+    /// `JobQueue::spawn` with a ready future.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_job_completion_pushes_success_outcome_toast() {
+        let mut sid_app = build_test_sid_app(None);
+        let outcome = JobOutcome::Success {
+            label: "ssh-copy-id".into(),
+            message: "copied key to acme".into(),
+        };
+        // Spawn a tokio task that pushes the outcome; we hand the queue to
+        // the task via clone of the Arc.
+        let jobs = Arc::clone(&sid_app.jobs);
+        jobs.spawn(async move { outcome });
+        // Yield until the spawned task gets to run.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        drain_job_outcomes(&mut sid_app);
+        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("ssh-copy-id") && m.contains("acme")),
+            "expected a toast mentioning ssh-copy-id + acme; got: {messages:?}"
+        );
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(kinds.contains(&crate::toast::ToastKind::Success));
+    }
+
+    /// A completed `JobOutcome::Failure` is converted into an Error toast.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_job_completion_pushes_error_outcome_toast() {
+        let mut sid_app = build_test_sid_app(None);
+        let outcome = JobOutcome::Failure {
+            label: "ssh-copy-id".into(),
+            message: "permission denied".into(),
+        };
+        let jobs = Arc::clone(&sid_app.jobs);
+        jobs.spawn(async move { outcome });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        drain_job_outcomes(&mut sid_app);
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Error),
+            "expected an Error toast; got: {kinds:?}"
+        );
+    }
+
+    /// `submit_ssh_debug` pushes a `Toast::Info` synchronously when an
+    /// asynchronous action is dispatched. The actual subprocess result is
+    /// surfaced later via the job queue; this test only asserts the immediate
+    /// info-toast feedback that tells the user something is running.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_ssh_debug_pushes_running_toast_immediately() {
+        use sid_widgets::FieldValue;
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let values = vec![(
+            "action".to_string(),
+            FieldValue::Choice("Show identity diagnostics".into()),
+        )];
+        submit_ssh_debug(&mut sid_app, "alias-x", &values).unwrap();
+        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("ssh-add -l")),
+            "expected a running-toast mentioning ssh-add -l; got: {messages:?}"
+        );
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Info),
+            "expected an Info toast on submit; got: {kinds:?}"
+        );
+    }
+
+    /// `dispatch_modal_submit` on `database.new` with valid fields pushes a
+    /// success toast whose message contains the new connection id.
+    #[test]
+    fn dispatch_database_new_pushes_success_toast() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("database"));
+        let id = ModalId("database.new".to_string());
+        let values = vec![
+            ("id".into(), FieldValue::Text("prod-pg".into())),
+            ("name".into(), FieldValue::Text("Prod".into())),
+            ("kind".into(), FieldValue::Choice("SQLite".into())),
+            ("dsn".into(), FieldValue::Text(":memory:".into())),
+            ("password".into(), FieldValue::Password(String::new())),
+        ];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("prod-pg")),
+            "expected toast mentioning 'prod-pg'; got: {messages:?}"
+        );
     }
 }

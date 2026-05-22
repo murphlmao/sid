@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -15,6 +16,7 @@ use sid_store::{OpenStore, RedbStore, Store, Workspace, now_epoch};
 use tracing_subscriber::EnvFilter;
 
 mod runtime;
+mod toast;
 mod wire;
 
 #[derive(Parser, Debug)]
@@ -497,18 +499,15 @@ async fn main() -> Result<()> {
     }
 
     // Construct the SysProbe and spawn its polling loop so the Network tab
-    // sees fresh snapshots while the TUI runs.
+    // sees fresh snapshots while the TUI runs. We subscribe BEFORE spawning
+    // so the first snapshot is captured, and we hand the same Arc<SysProbe>
+    // to the task — `SysProbe::run` takes `&self`, so the broadcast channel
+    // observed by `sys_rx` is the same one the loop sends on.
     let sys_probe = wire::build_sys_probe(Duration::from_secs(2));
+    let sys_rx = sys_probe.subscribe();
     let probe_task = {
         let probe = Arc::clone(&sys_probe);
-        // SysProbe::run consumes self; clone the inner Arc and re-wrap.
-        tokio::spawn(async move {
-            // Build a transient owned SysProbe sharing the provider handle
-            // and interval. We bypass Arc::try_unwrap because the Arc may
-            // have outstanding references in tests.
-            let owned = sid_core::sys_probe::SysProbe::new(probe.provider(), probe.interval());
-            owned.run().await;
-        })
+        tokio::spawn(async move { probe.run().await })
     };
 
     let systemctl = wire::build_systemctl_client();
@@ -527,11 +526,14 @@ async fn main() -> Result<()> {
         None
     };
 
+    let jobs: Arc<sid_job::JobQueue<wire::JobOutcome>> = Arc::new(sid_job::JobQueue::new());
+
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
         session_id: session_id.clone(),
         sys_probe: Some(Arc::clone(&sys_probe)),
+        sys_rx: Some(sys_rx),
         systemctl,
         spawner,
         postgres,
@@ -541,12 +543,16 @@ async fn main() -> Result<()> {
         fx_state,
         modal_stack: Vec::new(),
         pending_submits: Vec::new(),
+        toasts: toast::ToastQueue::new(4),
+        jobs,
     };
 
-    // Set up terminal.
+    // Set up terminal. Mouse capture is enabled so the event pump receives
+    // wheel scrolls and click events alongside keyboard input; the wire layer
+    // routes them in `run_event_loop`.
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -559,9 +565,12 @@ async fn main() -> Result<()> {
     pump.abort();
     probe_task.abort();
 
-    // Restore terminal.
+    // Restore terminal. Disable mouse capture in the same execute! call so a
+    // crash before this point still releases the terminal cleanly on the
+    // next process invocation (the Drop won't run, but the next process's
+    // EnableMouseCapture supersedes any stale state).
     disable_raw_mode()?;
-    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
     terminal.show_cursor()?;
 
     // Mark session ended.
