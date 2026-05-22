@@ -44,6 +44,35 @@ use crate::settings::theme_picker::{ThemePickerOutcome, ThemePickerView};
 use crate::settings::workspace_roots::WorkspaceRootsView;
 use crate::stub::ComingSoonBody;
 
+/// Encode a [`BehaviorTogglesOutcome::Toggled`] payload as a
+/// query-string-style key/value blob for [`emit_action_with_payload`].
+/// The wire layer's settings-outcome dispatch parses this back.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::behavior_toggles::ToggleValue;
+/// use sid_widgets::settings::encode_behavior_payload;
+///
+/// let s = encode_behavior_payload("auto_restore_session", &ToggleValue::Bool(true));
+/// assert_eq!(s, "key=auto_restore_session&kind=bool&value=true");
+/// ```
+pub fn encode_behavior_payload(
+    key: &str,
+    value: &crate::settings::behavior_toggles::ToggleValue,
+) -> String {
+    use crate::settings::behavior_toggles::ToggleValue;
+    match value {
+        ToggleValue::Bool(b) => format!("key={key}&kind=bool&value={b}"),
+        ToggleValue::Choice { options, selected } => {
+            let picked = options.get(*selected).cloned().unwrap_or_default();
+            format!("key={key}&kind=choice&value={picked}")
+        }
+        ToggleValue::U64 { value, .. } => format!("key={key}&kind=u64&value={value}"),
+        ToggleValue::String(s) => format!("key={key}&kind=string&value={s}"),
+    }
+}
+
 /// One sub-view in the Settings tab.
 pub enum SettingsCategory {
     /// Theme picker + live preview.
@@ -136,12 +165,46 @@ impl SettingsFocus {
 /// assert_eq!(w.id().as_str(), "settings.root");
 /// assert_eq!(w.title(), "Settings");
 /// ```
+/// A pending settings outcome the widget signalled. The wire layer drains
+/// these via [`SettingsWidget::take_pending_outcomes`] each event-loop pass
+/// and dispatches them to the right [`sid_store::Store`] put_* method.
+///
+/// Carried out-of-band (in addition to the [`WidgetCtx::emit_action_with_payload`]
+/// emit) so the binary can act without having to listen on the action
+/// channel that `App::handle_event` owns.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::PendingSettingsOutcome;
+/// use sid_widgets::settings::behavior_toggles::ToggleValue;
+///
+/// let o = PendingSettingsOutcome::BehaviorToggled {
+///     key: "auto_restore_session",
+///     value: ToggleValue::Bool(true),
+/// };
+/// assert!(matches!(o, PendingSettingsOutcome::BehaviorToggled { .. }));
+/// ```
+#[derive(Clone, Debug)]
+pub enum PendingSettingsOutcome {
+    /// User cycled a Behavior toggle; wire should `put_*` the value.
+    BehaviorToggled {
+        /// Canonical setting key (see [`sid_store::settings_keys`]).
+        key: &'static str,
+        /// New value as held by the view.
+        value: crate::settings::behavior_toggles::ToggleValue,
+    },
+}
+
 pub struct SettingsWidget {
     id: WidgetId,
     body: Option<ComingSoonBody>,
     categories: Vec<SettingsCategory>,
     focused_category: usize,
     focused_pane: SettingsFocus,
+    /// Outcomes that fired since the last drain. The binary's wire layer
+    /// drains via [`Self::take_pending_outcomes`] each event-loop pass.
+    pending_outcomes: Vec<PendingSettingsOutcome>,
 }
 
 impl SettingsWidget {
@@ -157,6 +220,7 @@ impl SettingsWidget {
             categories: Vec::new(),
             focused_category: 0,
             focused_pane: SettingsFocus::default(),
+            pending_outcomes: Vec::new(),
         }
     }
 
@@ -187,12 +251,21 @@ impl SettingsWidget {
             categories,
             focused_category: 0,
             focused_pane: SettingsFocus::default(),
+            pending_outcomes: Vec::new(),
         }
     }
 
     /// Currently-focused pane (Categories or SubView).
     pub fn focused_pane(&self) -> SettingsFocus {
         self.focused_pane
+    }
+
+    /// Drain the pending outcomes queue. Returns every outcome that
+    /// fired since the last call. The wire layer calls this after every
+    /// `app.handle_event` pass and dispatches each to the right
+    /// `Store::put_*`.
+    pub fn take_pending_outcomes(&mut self) -> Vec<PendingSettingsOutcome> {
+        std::mem::take(&mut self.pending_outcomes)
     }
 
     /// Stable string label for the focused pane.
@@ -640,15 +713,38 @@ impl Widget for SettingsWidget {
                                     EventOutcome::Bubble => {}
                                 }
                             }
+                            SettingsCategory::Behavior(v) => {
+                                use crate::settings::behavior_toggles::BehaviorTogglesOutcome;
+                                match v.handle_event(ev) {
+                                    BehaviorTogglesOutcome::None => {}
+                                    BehaviorTogglesOutcome::Toggled { key, value } => {
+                                        // Two-channel signal:
+                                        // 1) emit_action_with_payload — for any
+                                        //    listener / telemetry on the action
+                                        //    bus.
+                                        // 2) pending_outcomes — for the binary
+                                        //    wire layer to drain and dispatch
+                                        //    to Store::put_*.
+                                        let payload = encode_behavior_payload(key, &value);
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.behavior_toggle",
+                                            &payload,
+                                        );
+                                        self.pending_outcomes.push(
+                                            PendingSettingsOutcome::BehaviorToggled { key, value },
+                                        );
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
+                            }
                             SettingsCategory::Keybinds(_)
-                            | SettingsCategory::Behavior(_)
                             | SettingsCategory::WorkspaceRoots(_)
                             | SettingsCategory::QuickActions(_)
                             | SettingsCategory::DbPath(_)
                             | SettingsCategory::Reset(_) => {
-                                // Per-category event routing is implemented
-                                // by the binary wire path (which owns the
-                                // Store / ActionRegistry handles).
+                                // Per-category event routing for these is a
+                                // follow-up — each will grow its own Outcome
+                                // enum in the same pattern as Behavior + Theme.
                             }
                         }
                     }
