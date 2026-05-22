@@ -1442,6 +1442,7 @@ pub fn default_discovery_roots() -> Vec<PathBuf> {
 /// // count is how many workspaces were upserted.
 /// let _ = count;
 /// ```
+#[allow(dead_code)] // Retained for the upcoming workspaces.scan_now palette action (branch #2 follow-up).
 pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<usize> {
     struct Bridge<'a> {
         store: &'a dyn Store,
