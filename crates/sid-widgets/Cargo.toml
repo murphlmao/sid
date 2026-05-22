@@ -44,3 +44,7 @@ harness = false
 [[bench]]
 name = "workspace_detail_open"
 harness = false
+
+[[bench]]
+name = "interface_sort"
+harness = false
