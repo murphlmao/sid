@@ -228,10 +228,7 @@ impl WorkspaceDetailWidget {
             let para = Paragraph::new(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!(
-                        "scanning {} for sub-repos…",
-                        self.workspace.path.display()
-                    ),
+                    format!("scanning {} for sub-repos…", self.workspace.path.display()),
                     Style::default().fg(theme.muted.into()),
                 ),
             ]))

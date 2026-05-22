@@ -52,8 +52,7 @@ fn empty_results_shows_no_subrepos_hint() {
 
 #[test]
 fn render_shows_each_subrepo_row() {
-    let mut w =
-        WorkspaceDetailWidget::new(umbrella("/vcs/eggsight-stack", "eggsight-stack"), None);
+    let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/eggsight-stack", "eggsight-stack"), None);
     w.apply_scan_results(vec![
         summary("frontend", "main", 3, 12, 7200),
         summary("backend", "feature/x", 0, 0, 900),
@@ -108,10 +107,8 @@ fn format_age_buckets() {
 
 #[test]
 fn missing_path_still_renders_empty_state_after_scan_completes() {
-    let mut w = WorkspaceDetailWidget::new(
-        umbrella("/nonexistent/path/never/exists", "ghost"),
-        None,
-    );
+    let mut w =
+        WorkspaceDetailWidget::new(umbrella("/nonexistent/path/never/exists", "ghost"), None);
     // The binary's scan job returns an empty vec on filesystem error.
     w.apply_scan_results(vec![]);
     let s = render_to_string(&w, 200, 30);

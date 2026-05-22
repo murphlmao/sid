@@ -10,8 +10,8 @@ use sid_core::layout::Layout;
 use sid_core::tab::{Tab, TabId, TabKind, TabManager};
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
-use sid_widgets::workspace_detail::WorkspaceDetailWidget;
 use sid_widgets::WorkspacesWidget;
+use sid_widgets::workspace_detail::WorkspaceDetailWidget;
 use std::path::PathBuf;
 
 fn workspaces_tab(workspaces: Vec<Workspace>) -> Tab {
@@ -42,7 +42,10 @@ fn enter_then_push_detail_then_ctrl_w_closes() {
     let mut app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
 
     // Press Enter on the Workspaces tab — the widget emits + sets pending.
-    let _ = app.handle_event(&Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE)));
+    let _ = app.handle_event(&Event::Key(KeyChord::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
 
     // Simulate the wire layer's response: detect pending_open_detail and
     // push a Detail tab.
