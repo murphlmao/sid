@@ -29,6 +29,7 @@ use sid_core::adapters::sys::{
     ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
 };
 
+pub mod default_route;
 mod interfaces;
 mod kill;
 mod ports;
@@ -88,6 +89,10 @@ impl SysProvider for SysinfoProvider {
 
     fn kill_process(&mut self, pid: Pid, sig: Signal) -> Result<(), SysError> {
         kill::kill_process(pid, sig)
+    }
+
+    fn default_route_iface_name(&mut self) -> Result<Option<String>, SysError> {
+        default_route::read_default_route_iface()
     }
 }
 
