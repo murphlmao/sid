@@ -280,4 +280,15 @@ pub trait SysProvider: Send + Sync {
     /// - `ESRCH`           → [`SysError::NotFound`]
     /// - anything else     → [`SysError::Other`]
     fn kill_process(&mut self, pid: Pid, sig: Signal) -> Result<(), SysError>;
+
+    /// Return the name of the network interface holding the default route,
+    /// if one exists. Used by widgets to sort interfaces with the primary
+    /// WAN first.
+    ///
+    /// The default implementation returns `Ok(None)` so existing impls
+    /// compile unchanged. Concrete impls override this for their platform
+    /// (Linux reads `/proc/net/route`; macOS shells out to `route`).
+    fn default_route_iface_name(&mut self) -> Result<Option<String>, SysError> {
+        Ok(None)
+    }
 }
