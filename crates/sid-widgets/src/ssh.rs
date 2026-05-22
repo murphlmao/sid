@@ -562,6 +562,14 @@ pub struct SshWidget {
     // Embedded terminal screen for the right pane. `None` until the binary
     // (or a test) calls `set_pty_pane` after a successful connect.
     pty_pane: Option<PtyPane>,
+    // Set by the widget when the user presses `Enter` on a host in the
+    // Hosts pane. Drained by the wire layer each frame; on drain the wire
+    // layer spawns an async connect task. None when no connect is pending.
+    //
+    // This is the outbox half of "Option A" from the SSH wiring plan: the
+    // widget marks intent (alias), the binary acts on it. See
+    // `take_pending_connect`.
+    pending_connect: Option<String>,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -594,6 +602,7 @@ impl SshWidget {
             id: WidgetId::new("ssh.root"),
             focused_pane: SshFocus::default(),
             pty_pane: None,
+            pending_connect: None,
             _ssh_factory: None,
             _pty_provider: None,
         }
@@ -718,6 +727,55 @@ impl SshWidget {
     /// Detach the `PtyPane` (e.g. on disconnect).
     pub fn take_pty_pane(&mut self) -> Option<PtyPane> {
         self.pty_pane.take()
+    }
+
+    /// Borrow the alias the user just asked to connect to (set by pressing
+    /// `Enter` on a host in the Hosts pane). Read-only; the wire layer drains
+    /// via [`Self::take_pending_connect`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let w = SshWidget::new();
+    /// assert!(w.peek_pending_connect().is_none());
+    /// ```
+    pub fn peek_pending_connect(&self) -> Option<&str> {
+        self.pending_connect.as_deref()
+    }
+
+    /// Drain the pending connect intent. The wire layer calls this each
+    /// frame; when it returns `Some(alias)` the binary spawns the connect
+    /// task and the widget's `ConnectionState` is already in
+    /// `Connecting` (set by the Enter handler).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let mut w = SshWidget::new();
+    /// // No pending connect on a freshly built widget.
+    /// assert!(w.take_pending_connect().is_none());
+    /// ```
+    pub fn take_pending_connect(&mut self) -> Option<String> {
+        self.pending_connect.take()
+    }
+
+    /// Test / wire-layer hook: directly seed the pending-connect slot. The
+    /// widget itself only sets this via the Enter key path; production code
+    /// in the binary uses it to forge the same intent from a future
+    /// "Connect" action or palette entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let mut w = SshWidget::new();
+    /// w.set_pending_connect(Some("acme".into()));
+    /// assert_eq!(w.take_pending_connect().as_deref(), Some("acme"));
+    /// ```
+    pub fn set_pending_connect(&mut self, alias: Option<String>) {
+        self.pending_connect = alias;
     }
     /// Resize the embedded PTY pane to match the inner dimensions of `area`
     /// (the right-hand body rect, **before** the border subtraction).
@@ -1175,7 +1233,14 @@ impl Widget for SshWidget {
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
                         if let Some(alias) = self.state.selected_alias() {
-                            self.connection.begin_connecting(alias.to_string());
+                            let alias = alias.to_string();
+                            self.connection.begin_connecting(alias.clone());
+                            // Mark intent for the wire layer to pick up on the
+                            // next event-loop iteration. The wire layer drains
+                            // and spawns the real russh connect; on completion
+                            // it flips the connection state to Connected or
+                            // Failed via a separate outcome channel.
+                            self.pending_connect = Some(alias);
                         }
                         return EventOutcome::Consumed;
                     }
