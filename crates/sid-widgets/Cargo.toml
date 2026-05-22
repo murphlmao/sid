@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "interface_sort"
 harness = false
+
+[[bench]]
+name = "settings_dispatch"
+harness = false

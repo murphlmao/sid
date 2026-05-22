@@ -209,15 +209,6 @@ impl BehaviorTogglesView {
         }
     }
 
-    /// Cycle the focused toggle's value. `dir` is `+1` to advance and `-1` to
-    /// reverse. Other values are treated as `+1`.
-    ///
-    /// - `Bool` flips.
-    /// - `Choice` advances (wraps).
-    /// - `U64` adds `dir * step`, clamped to `[min, max]`. If `max == min`,
-    ///   no change.
-    /// - `String` is left untouched (string toggles are edited via the input
-    ///   path, not cycling).
     /// Route a key event into the view, returning what happened.
     ///
     /// Up/Down move focus only. Left/Right cycle the focused value and
@@ -277,6 +268,15 @@ impl BehaviorTogglesView {
         }
     }
 
+    /// Cycle the focused toggle's value. `dir` is `+1` to advance and `-1`
+    /// to reverse. Other values are treated as `+1`.
+    ///
+    /// - `Bool` flips.
+    /// - `Choice` advances (wraps).
+    /// - `U64` adds `dir * step`, clamped to `[min, max]`. If `max == min`,
+    ///   no change.
+    /// - `String` is left untouched (string toggles are edited via the
+    ///   input path, not cycling).
     pub fn cycle_focused_value(&mut self, dir: i32) {
         let step_dir: i64 = if dir < 0 { -1 } else { 1 };
         let Some(t) = self.toggles.get_mut(self.focused) else {

@@ -1699,6 +1699,8 @@ where
             // Workspaces widget signalled that the user pressed Enter on a
             // Repo leaf. If so, open a detail tab.
             maybe_open_pending_workspace_detail(sid_app);
+            // Drain settings outcomes (live-apply behavior toggles, etc.).
+            apply_pending_settings_outcomes(sid_app);
             let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
             if matches!(dispatch, Dispatch::Quit) {
                 break;
@@ -1706,6 +1708,60 @@ where
         }
     }
     Ok(())
+}
+
+/// Drain the active Settings widget's pending outcomes (if any) and
+/// dispatch each to the right `Store::put_*` call. Pushes a success
+/// toast per applied outcome; pushes an error toast on `put_*` failure.
+fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
+    use sid_core::layout::Layout;
+    use sid_store::TypedSettings;
+    use sid_widgets::settings::PendingSettingsOutcome;
+    use sid_widgets::settings::behavior_toggles::ToggleValue;
+
+    // Find the settings tab; bail if it's not present (custom test setups).
+    let Some(settings_tab) = sid_app
+        .app
+        .tabs_mut()
+        .tabs_mut()
+        .iter_mut()
+        .find(|t| t.id.as_str() == "settings")
+    else {
+        return;
+    };
+    let Layout::Single(w) = &mut settings_tab.layout else {
+        return;
+    };
+    let Some(settings) = w.as_any_mut().downcast_mut::<sid_widgets::SettingsWidget>() else {
+        return;
+    };
+    let outcomes = settings.take_pending_outcomes();
+    if outcomes.is_empty() {
+        return;
+    }
+
+    for outcome in outcomes {
+        let PendingSettingsOutcome::BehaviorToggled { key, value } = outcome;
+        let put_result = match &value {
+            ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
+            ToggleValue::Choice { options, selected } => {
+                let picked = options.get(*selected).cloned().unwrap_or_default();
+                sid_app.store.put_string(key, &picked)
+            }
+            ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
+            ToggleValue::String(s) => sid_app.store.put_string(key, s),
+        };
+        match put_result {
+            Ok(()) => {
+                sid_app.toasts.push(Toast::success(format!("Saved {key}")));
+            }
+            Err(e) => {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("Save failed for {key}: {e}")));
+            }
+        }
+    }
 }
 
 /// If the Workspaces widget has a pending `take_pending_open_detail` flag,

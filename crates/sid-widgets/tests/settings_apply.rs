@@ -26,8 +26,14 @@ fn right_arrow_emits_toggled_outcome() {
 #[test]
 fn up_down_only_moves_focus_no_outcome() {
     let mut v = BehaviorTogglesView::defaults();
-    assert_eq!(v.handle_event(&key(KeyCode::Down)), BehaviorTogglesOutcome::None);
-    assert_eq!(v.handle_event(&key(KeyCode::Up)), BehaviorTogglesOutcome::None);
+    assert_eq!(
+        v.handle_event(&key(KeyCode::Down)),
+        BehaviorTogglesOutcome::None
+    );
+    assert_eq!(
+        v.handle_event(&key(KeyCode::Up)),
+        BehaviorTogglesOutcome::None
+    );
 }
 
 #[test]

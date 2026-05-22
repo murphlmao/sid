@@ -63,11 +63,7 @@ impl WidgetCtx {
     ///     "settings.outcome.theme?name=cosmos",
     /// );
     /// ```
-    pub fn emit_action_with_payload(
-        &mut self,
-        id: impl Into<String>,
-        payload: impl AsRef<str>,
-    ) {
+    pub fn emit_action_with_payload(&mut self, id: impl Into<String>, payload: impl AsRef<str>) {
         let mut s = id.into();
         s.push('?');
         s.push_str(payload.as_ref());
