@@ -212,6 +212,130 @@ This is a structural rule, not a style preference:
 
 ---
 
+## Claude Code automation (for AI-assisted sessions)
+
+This repo ships a project-local Claude Code plugin, a PreToolUse hook, and a CI workflow that mechanise the rigor bar above. They are not optional polish — they are the difference between "I remembered to run the gate" and "the gate ran".
+
+**When you add, change, or remove any of the components below, update this section in the same commit.** This section is the load-bearing answer to "what tooling helps me work in sid?" — keep it accurate.
+
+### `sid-testing` plugin
+
+Installed once per machine:
+
+```text
+/plugin marketplace add /home/murphy/vcs/sid
+/plugin install sid-testing@sid
+/reload-plugins
+```
+
+The plugin lives at `.claude/plugins/sid-testing/`; the marketplace manifest is at `.claude-plugin/marketplace.json`. Both travel with the repo. Adding a new skill or agent means dropping a file under `skills/` or `agents/` and rerunning `/reload-plugins`.
+
+**Skills** (invoke as slash commands):
+
+| Skill | Purpose | Args |
+|---|---|---|
+| `/mc-dc-audit` | Audit a file or crate for Modified Condition/Decision Coverage. Walks every boolean decision, maps it against existing tests, reports independence gaps, generates test stubs. | `<file-or-crate>` or empty |
+| `/mutation-hunt` | Run `cargo-mutants` on a crate, parse survivors, dispatch fixer subagents to write killing tests. Caps at 20 mutants per invocation. Requires `cargo install cargo-mutants`. | `<crate>` or empty |
+| `/sid-gate` | Verification gate: parallel `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `cargo deny check`. Reports green/red per gate. Refuses to claim "ready" if any gate is red. | `<crate>` or empty; `--full` adds doc + release tests |
+
+**Agents** (delegate to with the Agent tool):
+
+| Agent | Purpose |
+|---|---|
+| `rust-test-writer` | Given a function, type, or module, writes the full 8-item test set per `docs/TESTING.md` (unit / doc / adversarial / property / snapshot / criterion / loom / integration). Picks which items apply, places tests correctly, runs them, returns a structured patch report. Does not auto-commit. Does not modify production code. |
+
+### Adapter-violation hook
+
+`.claude/hooks/adapter-violation.sh` is wired into `.claude/settings.local.json` as a PreToolUse hook on `Edit | Write`. It blocks the edit with a sid-flavoured fix recommendation if the new content adds a forbidden `use`:
+
+- `crates/sid-widgets/**` must not name: `redb`, `russh`, `russh_sftp`, `russh_keys`, `git2`, `tokio_postgres`, `rusqlite`, `portable_pty`, `vt100`, `sysinfo`, `netstat2`, `nix`, `csv`. (`ratatui` is permitted by exception — widgets are the rendering surface.)
+- `crates/sid-core/**` must not name: `ratatui`, `redb`. (`tokio` and `crossterm` are permitted by carve-out.)
+
+If you legitimately need a carve-out, document it in this file's "Adapter pattern enforcement" section *and* add the crate to the hook's forbidden list with the right polarity. Never silently disable the hook.
+
+### Permission allowlist
+
+`.claude/settings.local.json` pre-approves the common cargo/git/rg patterns (`cargo test *`, `cargo clippy *`, `cargo fmt *`, `cargo bench *`, `cargo llvm-cov *`, `cargo mutants *`, `cargo insta *`, `cargo deny *`, etc., plus read-only git and `rg`). When you add a new tool to this list, prefer the narrowest workable pattern.
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and PR:
+
+- `fmt` — `cargo fmt --all -- --check`
+- `clippy` — `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `test` — `cargo test --workspace --all-features --no-fail-fast` on Linux **and** macOS
+- `doctests` — `cargo test --doc --workspace --all-features`
+- `deny` — `cargo deny check` against `deny.toml`
+- `coverage` — `cargo llvm-cov --workspace --all-features --branch --fail-under-lines 80`
+- `gate` — aggregate job that depends on all of the above; this is the single check for branch protection.
+
+If CI fails on a change, fix the change. Do not weaken any of the gates. If a gate becomes a recurring noise source rather than a useful signal, raise it as a design issue, not a CI-config issue.
+
+### `sid-mcp` server
+
+`crates/sid-mcp/` is a Rust crate that ships an MCP (Model Context Protocol) server. It is invoked as `sid mcp` — a subcommand of the main binary — and speaks JSON-RPC 2.0 over stdio. Registered for Claude Code via `.mcp.json` at the repo root. The server exposes structured codebase introspection so skills and agents stop having to grep around for their input data.
+
+**Tools exposed** (all return JSON):
+
+| Tool | Purpose |
+|---|---|
+| `tool_manifest` | Return the dependency manifest (see below). Meta-tool for blast-radius analysis. |
+| `crate_info` | Cargo metadata + LOC + test count + pub-item count + critical-path flag for one crate. |
+| `find_pub_item` | Locate a public item by name; return file:line, kind, doc-comment status, optionally scoped to a crate. |
+| `pub_items_without_doc_tests` | List public items lacking a doc test — the CLAUDE.md doc-test contract surfaced as actionable data. |
+| `coverage_summary` | `cargo llvm-cov` results per crate; flags critical-path crates below 95%. Cached at `target/llvm-cov/sid-mcp-cache.json`. |
+| `gate_status` | Read the last cached `/sid-gate` outcome from `target/gate-logs/`. Does **not** run the gate. |
+| `plan_status` | Per-plan task completion (`- [ ]` / `- [x]` counts) parsed from `docs/superpowers/plans/*.md`. |
+| `recent_commits` | Recent git commits, optionally scoped to a crate's directory. |
+| `criterion_compare` | Compare criterion bench results vs the saved baseline; flag any `delta_pct >= threshold` (default 10% per CLAUDE.md). |
+
+**Dependency manifest** (source of truth: `crates/sid-mcp/tools.toml`). For every tool, the manifest declares:
+
+- `description` (mirrors the `#[tool(description = ...)]` attribute on the Rust impl)
+- `schema_version` (bump on a breaking change to tool input/output shape)
+- `depends_on` (file globs whose meaningful changes invalidate the tool's output)
+
+And for every downstream consumer (skill or agent) the manifest lists `tools = [...]` and a one-line `purpose`. The `tool_manifest` MCP tool exposes this manifest at runtime so a session can ask "what breaks if I change tool X?".
+
+### MCP maintenance contract (binding)
+
+The MCP server is part of the testing infrastructure — when it drifts, downstream agents and skills go wrong silently. The rules:
+
+1. **Schema-version bump triggers consumer review.** When you bump a tool's `schema_version` in `tools.toml`, every consumer listed under `[consumers]` that calls that tool MUST be reviewed in the same commit. If a consumer's behaviour relied on the old schema, update the consumer's SKILL.md or agent system prompt to match. The same commit lands the schema change, the consumer updates, and any test updates.
+2. **Tool semantics change triggers tool re-implementation review.** When an internal subsystem an MCP tool reads from changes meaningfully — new convention in `target/gate-logs/`, postcard layout change in `sid-store`, new structure under `docs/superpowers/plans/` — the corresponding `crates/sid-mcp/src/tools/<name>.rs` MUST be revisited. The `depends_on` field in `tools.toml` is the index of what subsystems each tool reads from. Use it as a checklist.
+3. **New consumer registers itself.** When you add a skill or agent that calls one or more MCP tools, add an entry to `[consumers]` in the same commit. The manifest's `validate()` method (run by `cargo test -p sid-mcp manifest::tests::load_real_manifest_in_repo_parses_cleanly`) will fail the build if a consumer references a tool that doesn't exist.
+4. **Maintenance contract drift IS a bug.** If `tools.toml` says a consumer uses tool X but the consumer no longer does, fix the manifest in the same PR. If the manifest lists a tool that doesn't have an impl, fix the impl in the same PR.
+
+The full sequence of "what to update where" when changing tool semantics:
+
+```text
+1. crates/sid-mcp/src/tools/<name>.rs        — the impl
+2. crates/sid-mcp/src/lib.rs                 — the #[tool] description + param struct
+3. crates/sid-mcp/tools.toml                 — schema_version + depends_on
+4. .claude/plugins/sid-testing/skills/...    — every consumer SKILL.md
+5. .claude/plugins/sid-testing/agents/...    — every consumer agent
+6. CLAUDE.md                                 — this section, if the tool surface itself changed
+```
+
+Skipping any step is a PR-blocking review finding.
+
+### Skills + agents added by `sid-mcp` consumers
+
+| Component | Type | Calls these MCP tools |
+|---|---|---|
+| `/coverage-report` | skill | `coverage_summary` |
+| `/perf-check` | skill | `criterion_compare`, `recent_commits` |
+| `sid-store-reviewer` | agent | `crate_info`, `find_pub_item`, `pub_items_without_doc_tests`, `coverage_summary`, `recent_commits` |
+| `widget-render-reviewer` | agent | `crate_info`, `find_pub_item`, `pub_items_without_doc_tests`, `recent_commits` |
+
+When updating the tool surface, walk this table and update each consumer's prose if its inputs change.
+
+### Maintenance contract
+
+Any change to plugin skills, the hook, the allowlist, the CI workflow, *or this section* lands in a single commit. The commit body states what changed and why. Skills/agents/hooks that drift away from this section's description are bugs — fix the section *or* fix the implementation, never let them disagree.
+
+---
+
 ## What to do when uncertain
 
 - If a directive in this file conflicts with the user's instruction, **ask** before bypassing the directive.
