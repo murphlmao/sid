@@ -43,6 +43,37 @@ impl WidgetCtx {
         let _ = self.action_tx.send(id.into());
     }
 
+    /// Emit an action with a query-string-style payload appended after `?`.
+    /// The receiver parses by splitting on the first `?`.
+    ///
+    /// Used by Settings sub-views to ship typed outcomes (key + value)
+    /// through the same `Sender<String>` channel as plain actions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::mpsc;
+    /// use sid_core::context::WidgetCtx;
+    ///
+    /// let (tx, rx) = mpsc::channel();
+    /// let mut ctx = WidgetCtx::new(tx);
+    /// ctx.emit_action_with_payload("settings.outcome.theme", "name=cosmos");
+    /// assert_eq!(
+    ///     rx.try_recv().unwrap(),
+    ///     "settings.outcome.theme?name=cosmos",
+    /// );
+    /// ```
+    pub fn emit_action_with_payload(
+        &mut self,
+        id: impl Into<String>,
+        payload: impl AsRef<str>,
+    ) {
+        let mut s = id.into();
+        s.push('?');
+        s.push_str(payload.as_ref());
+        let _ = self.action_tx.send(s);
+    }
+
     /// Mark the screen as dirty; the next event-loop iteration redraws.
     ///
     /// # Examples
