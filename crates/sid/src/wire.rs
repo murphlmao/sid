@@ -723,6 +723,7 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
         "tabs.next",
         "tabs.prev",
         "app.open_settings",
+        "tab.close",
         "tab.detach",
         "tab.attach",
         "tab.reload",
