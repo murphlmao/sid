@@ -314,7 +314,8 @@ impl NetworkWidget {
     pub fn apply_snapshot(&mut self, snap: sid_core::sys_probe::SysSnapshot) {
         self.ports.set_data(snap.listening_ports);
         self.procs.set_data(snap.processes);
-        self.ifs.set_data(snap.interfaces);
+        self.ifs
+            .set_data_with_default_route(snap.interfaces, snap.default_route_iface.as_deref());
     }
 
     /// Cycle focus forward (Tab).
