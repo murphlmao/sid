@@ -33,6 +33,7 @@ use crate::tab::TabManager;
 ///     fn render(&self, _: &mut dyn RenderTarget) {}
 ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
 ///     fn as_any(&self) -> &dyn std::any::Any { self }
+///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 /// }
 ///
 /// let tabs = TabManager::new(vec![Tab {
@@ -77,6 +78,7 @@ impl App {
     ///     fn render(&self, _: &mut dyn RenderTarget) {}
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     ///     fn as_any(&self) -> &dyn std::any::Any { self }
+    ///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// }
     ///
     /// let tabs = TabManager::new(vec![Tab {
@@ -167,6 +169,7 @@ impl App {
     ///     fn render(&self, _: &mut dyn RenderTarget) {}
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     ///     fn as_any(&self) -> &dyn std::any::Any { self }
+    ///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// }
     ///
     /// let tabs = TabManager::new(vec![Tab {
@@ -209,6 +212,7 @@ impl App {
     ///     fn render(&self, _: &mut dyn RenderTarget) {}
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     ///     fn as_any(&self) -> &dyn std::any::Any { self }
+    ///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// }
     ///
     /// let tabs = TabManager::new(vec![Tab {
@@ -251,6 +255,7 @@ impl App {
     ///     fn render(&self, _: &mut dyn RenderTarget) {}
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     ///     fn as_any(&self) -> &dyn std::any::Any { self }
+    ///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// }
     ///
     /// let tabs = TabManager::new(vec![Tab {
@@ -330,6 +335,7 @@ impl App {
     ///     fn render(&self, _: &mut dyn RenderTarget) {}
     ///     fn handle_event(&mut self, _: &Event, _: &mut WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
     ///     fn as_any(&self) -> &dyn std::any::Any { self }
+    ///     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     /// }
     ///
     /// let tabs = TabManager::new(vec![Tab {

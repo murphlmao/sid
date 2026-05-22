@@ -1305,6 +1305,12 @@ pub struct WorkspacesWidget {
     /// Strict pane-focus marker. Tab toggles between [`WsFocus::Tree`] and
     /// [`WsFocus::SubView`].
     focused_pane: WsFocus,
+    /// Set by the Enter handler when the user pressed Enter on a Repo leaf.
+    /// The wire layer drains this via [`Self::take_pending_open_detail`] after
+    /// every event loop pass and builds a [`crate::WorkspaceDetailWidget`] +
+    /// pushes it as a detail tab. Kept here so the widget owns the signal
+    /// without the binary needing a custom action-channel listener.
+    pending_open_detail: Option<sid_store::Workspace>,
 }
 
 impl WorkspacesWidget {
@@ -1330,7 +1336,19 @@ impl WorkspacesWidget {
             git_factory,
             open_repos: HashMap::new(),
             focused_pane: WsFocus::default(),
+            pending_open_detail: None,
         }
+    }
+
+    /// Drain the pending-open-detail flag. Returns `Some(workspace)` exactly
+    /// once after the user pressed Enter on a Repo leaf; subsequent calls
+    /// return `None` until another Enter fires.
+    ///
+    /// The wire layer calls this after every event-loop pass; on `Some` it
+    /// builds a [`crate::WorkspaceDetailWidget`] and pushes it as a detail
+    /// tab.
+    pub fn take_pending_open_detail(&mut self) -> Option<sid_store::Workspace> {
+        self.pending_open_detail.take()
     }
 
     /// Currently-focused pane.
@@ -1850,6 +1868,10 @@ impl Widget for WorkspacesWidget {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
             FooterHint::new("N", "new workspace"),
@@ -1932,13 +1954,17 @@ impl Widget for WorkspacesWidget {
                         // layer can build a WorkspaceDetailWidget and push it
                         // as a new tab (branch #3). Umbrellas keep the
                         // toggle-expand behavior for muscle memory.
-                        let kind = self.state.selected_workspace().map(|w| w.kind.clone());
-                        match kind {
+                        let selected = self.state.selected_workspace().cloned();
+                        match selected.as_ref().map(|w| &w.kind) {
                             Some(WorkspaceKind::Umbrella) => {
                                 self.state.toggle_expand_selected();
                             }
                             Some(WorkspaceKind::Repo) => {
+                                // Emit the action for the keybind tracker
+                                // (logs / future analytics) AND set the
+                                // pending-flag the binary will drain.
                                 ctx.emit_action("workspaces.open_detail");
+                                self.pending_open_detail = selected;
                             }
                             None => {}
                         }

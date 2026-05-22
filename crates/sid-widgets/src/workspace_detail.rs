@@ -357,6 +357,10 @@ impl Widget for WorkspaceDetailWidget {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn render(&self, _: &mut dyn RenderTarget) {}
 
     fn footer_hint(&self) -> Vec<FooterHint> {

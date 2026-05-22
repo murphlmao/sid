@@ -137,6 +137,14 @@ pub enum JobOutcome {
         /// Captured stderr trailer / launch error.
         message: String,
     },
+    /// A workspace detail scan completed. The widget identified by `tab_id`
+    /// receives `summaries` via apply_scan_results. No toast — silent.
+    WorkspaceDetailScanned {
+        /// `TabId.as_str()` for the detail tab that requested the scan.
+        tab_id: String,
+        /// Discovered sub-repo summaries.
+        summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+    },
 }
 
 /// Top-level wired application state owned by the binary.
@@ -1687,6 +1695,10 @@ where
 
         if !handled {
             let dispatch = sid_app.app.handle_event(&ev);
+            // After the widget(s) have processed the event, check if the
+            // Workspaces widget signalled that the user pressed Enter on a
+            // Repo leaf. If so, open a detail tab.
+            maybe_open_pending_workspace_detail(sid_app);
             let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
             if matches!(dispatch, Dispatch::Quit) {
                 break;
@@ -1694,6 +1706,125 @@ where
         }
     }
     Ok(())
+}
+
+/// If the Workspaces widget has a pending `take_pending_open_detail` flag,
+/// drain it and push a new [`sid_widgets::WorkspaceDetailWidget`] as a
+/// detail tab. No-op when the flag is unset.
+///
+/// Avoids duplicate tabs: if a detail tab for the same workspace path is
+/// already open, switches to it instead of pushing a new one.
+fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
+    use sid_core::layout::Layout;
+    use sid_core::tab::{Tab, TabId, TabKind};
+
+    // Find the workspaces tab and drain its pending flag.
+    let parent_idx = match sid_app
+        .app
+        .tabs()
+        .tabs()
+        .iter()
+        .position(|t| t.id.as_str() == "workspaces")
+    {
+        Some(i) => i,
+        None => return,
+    };
+    let workspace = {
+        let tabs = sid_app.app.tabs_mut().tabs_mut();
+        let Some(tab) = tabs.get_mut(parent_idx) else {
+            return;
+        };
+        let Layout::Single(w) = &mut tab.layout else {
+            return;
+        };
+        let Some(ws_widget) = w
+            .as_any_mut()
+            .downcast_mut::<sid_widgets::WorkspacesWidget>()
+        else {
+            return;
+        };
+        match ws_widget.take_pending_open_detail() {
+            Some(ws) => ws,
+            None => return,
+        }
+    };
+
+    let tab_id_str = format!("workspace_detail:{}", workspace.path.display());
+    let tab_id = TabId::new(&tab_id_str);
+
+    // Already open? Just switch.
+    if sid_app.app.tabs().tabs().iter().any(|t| t.id == tab_id) {
+        let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+        return;
+    }
+
+    let widget = sid_widgets::WorkspaceDetailWidget::new(workspace.clone(), None);
+    let new_tab = Tab {
+        id: tab_id.clone(),
+        title: workspace.name.clone(),
+        layout: Layout::Single(Box::new(widget)),
+        hotkey: None,
+        kind: TabKind::Detail { parent_idx },
+    };
+    if let Err(e) = sid_app.app.tabs_mut().push_detail(new_tab) {
+        sid_app
+            .toasts
+            .push(Toast::error(format!("open workspace detail: {e}")));
+        return;
+    }
+    let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+
+    // Spawn the scan job. Completion routes back to apply_workspace_detail_scan
+    // via drain_job_outcomes.
+    let path = workspace.path.clone();
+    let scan_tab_id = tab_id_str;
+    let _ = sid_app.jobs.spawn(async move {
+        let summaries = scan_workspace_for_summaries(&path).await;
+        JobOutcome::WorkspaceDetailScanned {
+            tab_id: scan_tab_id,
+            summaries,
+        }
+    });
+}
+
+/// Walk `path` one level deep, find each git repo, and build a
+/// [`sid_widgets::workspace_detail::RepoSummary`] for each. Best-effort —
+/// failures on individual repos are reported with placeholder defaults.
+async fn scan_workspace_for_summaries(
+    path: &std::path::Path,
+) -> Vec<sid_widgets::workspace_detail::RepoSummary> {
+    use sid_core::workspace_discovery::scan_workspace_root;
+    use sid_widgets::workspace_detail::{CiStatus, RepoSummary};
+    let discovered = match scan_workspace_root(path, 1) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("scan_workspace_root({}) failed: {e}", path.display());
+            return Vec::new();
+        }
+    };
+    discovered
+        .into_iter()
+        .filter(|d| d.kind == sid_core::workspace_metadata::WorkspaceKind::Repo)
+        .map(|d| {
+            let name = d
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| d.path.display().to_string());
+            // v1: branch / ahead-behind / dirty / age are best-effort defaults.
+            // A follow-up will wire the real GitProvider per row.
+            RepoSummary {
+                path: d.path.clone(),
+                name,
+                branch: "?".into(),
+                ahead: 0,
+                behind: 0,
+                dirty: 0,
+                last_commit_age_secs: 0,
+                ci_status: CiStatus::Unknown,
+            }
+        })
+        .collect()
 }
 
 /// Spawn a new external terminal window running `sid --start-tab <active>`.
@@ -2929,10 +3060,36 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
                     .toasts
                     .push(Toast::error(format!("{label}: {message}")));
             }
+            Ok(JobOutcome::WorkspaceDetailScanned { tab_id, summaries }) => {
+                apply_workspace_detail_scan(sid_app, &tab_id, summaries);
+            }
             Err(e) => {
                 sid_app.toasts.push(Toast::error(format!("job: {e}")));
             }
         }
+    }
+}
+
+/// Route a completed workspace-detail scan to the widget identified by
+/// `tab_id`. No-op if the tab was closed before the scan completed.
+fn apply_workspace_detail_scan(
+    sid_app: &mut SidApp,
+    tab_id: &str,
+    summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+) {
+    use sid_core::layout::Layout;
+    for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
+        if tab.id.as_str() != tab_id {
+            continue;
+        }
+        if let Layout::Single(w) = &mut tab.layout
+            && let Some(detail) = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::WorkspaceDetailWidget>()
+        {
+            detail.apply_scan_results(summaries);
+        }
+        return;
     }
 }
 

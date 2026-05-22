@@ -1050,6 +1050,10 @@ impl Widget for DatabaseWidget {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
             FooterHint::new("N", "new"),
