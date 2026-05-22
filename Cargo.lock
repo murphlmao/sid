@@ -3790,6 +3790,7 @@ name = "sid"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "color-eyre",
  "criterion",

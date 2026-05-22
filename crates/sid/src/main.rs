@@ -554,6 +554,7 @@ async fn main() -> Result<()> {
     };
 
     let jobs: Arc<sid_job::JobQueue<wire::JobOutcome>> = Arc::new(sid_job::JobQueue::new());
+    let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let mut sid_app = wire::SidApp {
         app,
@@ -572,6 +573,12 @@ async fn main() -> Result<()> {
         pending_submits: Vec::new(),
         toasts: toast::ToastQueue::new(4),
         jobs,
+        ssh_client_factory: wire::build_ssh_client_factory_fn(),
+        ssh_outcome_tx,
+        ssh_outcome_rx,
+        ssh_byte_rx: None,
+        ssh_last_pty_area: None,
+        ssh_shutdown_tx: None,
     };
 
     // Offer the user a resume-or-start-fresh modal if the previous session

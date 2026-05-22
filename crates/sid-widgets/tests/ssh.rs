@@ -200,3 +200,81 @@ fn focus_at_outside_area_is_noop() {
     w.focus_at(area, 200, 5); // right of area.right()
     assert_eq!(w.focused_pane(), original);
 }
+
+// ---------------------------------------------------------------------------
+// pending_connect — Enter on a host in the Hosts pane queues a connect intent
+// ---------------------------------------------------------------------------
+
+fn host_for(alias: &str) -> sid_store::SshHost {
+    sid_store::SshHost {
+        alias: alias.into(),
+        host: format!("{alias}.example"),
+        port: 22,
+        user: "u".into(),
+        identity_file: None,
+        source: sid_store::SshHostSource::Manual,
+        last_connected: 0,
+        command_history: vec![],
+        last_sftp_path: None,
+        auth_kind: sid_store::SshAuthKind::Agent,
+    }
+}
+
+#[test]
+fn enter_on_host_sets_pending_connect_and_marks_connecting() {
+    use sid_widgets::ssh::ConnectionPhase;
+    let state = sid_widgets::ssh::SshState::new(vec![host_for("alpha"), host_for("bravo")], vec![]);
+    let mut w = SshWidget::with_state(state);
+    let mut c = ctx();
+    assert_eq!(w.focused_pane(), SshFocus::Hosts);
+    assert_eq!(w.connection().phase(), ConnectionPhase::Idle);
+    assert!(w.peek_pending_connect().is_none());
+
+    w.handle_event(&key(KeyCode::Enter, KeyModifiers::NONE), &mut c);
+
+    assert_eq!(w.connection().phase(), ConnectionPhase::Connecting);
+    assert_eq!(w.connection().alias(), Some("alpha"));
+    assert_eq!(w.peek_pending_connect(), Some("alpha"));
+
+    let taken = w.take_pending_connect();
+    assert_eq!(taken.as_deref(), Some("alpha"));
+    // Take is destructive — the second drain sees None.
+    assert!(w.peek_pending_connect().is_none());
+    assert!(w.take_pending_connect().is_none());
+    // But the connection state stays Connecting until the wire layer flips
+    // it after the connect future resolves.
+    assert_eq!(w.connection().phase(), ConnectionPhase::Connecting);
+}
+
+#[test]
+fn enter_on_empty_host_list_is_a_noop() {
+    let mut w = SshWidget::new();
+    let mut c = ctx();
+    w.handle_event(&key(KeyCode::Enter, KeyModifiers::NONE), &mut c);
+    assert!(w.peek_pending_connect().is_none());
+}
+
+#[test]
+fn enter_when_detail_focused_does_not_queue_a_connect() {
+    let state = sid_widgets::ssh::SshState::new(vec![host_for("alpha")], vec![]);
+    let mut w = SshWidget::with_state(state);
+    let mut c = ctx();
+    w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+    assert_eq!(w.focused_pane(), SshFocus::Detail);
+    w.handle_event(&key(KeyCode::Enter, KeyModifiers::NONE), &mut c);
+    assert!(w.peek_pending_connect().is_none());
+}
+
+#[test]
+fn set_pending_connect_seed_then_drain() {
+    let mut w = SshWidget::new();
+    assert!(w.take_pending_connect().is_none());
+    w.set_pending_connect(Some("forced".into()));
+    assert_eq!(w.peek_pending_connect(), Some("forced"));
+    assert_eq!(w.take_pending_connect().as_deref(), Some("forced"));
+    assert!(w.peek_pending_connect().is_none());
+    // Clearing back to None is also fine.
+    w.set_pending_connect(Some("again".into()));
+    w.set_pending_connect(None);
+    assert!(w.take_pending_connect().is_none());
+}

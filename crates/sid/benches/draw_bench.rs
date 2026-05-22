@@ -9,7 +9,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use sid::toast::ToastQueue;
-use sid::wire::{JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app, draw};
+use sid::wire::{
+    JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app,
+    build_ssh_client_factory_fn, draw,
+};
 use sid_store::{OpenStore, RedbStore, Store};
 use tempfile::tempdir;
 
@@ -22,6 +25,7 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
     let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
         sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
     );
+    let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
     SidApp {
         app: build_app(start_tab, vec![]),
         store,
@@ -39,6 +43,12 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         pending_submits: Vec::new(),
         toasts: ToastQueue::new(4),
         jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
+        ssh_client_factory: build_ssh_client_factory_fn(),
+        ssh_outcome_tx,
+        ssh_outcome_rx,
+        ssh_byte_rx: None,
+        ssh_last_pty_area: None,
+        ssh_shutdown_tx: None,
     }
 }
 

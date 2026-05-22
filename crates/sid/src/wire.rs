@@ -44,8 +44,72 @@ use sid_widgets::{
 };
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::error::TryRecvError as MpscTryRecvError;
 
 use crate::toast::{Toast, ToastQueue};
+
+/// Type alias for the SSH client factory: a callable that returns a fresh
+/// `Box<dyn SshClient>` per invocation. The production binary wires this to
+/// [`sid_ssh::RusshClientFactory::new_client`]; tests substitute a mock.
+///
+/// Held as an `Arc<dyn Fn(...) ...>` so the same closure can be cloned into
+/// every spawned connect task without re-creating it.
+pub type SshClientFactoryFn =
+    Arc<dyn Fn() -> Box<dyn sid_core::adapters::ssh::SshClient> + Send + Sync>;
+
+/// Outcome of an asynchronous SSH connect attempt. Produced by the task
+/// spawned by [`drain_pending_ssh_connect`] and consumed by
+/// [`drain_ssh_outcomes`] on the next event-loop iteration.
+///
+/// The `Connected` variant ships the freshly constructed [`sid_widgets::ssh::PtyPane`]
+/// plus a byte-stream receiver. The wire layer attaches the pane to the
+/// widget and stashes the receiver on `SidApp.ssh_byte_rx`; subsequent
+/// frames drain bytes from the receiver into the pane.
+///
+/// The `Failed` variant carries the alias the user attempted plus a
+/// human-readable error message that becomes the body of a toast.
+pub enum SshConnectOutcome {
+    /// SSH connect + `open_shell` succeeded.
+    Connected {
+        /// Alias that was connected.
+        alias: String,
+        /// Freshly created PTY pane wrapping a `Vt100Screen`. Ownership
+        /// transfers to the widget when the wire layer drains this outcome.
+        pty: sid_widgets::ssh::PtyPane,
+        /// Channel that receives stdout bytes from the remote shell. The
+        /// wire layer owns it and forwards bytes to the widget's pane each
+        /// frame. Drop the sender (held by the spawned reader task) to
+        /// terminate the reader on disconnect.
+        byte_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        /// One-shot shutdown signal for the reader task. Send `()` (or
+        /// drop) to stop the background reader.
+        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    },
+    /// SSH connect or `open_shell` failed. The widget flips to
+    /// `ConnectionPhase::Failed` and a toast is pushed.
+    Failed {
+        /// Alias that was attempted.
+        alias: String,
+        /// Human-readable error body.
+        error: String,
+    },
+}
+
+impl std::fmt::Debug for SshConnectOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected { alias, .. } => f
+                .debug_struct("Connected")
+                .field("alias", alias)
+                .finish_non_exhaustive(),
+            Self::Failed { alias, error } => f
+                .debug_struct("Failed")
+                .field("alias", alias)
+                .field("error", error)
+                .finish(),
+        }
+    }
+}
 
 /// Outcome of a background job spawned via [`SidApp::jobs`]. Each variant
 /// carries a short human-readable label (used in the toast prefix) and the
@@ -95,6 +159,7 @@ pub enum JobOutcome {
 /// let app = build_app(None, vec![]);
 /// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
 ///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
+/// let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
 /// let sid_app = SidApp {
 ///     app,
 ///     store,
@@ -112,6 +177,12 @@ pub enum JobOutcome {
 ///     pending_submits: Vec::new(),
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::<JobOutcome>::new()),
+///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
+///     ssh_outcome_tx,
+///     ssh_outcome_rx,
+///     ssh_byte_rx: None,
+///     ssh_last_pty_area: None,
+///     ssh_shutdown_tx: None,
 /// };
 /// ```
 pub struct SidApp {
@@ -165,6 +236,31 @@ pub struct SidApp {
     /// the event loop drains completed outcomes once per iteration and
     /// converts them into toasts.
     pub jobs: Arc<sid_job::JobQueue<JobOutcome>>,
+    /// Factory closure used to spawn a fresh `SshClient` for every new
+    /// connect attempt. The production binary uses
+    /// [`build_ssh_client_factory_fn`]; tests substitute a mock that returns
+    /// a hand-rolled `SshClient`.
+    pub ssh_client_factory: SshClientFactoryFn,
+    /// Sender half of the SSH connect outcome channel. Cloned into every
+    /// spawned connect task so it can deliver its result back to the wire
+    /// layer. The receiver lives on `ssh_outcome_rx`.
+    pub ssh_outcome_tx: tokio::sync::mpsc::UnboundedSender<SshConnectOutcome>,
+    /// Receiver half of the SSH connect outcome channel. Drained each frame
+    /// by [`drain_ssh_outcomes`]; on `Connected`, attaches the PtyPane and
+    /// stashes the byte receiver; on `Failed`, marks the widget and pushes
+    /// a toast.
+    pub ssh_outcome_rx: tokio::sync::mpsc::UnboundedReceiver<SshConnectOutcome>,
+    /// Live byte-stream receiver from the connected remote shell. `None`
+    /// when no connection is active. Drained each frame by
+    /// [`drain_ssh_bytes`] and forwarded into the SSH widget's PtyPane.
+    pub ssh_byte_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
+    /// Last PTY body rect we resized the screen to. Used so we only call
+    /// `pty_pane_resize_to_area` when the area actually changed.
+    pub ssh_last_pty_area: Option<Rect>,
+    /// One-shot shutdown signal for the active byte-reader task. Send (or
+    /// drop) to terminate the reader cleanly. `None` when no reader is
+    /// running.
+    pub ssh_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -492,6 +588,22 @@ pub fn build_pty_provider() -> Arc<sid_pty::PortablePtyProvider> {
     Arc::new(sid_pty::PortablePtyProvider::new())
 }
 
+/// Construct the production [`SshClientFactoryFn`] closure: each invocation
+/// returns a fresh [`sid_ssh::RusshClient`] (not yet connected) boxed as
+/// [`sid_core::adapters::ssh::SshClient`].
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::build_ssh_client_factory_fn;
+/// let f = build_ssh_client_factory_fn();
+/// let _client = f();
+/// ```
+pub fn build_ssh_client_factory_fn() -> SshClientFactoryFn {
+    let factory = sid_ssh::RusshClientFactory::new();
+    Arc::new(move || Box::new(factory.new_client()) as Box<dyn sid_core::adapters::ssh::SshClient>)
+}
+
 /// Build the App with optional SSH host hydration. The SSH tab is initialized
 /// with a merged view of `ssh_hosts` (from the store) + `ssh_config_entries`
 /// (from `~/.ssh/config`). If `start_ssh_alias` is `Some`, the SSH tab is
@@ -735,6 +847,7 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/resume_test.redb")).unwrap());
 /// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
 ///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
+/// let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
 /// let mut sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
@@ -752,6 +865,12 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 ///     pending_submits: Vec::new(),
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::new()),
+///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
+///     ssh_outcome_tx,
+///     ssh_outcome_rx,
+///     ssh_byte_rx: None,
+///     ssh_last_pty_area: None,
+///     ssh_shutdown_tx: None,
 /// };
 /// // With a fresh store there's no prior session — no modal is pushed.
 /// maybe_push_resume_modal(&mut sid_app);
@@ -824,6 +943,7 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 /// let store = Arc::new(RedbStore::open(Path::new("/tmp/draw_test.redb")).unwrap());
 /// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
 ///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
+/// let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
 /// let sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
@@ -841,6 +961,12 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 ///     pending_submits: Vec::new(),
 ///     toasts: sid::toast::ToastQueue::new(4),
 ///     jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
+///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
+///     ssh_outcome_tx,
+///     ssh_outcome_rx,
+///     ssh_byte_rx: None,
+///     ssh_last_pty_area: None,
+///     ssh_shutdown_tx: None,
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -1393,6 +1519,18 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         pending_submits: Vec::new(),
 ///         toasts: sid::toast::ToastQueue::new(4),
 ///         jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
+///         ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
+///         ssh_outcome_tx: {
+///             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+///             tx
+///         },
+///         ssh_outcome_rx: {
+///             let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+///             rx
+///         },
+///         ssh_byte_rx: None,
+///         ssh_last_pty_area: None,
+///         ssh_shutdown_tx: None,
 ///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -1423,6 +1561,22 @@ where
         // Drain completed background jobs (ssh-copy-id, ssh-keygen, ssh -vv,
         // ...) and convert each outcome into a toast.
         drain_job_outcomes(sid_app);
+
+        // SSH live-connect plumbing. Order matters:
+        // 1. Pending-connect intent → spawn connect task.
+        // 2. Connect outcomes → attach PtyPane + stash byte_rx (or mark
+        //    Failed and toast).
+        // 3. Live bytes from the connected shell → forward into the
+        //    attached PtyPane.
+        drain_pending_ssh_connect(sid_app);
+        drain_ssh_outcomes(sid_app);
+        drain_ssh_bytes(sid_app);
+
+        // Resize the SSH PtyPane to match the current body area, if the
+        // active tab is SSH and a pane is attached. The render path
+        // doesn't mutate the screen, so this must happen before draw().
+        let full_area = terminal_size_rect(terminal);
+        sync_ssh_pty_size(sid_app, full_area);
 
         // Sweep expired toasts so they fade out on the next render.
         sid_app.toasts.drain_expired();
@@ -2777,6 +2931,360 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// SSH connect + PTY wiring
+// ---------------------------------------------------------------------------
+
+/// Drain the SSH widget's `pending_connect` slot, if any, and spawn the real
+/// russh connect task. The task delivers its outcome back to the wire layer
+/// via `sid_app.ssh_outcome_tx`; the next event-loop pass picks it up via
+/// [`drain_ssh_outcomes`].
+///
+/// Does nothing when:
+/// - The SSH tab isn't installed (custom in-memory `TabManager`s in tests).
+/// - The widget has no pending connect.
+/// - The matching host alias is not in the merged host list.
+///
+/// Looks up the host record from the merged list (store + ssh-config) so the
+/// connect target is consistent with what the user sees in the Hosts pane.
+pub fn drain_pending_ssh_connect(sid_app: &mut SidApp) {
+    // Lift the alias and host snapshot out of the widget so we can release
+    // the borrow on `sid_app.app` before spawning the connect task (which
+    // captures `sid_app.ssh_client_factory` + `ssh_outcome_tx`).
+    let (alias, host, rows, cols) = {
+        let Some(ssh) = active_ssh_widget_mut(sid_app) else {
+            return;
+        };
+        let Some(alias) = ssh.take_pending_connect() else {
+            return;
+        };
+        let host = ssh
+            .state()
+            .visible_hosts()
+            .iter()
+            .find(|h| h.alias == alias)
+            .cloned();
+        let Some(host) = host else {
+            // Race: the user removed the host between Enter and drain.
+            // Mark the connection failed instead of silently dropping.
+            ssh.connection_mut().mark_failed("host not found".into());
+            return;
+        };
+        // Pick a default starting size; the next render frame calls
+        // `pty_pane_resize_to_area` and bumps the screen to match the actual
+        // body rect. 24x80 is the universal vt100 default.
+        let (rows, cols) = ssh.pty_pane().map(|p| p.size()).unwrap_or((24u16, 80u16));
+        (alias, host, rows, cols)
+    };
+
+    let factory = Arc::clone(&sid_app.ssh_client_factory);
+    let tx = sid_app.ssh_outcome_tx.clone();
+    spawn_ssh_connect_task(factory, tx, host, alias, rows, cols);
+}
+
+/// Drain every queued [`SshConnectOutcome`]. On `Connected`, attaches the
+/// PtyPane to the SSH widget, stashes the byte receiver + shutdown handle on
+/// `sid_app`, and flips connection state to `Connected`. On `Failed`, marks
+/// the widget failed and pushes an error toast.
+pub fn drain_ssh_outcomes(sid_app: &mut SidApp) {
+    loop {
+        let outcome = match sid_app.ssh_outcome_rx.try_recv() {
+            Ok(o) => o,
+            Err(MpscTryRecvError::Empty) => break,
+            Err(MpscTryRecvError::Disconnected) => {
+                // The sender stored on SidApp should keep this alive; if we
+                // hit this branch the channel was torn down — log and exit.
+                tracing::warn!("ssh_outcome channel disconnected; stopping drain");
+                break;
+            }
+        };
+        match outcome {
+            SshConnectOutcome::Connected {
+                alias,
+                pty,
+                byte_rx,
+                shutdown_tx,
+            } => {
+                // Tear down any previous reader (best-effort).
+                if let Some(prev) = sid_app.ssh_shutdown_tx.take() {
+                    let _ = prev.send(());
+                }
+                let attached = if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                    ssh.set_pty_pane(pty);
+                    ssh.connection_mut().mark_connected();
+                    true
+                } else {
+                    false
+                };
+                if attached {
+                    sid_app.ssh_byte_rx = Some(byte_rx);
+                    sid_app.ssh_shutdown_tx = Some(shutdown_tx);
+                    sid_app.ssh_last_pty_area = None;
+                    sid_app
+                        .toasts
+                        .push(Toast::success(format!("ssh: connected to {alias}")));
+                } else {
+                    // No SSH widget on this app — drop the resources;
+                    // dropping `shutdown_tx` causes the reader task to exit
+                    // naturally on its select! branch.
+                    drop(byte_rx);
+                    drop(shutdown_tx);
+                    tracing::warn!("ssh outcome arrived but SSH tab is missing");
+                }
+            }
+            SshConnectOutcome::Failed { alias, error } => {
+                if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                    ssh.connection_mut().mark_failed(error.clone());
+                }
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("ssh {alias}: {error}")));
+            }
+        }
+    }
+}
+
+/// Drain pending bytes from the connected remote shell into the widget's
+/// PtyPane. Coalesces every chunk that's currently available so we forward
+/// in a single render-aligned burst.
+///
+/// No-op when:
+/// - No byte channel is attached (no live connection).
+/// - The SSH widget has no PtyPane (shouldn't happen post-connect, but is
+///   defensive).
+pub fn drain_ssh_bytes(sid_app: &mut SidApp) {
+    let Some(rx) = sid_app.ssh_byte_rx.as_mut() else {
+        return;
+    };
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut disconnected = false;
+    loop {
+        match rx.try_recv() {
+            Ok(bytes) => chunks.push(bytes),
+            Err(MpscTryRecvError::Empty) => break,
+            Err(MpscTryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            }
+        }
+    }
+    if chunks.is_empty() && !disconnected {
+        return;
+    }
+    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+        if let Some(pane) = ssh.pty_pane_mut() {
+            for chunk in &chunks {
+                pane.feed(chunk);
+            }
+        }
+        if disconnected {
+            // Remote closed the shell. Mark widget Disconnected so the
+            // status bar reflects it; keep the pane around so the user can
+            // still see the final terminal state until they hit Enter
+            // again.
+            ssh.connection_mut().mark_disconnected();
+        }
+    }
+    if disconnected {
+        // Drop the receiver so future drains exit immediately. The reader
+        // task is already done if the channel is closed.
+        sid_app.ssh_byte_rx = None;
+        if let Some(prev) = sid_app.ssh_shutdown_tx.take() {
+            let _ = prev.send(());
+        }
+    }
+}
+
+/// Resize the SSH widget's PTY pane to match the body rect, if it changed.
+/// Also sends a `window_change` (via [`sid_core::adapters::ssh::SshShell::resize`])
+/// to the remote in a future iteration — for now we only resize the local
+/// screen so the rendered output lines up with the visible area. The shell
+/// reader task does not receive the new size automatically; that's a
+/// scheduled follow-up (see TODO).
+pub fn sync_ssh_pty_size(sid_app: &mut SidApp, full_area: Rect) {
+    let body = active_ssh_body_rect(full_area);
+    // Guard: only act on the active tab being SSH.
+    let is_active_ssh = sid_app.app.tabs().active().id.as_str() == "ssh";
+    if !is_active_ssh {
+        return;
+    }
+    if sid_app.ssh_last_pty_area == Some(body) {
+        return;
+    }
+    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+        if ssh.pty_pane().is_some() {
+            ssh.pty_pane_resize_to_area(body);
+            sid_app.ssh_last_pty_area = Some(body);
+            // TODO: forward the new size to the remote via SshShell::resize.
+            // The current shell handle isn't accessible here because it was
+            // moved into the reader task; the next iteration plumbs a
+            // resize-command channel.
+        }
+    }
+}
+
+/// Compute the SSH widget's right-pane body rect given the full terminal
+/// area. Mirrors the body rect carved out of the full draw area by
+/// [`draw`]: tab strip (3 rows) → body → footer (1 row) on the outside, and
+/// then [`sid_widgets::ssh::body_rect_for`] inside.
+fn active_ssh_body_rect(full: Rect) -> Rect {
+    // The body rect inside draw() is full_area minus a 3-row tab strip on
+    // top and a 1-row footer at the bottom. Match that.
+    let top = 3u16;
+    let bottom = 1u16;
+    let inner_h = full.height.saturating_sub(top + bottom);
+    let inner = Rect {
+        x: full.x,
+        y: full.y + top.min(full.height),
+        width: full.width,
+        height: inner_h,
+    };
+    sid_widgets::ssh::body_rect_for(inner)
+}
+
+/// Mutably borrow the active SSH widget, if the SSH tab exists.
+fn active_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if t.id.as_str() == "ssh" {
+            if let Some(w) = t.layout.iter_widgets_mut().next() {
+                let any_ref = w as &mut dyn std::any::Any;
+                return any_ref.downcast_mut::<SshWidget>();
+            }
+        }
+    }
+    None
+}
+
+/// Spawn the async connect task. Each task is independent and owns the
+/// [`SshClient`] it created; on completion it sends an
+/// [`SshConnectOutcome`] back through `tx`.
+///
+/// `rows` / `cols` set the initial remote PTY size; the wire layer will
+/// resize the local screen each frame via [`sync_ssh_pty_size`].
+///
+/// Auth choice is derived from the host record's `auth_kind`:
+/// - `Agent` → [`SshAuth::Agent`] (default; works on most modern setups).
+/// - `Key` → [`SshAuth::Key`] with the host's `identity_file`.
+/// - `Password` → [`SshAuth::Agent`] is used as a stand-in. Interactive
+///   password prompting is out of scope for this iteration and tracked
+///   separately.
+fn spawn_ssh_connect_task(
+    factory: SshClientFactoryFn,
+    tx: tokio::sync::mpsc::UnboundedSender<SshConnectOutcome>,
+    host: sid_store::SshHost,
+    alias: String,
+    rows: u16,
+    cols: u16,
+) {
+    use sid_core::adapters::ssh::{SshAuth, SshHostSpec};
+
+    tokio::spawn(async move {
+        let mut client = factory();
+        let spec = SshHostSpec {
+            host: host.host.clone(),
+            port: host.port,
+            user: host.user.clone(),
+        };
+        let auth = match host.auth_kind {
+            sid_store::SshAuthKind::Key => match host.identity_file.as_ref() {
+                Some(path) => SshAuth::Key {
+                    path: std::path::PathBuf::from(path),
+                    passphrase: None,
+                },
+                None => SshAuth::Agent,
+            },
+            sid_store::SshAuthKind::Password => {
+                // TODO: prompt for password via a modal. For now, fall back
+                // to agent auth which works for most setups; if it fails the
+                // user sees a clear error.
+                SshAuth::Agent
+            }
+            sid_store::SshAuthKind::Agent => SshAuth::Agent,
+        };
+
+        if let Err(e) = client.connect(&spec, &auth).await {
+            let _ = tx.send(SshConnectOutcome::Failed {
+                alias,
+                error: format!("connect: {e}"),
+            });
+            return;
+        }
+
+        let mut shell = match client.open_shell("xterm-256color", rows, cols).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = tx.send(SshConnectOutcome::Failed {
+                    alias,
+                    error: format!("open_shell: {e}"),
+                });
+                return;
+            }
+        };
+
+        // Build the PtyPane wrapping a freshly-sized Vt100Screen. The local
+        // screen size matches the rows/cols we just used for the remote PTY
+        // request so the first frame doesn't visibly stretch.
+        let screen = sid_pty::Vt100Screen::new(rows, cols);
+        let pty = sid_widgets::ssh::PtyPane::new(
+            Box::new(screen) as Box<dyn sid_core::adapters::pty::TerminalScreen>
+        );
+
+        // Byte-forwarding channel. The reader task owns the sender; the
+        // wire layer owns the receiver and forwards into the pane each
+        // frame.
+        let (byte_tx, byte_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Hand the PtyPane + receiver to the wire layer.
+        let _ = tx.send(SshConnectOutcome::Connected {
+            alias: alias.clone(),
+            pty,
+            byte_rx,
+            shutdown_tx,
+        });
+
+        // Background reader loop: poll the shell every ~25ms for new bytes
+        // and forward them. The loop exits when:
+        // - The shell returns an error (remote closed),
+        // - `try_read` returns `Err(Disconnected)` (we send an empty
+        //   chunk and rely on the byte channel close),
+        // - `byte_tx` is closed (the receiver was dropped),
+        // - The shutdown signal fires.
+        //
+        // `try_read` is non-blocking: it returns whatever bytes have
+        // accumulated in `RusshShell`'s internal buffer. The buffer is
+        // populated by russh's own background task — see
+        // `sid_ssh::shell::RusshShell::new`.
+        let poll_interval = std::time::Duration::from_millis(25);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                _ = tokio::time::sleep(poll_interval) => {
+                    match shell.try_read().await {
+                        Ok(bytes) if bytes.is_empty() => {
+                            // Nothing this tick; keep polling.
+                        }
+                        Ok(bytes) => {
+                            if byte_tx.send(bytes).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "ssh shell read error; closing");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        // Best-effort: close the shell and disconnect. Errors at this stage
+        // are not user-facing.
+        let _ = shell.close().await;
+        let _ = client.disconnect().await;
+        tracing::debug!(alias = %alias, "ssh reader task exited");
+    });
 }
 
 /// Render the toast queue anchored to the bottom-right of `area`.
@@ -4749,6 +5257,7 @@ mod tests {
         let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
             sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
         );
+        let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
         SidApp {
             app: build_app(start_tab, vec![]),
             store,
@@ -4766,6 +5275,12 @@ mod tests {
             pending_submits: Vec::new(),
             toasts: ToastQueue::new(4),
             jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
+            ssh_client_factory: build_ssh_client_factory_fn(),
+            ssh_outcome_tx,
+            ssh_outcome_rx,
+            ssh_byte_rx: None,
+            ssh_last_pty_area: None,
+            ssh_shutdown_tx: None,
         }
     }
 
@@ -7111,5 +7626,499 @@ mod tests {
             height: 0,
         };
         assert!(body_rect(zero).is_none());
+    }
+
+    // ----- SSH live-connect wiring -----------------------------------------
+
+    /// Tests for the live SSH connect path: pending-connect drain, outcome
+    /// drain (Connected attaches PtyPane, Failed marks failed + toasts),
+    /// byte-stream forwarding, and the production factory shape.
+    ///
+    /// Real russh is gated to integration tests in `sid-ssh/tests/`. Here
+    /// we substitute a hand-rolled `SshClient` so the wire layer is
+    /// exercised end-to-end without network or subprocess.
+    mod ssh_connect_wiring {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        use async_trait::async_trait;
+        use sid_core::adapters::ssh::{
+            ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
+        };
+        use sid_store::{SshHost, SshHostSource};
+        use sid_widgets::SshWidget;
+
+        use super::*;
+
+        // Mock shell — emits a queue of byte chunks then idles forever.
+        struct MockShell {
+            chunks: Mutex<std::collections::VecDeque<Vec<u8>>>,
+            closed: Mutex<bool>,
+        }
+        impl MockShell {
+            fn new(chunks: Vec<Vec<u8>>) -> Self {
+                Self {
+                    chunks: Mutex::new(chunks.into_iter().collect()),
+                    closed: Mutex::new(false),
+                }
+            }
+        }
+        #[async_trait]
+        impl SshShell for MockShell {
+            async fn write(&mut self, _bytes: &[u8]) -> Result<(), SshError> {
+                Ok(())
+            }
+            async fn try_read(&mut self) -> Result<Vec<u8>, SshError> {
+                if *self.closed.lock().unwrap() {
+                    return Err(SshError::Disconnected);
+                }
+                Ok(self.chunks.lock().unwrap().pop_front().unwrap_or_default())
+            }
+            async fn resize(&mut self, _rows: u16, _cols: u16) -> Result<(), SshError> {
+                Ok(())
+            }
+            async fn close(&mut self) -> Result<(), SshError> {
+                *self.closed.lock().unwrap() = true;
+                Ok(())
+            }
+        }
+
+        // Mock client — configurable success/failure at each step.
+        struct MockClient {
+            connect_ok: bool,
+            open_shell_ok: bool,
+            chunks: Vec<Vec<u8>>,
+            connected: bool,
+        }
+        impl MockClient {
+            fn ok(chunks: Vec<Vec<u8>>) -> Self {
+                Self {
+                    connect_ok: true,
+                    open_shell_ok: true,
+                    chunks,
+                    connected: false,
+                }
+            }
+            fn connect_fail() -> Self {
+                Self {
+                    connect_ok: false,
+                    open_shell_ok: false,
+                    chunks: vec![],
+                    connected: false,
+                }
+            }
+            fn open_shell_fail() -> Self {
+                Self {
+                    connect_ok: true,
+                    open_shell_ok: false,
+                    chunks: vec![],
+                    connected: false,
+                }
+            }
+        }
+        #[async_trait]
+        impl SshClient for MockClient {
+            async fn connect(
+                &mut self,
+                _host: &SshHostSpec,
+                _auth: &SshAuth,
+            ) -> Result<(), SshError> {
+                if self.connect_ok {
+                    self.connected = true;
+                    Ok(())
+                } else {
+                    Err(SshError::ConnectFailed("mock refuse".into()))
+                }
+            }
+            async fn disconnect(&mut self) -> Result<(), SshError> {
+                self.connected = false;
+                Ok(())
+            }
+            fn is_connected(&self) -> bool {
+                self.connected
+            }
+            async fn exec(&mut self, _cmd: &str) -> Result<ExecResult, SshError> {
+                Err(SshError::Other("mock exec".into()))
+            }
+            async fn open_shell(
+                &mut self,
+                _term: &str,
+                _rows: u16,
+                _cols: u16,
+            ) -> Result<Box<dyn SshShell>, SshError> {
+                if self.open_shell_ok {
+                    Ok(Box::new(MockShell::new(std::mem::take(&mut self.chunks))))
+                } else {
+                    Err(SshError::Other("mock shell open denied".into()))
+                }
+            }
+            async fn open_sftp(&mut self) -> Result<Box<dyn SftpSession>, SshError> {
+                Err(SshError::Other("mock sftp".into()))
+            }
+        }
+
+        type MockMaker = Box<dyn FnMut() -> Box<dyn SshClient> + Send>;
+
+        fn factory_for(make: Arc<Mutex<MockMaker>>) -> SshClientFactoryFn {
+            Arc::new(move || make.lock().unwrap()())
+        }
+
+        fn host_record(alias: &str) -> SshHost {
+            SshHost {
+                alias: alias.into(),
+                host: "127.0.0.1".into(),
+                port: 22,
+                user: "u".into(),
+                identity_file: None,
+                source: SshHostSource::Manual,
+                last_connected: 0,
+                command_history: vec![],
+                last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
+            }
+        }
+
+        fn seed_host_into_widget(sid_app: &mut SidApp, h: SshHost) {
+            sid_app.store.upsert_ssh_host(&h).unwrap();
+            for t in sid_app.app.tabs_mut().tabs_mut() {
+                if t.id.as_str() == "ssh"
+                    && let Some(w) = t.layout.iter_widgets_mut().next()
+                    && let Some(ssh) = (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>()
+                {
+                    ssh.state_mut().set_store_hosts(vec![h.clone()]);
+                }
+            }
+        }
+
+        /// `drain_pending_ssh_connect` is a no-op when no intent is queued.
+        #[test]
+        fn drain_pending_connect_noop_without_intent() {
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            drain_pending_ssh_connect(&mut sid_app);
+            assert!(sid_app.ssh_outcome_rx.try_recv().is_err());
+        }
+
+        /// Race: alias removed from the list between Enter and drain →
+        /// the connection state is flipped to Failed immediately.
+        #[test]
+        fn drain_pending_connect_unknown_alias_marks_failed() {
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .set_pending_connect(Some("ghost".into()));
+            drain_pending_ssh_connect(&mut sid_app);
+            let phase = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .connection()
+                .phase();
+            assert_eq!(phase, sid_widgets::ssh::ConnectionPhase::Failed);
+        }
+
+        /// End-to-end on a single tokio runtime: pending-connect intent
+        /// flows through a mock factory, the connect task succeeds, the
+        /// outcome drain attaches a PtyPane and flips the widget to
+        /// Connected, and subsequent byte drains feed bytes into the pane.
+        #[tokio::test(flavor = "current_thread")]
+        async fn pending_connect_succeeds_attaches_pane_and_forwards_bytes() {
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+
+            let make: MockMaker = Box::new(|| Box::new(MockClient::ok(vec![b"hello\n".to_vec()])));
+            sid_app.ssh_client_factory = factory_for(Arc::new(Mutex::new(make)));
+
+            active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .set_pending_connect(Some("acme".into()));
+
+            drain_pending_ssh_connect(&mut sid_app);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+            }
+
+            drain_ssh_outcomes(&mut sid_app);
+            let widget = active_ssh_widget_mut(&mut sid_app).expect("ssh widget");
+            assert_eq!(widget.connection().phase(), ConnectionPhase::Connected);
+            assert!(widget.pty_pane().is_some());
+            assert!(sid_app.ssh_byte_rx.is_some());
+
+            // Let the reader task pump at least one chunk.
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            drain_ssh_bytes(&mut sid_app);
+
+            let pane = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .pty_pane()
+                .unwrap();
+            let lines = pane.lines();
+            assert!(
+                lines[0].trim_end().starts_with("hello"),
+                "expected first line to start with 'hello'; got {:?}",
+                lines[0]
+            );
+
+            if let Some(s) = sid_app.ssh_shutdown_tx.take() {
+                let _ = s.send(());
+            }
+        }
+
+        /// Connect failure flips Failed and pushes an error toast.
+        #[tokio::test(flavor = "current_thread")]
+        async fn pending_connect_fails_marks_widget_and_toasts() {
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+
+            let make: MockMaker = Box::new(|| Box::new(MockClient::connect_fail()));
+            sid_app.ssh_client_factory = factory_for(Arc::new(Mutex::new(make)));
+
+            active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .set_pending_connect(Some("acme".into()));
+
+            drain_pending_ssh_connect(&mut sid_app);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+            }
+            drain_ssh_outcomes(&mut sid_app);
+
+            let phase = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .connection()
+                .phase();
+            assert_eq!(phase, ConnectionPhase::Failed);
+            let kinds: Vec<crate::toast::ToastKind> =
+                sid_app.toasts.iter().map(|t| t.kind).collect();
+            assert!(
+                kinds.contains(&crate::toast::ToastKind::Error),
+                "expected an Error toast; got: {kinds:?}"
+            );
+        }
+
+        /// open_shell failure (connect OK, shell denied) also flips Failed.
+        #[tokio::test(flavor = "current_thread")]
+        async fn pending_connect_open_shell_failure_marks_failed() {
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+
+            let make: MockMaker = Box::new(|| Box::new(MockClient::open_shell_fail()));
+            sid_app.ssh_client_factory = factory_for(Arc::new(Mutex::new(make)));
+
+            active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .set_pending_connect(Some("acme".into()));
+
+            drain_pending_ssh_connect(&mut sid_app);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+            }
+            drain_ssh_outcomes(&mut sid_app);
+
+            let phase = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .connection()
+                .phase();
+            assert_eq!(phase, ConnectionPhase::Failed);
+        }
+
+        /// drain_ssh_outcomes is a no-op when nothing is queued.
+        #[test]
+        fn drain_outcomes_empty_is_a_noop() {
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            drain_ssh_outcomes(&mut sid_app);
+            let phase = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .connection()
+                .phase();
+            assert_eq!(phase, sid_widgets::ssh::ConnectionPhase::Idle);
+        }
+
+        /// drain_ssh_outcomes attaches a forged Connected outcome.
+        #[test]
+        fn drain_outcomes_attaches_pty_and_stashes_byte_rx() {
+            use sid_pty::Vt100Screen;
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            let (byte_tx, byte_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            let pty = sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                as Box<dyn sid_core::adapters::pty::TerminalScreen>);
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "x".into(),
+                    pty,
+                    byte_rx,
+                    shutdown_tx,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            let widget = active_ssh_widget_mut(&mut sid_app).unwrap();
+            assert_eq!(widget.connection().phase(), ConnectionPhase::Connected);
+            assert!(widget.pty_pane().is_some());
+            assert!(sid_app.ssh_byte_rx.is_some());
+            assert!(sid_app.ssh_shutdown_tx.is_some());
+            drop(byte_tx);
+        }
+
+        /// drain_ssh_outcomes on Failed marks the widget and toasts.
+        #[test]
+        fn drain_outcomes_failed_marks_widget_and_toasts() {
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Failed {
+                    alias: "x".into(),
+                    error: "boom".into(),
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            let widget = active_ssh_widget_mut(&mut sid_app).unwrap();
+            assert_eq!(widget.connection().phase(), ConnectionPhase::Failed);
+            assert_eq!(widget.connection().error_message(), Some("boom"));
+            let kinds: Vec<crate::toast::ToastKind> =
+                sid_app.toasts.iter().map(|t| t.kind).collect();
+            assert!(kinds.contains(&crate::toast::ToastKind::Error));
+        }
+
+        /// drain_ssh_bytes is a no-op with no channel attached.
+        #[test]
+        fn drain_bytes_noop_without_channel() {
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            drain_ssh_bytes(&mut sid_app);
+        }
+
+        /// drain_ssh_bytes forwards queued chunks into the pane.
+        #[test]
+        fn drain_bytes_forwards_chunks_into_pane() {
+            use sid_pty::Vt100Screen;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            let (byte_tx, byte_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "x".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx,
+                    shutdown_tx,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            byte_tx.send(b"abc".to_vec()).unwrap();
+            byte_tx.send(b"def".to_vec()).unwrap();
+            drain_ssh_bytes(&mut sid_app);
+            let pane = active_ssh_widget_mut(&mut sid_app)
+                .unwrap()
+                .pty_pane()
+                .unwrap();
+            let lines = pane.lines();
+            assert!(lines[0].starts_with("abcdef"), "got {:?}", lines[0]);
+            drop(byte_tx);
+        }
+
+        /// drain_ssh_bytes on remote disconnect flips Disconnected and
+        /// clears the receiver.
+        #[test]
+        fn drain_bytes_disconnect_marks_widget_and_clears_rx() {
+            use sid_pty::Vt100Screen;
+            use sid_widgets::ssh::ConnectionPhase;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            let (byte_tx, byte_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "x".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx,
+                    shutdown_tx,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            drop(byte_tx);
+            drain_ssh_bytes(&mut sid_app);
+            let widget = active_ssh_widget_mut(&mut sid_app).unwrap();
+            assert_eq!(widget.connection().phase(), ConnectionPhase::Disconnected);
+            assert!(sid_app.ssh_byte_rx.is_none());
+        }
+
+        /// sync_ssh_pty_size is a no-op when the active tab is not SSH.
+        #[test]
+        fn sync_pty_size_noop_when_not_ssh() {
+            use sid_pty::Vt100Screen;
+            let mut sid_app = build_test_sid_app(Some("workspaces"));
+            for t in sid_app.app.tabs_mut().tabs_mut() {
+                if t.id.as_str() == "ssh"
+                    && let Some(w) = t.layout.iter_widgets_mut().next()
+                    && let Some(ssh) = (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>()
+                {
+                    ssh.set_pty_pane(sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(
+                        24, 80,
+                    ))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>));
+                }
+            }
+            sync_ssh_pty_size(&mut sid_app, Rect::new(0, 0, 120, 40));
+            assert!(sid_app.ssh_last_pty_area.is_none());
+        }
+
+        /// sync_ssh_pty_size resizes the attached pane when the body
+        /// rect changed and the active tab is SSH.
+        #[test]
+        fn sync_pty_size_resizes_pane_on_ssh_tab() {
+            use sid_pty::Vt100Screen;
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            active_ssh_widget_mut(&mut sid_app).unwrap().set_pty_pane(
+                sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                    as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+            );
+            sync_ssh_pty_size(&mut sid_app, Rect::new(0, 0, 120, 40));
+            assert!(sid_app.ssh_last_pty_area.is_some());
+            let prev = sid_app.ssh_last_pty_area;
+            sync_ssh_pty_size(&mut sid_app, Rect::new(0, 0, 120, 40));
+            assert_eq!(sid_app.ssh_last_pty_area, prev);
+        }
+
+        /// The production factory closure produces a fresh client per call.
+        #[test]
+        fn build_ssh_client_factory_fn_produces_clients() {
+            let f = build_ssh_client_factory_fn();
+            let c1 = f();
+            let c2 = f();
+            assert!(!c1.is_connected());
+            assert!(!c2.is_connected());
+        }
+
+        /// active_ssh_body_rect carves a sensible body rect inside the
+        /// full draw area.
+        #[test]
+        fn active_ssh_body_rect_carves_inside_layout() {
+            let full = Rect::new(0, 0, 120, 40);
+            let body = active_ssh_body_rect(full);
+            assert!(body.x >= 120 * 40 / 100 - 1, "x={}", body.x);
+            assert!(body.y >= 3, "y={}", body.y);
+            assert!(body.width < full.width);
+        }
+
+        /// SshConnectOutcome::Debug does not leak pty/byte_rx payloads but
+        /// the Failed branch is fully displayable.
+        #[test]
+        fn ssh_connect_outcome_debug_compiles() {
+            let s = format!(
+                "{:?}",
+                SshConnectOutcome::Failed {
+                    alias: "x".into(),
+                    error: "y".into()
+                }
+            );
+            assert!(s.contains("Failed"));
+            assert!(s.contains("x"));
+            assert!(s.contains("y"));
+        }
     }
 }
