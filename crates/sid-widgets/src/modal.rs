@@ -562,13 +562,20 @@ pub enum ModalKeyOutcome {
 /// Route a single crossterm `KeyEvent` into `modal` and return what the caller
 /// should do next.
 ///
-/// - `Esc`                       → Cancel
-/// - `Tab` / `Shift+Tab`         → cycle focus, Consumed
-/// - `Backspace`                 → backspace on focused text/password/picker, Consumed
-/// - `Enter` on Toggle / Choice  → toggle/cycle the field, Consumed
-/// - `Enter` on Text / Password / Picker → Submit
-/// - `Char(c)` (no Ctrl/Alt)     → type_char, Consumed
-/// - any other key               → Consumed (modal swallows it)
+/// - `Esc`                                → Cancel
+/// - `Up` / `Shift+Tab` / `BackTab`       → cycle focus backward, Consumed
+/// - `Down` / `Tab` (no Shift)            → cycle focus forward, Consumed
+/// - `Left`                               → cycle focused Choice/Toggle backward, Consumed
+/// - `Right`                              → cycle focused Choice/Toggle forward, Consumed
+/// - `Backspace`                          → backspace on focused text/password/picker, Consumed
+/// - `Enter`                              → Submit (always — buttons stay decorative)
+/// - `Space` on Toggle / Choice           → flip/cycle the field, Consumed (legacy convenience)
+/// - `Char(c)` (no Ctrl/Alt)              → type_char, Consumed
+/// - any other key                        → Consumed (modal swallows it)
+///
+/// `Enter` no longer cycles a focused Choice — that's now Left/Right. This
+/// makes Enter unambiguously "submit the form" so users can confirm without
+/// accidentally changing the selection on the way out.
 ///
 /// # Examples
 ///
@@ -595,25 +602,35 @@ pub fn route_key_to_modal(
     use crossterm::event::{KeyCode, KeyModifiers};
     match (key.code, key.mods) {
         (KeyCode::Esc, _) => ModalKeyOutcome::Cancel,
-        (KeyCode::Tab, KeyModifiers::NONE) => {
+        (KeyCode::Up, _) | (KeyCode::BackTab, _) => {
+            modal.cycle_focus_backward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Down, _) => {
             modal.cycle_focus_forward();
             ModalKeyOutcome::Consumed
         }
-        (KeyCode::BackTab, _) => {
+        (KeyCode::Tab, m) if !m.contains(KeyModifiers::SHIFT) => {
+            modal.cycle_focus_forward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Tab, _) => {
             modal.cycle_focus_backward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Left, _) => {
+            modal.cycle_focused_value(-1);
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Right, _) => {
+            modal.cycle_focused_value(1);
             ModalKeyOutcome::Consumed
         }
         (KeyCode::Backspace, _) => {
             modal.backspace();
             ModalKeyOutcome::Consumed
         }
-        (KeyCode::Enter, _) => match modal.fields.get(modal.focus) {
-            Some(Field::Toggle { .. } | Field::Choice { .. }) => {
-                modal.space_or_enter_on_field();
-                ModalKeyOutcome::Consumed
-            }
-            _ => ModalKeyOutcome::Submit,
-        },
+        (KeyCode::Enter, _) => ModalKeyOutcome::Submit,
         (KeyCode::Char(' '), _)
             if matches!(
                 modal.fields.get(modal.focus),

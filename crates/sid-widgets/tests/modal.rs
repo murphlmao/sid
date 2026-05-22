@@ -317,3 +317,155 @@ proptest! {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 5 — route_key_to_modal arrow keys + L/R cycle
+// ---------------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyModifiers};
+use sid_core::event::KeyChord;
+use sid_widgets::modal::{route_key_to_modal, ModalKeyOutcome};
+
+fn chord(code: KeyCode, mods: KeyModifiers) -> KeyChord {
+    KeyChord { code, mods }
+}
+
+#[test]
+fn up_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle { label: "a".into(), value: false },
+            Field::Toggle { label: "b".into(), value: false },
+        ],
+    );
+    m.focus = 1;
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Consumed);
+    assert_eq!(m.focus, 0);
+}
+
+#[test]
+fn down_cycles_focus_forward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle { label: "a".into(), value: false },
+            Field::Toggle { label: "b".into(), value: false },
+        ],
+    );
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Consumed);
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn right_cycles_choice_value() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Right, KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    }
+}
+
+#[test]
+fn left_cycles_choice_value_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Left, KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 2);
+    }
+}
+
+#[test]
+fn enter_on_choice_now_submits_not_cycles() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Submit);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 0);
+    }
+}
+
+#[test]
+fn space_on_choice_still_cycles_for_backward_compat() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Char(' '), KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    }
+}
+
+#[test]
+fn shift_tab_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle { label: "a".into(), value: false },
+            Field::Toggle { label: "b".into(), value: false },
+        ],
+    );
+    m.focus = 0;
+    route_key_to_modal(&mut m, chord(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn tab_with_shift_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle { label: "a".into(), value: false },
+            Field::Toggle { label: "b".into(), value: false },
+        ],
+    );
+    m.focus = 0;
+    route_key_to_modal(&mut m, chord(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn arrow_keys_on_empty_modal_are_noop_not_panic() {
+    let mut m = ModalSpec::new("id", "t", vec![]);
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Up, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Down, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Left, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(m.focus, 0);
+}
