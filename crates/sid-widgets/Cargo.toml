@@ -36,3 +36,7 @@ sid-pty.workspace = true
 [[bench]]
 name = "tab_switch"
 harness = false
+
+[[bench]]
+name = "visible_workspaces"
+harness = false

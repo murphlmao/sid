@@ -284,3 +284,31 @@ fn multiple_removes_are_idempotent() {
     store.remove_workspace(&PathBuf::from("/a")).unwrap();
     assert!(store.list_workspaces().unwrap().is_empty());
 }
+
+#[test]
+fn pre_existing_workspaces_survive_branch_2_upgrade() {
+    // Simulate a user who had auto-discovered workspaces persisted from a
+    // pre-branch-#2 sid run. They should still be there after the upgrade
+    // (branch #2 dropped the unconditional startup_discover scan but did
+    // NOT touch the store schema or existing records).
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("sid.redb");
+    {
+        let store = RedbStore::open(&db).unwrap();
+        let w = Workspace {
+            path: PathBuf::from("/vcs/auto-discovered-repo"),
+            name: "auto-discovered-repo".into(),
+            kind: WorkspaceKind::Repo,
+            manifest_hash: 0,
+            last_seen: 1_000_000,
+            parent: None,
+        };
+        store.upsert_workspace(&w).unwrap();
+    }
+    // Reopen — the post-branch-#2 sid version starts without calling
+    // startup_discover.
+    let store = RedbStore::open(&db).unwrap();
+    let list = store.list_workspaces().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "auto-discovered-repo");
+}

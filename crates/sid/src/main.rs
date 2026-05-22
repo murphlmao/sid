@@ -34,7 +34,12 @@ struct Cli {
     #[arg(long)]
     start_tab: Option<String>,
 
-    /// Skip workspace discovery scan on startup (faster launch, useful in tests).
+    /// Skip workspace discovery scan on startup.
+    ///
+    /// **No-op in this release.** sid no longer scans `~/vcs/` at startup;
+    /// the flag is preserved for one release cycle so muscle memory doesn't
+    /// trigger a CLI error. Use the `workspaces.scan_now` command-palette
+    /// action (when implemented) to scan on demand.
     #[arg(long)]
     skip_discovery: bool,
 
@@ -387,14 +392,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Startup workspace discovery (scan ~/vcs/ by default).
-    if !cli.skip_discovery {
-        let roots = wire::default_discovery_roots();
-        // Discovery errors are non-fatal: log and continue.
-        if let Err(e) = wire::startup_discover(&*store, &roots) {
-            tracing::warn!("workspace discovery failed: {e}");
-        }
-    }
+    // Startup workspace discovery is disabled. Workspaces are exclusively
+    // user-registered (via `sid workspace add` or the in-TUI N modal).
+    // `cli.skip_discovery` is preserved as a no-op stub for one release
+    // cycle and is otherwise ignored.
+    let _ = cli.skip_discovery;
 
     // Resolve the active theme + keybind profile from the store. The full
     // wiring of these into the running App is incremental — for now the call

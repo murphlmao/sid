@@ -462,6 +462,11 @@ impl App {
                 let _ = self.tabs.close_active();
                 Dispatch::Continue
             }
+            // Branch #2 placeholder: the Workspaces widget emits this when
+            // Enter is pressed on a Repo leaf. Branch #3 replaces this arm
+            // with the real "build WorkspaceDetailWidget + push as Detail
+            // tab" flow.
+            "workspaces.open_detail" => Dispatch::Continue,
             // No-ops in Plan 1; implemented in Plan 8.
             "tab.detach" | "tab.attach" | "tab.reload" => Dispatch::Continue,
             _ => {

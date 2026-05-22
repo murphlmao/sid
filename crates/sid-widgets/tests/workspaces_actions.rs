@@ -338,3 +338,117 @@ proptest! {
         prop_assert_eq!(calls.len(), n);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Branch #2 Task 3 — Enter emits open_detail; Right/Left toggle umbrella expand
+// ---------------------------------------------------------------------------
+
+mod task3 {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use sid_core::context::WidgetCtx;
+    use sid_core::event::{Event, KeyChord};
+    use sid_core::widget::Widget;
+    use sid_widgets::WorkspacesWidget;
+
+    fn repo(path: &str, name: &str) -> Workspace {
+        Workspace {
+            path: PathBuf::from(path),
+            name: name.into(),
+            kind: WorkspaceKind::Repo,
+            manifest_hash: 0,
+            last_seen: 0,
+            parent: None,
+        }
+    }
+
+    fn umbrella(path: &str, name: &str) -> Workspace {
+        Workspace {
+            path: PathBuf::from(path),
+            name: name.into(),
+            kind: WorkspaceKind::Umbrella,
+            manifest_hash: 0,
+            last_seen: 0,
+            parent: None,
+        }
+    }
+
+    fn make_ctx() -> (WidgetCtx, std::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (WidgetCtx::new(tx), rx)
+    }
+
+    #[test]
+    fn enter_on_repo_emits_open_detail_action() {
+        let mut w =
+            WorkspacesWidget::new(vec![repo("/vcs/eggsight-stack", "eggsight-stack")], None);
+        let (mut ctx, rx) = make_ctx();
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = w.handle_event(&ev, &mut ctx);
+        let action = rx.try_recv().expect("expected an action to be emitted");
+        assert_eq!(action, "workspaces.open_detail");
+    }
+
+    #[test]
+    fn enter_on_umbrella_does_not_emit_open_detail() {
+        let mut w = WorkspacesWidget::new(vec![umbrella("/vcs/monorepo", "monorepo")], None);
+        let (mut ctx, rx) = make_ctx();
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = w.handle_event(&ev, &mut ctx);
+        assert!(
+            rx.try_recv().is_err(),
+            "Enter on umbrella should toggle expand, not emit open_detail",
+        );
+    }
+
+    #[test]
+    fn right_arrow_toggles_umbrella_expansion() {
+        let umb = umbrella("/vcs/monorepo", "monorepo");
+        let child = Workspace {
+            parent: Some(PathBuf::from("/vcs/monorepo")),
+            ..repo("/vcs/monorepo/child", "child")
+        };
+        let mut w = WorkspacesWidget::new(vec![umb, child], None);
+        assert_eq!(w.state().visible_count(), 1);
+        let (mut ctx, _rx) = make_ctx();
+        let ev = Event::Key(KeyChord::new(KeyCode::Right, KeyModifiers::NONE));
+        let _ = w.handle_event(&ev, &mut ctx);
+        assert_eq!(w.state().visible_count(), 2);
+    }
+
+    #[test]
+    fn left_arrow_collapses_umbrella() {
+        let umb = umbrella("/vcs/monorepo", "monorepo");
+        let child = Workspace {
+            parent: Some(PathBuf::from("/vcs/monorepo")),
+            ..repo("/vcs/monorepo/child", "child")
+        };
+        let mut w = WorkspacesWidget::new(vec![umb, child], None);
+        let (mut ctx, _rx) = make_ctx();
+        let _ = w.handle_event(
+            &Event::Key(KeyChord::new(KeyCode::Right, KeyModifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(w.state().visible_count(), 2);
+        let _ = w.handle_event(
+            &Event::Key(KeyChord::new(KeyCode::Left, KeyModifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(w.state().visible_count(), 1);
+    }
+
+    #[test]
+    fn enter_on_workspace_with_missing_path_still_emits() {
+        let missing = repo("/nonexistent/path/that/does/not/exist", "ghost");
+        let mut w = WorkspacesWidget::new(vec![missing], None);
+        let (mut ctx, rx) = make_ctx();
+        let _ = w.handle_event(
+            &Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut ctx,
+        );
+        let action = rx
+            .try_recv()
+            .expect("Enter must emit even on missing-path workspaces");
+        assert_eq!(action, "workspaces.open_detail");
+    }
+}

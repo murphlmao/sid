@@ -57,3 +57,15 @@ fn snapshot_one_repo_branches_pane() {
     let s = render(&w, 80, 12);
     insta::assert_snapshot!("workspaces_one_repo_branches", s);
 }
+
+#[test]
+fn empty_workspaces_renders_press_n_hint() {
+    let w = WorkspacesWidget::new(vec![], None);
+    // Use a wide buffer so the empty-state line isn't clipped by the
+    // 30%-width tree pane (hint text must fit in ~30% of width).
+    let s = render(&w, 200, 30);
+    assert!(
+        s.contains("no workspaces yet") && s.contains("press N to add one"),
+        "expected empty-state hint in:\n{s}",
+    );
+}
