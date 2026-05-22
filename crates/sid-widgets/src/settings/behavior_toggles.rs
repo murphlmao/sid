@@ -29,6 +29,39 @@ use sid_core::SidError;
 use sid_store::{Store, TypedSettings};
 use sid_ui::Theme;
 
+/// Outcome of a single key event routed into the behavior toggles view.
+///
+/// Mirrors the [`crate::settings::theme_picker::ThemePickerOutcome`] shape
+/// so the wire layer can dispatch with a uniform match. The caller is
+/// expected to forward `Toggled` outcomes to the binary's settings
+/// dispatch (which then calls the right `Store::put_*`).
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::behavior_toggles::{
+///     BehaviorTogglesOutcome, ToggleValue,
+/// };
+/// let o = BehaviorTogglesOutcome::Toggled {
+///     key: "auto_restore_session",
+///     value: ToggleValue::Bool(true),
+/// };
+/// assert!(matches!(o, BehaviorTogglesOutcome::Toggled { .. }));
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BehaviorTogglesOutcome {
+    /// No state change — caller should not emit.
+    None,
+    /// User cycled the focused value. The wire layer should put_* the
+    /// new value at `key`.
+    Toggled {
+        /// Canonical setting key (see [`sid_store::settings_keys`]).
+        key: &'static str,
+        /// The new value as held by the view.
+        value: ToggleValue,
+    },
+}
+
 /// Typed value for a single [`Toggle`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToggleValue {
@@ -185,6 +218,65 @@ impl BehaviorTogglesView {
     ///   no change.
     /// - `String` is left untouched (string toggles are edited via the input
     ///   path, not cycling).
+    /// Route a key event into the view, returning what happened.
+    ///
+    /// Up/Down move focus only. Left/Right cycle the focused value and
+    /// return [`BehaviorTogglesOutcome::Toggled`] so the wire layer can
+    /// dispatch to the right `Store::put_*`. Other keys are no-ops.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_widgets::settings::behavior_toggles::{
+    ///     BehaviorTogglesOutcome, BehaviorTogglesView,
+    /// };
+    ///
+    /// let mut v = BehaviorTogglesView::defaults();
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Right, KeyModifiers::NONE));
+    /// assert!(matches!(v.handle_event(&ev), BehaviorTogglesOutcome::Toggled { .. }));
+    /// ```
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> BehaviorTogglesOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let sid_core::event::Event::Key(chord) = ev else {
+            return BehaviorTogglesOutcome::None;
+        };
+        match (chord.code, chord.mods) {
+            (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                self.next();
+                BehaviorTogglesOutcome::None
+            }
+            (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                self.prev();
+                BehaviorTogglesOutcome::None
+            }
+            (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
+                self.cycle_focused_value(1);
+                if let Some(t) = self.focused() {
+                    BehaviorTogglesOutcome::Toggled {
+                        key: t.key,
+                        value: t.value.clone(),
+                    }
+                } else {
+                    BehaviorTogglesOutcome::None
+                }
+            }
+            (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
+                self.cycle_focused_value(-1);
+                if let Some(t) = self.focused() {
+                    BehaviorTogglesOutcome::Toggled {
+                        key: t.key,
+                        value: t.value.clone(),
+                    }
+                } else {
+                    BehaviorTogglesOutcome::None
+                }
+            }
+            _ => BehaviorTogglesOutcome::None,
+        }
+    }
+
     pub fn cycle_focused_value(&mut self, dir: i32) {
         let step_dir: i64 = if dir < 0 { -1 } else { 1 };
         let Some(t) = self.toggles.get_mut(self.focused) else {
