@@ -380,11 +380,9 @@ mod task3 {
 
     #[test]
     fn enter_on_repo_emits_open_detail_action() {
-        let mut w = WorkspacesWidget::new(
-            vec![repo("/vcs/eggsight-stack", "eggsight-stack")],
-            None,
-        );
-        let (mut ctx, mut rx) = make_ctx();
+        let mut w =
+            WorkspacesWidget::new(vec![repo("/vcs/eggsight-stack", "eggsight-stack")], None);
+        let (mut ctx, rx) = make_ctx();
         let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
         let _ = w.handle_event(&ev, &mut ctx);
         let action = rx.try_recv().expect("expected an action to be emitted");
@@ -394,7 +392,7 @@ mod task3 {
     #[test]
     fn enter_on_umbrella_does_not_emit_open_detail() {
         let mut w = WorkspacesWidget::new(vec![umbrella("/vcs/monorepo", "monorepo")], None);
-        let (mut ctx, mut rx) = make_ctx();
+        let (mut ctx, rx) = make_ctx();
         let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
         let _ = w.handle_event(&ev, &mut ctx);
         assert!(
@@ -443,12 +441,14 @@ mod task3 {
     fn enter_on_workspace_with_missing_path_still_emits() {
         let missing = repo("/nonexistent/path/that/does/not/exist", "ghost");
         let mut w = WorkspacesWidget::new(vec![missing], None);
-        let (mut ctx, mut rx) = make_ctx();
+        let (mut ctx, rx) = make_ctx();
         let _ = w.handle_event(
             &Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE)),
             &mut ctx,
         );
-        let action = rx.try_recv().expect("Enter must emit even on missing-path workspaces");
+        let action = rx
+            .try_recv()
+            .expect("Enter must emit even on missing-path workspaces");
         assert_eq!(action, "workspaces.open_detail");
     }
 }
