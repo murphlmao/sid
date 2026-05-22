@@ -2064,10 +2064,12 @@ fn help_modal_for_active_tab(sid_app: &SidApp) -> sid_widgets::ModalSpec {
     ModalSpec::new(
         format!("help:{tab_id}"),
         format!("Help — {tab_title}"),
-        vec![Field::Text {
+        // `Field::Display` paints each `\n`-separated line on its own row.
+        // Previously this used `Field::Text` whose single-row renderer
+        // showed literal `\n` characters or clipped the body to one line.
+        vec![Field::Display {
             label: "keys".into(),
-            value: lines.join("\n"),
-            placeholder: None,
+            body: lines.join("\n"),
         }],
     )
     .with_help("Esc closes.")
@@ -5484,12 +5486,14 @@ mod tests {
             modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
         assert_eq!(modal.id.0, "help:ssh");
         // The keys field should contain the SshWidget's footer hints (N/G/S/K/X/?).
+        // Help modals use `Field::Display` so multi-line bodies render one
+        // row per `\n`-separated line.
         let keys_val = modal
             .fields
             .iter()
             .find_map(|f| match f {
-                sid_widgets::Field::Text { label, value, .. } if label == "keys" => {
-                    Some(value.clone())
+                sid_widgets::Field::Display { label, body } if label == "keys" => {
+                    Some(body.clone())
                 }
                 _ => None,
             })
@@ -5511,6 +5515,33 @@ mod tests {
         let modal =
             modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
         assert_eq!(modal.id.0, "help:workspaces");
+    }
+
+    /// The help modal uses `Field::Display` so multi-line bodies render
+    /// one row per `\n`-separated line. The body must contain newline
+    /// characters (proving the modal will paint multi-row) and the field
+    /// variant must be `Display` (so the renderer takes the multi-row path
+    /// instead of clipping to a single value row).
+    #[test]
+    fn help_modal_uses_display_field_with_multiline_body() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let modal =
+            modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
+        let first_field = modal.fields.first().expect("help modal has a field");
+        match first_field {
+            sid_widgets::Field::Display { label, body } => {
+                assert_eq!(label, "keys");
+                assert!(
+                    body.contains('\n'),
+                    "help body must contain newlines so the Display renderer paints multi-row"
+                );
+                assert!(
+                    body.contains("Global:"),
+                    "help body must contain Global section"
+                );
+            }
+            other => panic!("help modal first field must be Display; got {other:?}"),
+        }
     }
 
     // ─── Phase 6 — Mouse routing ────────────────────────────────────────────

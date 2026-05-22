@@ -495,29 +495,17 @@ impl Widget for SettingsWidget {
                                 ThemePickerOutcome::None => {}
                                 _ => return EventOutcome::Consumed,
                             },
-                            SettingsCategory::Animation(v) => match k.code {
-                                KeyCode::Up => {
-                                    v.focus_prev();
-                                    return EventOutcome::Consumed;
+                            SettingsCategory::Animation(v) => {
+                                // The AnimationView owns its own event
+                                // routing (j/k, h/l, arrows, Space/Enter,
+                                // and `S` to flush via its embedded store).
+                                match v.handle_event(ev, ctx) {
+                                    EventOutcome::Consumed => {
+                                        return EventOutcome::Consumed;
+                                    }
+                                    EventOutcome::Bubble => {}
                                 }
-                                KeyCode::Down => {
-                                    v.focus_next();
-                                    return EventOutcome::Consumed;
-                                }
-                                KeyCode::Left => {
-                                    v.adjust_focused(-1);
-                                    return EventOutcome::Consumed;
-                                }
-                                KeyCode::Right => {
-                                    v.adjust_focused(1);
-                                    return EventOutcome::Consumed;
-                                }
-                                KeyCode::Char(' ') | KeyCode::Enter => {
-                                    v.adjust_focused(0);
-                                    return EventOutcome::Consumed;
-                                }
-                                _ => {}
-                            },
+                            }
                             SettingsCategory::Keybinds(_)
                             | SettingsCategory::Behavior(_)
                             | SettingsCategory::WorkspaceRoots(_)
