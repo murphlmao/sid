@@ -99,11 +99,12 @@ async fn kill_modal_opens_via_keypress_against_focused_pid() {
     let mut widget = NetworkWidget::new();
     widget.apply_snapshot(snap);
 
-    // 'k' opens the modal targeting the focused (ports) PID = 1.
+    // Capital 'K' opens the modal targeting the focused (ports) PID = 1.
+    // Lowercase k is now vim-style "up" — see network.rs handle_event.
     let (tx, _r) = std::sync::mpsc::channel();
     let mut ctx = WidgetCtx::new(tx);
     let ev = SidEvent::from_crossterm(crossterm::event::Event::Key(KeyEvent::new(
-        KeyCode::Char('k'),
+        KeyCode::Char('K'),
         KeyModifiers::NONE,
     )));
     widget.handle_event(&ev, &mut ctx);

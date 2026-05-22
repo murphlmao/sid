@@ -733,15 +733,6 @@ impl Widget for NetworkWidget {
                 self.filter.enter_filter();
                 EventOutcome::Consumed
             }
-            KeyCode::Char('k')
-                if !chord.mods.contains(KeyModifiers::CONTROL)
-                    && matches!(self.focus, Focus::Ports | Focus::Processes) =>
-            {
-                if let Some(pid) = self.focused_pid() {
-                    self.kill_modal.open(pid);
-                }
-                EventOutcome::Consumed
-            }
             KeyCode::Char('s') => {
                 self.cycle_sort();
                 EventOutcome::Consumed
@@ -750,16 +741,19 @@ impl Widget for NetworkWidget {
                 self.selection_next();
                 EventOutcome::Consumed
             }
+            // Capital `K` (Shift+k) opens the kill modal; lowercase `k` is
+            // always vim-style "up" navigation. This was previously
+            // overloaded — lowercase k on Ports/Processes opened the modal,
+            // which contradicted the j/k navigation convention and surprised
+            // users. Capital K is now the only kill chord on Network, and
+            // the footer hint `[ K: kill ]` matches that.
             KeyCode::Char('K') if matches!(self.focus, Focus::Ports | Focus::Processes) => {
-                // Capital K (Shift+k) is an alias for "kill" — gated on
-                // panes where the action makes sense.
                 if let Some(pid) = self.focused_pid() {
                     self.kill_modal.open(pid);
                 }
                 EventOutcome::Consumed
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                // Pure j/k navigation (lowercase k on Interfaces, or Up).
                 self.selection_prev();
                 EventOutcome::Consumed
             }
