@@ -212,26 +212,56 @@ impl ConnectionState {
 // ---------------------------------------------------------------------------
 
 /// Owns the embedded terminal screen for the SSH tab's right pane.
+///
+/// The pane wraps a boxed [`TerminalScreen`] (an adapter trait owned by
+/// `sid-core`) so the widget crate never names `vt100` directly. The concrete
+/// `Vt100Screen` is constructed by the binary (or by tests) and handed in.
 pub struct PtyPane {
     screen: Box<dyn TerminalScreen>,
 }
 
 impl PtyPane {
+    /// Wrap an existing `TerminalScreen` (typically a `Vt100Screen`).
     pub fn new(screen: Box<dyn TerminalScreen>) -> Self {
         Self { screen }
     }
+    /// Feed bytes from the remote into the screen.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.screen.feed(bytes);
     }
+    /// Resize the underlying screen. Idempotent if `(rows, cols)` already
+    /// matches the current size.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.screen.resize(rows, cols);
     }
+    /// Resize the screen to the inner dimensions of the given pane area.
+    ///
+    /// Convenience wrapper: subtracts the surrounding border (`1` cell on
+    /// each side) and clamps to a minimum of `1` row/col. A no-op if the
+    /// resulting `(rows, cols)` already matches the current screen size.
+    ///
+    /// This is called by the binary (or test harness) **before** the next
+    /// `render_into_frame`, because the render pass is `&self` and must not
+    /// mutate the screen — see the comment on
+    /// `SshWidget::pty_pane_resize_to_area`.
+    pub fn resize_to_area(&mut self, rows: u16, cols: u16) {
+        let target_rows = rows.max(1);
+        let target_cols = cols.max(1);
+        if self.size() != (target_rows, target_cols) {
+            self.resize(target_rows, target_cols);
+        }
+    }
+    /// Current size as `(rows, cols)`.
     pub fn size(&self) -> (u16, u16) {
         self.screen.size()
     }
+    /// Visible buffer, one string per row. Each row is `cols` characters wide
+    /// after `Vt100Screen::lines` padding.
     pub fn lines(&self) -> Vec<String> {
         self.screen.lines()
     }
+    /// Cursor position as `(row, col)`, both zero-indexed against the inner
+    /// area (`row < rows`, `col < cols`).
     pub fn cursor_position(&self) -> (u16, u16) {
         self.screen.cursor_position()
     }
@@ -529,6 +559,9 @@ pub struct SshWidget {
     history: BTreeMap<String, CommandHistory>,
     id: WidgetId,
     focused_pane: SshFocus,
+    // Embedded terminal screen for the right pane. `None` until the binary
+    // (or a test) calls `set_pty_pane` after a successful connect.
+    pty_pane: Option<PtyPane>,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -560,6 +593,7 @@ impl SshWidget {
             history,
             id: WidgetId::new("ssh.root"),
             focused_pane: SshFocus::default(),
+            pty_pane: None,
             _ssh_factory: None,
             _pty_provider: None,
         }
@@ -586,6 +620,50 @@ impl SshWidget {
     /// Cycle focus backward (Shift+Tab).
     pub fn focus_prev(&mut self) {
         self.focused_pane = self.focused_pane.prev();
+    }
+
+    /// Focus the pane that contains the given coordinate. No-op when the
+    /// coordinate falls outside `area`.
+    ///
+    /// Layout mirrors [`Self::render_into_frame`]: a 40/60 horizontal split.
+    /// Columns left of the 40% boundary focus [`SshFocus::Hosts`]; everything
+    /// else focuses [`SshFocus::Detail`]. Rendering rereads `focused_pane`
+    /// next frame; this method does not invoke any render path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    /// use sid_widgets::SshWidget;
+    /// use sid_widgets::ssh::SshFocus;
+    /// let mut w = SshWidget::new();
+    /// let area = Rect { x: 0, y: 0, width: 100, height: 24 };
+    /// // Click in the right pane (col 80): focuses Detail.
+    /// w.focus_at(area, 80, 5);
+    /// assert_eq!(w.focused_pane(), SshFocus::Detail);
+    /// // Click in the left pane (col 10): focuses Hosts.
+    /// w.focus_at(area, 10, 5);
+    /// assert_eq!(w.focused_pane(), SshFocus::Hosts);
+    /// // Click outside the area is a no-op.
+    /// w.focus_at(area, 200, 5);
+    /// assert_eq!(w.focused_pane(), SshFocus::Hosts);
+    /// ```
+    pub fn focus_at(&mut self, area: Rect, col: u16, row: u16) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        let split_col = area.x.saturating_add(area.width.saturating_mul(40) / 100);
+        self.focused_pane = if col < split_col {
+            SshFocus::Hosts
+        } else {
+            SshFocus::Detail
+        };
     }
 
     /// Inject providers (called by `wire.rs`).
@@ -622,6 +700,40 @@ impl SshWidget {
     }
     pub fn edit_state_mut(&mut self) -> &mut SftpEditState {
         &mut self.edit_state
+    }
+    /// Borrow the embedded PTY pane, if one is attached.
+    pub fn pty_pane(&self) -> Option<&PtyPane> {
+        self.pty_pane.as_ref()
+    }
+    /// Mutably borrow the embedded PTY pane, if one is attached.
+    pub fn pty_pane_mut(&mut self) -> Option<&mut PtyPane> {
+        self.pty_pane.as_mut()
+    }
+    /// Attach a `PtyPane`. Called by the binary after a successful SSH
+    /// `request_shell` returns a session bound to a fresh `Vt100Screen`. In
+    /// tests we feed the pane directly via `pty_pane_mut().unwrap().feed(...)`.
+    pub fn set_pty_pane(&mut self, pane: PtyPane) {
+        self.pty_pane = Some(pane);
+    }
+    /// Detach the `PtyPane` (e.g. on disconnect).
+    pub fn take_pty_pane(&mut self) -> Option<PtyPane> {
+        self.pty_pane.take()
+    }
+    /// Resize the embedded PTY pane to match the inner dimensions of `area`
+    /// (the right-hand body rect, **before** the border subtraction).
+    ///
+    /// `render_into_frame(&self, ...)` cannot mutate the screen (and the
+    /// project rules forbid interior mutability inside render), so the binary
+    /// — and the snapshot tests — must call this on a `&mut SshWidget` before
+    /// every frame whose right-pane area changed. No-op when no pane is
+    /// attached or when the size already matches.
+    pub fn pty_pane_resize_to_area(&mut self, area: Rect) {
+        if let Some(pane) = self.pty_pane.as_mut() {
+            // Subtract one cell on each side for the border. Clamp to >=1.
+            let rows = area.height.saturating_sub(2).max(1);
+            let cols = area.width.saturating_sub(2).max(1);
+            pane.resize_to_area(rows, cols);
+        }
     }
     pub fn history_for(&self, alias: &str) -> Option<&CommandHistory> {
         self.history.get(alias)
@@ -771,11 +883,42 @@ impl SshWidget {
 
     fn render_pty_body(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
         let phase = self.connection.phase();
+        let session_title = match self.state.selected_alias() {
+            Some(alias) => format!(" {alias} "),
+            None => " (no host selected) ".to_string(),
+        };
+        let focused = self.focused_pane == SshFocus::Detail;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(session_title)
+            .title_style(title_style);
+
+        // Connected + a PtyPane attached: dump the live vt100 buffer.
+        if phase == ConnectionPhase::Connected
+            && self.pty_pane.is_some()
+            && rect.width >= 2
+            && rect.height >= 2
+        {
+            self.render_pty_screen(frame, rect, theme, block);
+            return;
+        }
+
         let body: Vec<Line<'_>> = match phase {
             ConnectionPhase::Connected => {
-                // TODO: hook the live vt100 buffer up here once the
-                // TerminalScreen draw path is exposed. For now, show a
-                // placeholder that proves we know we're connected.
+                // Connected but no pane was attached yet (e.g. the binary
+                // hasn't called `set_pty_pane`). Preserve the legacy
+                // placeholder so the user still sees that the connection
+                // is live.
                 let alias = self.connection.alias().unwrap_or("?");
                 vec![
                     Line::from(Span::styled(
@@ -813,26 +956,89 @@ impl SshWidget {
                 )),
             ],
         };
-        let session_title = match self.state.selected_alias() {
-            Some(alias) => format!(" {alias} "),
-            None => " (no host selected) ".to_string(),
-        };
-        let focused = self.focused_pane == SshFocus::Detail;
-        let border_color = if focused {
-            theme.accent_primary
-        } else {
-            theme.muted
-        };
-        let mut title_style = Style::default().fg(theme.foreground.into());
-        if focused {
-            title_style = title_style.add_modifier(Modifier::BOLD);
-        }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color.into()))
-            .title(session_title)
-            .title_style(title_style);
         frame.render_widget(Paragraph::new(body).block(block), rect);
+    }
+
+    /// Render the attached [`PtyPane`]'s live buffer into `rect`.
+    ///
+    /// Invariants:
+    /// * Callers guarantee `self.pty_pane.is_some()`.
+    /// * Callers guarantee `rect.width >= 2` and `rect.height >= 2` so the
+    ///   inner area is at least `1x1` after subtracting the surrounding
+    ///   border.
+    ///
+    /// The function:
+    /// 1. Reads `lines()` from the pane.
+    /// 2. If every row is whitespace, replaces them with a single dim
+    ///    "(waiting for output…)" hint.
+    /// 3. Truncates each row to the inner width so wide vt100 buffers do
+    ///    not bleed past the border. (`vt100::Screen::lines` pads each row
+    ///    to the screen's column count; we may have a stale pane that
+    ///    hasn't been resized yet, so we still guard against overflow.)
+    /// 4. Renders the body as a `Paragraph` inside the bordered `block`.
+    /// 5. Inverts the cursor cell by flipping `fg <-> bg` directly on the
+    ///    buffer. The render is `&self`, but mutating the `Buffer` via
+    ///    `frame.buffer_mut()` is **not** widget interior mutability — it
+    ///    is just normal rendering output.
+    fn render_pty_screen(
+        &self,
+        frame: &mut Frame<'_>,
+        rect: Rect,
+        theme: &Theme,
+        block: Block<'_>,
+    ) {
+        // Inner area inside the border. Guaranteed >= 1x1 by the caller's
+        // `rect.width >= 2 && rect.height >= 2` precondition.
+        let inner_width = rect.width.saturating_sub(2) as usize;
+        let inner_height = rect.height.saturating_sub(2) as usize;
+        let pane = self
+            .pty_pane
+            .as_ref()
+            .expect("render_pty_screen invariant: pty_pane is Some");
+        let raw_lines = pane.lines();
+
+        let all_blank = raw_lines.iter().all(|row| row.chars().all(|c| c == ' '));
+        let body: Vec<Line<'_>> = if all_blank {
+            vec![Line::from(Span::styled(
+                "(waiting for output…)",
+                Style::default().fg(theme.muted.into()),
+            ))]
+        } else {
+            raw_lines
+                .into_iter()
+                .take(inner_height.max(1))
+                .map(|row| {
+                    // Truncate to inner_width chars; if `row` is shorter
+                    // (rare — vt100 pads, but be defensive) it renders as-is.
+                    let truncated: String = row.chars().take(inner_width.max(1)).collect();
+                    Line::from(Span::styled(
+                        truncated,
+                        Style::default().fg(theme.foreground.into()),
+                    ))
+                })
+                .collect()
+        };
+
+        frame.render_widget(Paragraph::new(body).block(block), rect);
+
+        // Invert the cursor cell. Skipped when we're showing the waiting hint
+        // (no live cursor to draw) or when the cursor falls outside the
+        // visible inner area.
+        if !all_blank {
+            let (cur_row, cur_col) = pane.cursor_position();
+            if (cur_row as usize) < inner_height && (cur_col as usize) < inner_width {
+                let x = rect.x + 1 + cur_col;
+                let y = rect.y + 1 + cur_row;
+                let buf = frame.buffer_mut();
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(
+                        Style::default()
+                            .fg(theme.background.into())
+                            .bg(theme.foreground.into()),
+                    );
+                }
+            }
+        }
     }
 
     fn render_sftp_body(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
@@ -1018,4 +1224,60 @@ pub fn render_to_string(widget: &SshWidget, width: u16, height: u16) -> String {
         s.push('\n');
     }
     s
+}
+
+/// Compute the right-pane body rect for a widget rendered into `(width, height)`.
+///
+/// Mirrors the layout used by [`SshWidget::render_into_frame`] — horizontal
+/// 40/60 split, then a vertical (3, Min(1), 1) split inside the right half.
+/// Exposed so tests (and the binary) can resize an attached
+/// [`PtyPane`] to match the body rect before the next frame.
+///
+/// # Examples
+///
+/// ```
+/// use ratatui::layout::Rect;
+/// use sid_widgets::ssh::body_rect_for;
+/// let outer = Rect::new(0, 0, 80, 16);
+/// let body = body_rect_for(outer);
+/// // The body is somewhere inside the right 60%, narrower than the outer.
+/// assert!(body.x >= outer.width * 40 / 100 - 1);
+/// assert!(body.width < outer.width);
+/// ```
+pub fn body_rect_for(outer: Rect) -> Rect {
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(outer);
+    let right = split[1];
+    let right_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(right);
+    right_split[1]
+}
+
+/// Mutably resize an attached [`PtyPane`] to fit `(width, height)` then
+/// render the widget to a string. Convenience helper for tests that want a
+/// snapshot of the live PTY buffer: they can feed bytes into the pane, call
+/// this, and the screen is sized to the body rect before render. No-op if
+/// the widget has no `PtyPane` attached.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::SshWidget;
+/// use sid_widgets::ssh::render_to_string_with_resize;
+/// let mut w = SshWidget::new();
+/// let s = render_to_string_with_resize(&mut w, 80, 16);
+/// assert!(s.contains("Hosts"));
+/// ```
+pub fn render_to_string_with_resize(widget: &mut SshWidget, width: u16, height: u16) -> String {
+    let outer = Rect::new(0, 0, width, height);
+    widget.pty_pane_resize_to_area(body_rect_for(outer));
+    render_to_string(widget, width, height)
 }
