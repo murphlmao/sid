@@ -451,6 +451,11 @@ impl App {
                 self.tabs.switch_to(&crate::tab::TabId::new("settings"));
                 Dispatch::Continue
             }
+            "tab.close" => {
+                // Close the active tab if it is a Detail; no-op on Core.
+                let _ = self.tabs.close_active();
+                Dispatch::Continue
+            }
             // No-ops in Plan 1; implemented in Plan 8.
             "tab.detach" | "tab.attach" | "tab.reload" => Dispatch::Continue,
             _ => {
