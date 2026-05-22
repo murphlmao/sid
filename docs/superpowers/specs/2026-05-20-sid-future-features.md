@@ -30,13 +30,12 @@ For example, the **Workspaces** tab in v2 could contain `[git-branches | git-sta
 
 ---
 
-### Workspace open list (workspaces as tabs)
+### ~~Workspace open list (workspaces as tabs)~~ — **promoted to v1** (2026-05-22)
 
-**What it does.** Pin a workspace open so it appears as its own tab in the tab strip — `Workspaces · web-api · data-pipe · SSH · …`. `Tab` through to switch between open workspaces. Each open workspace remembers its own view state. Close from the tab strip with `Ctrl+W`.
+**Status:** Now in design as part of the [TUI UX interaction overhaul](2026-05-22-tui-ux-interaction-design.md) (branch #3 — `feat/workspace-detail-as-tab`). The promotion was driven by user feedback that the single Workspaces tab did not feel "inhabit-able": you couldn't open a workspace and stay in it. The design landed in v1 differs from the original v2 sketch in two ways:
 
-**Why deferred.** In practice you'll typically have 1–2 workspaces open at a time, so v1's single **Workspaces** tab with quick switching inside is adequate. The "a workspace can also be a tab" mental model is best introduced once the basic Workspaces UX is stable and you've felt the friction of the alternative.
-
-**v1 hook.** Tabs are an ordered list in `TabManager`; new tab kinds register dynamically at startup. A "workspace-tab" kind is a small addition — same `Widget` trait, parameterized by workspace ID. No core changes.
+- v1 ships **one detail tab per open workspace**, not "every registered workspace as a tab in the strip". You explicitly open a workspace from the overview; it gets its own dynamic tab; closing it returns to the overview.
+- v1's detail tab is a **multi-repo dashboard** (umbrella + sub-repos) by default, not a single-repo view. This matches the user's umbrella-heavy workflow (e.g., `eggsight-stack`).
 
 ---
 
@@ -199,6 +198,70 @@ These are clearly desirable but unscheduled. Listed so they don't get forgotten.
 - **Linear / Jira / GitHub Issues** widget (read-only ticket lookup; no v1 because pulls in external API surfaces)
 - **GitLab / GitHub PR widget** (status, comments, approve)
 - **Discord / Slack notifier hooks** for long-running jobs
+
+---
+
+## Deferred from the 2026-05-22 interaction overhaul
+
+These items came up during the [TUI UX interaction overhaul spec](2026-05-22-tui-ux-interaction-design.md) and were intentionally cut from its v1 scope so the spec stayed focused. Each has a v1 hook in place so the follow-up is an addition, not a rewrite.
+
+### Network interface mutation (write path)
+
+**What it does.** Edit DHCP/static IP, MTU, default-route preference; restart the interface; restart NetworkManager/networkd. Triggered by `E` from a focused interface in the Network tab.
+
+**Why deferred.** Requires a new adapter (`NetworkAdmin`), a polkit/sudo elevation flow, and careful failure-mode coverage (what if `nmcli` succeeds but the connection drops?). Bigger surface than the rest of the overhaul.
+
+**v1 hook.** v1 ships the `E` chord bound to a stub that toasts "Interface editing not yet supported — see backlog". The `InterfaceDetailModal` substrate is also in v1 — adding editable fields means swapping `Field::Display` for `Field::Text`/`Field::Choice` rows and wiring submit to the `NetworkAdmin` adapter.
+
+---
+
+### Real CI status fetcher for `WorkspaceDetailWidget`
+
+**What it does.** Each sub-repo row in the workspace detail dashboard shows live CI status (passing/failing/in-progress). Probably shells out to `gh run list --json --limit 1` per repo, cached per-session.
+
+**Why deferred.** Pulls a `gh` subprocess dependency into the hot path of the dashboard; cache invalidation needs care. v1 ships the column with `CiStatus::Unknown` everywhere so the layout is final.
+
+**v1 hook.** The `CiStatus` enum and the column already exist; populating them is a job for a new `CiStatusProvider` adapter behind a feature flag.
+
+---
+
+### "Sync all sub-repos to branch X" actual implementation
+
+**What it does.** From a workspace detail tab, press `b` to open a modal that takes a branch name and attempts `git checkout` on every sub-repo, reporting per-repo success/skip/conflict.
+
+**Why deferred.** Need to think about partial-failure semantics: do we roll back the repos that succeeded if a later one fails? Probably not, but the user should see a clear per-repo result.
+
+**v1 hook.** v1 ships the `b` modal that opens, accepts a branch name, and toasts "Not yet implemented". Wiring it up is implementation-only.
+
+---
+
+### Kitty-protocol auto-enable on startup
+
+**What it does.** sid emits `CSI > 1 u` at startup to ask the terminal to deliver enhanced key chords. Terminals that support the protocol (kitty, ghostty, wezterm, foot, recent xterm/modifyOtherKeys=2) start sending `Ctrl+1`, `Ctrl+,`, etc. as distinct chords.
+
+**Why deferred.** Alt fallbacks ship in v1 and work universally. Auto-enabling adds a startup side effect and a "leave the terminal in a clean state on exit" obligation that needs care.
+
+**v1 hook.** Bindings under `KeyModifiers::CONTROL` already exist — they just don't fire on terminals that swallow the chord. Once the protocol is enabled the existing bindings work without further changes.
+
+---
+
+### Established connections / Unix sockets in the ports table
+
+**What it does.** Network tab shows not just listening sockets but also active outbound connections, Unix-domain sockets, and sudo-required visibility into root-owned sockets.
+
+**Why deferred.** Expands the sys-probe adapter surface and needs a privilege-elevation model. v1's listening-only view is honest about its scope.
+
+**v1 hook.** The `ListeningPort` type can grow a `direction: PortDirection` discriminator without breaking callers; the adapter trait can add new methods alongside `list_listening_ports`.
+
+---
+
+### Workspace scan-on-demand command-palette action
+
+**What it does.** A `workspaces.scan_now` action in the command palette runs the existing `scan_workspace_root` over user-defined roots and presents discovered repos as a "promote these?" picker.
+
+**Why deferred.** The function is exported and tested in v1 (it's the same code that used to run at startup). Adding the palette affordance + the promotion picker is UI-only work for a follow-up.
+
+**v1 hook.** `wire::startup_discover` is exported. A new `palette` action calls it on demand.
 
 ---
 
