@@ -88,6 +88,9 @@ pub struct KillToast {
 
 /// Currently-focused pane. Cycled with Tab / Shift+Tab.
 ///
+/// Also exposed as [`NetFocus`] for parity with the other widgets'
+/// `<Widget>Focus` naming convention.
+///
 /// # Examples
 ///
 /// ```
@@ -104,6 +107,10 @@ pub enum Focus {
     /// Interfaces sidebar is focused.
     Interfaces,
 }
+
+/// Strict pane-focus model alias matching the other widgets'
+/// `<Widget>Focus` convention. See [`Focus`].
+pub type NetFocus = Focus;
 
 /// Persisted UI preferences. Captures sort + focus so a sid restart restores
 /// the user's view layout. The actual data comes from the next probe tick.
@@ -279,6 +286,21 @@ impl NetworkWidget {
     /// Currently-focused pane.
     pub fn focus(&self) -> Focus {
         self.focus
+    }
+
+    /// Currently-focused pane (parity with the other widgets'
+    /// `focused_pane()` method).
+    pub fn focused_pane(&self) -> NetFocus {
+        self.focus
+    }
+
+    /// Stable string label for the focused pane.
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focus {
+            Focus::Ports => "Ports",
+            Focus::Processes => "Processes",
+            Focus::Interfaces => "Interfaces",
+        }
     }
 
     /// True when focus is on the ports pane.
@@ -689,12 +711,32 @@ impl Widget for NetworkWidget {
             }
         }
 
+        // Tab / Shift+Tab cycle the focused pane FIRST.
+        match chord.code {
+            KeyCode::Tab => {
+                self.focus_next();
+                return EventOutcome::Consumed;
+            }
+            KeyCode::BackTab => {
+                self.focus_prev();
+                return EventOutcome::Consumed;
+            }
+            _ => {}
+        }
+        // Alt+<key> is reserved for future cross-pane actions.
+        if chord.mods.contains(KeyModifiers::ALT) {
+            // TODO: cross-pane actions on Alt+<key>
+            return EventOutcome::Bubble;
+        }
         match chord.code {
             KeyCode::Char('/') => {
                 self.filter.enter_filter();
                 EventOutcome::Consumed
             }
-            KeyCode::Char('k') if !chord.mods.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('k')
+                if !chord.mods.contains(KeyModifiers::CONTROL)
+                    && matches!(self.focus, Focus::Ports | Focus::Processes) =>
+            {
                 if let Some(pid) = self.focused_pid() {
                     self.kill_modal.open(pid);
                 }
@@ -704,26 +746,20 @@ impl Widget for NetworkWidget {
                 self.cycle_sort();
                 EventOutcome::Consumed
             }
-            KeyCode::Tab => {
-                self.focus_next();
-                EventOutcome::Consumed
-            }
-            KeyCode::BackTab => {
-                self.focus_prev();
-                EventOutcome::Consumed
-            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selection_next();
                 EventOutcome::Consumed
             }
-            KeyCode::Char('K') => {
-                // Capital K with no Ctrl mod — alias for Shift+k → "kill"
+            KeyCode::Char('K') if matches!(self.focus, Focus::Ports | Focus::Processes) => {
+                // Capital K (Shift+k) is an alias for "kill" — gated on
+                // panes where the action makes sense.
                 if let Some(pid) = self.focused_pid() {
                     self.kill_modal.open(pid);
                 }
                 EventOutcome::Consumed
             }
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up => {
+                // Pure j/k navigation (lowercase k on Interfaces, or Up).
                 self.selection_prev();
                 EventOutcome::Consumed
             }

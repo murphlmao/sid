@@ -41,3 +41,154 @@ fn database_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<DatabaseWidget>();
 }
+
+// ---------------------------------------------------------------------------
+// Strict pane-focus model tests
+// ---------------------------------------------------------------------------
+
+mod focus {
+    use std::sync::mpsc;
+
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use sid_core::adapters::db_client::{Column, ColumnType, DbKind, QueryPage, Row};
+    use sid_core::context::WidgetCtx;
+    use sid_core::event::{Event, KeyChord};
+    use sid_core::widget::Widget;
+    use sid_store::DbConnection;
+    use sid_widgets::DatabaseWidget;
+    use sid_widgets::database::{DbFocus, RightPane};
+
+    fn ctx() -> WidgetCtx {
+        let (tx, _rx) = mpsc::channel();
+        WidgetCtx::new(tx)
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> Event {
+        Event::Key(KeyChord::new(code, mods))
+    }
+
+    fn conn(id: &str) -> DbConnection {
+        DbConnection {
+            id: id.into(),
+            kind: DbKind::Sqlite,
+            name: id.into(),
+            dsn: ":memory:".into(),
+            secret_ref: None,
+            created_at: 0,
+        }
+    }
+
+    fn results_page() -> QueryPage {
+        QueryPage {
+            columns: vec![Column {
+                name: "x".into(),
+                ty: ColumnType::Text,
+            }],
+            rows: vec![
+                Row {
+                    values: vec!["1".into()],
+                },
+                Row {
+                    values: vec!["2".into()],
+                },
+            ],
+            next_cursor: None,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn default_focus_is_connections() {
+        let w = DatabaseWidget::new(vec![]);
+        assert_eq!(w.focused_pane(), DbFocus::Connections);
+        assert_eq!(w.focused_pane_label(), "Connections");
+    }
+
+    #[test]
+    fn tab_cycles_focus_forward() {
+        let mut w = DatabaseWidget::new(vec![]);
+        let mut c = ctx();
+        let order = [
+            DbFocus::Editor,
+            DbFocus::Results,
+            DbFocus::History,
+            DbFocus::Connections,
+        ];
+        for expected in order {
+            w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+            assert_eq!(w.focused_pane(), expected);
+        }
+    }
+
+    #[test]
+    fn shift_tab_cycles_focus_backward() {
+        let mut w = DatabaseWidget::new(vec![]);
+        let mut c = ctx();
+        let order = [
+            DbFocus::History,
+            DbFocus::Results,
+            DbFocus::Editor,
+            DbFocus::Connections,
+        ];
+        for expected in order {
+            w.handle_event(&key(KeyCode::BackTab, KeyModifiers::SHIFT), &mut c);
+            assert_eq!(w.focused_pane(), expected);
+        }
+    }
+
+    #[test]
+    fn tab_syncs_right_pane_with_focus() {
+        let mut w = DatabaseWidget::new(vec![]);
+        let mut c = ctx();
+        // Connections → Editor: RightPane should switch to Editor.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().right_pane(), RightPane::Editor);
+        // Editor → Results.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().right_pane(), RightPane::Results);
+        // Results → History.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().right_pane(), RightPane::History);
+    }
+
+    #[test]
+    fn j_only_acts_on_focused_pane() {
+        let mut w = DatabaseWidget::new(vec![conn("a"), conn("b")]);
+        let mut c = ctx();
+        w.set_results_for_tests(results_page());
+        // Focus is Connections. j should advance connection selection.
+        assert_eq!(w.state().selected_index(), 0);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().selected_index(), 1);
+        // Tab to Editor; j must not advance connection selection.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), DbFocus::Editor);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().selected_index(), 1);
+        // Tab to Results; j moves the result row, not the connection.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), DbFocus::Results);
+        assert_eq!(w.state().results.selected_row, 0);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().results.selected_row, 1);
+        assert_eq!(w.state().selected_index(), 1); // unchanged
+        // Tab to History; j must not move the connection list either.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), DbFocus::History);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.state().selected_index(), 1);
+    }
+
+    #[test]
+    fn border_follows_focus() {
+        let mut w = DatabaseWidget::new(vec![]);
+        let mut c = ctx();
+        assert_eq!(w.focused_pane_label(), "Connections");
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane_label(), "Editor");
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane_label(), "Results");
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane_label(), "History");
+    }
+}

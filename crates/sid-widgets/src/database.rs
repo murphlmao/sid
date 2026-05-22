@@ -46,6 +46,57 @@ pub enum RightPane {
     History,
 }
 
+/// Which pane in the Database tab currently owns keyboard input.
+///
+/// Distinct from [`RightPane`]: `RightPane` controls what the right side
+/// **displays** (Editor / Results / History) while `DbFocus` controls
+/// **where input goes** (the left connection list, or one of the three
+/// right-pane sub-views).
+///
+/// `Tab` cycles 4-way: `Connections → Editor → Results → History → Connections`.
+/// When focus advances to one of `Editor/Results/History` the right pane is
+/// also switched to that display so the focused area is what the user sees.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::database::DbFocus;
+/// assert_eq!(DbFocus::default(), DbFocus::Connections);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DbFocus {
+    /// Left-hand connection list.
+    #[default]
+    Connections,
+    /// Right-hand SQL editor.
+    Editor,
+    /// Right-hand results table.
+    Results,
+    /// Right-hand query history.
+    History,
+}
+
+impl DbFocus {
+    /// Cycle forward (Tab).
+    pub fn next(self) -> Self {
+        match self {
+            DbFocus::Connections => DbFocus::Editor,
+            DbFocus::Editor => DbFocus::Results,
+            DbFocus::Results => DbFocus::History,
+            DbFocus::History => DbFocus::Connections,
+        }
+    }
+    /// Cycle backward (Shift+Tab).
+    pub fn prev(self) -> Self {
+        match self {
+            DbFocus::Connections => DbFocus::History,
+            DbFocus::Editor => DbFocus::Connections,
+            DbFocus::Results => DbFocus::Editor,
+            DbFocus::History => DbFocus::Results,
+        }
+    }
+}
+
 /// One-shot commands the widget asks the App to perform. The wire layer
 /// translates these into JobQueue spawns and routes the result back via the
 /// widget's `apply_*` setters.
@@ -485,6 +536,7 @@ pub struct DatabaseWidget {
     state: DatabaseState,
     id: WidgetId,
     body: ComingSoonBody,
+    focused_pane: DbFocus,
 }
 
 impl DatabaseWidget {
@@ -505,6 +557,45 @@ impl DatabaseWidget {
                 "Database",
                 "Postgres + SQLite query runner — Plan 4 wires the editor + results table in a follow-up.",
             ),
+            focused_pane: DbFocus::default(),
+        }
+    }
+
+    /// Currently-focused pane.
+    pub fn focused_pane(&self) -> DbFocus {
+        self.focused_pane
+    }
+
+    /// Stable string label for the focused pane.
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focused_pane {
+            DbFocus::Connections => "Connections",
+            DbFocus::Editor => "Editor",
+            DbFocus::Results => "Results",
+            DbFocus::History => "History",
+        }
+    }
+
+    /// Cycle focus forward. Synchronises [`RightPane`] when focus lands on
+    /// one of the right-pane sub-views.
+    pub fn focus_next(&mut self) {
+        self.focused_pane = self.focused_pane.next();
+        self.sync_right_pane_with_focus();
+    }
+
+    /// Cycle focus backward. Synchronises [`RightPane`] when focus lands on
+    /// one of the right-pane sub-views.
+    pub fn focus_prev(&mut self) {
+        self.focused_pane = self.focused_pane.prev();
+        self.sync_right_pane_with_focus();
+    }
+
+    fn sync_right_pane_with_focus(&mut self) {
+        match self.focused_pane {
+            DbFocus::Editor => self.state.set_right_pane(RightPane::Editor),
+            DbFocus::Results => self.state.set_right_pane(RightPane::Results),
+            DbFocus::History => self.state.set_right_pane(RightPane::History),
+            DbFocus::Connections => {}
         }
     }
 
@@ -584,11 +675,21 @@ impl DatabaseWidget {
     }
 
     fn render_connection_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let focused = self.focused_pane == DbFocus::Connections;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" Connections ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
 
         if self.state.connections.is_empty() {
             let msg = "(no connections — `sid db add` to register)";
@@ -636,7 +737,7 @@ impl DatabaseWidget {
     }
 
     fn render_editor(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
-        let focused = self.state.right_pane == RightPane::Editor;
+        let focused = self.focused_pane == DbFocus::Editor;
         let border_color = if focused {
             theme.accent_primary
         } else {
@@ -696,7 +797,7 @@ impl DatabaseWidget {
     }
 
     fn render_results(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
-        let focused = self.state.right_pane == RightPane::Results;
+        let focused = self.focused_pane == DbFocus::Results;
         let border_color = if focused {
             theme.accent_primary
         } else {
@@ -770,7 +871,7 @@ impl DatabaseWidget {
     }
 
     fn render_history(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
-        let focused = self.state.right_pane == RightPane::History;
+        let focused = self.focused_pane == DbFocus::History;
         let border_color = if focused {
             theme.accent_primary
         } else {
@@ -908,36 +1009,31 @@ impl Widget for DatabaseWidget {
     fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(chord) = ev {
+            // Tab / Shift+Tab cycle the focused pane FIRST.
             match (chord.code, chord.mods) {
-                (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                    match self.state.right_pane {
-                        RightPane::Results => self.state.results.select_next_row(),
-                        RightPane::History => self.state.history.select_next(),
-                        RightPane::Editor => self.state.select_next(),
-                    }
-                    return EventOutcome::Consumed;
-                }
-                (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                    match self.state.right_pane {
-                        RightPane::Results => self.state.results.select_prev_row(),
-                        RightPane::History => self.state.history.select_prev(),
-                        RightPane::Editor => self.state.select_prev(),
-                    }
-                    return EventOutcome::Consumed;
-                }
                 (KeyCode::Tab, KeyModifiers::NONE) => {
-                    self.state.cycle_right_pane();
+                    self.focus_next();
                     return EventOutcome::Consumed;
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(c) = self.state.selected_connection() {
-                        let cmd = DbCommand::Connect {
-                            conn_id: c.id.clone(),
-                        };
-                        self.state.push_command(cmd);
-                    }
+                (KeyCode::Tab, m) if m.contains(KeyModifiers::SHIFT) => {
+                    self.focus_prev();
                     return EventOutcome::Consumed;
                 }
+                (KeyCode::BackTab, _) => {
+                    self.focus_prev();
+                    return EventOutcome::Consumed;
+                }
+                _ => {}
+            }
+            // Alt+<key> is reserved for future cross-pane actions.
+            if chord.mods.contains(KeyModifiers::ALT) {
+                // TODO: cross-pane actions on Alt+<key>
+                return EventOutcome::Bubble;
+            }
+            // Widget-global keybinds (independent of focused pane). These
+            // are command bindings, not navigation; existing CRUD modal
+            // triggers fire here regardless of which pane is focused.
+            match (chord.code, chord.mods) {
                 (KeyCode::Char('r'), KeyModifiers::CONTROL) => {
                     if let Some(id) = self.state.active_conn_id().map(|s| s.to_string()) {
                         let cmd = DbCommand::RunQuery {
@@ -952,16 +1048,64 @@ impl Widget for DatabaseWidget {
                     self.state.push_command(DbCommand::Disconnect);
                     return EventOutcome::Consumed;
                 }
-                (KeyCode::Char('c'), KeyModifiers::NONE)
-                    if self.state.right_pane == RightPane::Results =>
-                {
-                    if let Some(cell) = self.state.results.selected_cell() {
-                        let cmd = DbCommand::CopyCell(cell.to_string());
-                        self.state.push_command(cmd);
-                    }
-                    return EventOutcome::Consumed;
-                }
                 _ => {}
+            }
+            // Pane-gated routing.
+            match self.focused_pane {
+                DbFocus::Connections => match (chord.code, chord.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                        self.state.select_next();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                        self.state.select_prev();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if let Some(c) = self.state.selected_connection() {
+                            let cmd = DbCommand::Connect {
+                                conn_id: c.id.clone(),
+                            };
+                            self.state.push_command(cmd);
+                        }
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
+                DbFocus::Editor => {
+                    // Editor pane: only "Editor-local" navigation is bound
+                    // here. Character typing is the binary's wire-layer
+                    // responsibility (it owns the EditorState mutators).
+                }
+                DbFocus::Results => match (chord.code, chord.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                        self.state.results.select_next_row();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                        self.state.results.select_prev_row();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::NONE) => {
+                        if let Some(cell) = self.state.results.selected_cell() {
+                            let cmd = DbCommand::CopyCell(cell.to_string());
+                            self.state.push_command(cmd);
+                        }
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
+                DbFocus::History => match (chord.code, chord.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                        self.state.history.select_next();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                        self.state.history.select_prev();
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
             }
         }
         EventOutcome::Bubble

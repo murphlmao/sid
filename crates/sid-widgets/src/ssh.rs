@@ -474,6 +474,42 @@ impl SftpEditState {
 // SshWidget
 // ---------------------------------------------------------------------------
 
+/// Which pane in the SSH tab currently owns keyboard input.
+///
+/// Tab/Shift+Tab cycle. The accent border is rendered on the focused pane;
+/// the other pane uses the muted color.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::ssh::SshFocus;
+/// assert_ne!(SshFocus::Hosts, SshFocus::Detail);
+/// assert_eq!(SshFocus::default(), SshFocus::Hosts);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SshFocus {
+    /// The left-hand host list.
+    #[default]
+    Hosts,
+    /// The right-hand detail/PTY/SFTP pane (read-only for now).
+    Detail,
+}
+
+impl SshFocus {
+    /// Cycle to the next focus (Tab).
+    pub fn next(self) -> Self {
+        match self {
+            SshFocus::Hosts => SshFocus::Detail,
+            SshFocus::Detail => SshFocus::Hosts,
+        }
+    }
+    /// Cycle to the previous focus (Shift+Tab).
+    pub fn prev(self) -> Self {
+        // 2-way: prev == next.
+        self.next()
+    }
+}
+
 /// SSH tab widget.
 ///
 /// # Examples
@@ -491,6 +527,7 @@ pub struct SshWidget {
     edit_state: SftpEditState,
     history: BTreeMap<String, CommandHistory>,
     id: WidgetId,
+    focused_pane: SshFocus,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -521,9 +558,33 @@ impl SshWidget {
             edit_state: SftpEditState::default(),
             history,
             id: WidgetId::new("ssh.root"),
+            focused_pane: SshFocus::default(),
             _ssh_factory: None,
             _pty_provider: None,
         }
+    }
+
+    /// Currently-focused pane.
+    pub fn focused_pane(&self) -> SshFocus {
+        self.focused_pane
+    }
+
+    /// Stable string label for the focused pane (`"Hosts"` / `"Detail"`).
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focused_pane {
+            SshFocus::Hosts => "Hosts",
+            SshFocus::Detail => "Detail",
+        }
+    }
+
+    /// Cycle focus forward (Tab).
+    pub fn focus_next(&mut self) {
+        self.focused_pane = self.focused_pane.next();
+    }
+
+    /// Cycle focus backward (Shift+Tab).
+    pub fn focus_prev(&mut self) {
+        self.focused_pane = self.focused_pane.prev();
     }
 
     /// Inject providers (called by `wire.rs`).
@@ -648,15 +709,21 @@ impl SshWidget {
                 lines.push(Line::from(Span::styled(label, style)));
             }
         }
+        let focused = self.focused_pane == SshFocus::Hosts;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" Hosts ")
-            .title_style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            );
+            .title_style(title_style);
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
 
@@ -683,11 +750,21 @@ impl SshWidget {
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
+        let focused = self.focused_pane == SshFocus::Detail;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" Status ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
         frame.render_widget(Paragraph::new(line).block(block), rect);
     }
 
@@ -739,11 +816,21 @@ impl SshWidget {
             Some(alias) => format!(" {alias} "),
             None => " (no host selected) ".to_string(),
         };
+        let focused = self.focused_pane == SshFocus::Detail;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(session_title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
         frame.render_widget(Paragraph::new(body).block(block), rect);
     }
 
@@ -776,11 +863,21 @@ impl SshWidget {
             Some(alias) => format!(" SFTP · {alias} "),
             None => " SFTP ".to_string(),
         };
+        let focused = self.focused_pane == SshFocus::Detail;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(sftp_title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
 
@@ -834,26 +931,53 @@ impl Widget for SshWidget {
     fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(chord) = ev {
+            // Tab / Shift+Tab cycle the focused pane FIRST, before any
+            // pane-local key routing.
             match (chord.code, chord.mods) {
-                (KeyCode::Char('j') | KeyCode::Down, _) => {
-                    self.state.select_next();
-                    return EventOutcome::Consumed;
-                }
-                (KeyCode::Char('k') | KeyCode::Up, _) => {
-                    self.state.select_prev();
-                    return EventOutcome::Consumed;
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(alias) = self.state.selected_alias() {
-                        self.connection.begin_connecting(alias.to_string());
-                    }
-                    return EventOutcome::Consumed;
-                }
                 (KeyCode::Tab, KeyModifiers::NONE) => {
-                    self.sftp_panel.toggle();
+                    self.focus_next();
+                    return EventOutcome::Consumed;
+                }
+                (KeyCode::Tab, m) if m.contains(KeyModifiers::SHIFT) => {
+                    self.focus_prev();
+                    return EventOutcome::Consumed;
+                }
+                (KeyCode::BackTab, _) => {
+                    self.focus_prev();
                     return EventOutcome::Consumed;
                 }
                 _ => {}
+            }
+            // Alt+<key> is reserved for future cross-pane actions. For now
+            // we explicitly do nothing so nothing leaks through to pane
+            // handlers under an Alt modifier.
+            if chord.mods.contains(KeyModifiers::ALT) {
+                // TODO: cross-pane actions on Alt+<key>
+                return EventOutcome::Bubble;
+            }
+            // Pane-gated routing: keys only reach the focused pane.
+            match self.focused_pane {
+                SshFocus::Hosts => match (chord.code, chord.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, _) => {
+                        self.state.select_next();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('k') | KeyCode::Up, _) => {
+                        self.state.select_prev();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if let Some(alias) = self.state.selected_alias() {
+                            self.connection.begin_connecting(alias.to_string());
+                        }
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
+                SshFocus::Detail => {
+                    // Read-only until PTY/SFTP wiring lands. Intentionally
+                    // do not move the host list when j/k are pressed here.
+                }
             }
         }
         EventOutcome::Bubble
