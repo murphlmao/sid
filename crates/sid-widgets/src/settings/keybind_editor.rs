@@ -326,21 +326,36 @@ impl KeybindEditorView {
     /// Each row is `action.id   chord-or-(unbound)`. The focused row is
     /// highlighted; a capture-mode banner is rendered at the bottom while
     /// capture is active.
-    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    ///
+    /// `focused` controls the outer border color (accent vs muted) and the
+    /// title-bar bold modifier so the Settings composer can signal which pane
+    /// currently owns keyboard input.
+    pub fn render_into_frame(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        theme: &Theme,
+        focused: bool,
+    ) {
         let title = if matches!(self.capture, CaptureState::Idle) {
             " Keybinds "
         } else {
             " Keybinds (capturing — Esc to cancel) "
         };
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(title)
-            .title_style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            );
+            .title_style(title_style);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
@@ -689,5 +704,56 @@ mod tests {
         let lookup_b = view.map().lookup(&chord_b).map(|a| a.as_str());
         assert_eq!(lookup_a, Some("a"));
         assert_eq!(lookup_b, Some("a"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Focused vs unfocused snapshot tests — verify the sub-view honours
+    // the `focused: bool` argument by switching the border color.
+    // -------------------------------------------------------------------------
+
+    fn render_with_focus(v: &KeybindEditorView, focused: bool) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use sid_ui::themes::cosmos;
+        let backend = TestBackend::new(60, 12);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| v.render_into_frame(f, f.area(), &theme, focused))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            s.push('\n');
+        }
+        let tl = buf.cell((0, 0)).unwrap();
+        s.push_str(&format!(
+            "border_top_left: fg={:?} modifier={:?}\n",
+            tl.fg, tl.modifier
+        ));
+        let title_cell = buf.cell((2, 0)).unwrap();
+        s.push_str(&format!(
+            "title_first_char: symbol={:?} fg={:?} modifier={:?}\n",
+            title_cell.symbol(),
+            title_cell.fg,
+            title_cell.modifier
+        ));
+        s
+    }
+
+    #[test]
+    fn keybind_editor_render_focused() {
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let s = render_with_focus(&view, true);
+        insta::assert_snapshot!("keybind_editor_render_focused", s);
+    }
+
+    #[test]
+    fn keybind_editor_render_unfocused() {
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let s = render_with_focus(&view, false);
+        insta::assert_snapshot!("keybind_editor_render_unfocused", s);
     }
 }

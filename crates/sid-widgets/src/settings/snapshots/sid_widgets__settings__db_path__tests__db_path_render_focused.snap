@@ -1,0 +1,14 @@
+---
+source: crates/sid-widgets/src/settings/db_path.rs
+expression: s
+---
+┌ DB path ─────────────────────────────────────────────────┐
+│active : /var/lib/sid/sid.redb                            │
+│override: (none)                                          │
+│edit   : (Enter to edit)                                  │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+border_top_left: fg=Rgb(212, 65, 65) modifier=NONE
+title_first_char: symbol="D" fg=Rgb(230, 230, 240) modifier=BOLD

@@ -1,0 +1,14 @@
+---
+source: crates/sid-widgets/src/settings/workspace_roots.rs
+expression: s
+---
+┌ Workspace roots ─────────────────────────────────────────┐
+│> /home/example/vcs                                       │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+border_top_left: fg=Rgb(74, 74, 96) modifier=NONE
+title_first_char: symbol="W" fg=Rgb(230, 230, 240) modifier=NONE

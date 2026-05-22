@@ -1,0 +1,24 @@
+---
+source: crates/sid-widgets/src/settings/theme_picker.rs
+expression: s
+---
+┌ Theme ───────────────────────────────┐
+│> * cosmos                            │
+│  o cosmos-light                      │
+│  o dusk                              │
+│  o void                              │
+│┌────────────────────────────────────┐│
+││✦ cosmos ✦                          ││
+││  primary accent row                ││
+││  muted secondary text              ││
+││  success ok                        ││
+││                                    ││
+││                                    ││
+││                                    ││
+││                                    ││
+││                                    ││
+││Enter to apply  ·  Esc to cancel    ││
+│└────────────────────────────────────┘│
+└──────────────────────────────────────┘
+border_top_left: fg=Rgb(74, 74, 96) modifier=NONE
+title_first_char: symbol="T" fg=Rgb(230, 230, 240) modifier=NONE

@@ -192,16 +192,31 @@ impl WorkspaceRootsView {
     }
 
     /// Render the workspace roots editor into `area`.
-    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    ///
+    /// `focused` controls the outer border color (accent vs muted) and the
+    /// title-bar bold modifier so the Settings composer can signal which pane
+    /// currently owns keyboard input.
+    pub fn render_into_frame(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        theme: &Theme,
+        focused: bool,
+    ) {
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" Workspace roots ")
-            .title_style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            );
+            .title_style(title_style);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
@@ -524,5 +539,56 @@ mod tests {
         let added = v.commit_add().unwrap();
         // canonicalize should resolve the symlink.
         assert_eq!(added, std::fs::canonicalize(&link).unwrap());
+    }
+
+    // -------------------------------------------------------------------------
+    // Focused vs unfocused snapshot tests — verify the sub-view honours
+    // the `focused: bool` argument by switching the border color.
+    // -------------------------------------------------------------------------
+
+    fn render_with_focus(v: &WorkspaceRootsView, focused: bool) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use sid_ui::themes::cosmos;
+        let backend = TestBackend::new(60, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| v.render_into_frame(f, f.area(), &theme, focused))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            s.push('\n');
+        }
+        let tl = buf.cell((0, 0)).unwrap();
+        s.push_str(&format!(
+            "border_top_left: fg={:?} modifier={:?}\n",
+            tl.fg, tl.modifier
+        ));
+        let title_cell = buf.cell((2, 0)).unwrap();
+        s.push_str(&format!(
+            "title_first_char: symbol={:?} fg={:?} modifier={:?}\n",
+            title_cell.symbol(),
+            title_cell.fg,
+            title_cell.modifier
+        ));
+        s
+    }
+
+    #[test]
+    fn workspace_roots_render_focused() {
+        let v = WorkspaceRootsView::new(vec![PathBuf::from("/home/example/vcs")]);
+        let s = render_with_focus(&v, true);
+        insta::assert_snapshot!("workspace_roots_render_focused", s);
+    }
+
+    #[test]
+    fn workspace_roots_render_unfocused() {
+        let v = WorkspaceRootsView::new(vec![PathBuf::from("/home/example/vcs")]);
+        let s = render_with_focus(&v, false);
+        insta::assert_snapshot!("workspace_roots_render_unfocused", s);
     }
 }

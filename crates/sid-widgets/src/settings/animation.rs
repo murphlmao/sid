@@ -29,7 +29,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::SidError;
 use sid_core::animation::{AnimationConfig, GlyphSet, SETTING_ANIMATION_KEY};
 use sid_core::context::WidgetCtx;
@@ -379,16 +379,44 @@ impl AnimationView {
         }
     }
 
-    /// Render the Animation sub-view into `area`. The settings composer owns
-    /// the bordered right pane, so this body is rendered as plain paragraphs
-    /// without an additional outer block.
-    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    /// Render the Animation sub-view into `area`.
+    ///
+    /// The view owns its outer bordered block; `focused` controls the border
+    /// color (accent vs muted) and the title-bar bold modifier so the Settings
+    /// composer can signal which pane currently owns keyboard input without
+    /// overlaying its own block on top.
+    pub fn render_into_frame(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        theme: &Theme,
+        focused: bool,
+    ) {
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(" Animation ")
+            .title_style(title_style);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.width == 0 || inner.height == 0 {
             return;
         }
         let rows: Vec<Line> = self.build_lines(theme);
         let para = Paragraph::new(rows).style(Style::default().fg(theme.foreground.into()));
-        frame.render_widget(para, area);
+        frame.render_widget(para, inner);
     }
 
     fn build_lines(&self, theme: &Theme) -> Vec<Line<'static>> {

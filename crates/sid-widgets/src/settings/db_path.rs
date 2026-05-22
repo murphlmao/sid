@@ -131,16 +131,31 @@ impl DbPathView {
     }
 
     /// Render the DB path editor into `area`.
-    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    ///
+    /// `focused` controls the outer border color (accent vs muted) and the
+    /// title-bar bold modifier so the Settings composer can signal which pane
+    /// currently owns keyboard input.
+    pub fn render_into_frame(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        theme: &Theme,
+        focused: bool,
+    ) {
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" DB path ")
-            .title_style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            );
+            .title_style(title_style);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
@@ -344,5 +359,64 @@ mod tests {
         let (_d, active, toml) = paths();
         let mut v = DbPathView::open(active, toml).unwrap();
         assert!(v.commit_edit().is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // Focused vs unfocused snapshot tests — verify the sub-view honours
+    // the `focused: bool` argument by switching the border color.
+    // -------------------------------------------------------------------------
+
+    fn render_with_focus(v: &DbPathView, focused: bool) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use sid_ui::themes::cosmos;
+        let backend = TestBackend::new(60, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| v.render_into_frame(f, f.area(), &theme, focused))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            s.push('\n');
+        }
+        let tl = buf.cell((0, 0)).unwrap();
+        s.push_str(&format!(
+            "border_top_left: fg={:?} modifier={:?}\n",
+            tl.fg, tl.modifier
+        ));
+        let title_cell = buf.cell((2, 0)).unwrap();
+        s.push_str(&format!(
+            "title_first_char: symbol={:?} fg={:?} modifier={:?}\n",
+            title_cell.symbol(),
+            title_cell.fg,
+            title_cell.modifier
+        ));
+        s
+    }
+
+    fn sample_view() -> (tempfile::TempDir, DbPathView) {
+        let d = tempdir().unwrap();
+        let toml = d.path().join("sid.toml");
+        let active = PathBuf::from("/var/lib/sid/sid.redb");
+        let v = DbPathView::open(active, toml).unwrap();
+        (d, v)
+    }
+
+    #[test]
+    fn db_path_render_focused() {
+        let (_d, v) = sample_view();
+        let s = render_with_focus(&v, true);
+        insta::assert_snapshot!("db_path_render_focused", s);
+    }
+
+    #[test]
+    fn db_path_render_unfocused() {
+        let (_d, v) = sample_view();
+        let s = render_with_focus(&v, false);
+        insta::assert_snapshot!("db_path_render_unfocused", s);
     }
 }

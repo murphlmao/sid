@@ -1,0 +1,14 @@
+---
+source: crates/sid-widgets/src/settings/reset.rs
+expression: s
+---
+┌ Reset to defaults ───────────────────────────────────────┐
+│Press Enter to open the reset confirm modal.              │
+│This clears settings only — themes, keybinds, quick action│
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+border_top_left: fg=Rgb(74, 74, 96) modifier=NONE
+title_first_char: symbol="R" fg=Rgb(230, 230, 240) modifier=NONE
