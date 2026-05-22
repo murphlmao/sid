@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/mcp.schema.json",
+  "mcpServers": {
+    "sid": {
+      "command": "cargo",
+      "args": ["run", "--quiet", "--release", "-p", "sid", "--", "mcp"],
+      "env": {
+        "RUST_LOG": "warn"
+      }
+    }
+  }
+}

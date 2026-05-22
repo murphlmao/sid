@@ -1,0 +1,128 @@
+# sid-mcp dependency manifest
+#
+# Source of truth for which downstream skills/agents consume each MCP
+# tool. When a tool's `schema_version` bumps, every listed consumer in
+# `[consumers]` MUST be reviewed in the same commit.
+#
+# When a tool depends on a file/glob that changes meaningfully (new
+# convention, schema shift, layout move), the tool implementation in
+# `crates/sid-mcp/src/tools/<name>.rs` MUST be revisited.
+#
+# This file is exposed at runtime via the `tool_manifest` MCP tool.
+
+manifest_version = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+[tools.crate_info]
+description = "Cargo metadata, LOC, test count, public items, deps for one crate."
+schema_version = 1
+depends_on = [
+  "Cargo.toml",
+  "crates/*/Cargo.toml",
+  "crates/*/src/**/*.rs",
+]
+
+[tools.find_pub_item]
+description = "Locate a public item by name; return file:line, kind, doc-test status, callers."
+schema_version = 1
+depends_on = [
+  "crates/*/src/**/*.rs",
+  "crates/*/tests/**/*.rs",
+]
+
+[tools.pub_items_without_doc_tests]
+description = "List public items lacking doc tests, per CLAUDE.md doc-test contract."
+schema_version = 1
+depends_on = [
+  "crates/*/src/**/*.rs",
+]
+
+[tools.coverage_summary]
+description = "cargo-llvm-cov coverage per crate. Flags critical-path crates below 95%."
+schema_version = 1
+depends_on = [
+  "Cargo.toml",
+  "crates/*/Cargo.toml",
+  "crates/*/src/**/*.rs",
+  "crates/*/tests/**/*.rs",
+]
+
+[tools.gate_status]
+description = "Last cached gate status (test/clippy/fmt/deny) from target/gate-logs/."
+schema_version = 1
+depends_on = [
+  "target/gate-logs/",
+]
+
+[tools.plan_status]
+description = "Per-plan task completion from docs/superpowers/plans/*.md checkbox lists."
+schema_version = 1
+depends_on = [
+  "docs/superpowers/plans/*.md",
+]
+
+[tools.recent_commits]
+description = "Recent git commits, optionally scoped to a crate's directory."
+schema_version = 1
+depends_on = [
+  ".git/HEAD",
+  ".git/refs/",
+]
+
+[tools.criterion_compare]
+description = "Compare criterion bench results vs saved baseline; flag >=10% regressions."
+schema_version = 1
+depends_on = [
+  "crates/*/benches/**/*.rs",
+  "target/criterion/**/base/estimates.json",
+]
+
+[tools.tool_manifest]
+description = "Return this manifest. Meta-tool for assessing blast radius before changes."
+schema_version = 1
+depends_on = [
+  "crates/sid-mcp/tools.toml",
+]
+
+# ---------------------------------------------------------------------------
+# Consumers
+#
+# Each entry maps a skill/agent name to the list of tools it calls. When
+# a tool's schema_version changes, review every consumer in this section
+# and update or version-pin as needed.
+# ---------------------------------------------------------------------------
+
+[consumers."sid-testing:sid-gate"]
+tools = ["gate_status", "coverage_summary"]
+purpose = "Run the verification gate; cache result for downstream tools."
+
+[consumers."sid-testing:mc-dc-audit"]
+tools = ["crate_info", "find_pub_item"]
+purpose = "Audit MC/DC; needs to know the boolean-decision sites and existing tests."
+
+[consumers."sid-testing:mutation-hunt"]
+tools = ["crate_info", "gate_status"]
+purpose = "Sanity-check the baseline before mutating; scope per crate."
+
+[consumers."sid-testing:rust-test-writer"]
+tools = ["crate_info", "find_pub_item", "pub_items_without_doc_tests", "recent_commits"]
+purpose = "Locate the target, understand its surface, write the 8-item test set."
+
+[consumers."sid-testing:sid-store-reviewer"]
+tools = ["crate_info", "find_pub_item", "pub_items_without_doc_tests", "coverage_summary", "recent_commits"]
+purpose = "Review sid-store changes against the 95% critical-path bar."
+
+[consumers."sid-testing:widget-render-reviewer"]
+tools = ["crate_info", "find_pub_item", "pub_items_without_doc_tests", "recent_commits"]
+purpose = "Review sid-widgets changes; check snapshots + footer hints + modal substrate."
+
+[consumers."sid-testing:coverage-report"]
+tools = ["coverage_summary"]
+purpose = "Present coverage; flag crates below thresholds."
+
+[consumers."sid-testing:perf-check"]
+tools = ["criterion_compare", "recent_commits"]
+purpose = "Check perf regressions; correlate with recent commits."

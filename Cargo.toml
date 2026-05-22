@@ -15,6 +15,7 @@ members = [
     "crates/sid-ssh",
     "crates/sid-pty",
     "crates/sid-fx",
+    "crates/sid-mcp",
 ]
 
 [workspace.package]
@@ -40,13 +41,14 @@ sid-db-clients = { path = "crates/sid-db-clients" }
 sid-ssh = { path = "crates/sid-ssh" }
 sid-pty = { path = "crates/sid-pty" }
 sid-fx = { path = "crates/sid-fx" }
+sid-mcp = { path = "crates/sid-mcp" }
 
 # TUI
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async
-tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util", "test-util"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util", "test-util", "process"] }
 tokio-util = "0.7"
 futures = "0.3"
 
@@ -109,6 +111,10 @@ rand_chacha = "0.9"
 insta = { version = "1", features = ["yaml"] }
 proptest = "1"
 tempfile = "3"
+
+# MCP server SDK (Rust). Used by sid-mcp.
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+schemars = "0.8"
 
 # Performance / chaos / model-checking
 criterion = { version = "0.7", default-features = false, features = ["html_reports", "cargo_bench_support"] }

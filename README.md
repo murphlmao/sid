@@ -2,6 +2,8 @@
 
 # `sid`
 
+
+
 **a fast, focused TUI cockpit for developer workflow.**
 
 *named after my dog, who was the best.*
