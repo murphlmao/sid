@@ -97,6 +97,14 @@ enum Cmd {
         #[command(subcommand)]
         op: SshOp,
     },
+    /// Run the sid MCP server over stdio.
+    ///
+    /// Speaks JSON-RPC 2.0 per the Model Context Protocol spec and exposes
+    /// the sid-mcp tool surface (crate_info, find_pub_item, coverage_summary,
+    /// gate_status, plan_status, recent_commits, criterion_compare,
+    /// pub_items_without_doc_tests, tool_manifest). Used by Claude Code and
+    /// other MCP-aware clients. Reads + serves until the client disconnects.
+    Mcp,
 }
 
 /// Operations on the SSH host registry.
@@ -331,6 +339,18 @@ async fn main() -> Result<()> {
         return handle_net_cmd(op).await;
     }
 
+    // The MCP server speaks JSON-RPC on stdio and never opens the redb
+    // store. Dispatch before opening sid.redb so Claude Code can spawn
+    // an MCP session in parallel with a running TUI.
+    if let Some(Cmd::Mcp) = cli.cmd {
+        let workspace_root = std::env::current_dir()
+            .context("cannot read current dir for sid mcp")?;
+        sid_mcp::run_stdio(workspace_root)
+            .await
+            .map_err(|e| anyhow!("sid-mcp: {e}"))?;
+        return Ok(());
+    }
+
     let path = wire::db_path(cli.db);
     let store = Arc::new(RedbStore::open(&path)?);
 
@@ -455,8 +475,15 @@ async fn main() -> Result<()> {
     }
     {
         let animation_cfg = wire::load_animation_config(&*store);
+        // `with_store` lets the view's own `S`-key handler flush through
+        // the embedded handle without the wire layer needing to detect the
+        // press and route a separate action.
+        let store_handle: Arc<dyn Store> = Arc::clone(&store) as Arc<dyn Store>;
         settings_categories.push(sid_widgets::SettingsCategory::Animation(
-            sid_widgets::settings::animation::AnimationView::new(animation_cfg),
+            sid_widgets::settings::animation::AnimationView::with_store(
+                animation_cfg,
+                store_handle,
+            ),
         ));
     }
     settings_categories.push(sid_widgets::SettingsCategory::WorkspaceRoots(

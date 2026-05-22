@@ -105,6 +105,43 @@ fn snapshot_choice_three_options_second_selected() {
 }
 
 #[test]
+fn snapshot_display_field_multiline_body() {
+    // Build a help drawer-style modal with a single `Field::Display`. The
+    // snapshot locks in the per-line layout: the renderer must paint each
+    // `\n`-separated body line on its own row, never as a `\n` literal.
+    let m = ModalSpec::new(
+        "help.demo",
+        "Help — Demo",
+        vec![Field::Display {
+            label: "keys".into(),
+            body: [
+                "Demo:",
+                "  N: new",
+                "  D: delete",
+                "  R: rename",
+                "",
+                "Global:",
+                "  Ctrl+Q: quit",
+                "  Ctrl+F: palette",
+            ]
+            .join("\n"),
+        }],
+    )
+    .with_help("Esc closes.");
+    let s = render_modal_to_string(&m, W, H);
+    // Adversarial check: literal `\n` must never leak.
+    assert!(
+        !s.contains("\\n"),
+        "literal `\\n` leaked into rendered modal:\n{s}"
+    );
+    // Each body row should be visible.
+    for row in ["N: new", "D: delete", "R: rename", "Ctrl+Q: quit"] {
+        assert!(s.contains(row), "expected {row} in rendered modal:\n{s}");
+    }
+    insta::assert_snapshot!("modal_display_multiline_body", s);
+}
+
+#[test]
 fn snapshot_all_five_field_types_mixed_focus() {
     // Build a modal that exercises every field variant in one render.
     // Focus lands on the third row (the Toggle) so the focus prefix is

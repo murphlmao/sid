@@ -1,0 +1,23 @@
+---
+source: crates/sid-widgets/tests/modal.rs
+expression: s
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ ✦ Help — Demo ───────────────────────────────┐                
+                │  keys                                        │                
+                │  Demo:                                       │                
+                │    N: new                                    │                
+                │    D: delete                                 │                
+                │    R: rename                                 │                
+                │                                              │                
+                │  Global:                                     │                
+                │    Ctrl+Q: quit                              │                
+                │    Ctrl+F: palette                           │                
+                │                                              │                
+                │  Esc closes.                                 │                
+                │  [ Enter: Save ]   [ Esc: Cancel ]           │                
+                │                                              │                
+                └──────────────────────────────────────────────┘

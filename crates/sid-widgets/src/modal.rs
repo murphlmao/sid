@@ -20,6 +20,9 @@
 //! - [`Field::Choice`] — radio-button list, one option selected at a time.
 //! - [`Field::Picker`] — text input plus a `[browse]` hint, used for path
 //!   pickers and other "type-or-browse" inputs.
+//! - [`Field::Display`] — read-only multi-line text block. Each `\n`-separated
+//!   line renders on its own row. Used for help drawers and other surfaces
+//!   that need to show static prose inside the modal substrate.
 //!
 //! # Example
 //!
@@ -124,6 +127,20 @@ pub enum Field {
         value: String,
         /// Hint shown to the right of the value (e.g. `[browse ~/.ssh]`).
         hint: String,
+    },
+    /// Read-only multi-line text. Renders each `\n`-separated line on its
+    /// own row inside the modal body. The renderer width-clips per line
+    /// (no wrapping for now). All field mutators (`type_char`, `backspace`,
+    /// `space_or_enter_on_field`) are no-ops on a `Display` field.
+    ///
+    /// Use this for help drawers, summary panels, and other "show me a
+    /// block of text" surfaces that still benefit from the modal substrate.
+    Display {
+        /// Field label rendered above the body block.
+        label: String,
+        /// Multi-line text body. `\n` characters split the body into rows;
+        /// the renderer prints each row on its own line.
+        body: String,
     },
 }
 
@@ -302,7 +319,7 @@ impl ModalSpec {
             | Field::Picker { value, .. } => {
                 value.push(c);
             }
-            Field::Toggle { .. } | Field::Choice { .. } => {}
+            Field::Toggle { .. } | Field::Choice { .. } | Field::Display { .. } => {}
         }
     }
 
@@ -339,7 +356,7 @@ impl ModalSpec {
             | Field::Picker { value, .. } => {
                 value.pop();
             }
-            Field::Toggle { .. } | Field::Choice { .. } => {}
+            Field::Toggle { .. } | Field::Choice { .. } | Field::Display { .. } => {}
         }
     }
 
@@ -378,7 +395,10 @@ impl ModalSpec {
                     *selected = (*selected + 1) % options.len();
                 }
             }
-            Field::Text { .. } | Field::Password { .. } | Field::Picker { .. } => {}
+            Field::Text { .. }
+            | Field::Password { .. }
+            | Field::Picker { .. }
+            | Field::Display { .. } => {}
         }
     }
 
@@ -426,6 +446,9 @@ impl ModalSpec {
                 Field::Picker { label, value, .. } => {
                     (label.clone(), FieldValue::Picker(value.clone()))
                 }
+                Field::Display { label, body } => {
+                    (label.clone(), FieldValue::Display(body.clone()))
+                }
             })
             .collect()
     }
@@ -458,6 +481,12 @@ pub enum FieldValue {
     Choice(String),
     /// Snapshot of a [`Field::Picker`] value.
     Picker(String),
+    /// Snapshot of a [`Field::Display`] body. Carried separately from
+    /// [`FieldValue::Text`] so submit handlers can distinguish read-only
+    /// content from user-supplied text. Most submit handlers will simply
+    /// ignore `Display` entries — they exist for completeness so
+    /// [`ModalSpec::collect_values`] returns the full set of fields.
+    Display(String),
 }
 
 /// Bullet character used to mask passwords. U+2022 BULLET.
@@ -550,9 +579,26 @@ pub fn route_key_to_modal(
     }
 }
 
-/// Number of body lines each field occupies in the modal: one for the label,
-/// one for the value/control.
+/// Number of body lines a *standard* field occupies: one for the label, one
+/// for the value/control. [`Field::Display`] varies per-field — see
+/// [`field_body_lines`].
 const LINES_PER_FIELD: u16 = 2;
+
+/// Number of rows a field occupies inside the body area. Standard fields use
+/// [`LINES_PER_FIELD`]; [`Field::Display`] uses `1` for the label plus one
+/// row per `\n`-separated body line (minimum `1`, in case the body is empty).
+fn field_body_lines(field: &Field) -> u16 {
+    match field {
+        Field::Display { body, .. } => {
+            // `lines()` returns zero entries for an empty string; clamp to 1
+            // so the field still occupies a row for its label.
+            let body_rows = body.lines().count().max(1) as u16;
+            // +1 for the label row.
+            body_rows.saturating_add(1)
+        }
+        _ => LINES_PER_FIELD,
+    }
+}
 
 /// Number of chrome lines around the field block: top/bottom border (2),
 /// optional help hint (1 when present), and the button row (1) plus a
@@ -659,8 +705,14 @@ const CHROME_INNER_WITH_HELP: u16 = 4;
 /// default, height fitting the fields plus chrome. Clamped to never exceed
 /// the frame size.
 fn compute_modal_rect(full_area: Rect, modal: &ModalSpec) -> Rect {
-    let n_fields = modal.fields.len() as u16;
-    let fields_lines = n_fields.saturating_mul(LINES_PER_FIELD);
+    // Sum per-field heights instead of `n * LINES_PER_FIELD` so a
+    // [`Field::Display`] with N body lines pushes the modal taller as
+    // needed, while standard fields keep their two-row footprint.
+    let fields_lines: u16 = modal
+        .fields
+        .iter()
+        .map(field_body_lines)
+        .fold(0u16, |acc, n| acc.saturating_add(n));
     let chrome = if modal.help_hint.is_some() {
         CHROME_LINES_WITH_HELP
     } else {
@@ -687,21 +739,23 @@ fn render_fields(frame: &mut Frame<'_>, area: Rect, theme: &Theme, modal: &Modal
     if area.height == 0 || modal.fields.is_empty() {
         return;
     }
-    // One field == 2 rows. Render each field independently so the focused
-    // field can carry its own border style without touching the others.
+    // Standard fields are 2 rows; Display fields are 1 + body.lines().count().
+    // Render each field independently so the focused field can carry its
+    // own border style without touching the others.
     let mut y = area.y;
     for (i, field) in modal.fields.iter().enumerate() {
         if y >= area.y + area.height {
             break;
         }
+        let needed = field_body_lines(field);
         let field_area = Rect {
             x: area.x,
             y,
             width: area.width,
-            height: LINES_PER_FIELD.min((area.y + area.height).saturating_sub(y)),
+            height: needed.min((area.y + area.height).saturating_sub(y)),
         };
         render_field(frame, field_area, theme, field, i == modal.focus);
-        y = y.saturating_add(LINES_PER_FIELD);
+        y = y.saturating_add(needed);
     }
 }
 
@@ -736,6 +790,33 @@ fn render_field(frame: &mut Frame<'_>, area: Rect, theme: &Theme, field: &Field,
         return;
     }
 
+    if let Field::Display { body, .. } = field {
+        // Multi-line read-only body: one row per `\n`-separated line, all
+        // styled with `theme.muted`. The leading "  " prefix mirrors the
+        // single-line body layout so labels and bodies share their column.
+        let body_style = Style::default().fg(theme.muted.into());
+        let available = area.height.saturating_sub(1);
+        let mut y = area.y + 1;
+        for (i, line) in body.lines().enumerate() {
+            if i as u16 >= available {
+                break;
+            }
+            let row_area = Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            };
+            let para = Paragraph::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(line.to_string(), body_style),
+            ]));
+            frame.render_widget(para, row_area);
+            y = y.saturating_add(1);
+        }
+        return;
+    }
+
     let value_area = Rect {
         x: area.x,
         y: area.y + 1,
@@ -759,7 +840,8 @@ fn field_label(field: &Field) -> &str {
         | Field::Password { label, .. }
         | Field::Toggle { label, .. }
         | Field::Choice { label, .. }
-        | Field::Picker { label, .. } => label,
+        | Field::Picker { label, .. }
+        | Field::Display { label, .. } => label,
     }
 }
 
@@ -827,6 +909,17 @@ fn render_field_value<'a>(theme: &'a Theme, field: &'a Field, focused: bool) -> 
                     Style::default().fg(theme.muted.into()),
                 ));
             }
+        }
+        // `Display` fields are rendered specially by [`render_field`] across
+        // multiple rows; this single-line builder is only reached for the
+        // first line of a Display body. Return the first line styled with
+        // `theme.muted` to match the rest of the body.
+        Field::Display { body, .. } => {
+            let first = body.lines().next().unwrap_or("");
+            spans.push(Span::styled(
+                first.to_string(),
+                Style::default().fg(theme.muted.into()),
+            ));
         }
     }
     Line::from(spans)
@@ -1243,5 +1336,130 @@ mod tests {
         let m = ModalSpec::new("id", "MyTitle", vec![]);
         let s = render_modal_to_string(&m, 60, 10);
         assert!(s.contains("MyTitle"));
+    }
+
+    #[test]
+    fn field_body_lines_text_field_is_two() {
+        let f = text_field("a", "");
+        assert_eq!(field_body_lines(&f), LINES_PER_FIELD);
+    }
+
+    #[test]
+    fn field_body_lines_display_counts_lines() {
+        let f = Field::Display {
+            label: "keys".into(),
+            body: "line1\nline2\nline3".into(),
+        };
+        // 1 label row + 3 body rows.
+        assert_eq!(field_body_lines(&f), 4);
+    }
+
+    #[test]
+    fn field_body_lines_display_empty_body_is_two() {
+        let f = Field::Display {
+            label: "k".into(),
+            body: String::new(),
+        };
+        // Empty body still claims one row (so the label has a sibling).
+        assert_eq!(field_body_lines(&f), 2);
+    }
+
+    #[test]
+    fn type_char_on_display_is_noop() {
+        let mut m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Display {
+                label: "k".into(),
+                body: "hello".into(),
+            }],
+        );
+        m.type_char('x');
+        match &m.fields[0] {
+            Field::Display { body, .. } => assert_eq!(body, "hello"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn backspace_on_display_is_noop() {
+        let mut m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Display {
+                label: "k".into(),
+                body: "hello".into(),
+            }],
+        );
+        m.backspace();
+        match &m.fields[0] {
+            Field::Display { body, .. } => assert_eq!(body, "hello"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn space_or_enter_on_display_is_noop() {
+        let mut m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Display {
+                label: "k".into(),
+                body: "before".into(),
+            }],
+        );
+        m.space_or_enter_on_field();
+        match &m.fields[0] {
+            Field::Display { body, .. } => assert_eq!(body, "before"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn collect_values_returns_display_body() {
+        let m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Display {
+                label: "help".into(),
+                body: "line1\nline2".into(),
+            }],
+        );
+        let v = m.collect_values();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].0, "help");
+        assert!(matches!(&v[0].1, FieldValue::Display(s) if s == "line1\nline2"));
+    }
+
+    #[test]
+    fn render_modal_display_renders_one_row_per_newline() {
+        // Five `\n` separators yields six body rows.
+        let body = "row0\nrow1\nrow2\nrow3\nrow4\nrow5";
+        let m = ModalSpec::new(
+            "id",
+            "MultiLine",
+            vec![Field::Display {
+                label: "help".into(),
+                body: body.into(),
+            }],
+        );
+        let s = render_modal_to_string(&m, 60, 24);
+        // Every body line should be visible verbatim somewhere in the
+        // rendered buffer. Critically, no `\n` literal should appear in
+        // the painted cells — the renderer must have split the body
+        // across physical rows.
+        for row in ["row0", "row1", "row2", "row3", "row4", "row5"] {
+            assert!(
+                s.contains(row),
+                "expected body row {row} to appear in rendered modal:\n{s}"
+            );
+        }
+        // The literal backslash-n sequence must NOT appear (the modal
+        // body would have leaked `\n` if the renderer treated it as a
+        // single value row).
+        assert!(
+            !s.contains("\\n"),
+            "literal `\\n` leaked into rendered modal:\n{s}"
+        );
     }
 }

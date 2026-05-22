@@ -15,10 +15,15 @@
 //! - `SupernovaOnEvent`   — whether widget events trigger celebratory bursts.
 //! - `GlyphSet`           — palette cycled across `Cosmos -> Minimal -> Ascii`.
 //!
-//! The view is render-only; key event routing lives in the parent settings
-//! composer (or the binary's wire path) which calls [`AnimationView::focus_next`],
-//! [`AnimationView::focus_prev`], and [`AnimationView::adjust_focused`] in
-//! response to user input.
+//! Two construction shapes:
+//!
+//! - [`AnimationView::new`] — no embedded store; callers drive
+//!   [`AnimationView::flush_dirty`] themselves. Used by tests.
+//! - [`AnimationView::with_store`] — bound to an `Arc<dyn Store>`; the
+//!   [`AnimationView::handle_event`] handler can persist the working
+//!   config when the user presses `S` (or `Ctrl+S`).
+
+use std::sync::Arc;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -27,6 +32,9 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use sid_core::SidError;
 use sid_core::animation::{AnimationConfig, GlyphSet, SETTING_ANIMATION_KEY};
+use sid_core::context::WidgetCtx;
+use sid_core::event::Event;
+use sid_core::widget::EventOutcome;
 use sid_store::{SettingValue, Store};
 use sid_ui::Theme;
 
@@ -78,6 +86,10 @@ impl AnimationField {
 /// flip the `dirty` flag; [`AnimationView::flush_dirty`] serialises the config
 /// as JSON and persists it under [`SETTING_ANIMATION_KEY`].
 ///
+/// `Arc<dyn Store>` does not implement `Debug`, so [`AnimationView`] has a
+/// manual `Debug` impl that prints `<store bound>` / `<no store>` in place
+/// of the handle.
+///
 /// # Examples
 ///
 /// ```
@@ -88,22 +100,65 @@ impl AnimationField {
 /// assert!(!v.is_dirty());
 /// assert_eq!(v.config(), &AnimationConfig::default());
 /// ```
-#[derive(Debug)]
 pub struct AnimationView {
     cfg: AnimationConfig,
     focus: usize,
     dirty: bool,
+    /// Optional store handle the view writes through when the user presses
+    /// `S`. `None` for legacy / test callers that drive [`Self::flush_dirty`]
+    /// directly; the binary's wire path constructs the view via
+    /// [`AnimationView::with_store`] so the `S` route works end-to-end.
+    store: Option<Arc<dyn Store>>,
+}
+
+impl std::fmt::Debug for AnimationView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnimationView")
+            .field("cfg", &self.cfg)
+            .field("focus", &self.focus)
+            .field("dirty", &self.dirty)
+            .field(
+                "store",
+                if self.store.is_some() {
+                    &"<store bound>"
+                } else {
+                    &"<no store>"
+                },
+            )
+            .finish()
+    }
 }
 
 impl AnimationView {
-    /// Build a view around `cfg`. Focus starts at `Enabled`; dirty starts
-    /// `false`.
+    /// Build a view around `cfg` without a backing store. Focus starts at
+    /// `Enabled`; dirty starts `false`. Use this for tests / scenarios that
+    /// drive [`Self::flush_dirty`] directly; the production binary uses
+    /// [`Self::with_store`] so `S` can persist via the embedded handle.
     pub fn new(cfg: AnimationConfig) -> Self {
         Self {
             cfg,
             focus: 0,
             dirty: false,
+            store: None,
         }
+    }
+
+    /// Build a view bound to `store`. Pressing `S` (uppercase) or `Ctrl+S`
+    /// via [`Self::handle_event`] persists the working config through the
+    /// embedded handle without the caller needing access to a store.
+    pub fn with_store(cfg: AnimationConfig, store: Arc<dyn Store>) -> Self {
+        Self {
+            cfg,
+            focus: 0,
+            dirty: false,
+            store: Some(store),
+        }
+    }
+
+    /// True if this view holds a backing store reference. Used by tests +
+    /// the wire layer to assert which constructor was selected.
+    pub fn has_store(&self) -> bool {
+        self.store.is_some()
     }
 
     /// Borrow the working [`AnimationConfig`].
@@ -204,6 +259,124 @@ impl AnimationView {
         }
         self.dirty = false;
         Ok(())
+    }
+
+    /// Flush the working config through the embedded store, if any. Returns
+    /// `Ok(true)` when a write was attempted and succeeded, `Ok(false)` when
+    /// no store is wired (the view was built via [`Self::new`]), and any
+    /// underlying [`SidError`] from [`Self::flush_dirty`].
+    ///
+    /// This is the path the `S`-key handler takes; it lets the binary
+    /// surface a "saved" toast on `Ok(true)` and a warning on `Ok(false)`
+    /// without needing to thread a store reference through the widget tree.
+    pub fn flush_via_embedded_store(&mut self) -> Result<bool, SidError> {
+        if let Some(store) = self.store.clone() {
+            self.flush_dirty(&*store)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Route a single [`Event`] into this view. Translates key chords into
+    /// the existing mutator methods and, on `S` (uppercase) or `Ctrl+S`,
+    /// persists the working config via [`Self::flush_via_embedded_store`].
+    ///
+    /// Returns:
+    /// - [`EventOutcome::Consumed`] for any handled key (including failed
+    ///   saves — the error is logged via `eprintln!` so the event isn't
+    ///   silently re-dispatched).
+    /// - [`EventOutcome::Bubble`] for events the view doesn't recognise.
+    ///
+    /// `_ctx` is accepted for symmetry with the
+    /// [`sid_core::widget::Widget::handle_event`] signature so the composer
+    /// can forward without reshaping arguments; the view does not use it
+    /// today.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::sync::mpsc;
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::animation::AnimationConfig;
+    /// use sid_core::context::WidgetCtx;
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_core::widget::EventOutcome;
+    /// use sid_store::{OpenStore, RedbStore, Store};
+    /// use sid_widgets::settings::animation::AnimationView;
+    /// use tempfile::tempdir;
+    ///
+    /// let d = tempdir().unwrap();
+    /// let store: Arc<dyn Store> =
+    ///     Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+    /// let mut v = AnimationView::with_store(AnimationConfig::default(), store);
+    /// let (tx, _rx) = mpsc::channel();
+    /// let mut ctx = WidgetCtx::new(tx);
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::NONE));
+    /// assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+    /// ```
+    pub fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let Event::Key(k) = ev else {
+            return EventOutcome::Bubble;
+        };
+        match (k.code, k.mods) {
+            // Uppercase `S` (any non-Ctrl modifiers) or `Ctrl+S` — persist
+            // via the embedded store.
+            (KeyCode::Char('S'), m) if !m.contains(KeyModifiers::CONTROL) => {
+                self.try_save();
+                EventOutcome::Consumed
+            }
+            (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.try_save();
+                EventOutcome::Consumed
+            }
+            (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                self.focus_next();
+                EventOutcome::Consumed
+            }
+            (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                self.focus_prev();
+                EventOutcome::Consumed
+            }
+            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                self.adjust_focused(1);
+                EventOutcome::Consumed
+            }
+            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                self.adjust_focused(-1);
+                EventOutcome::Consumed
+            }
+            (KeyCode::Char(' ') | KeyCode::Enter, _) => {
+                self.adjust_focused(0);
+                EventOutcome::Consumed
+            }
+            _ => EventOutcome::Bubble,
+        }
+    }
+
+    /// Save helper used by the `S` handler. Logs (but does not panic) when
+    /// no store is bound or the write fails — the key event has been
+    /// consumed and there's nowhere good to surface a `Result` from
+    /// [`Self::handle_event`].
+    ///
+    /// `sid-widgets` does not depend on `tracing`, so we route via stderr.
+    /// The TUI captures stderr through its parent tracing layer when
+    /// running under the production binary.
+    fn try_save(&mut self) {
+        match self.flush_via_embedded_store() {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!(
+                    "AnimationView: S pressed but no store bound; \
+                     use AnimationView::with_store(...) to enable saving"
+                );
+            }
+            Err(e) => {
+                eprintln!("AnimationView: flush_dirty failed: {e}");
+            }
+        }
     }
 
     /// Render the Animation sub-view into `area`. The settings composer owns
@@ -390,5 +563,138 @@ mod tests {
     fn focused_field_starts_at_enabled() {
         let v = AnimationView::new(AnimationConfig::default());
         assert_eq!(v.focused_field(), AnimationField::Enabled);
+    }
+
+    #[test]
+    fn new_without_store_reports_no_store() {
+        let v = AnimationView::new(AnimationConfig::default());
+        assert!(!v.has_store());
+    }
+
+    #[test]
+    fn with_store_reports_store_bound() {
+        use sid_store::{OpenStore, RedbStore};
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let v = AnimationView::with_store(AnimationConfig::default(), store);
+        assert!(v.has_store());
+    }
+
+    #[test]
+    fn flush_via_embedded_store_no_store_returns_false() {
+        let mut v = AnimationView::new(AnimationConfig::default());
+        let out = v.flush_via_embedded_store().unwrap();
+        assert!(!out, "flush with no embedded store must return Ok(false)");
+    }
+
+    #[test]
+    fn flush_via_embedded_store_with_store_returns_true() {
+        use sid_store::{OpenStore, RedbStore};
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
+        let out = v.flush_via_embedded_store().unwrap();
+        assert!(out, "flush with embedded store must return Ok(true)");
+        // The setting key should now be present.
+        let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
+        assert!(got.is_some(), "animation setting key was not written");
+    }
+
+    #[test]
+    fn handle_event_uppercase_s_with_store_flushes() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_store::{OpenStore, RedbStore};
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
+        // Mutate something first so dirty != false.
+        v.focus_next(); // Density
+        v.adjust_focused(1); // bump
+        assert!(v.is_dirty());
+
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('S'), KeyModifiers::NONE));
+        let out = v.handle_event(&ev, &mut ctx);
+        assert_eq!(out, EventOutcome::Consumed);
+        assert!(!v.is_dirty(), "S press should clear the dirty flag");
+        let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
+        assert!(
+            got.is_some(),
+            "S press should have written the setting key"
+        );
+    }
+
+    #[test]
+    fn handle_event_ctrl_s_with_store_flushes() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_store::{OpenStore, RedbStore};
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let out = v.handle_event(&ev, &mut ctx);
+        assert_eq!(out, EventOutcome::Consumed);
+        let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
+        assert!(got.is_some(), "Ctrl+S press should have written the key");
+    }
+
+    #[test]
+    fn handle_event_j_focus_next() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = AnimationView::new(AnimationConfig::default());
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+        assert_eq!(v.focused_field(), AnimationField::Density);
+    }
+
+    #[test]
+    fn handle_event_k_focus_prev() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = AnimationView::new(AnimationConfig::default());
+        // Move down once so we have somewhere to step back from.
+        v.focus_next();
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+        assert_eq!(v.focused_field(), AnimationField::Enabled);
+    }
+
+    #[test]
+    fn handle_event_unknown_key_bubbles() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = AnimationView::new(AnimationConfig::default());
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Bubble);
     }
 }
