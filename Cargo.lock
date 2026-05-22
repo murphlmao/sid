@@ -3828,6 +3828,7 @@ name = "sid-core"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "criterion",
  "crossterm",
  "loom",
  "proptest",
@@ -4029,6 +4030,7 @@ name = "sid-widgets"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "criterion",
  "crossterm",
  "csv",
  "insta",

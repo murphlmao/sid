@@ -184,3 +184,365 @@ fn snapshot_all_five_field_types_mixed_focus() {
     assert!(!s.contains("hunter2"), "password leaked:\n{s}");
     insta::assert_snapshot!("modal_all_field_types", s);
 }
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 4 — ModalSpec::cycle_focused_value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cycle_focused_value_advances_choice_forward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(1);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    } else {
+        panic!("expected Choice");
+    }
+}
+
+#[test]
+fn cycle_focused_value_choice_wraps_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(-1);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 2);
+    } else {
+        panic!("expected Choice");
+    }
+}
+
+#[test]
+fn cycle_focused_value_toggle_flips() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Toggle {
+            label: "on".into(),
+            value: false,
+        }],
+    );
+    m.cycle_focused_value(1);
+    if let Field::Toggle { value, .. } = &m.fields[0] {
+        assert!(*value);
+    } else {
+        panic!("expected Toggle");
+    }
+    m.cycle_focused_value(-1);
+    if let Field::Toggle { value, .. } = &m.fields[0] {
+        assert!(!*value);
+    } else {
+        panic!("expected Toggle");
+    }
+}
+
+#[test]
+fn cycle_focused_value_text_is_noop() {
+    let mut m = ModalSpec::new("id", "t", vec![text("n", "hello")]);
+    m.cycle_focused_value(1);
+    if let Field::Text { value, .. } = &m.fields[0] {
+        assert_eq!(value, "hello");
+    } else {
+        panic!("expected Text");
+    }
+}
+
+#[test]
+fn cycle_focused_value_on_empty_modal_is_noop() {
+    let mut m = ModalSpec::new("id", "t", vec![]);
+    m.cycle_focused_value(1);
+    assert!(m.fields.is_empty());
+}
+
+#[test]
+fn cycle_focused_value_zero_dir_is_noop() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(0);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 0);
+    }
+}
+
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn cycle_choice_then_reverse_is_identity(
+        n_options in 2usize..10,
+        start in 0usize..10,
+        steps in 0usize..50,
+    ) {
+        let start = start % n_options;
+        let opts: Vec<String> = (0..n_options).map(|i| format!("o{i}")).collect();
+        let mut m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Choice {
+                label: "k".into(),
+                options: opts,
+                selected: start,
+            }],
+        );
+        for _ in 0..steps {
+            m.cycle_focused_value(1);
+        }
+        for _ in 0..steps {
+            m.cycle_focused_value(-1);
+        }
+        if let Field::Choice { selected, .. } = &m.fields[0] {
+            prop_assert_eq!(*selected, start);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 5 — route_key_to_modal arrow keys + L/R cycle
+// ---------------------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyModifiers};
+use sid_core::event::KeyChord;
+use sid_widgets::modal::{ModalKeyOutcome, route_key_to_modal};
+
+fn chord(code: KeyCode, mods: KeyModifiers) -> KeyChord {
+    KeyChord { code, mods }
+}
+
+#[test]
+fn up_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
+        ],
+    );
+    m.focus = 1;
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Consumed);
+    assert_eq!(m.focus, 0);
+}
+
+#[test]
+fn down_cycles_focus_forward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
+        ],
+    );
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Consumed);
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn right_cycles_choice_value() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Right, KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    }
+}
+
+#[test]
+fn left_cycles_choice_value_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Left, KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 2);
+    }
+}
+
+#[test]
+fn enter_on_choice_now_submits_not_cycles() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    let outcome = route_key_to_modal(&mut m, chord(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(outcome, ModalKeyOutcome::Submit);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 0);
+    }
+}
+
+#[test]
+fn space_on_choice_still_cycles_for_backward_compat() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    route_key_to_modal(&mut m, chord(KeyCode::Char(' '), KeyModifiers::NONE));
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    }
+}
+
+#[test]
+fn shift_tab_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
+        ],
+    );
+    m.focus = 0;
+    route_key_to_modal(&mut m, chord(KeyCode::BackTab, KeyModifiers::SHIFT));
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn tab_with_shift_cycles_focus_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
+        ],
+    );
+    m.focus = 0;
+    route_key_to_modal(&mut m, chord(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(m.focus, 1);
+}
+
+#[test]
+fn arrow_keys_on_empty_modal_are_noop_not_panic() {
+    let mut m = ModalSpec::new("id", "t", vec![]);
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Up, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Down, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Left, KeyModifiers::NONE));
+    let _ = route_key_to_modal(&mut m, chord(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(m.focus, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 6 — focused Choice/Toggle render ‹ › cycle hint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn focused_choice_renders_cycle_hint() {
+    let mut m = ModalSpec::new(
+        "id",
+        "Test",
+        vec![Field::Choice {
+            label: "action".into(),
+            options: vec!["Resume".into(), "Start fresh".into()],
+            selected: 0,
+        }],
+    );
+    m.focus = 0;
+    let rendered = render_modal_to_string(&m, 80, 12);
+    assert!(
+        rendered.contains('‹') && rendered.contains('›'),
+        "expected cycle hint glyphs in:\n{rendered}",
+    );
+}
+
+#[test]
+fn unfocused_choice_does_not_render_cycle_hint() {
+    let mut m = ModalSpec::new(
+        "id",
+        "Test",
+        vec![
+            Field::Toggle {
+                label: "first".into(),
+                value: false,
+            },
+            Field::Choice {
+                label: "action".into(),
+                options: vec!["Resume".into(), "Start fresh".into()],
+                selected: 0,
+            },
+        ],
+    );
+    m.focus = 0; // Toggle focused; Choice unfocused.
+    let rendered = render_modal_to_string(&m, 100, 14);
+    // Hint should appear on the focused row (Toggle) but not on Choice row.
+    let choice_line = rendered
+        .lines()
+        .find(|l| l.contains("Resume"))
+        .expect("Choice row should be rendered");
+    assert!(
+        !choice_line.contains('‹') && !choice_line.contains('›'),
+        "unfocused Choice row leaked cycle hint: {choice_line}",
+    );
+}

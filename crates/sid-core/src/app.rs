@@ -40,6 +40,7 @@ use crate::tab::TabManager;
 ///     title: "A".into(),
 ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
 ///     hotkey: None,
+///     kind: sid_core::tab::TabKind::Core,
 /// }]);
 /// let app = App::new(tabs, KeybindMap::new(), ActionRegistry::new());
 /// assert!(!app.is_quitting());
@@ -83,6 +84,7 @@ impl App {
     ///     title: "A".into(),
     ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
     ///     hotkey: None,
+    ///     kind: sid_core::tab::TabKind::Core,
     /// }]);
     /// let app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
     /// assert_eq!(app.tabs().active().id.as_str(), "a");
@@ -172,6 +174,7 @@ impl App {
     ///     title: "A".into(),
     ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
     ///     hotkey: None,
+    ///     kind: sid_core::tab::TabKind::Core,
     /// }]);
     /// let mut app = App::new(tabs, KeybindMap::new(), ActionRegistry::new());
     /// let tx = app.action_tx();
@@ -213,6 +216,7 @@ impl App {
     ///     title: "A".into(),
     ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
     ///     hotkey: None,
+    ///     kind: sid_core::tab::TabKind::Core,
     /// }]);
     /// let mut app = App::new(tabs, KeybindMap::new(), ActionRegistry::new());
     /// assert!(app.drain_pending_actions().is_empty());
@@ -254,6 +258,7 @@ impl App {
     ///     title: "A".into(),
     ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
     ///     hotkey: None,
+    ///     kind: sid_core::tab::TabKind::Core,
     /// }]);
     /// let mut app = App::new(tabs, KeybindMap::new(), ActionRegistry::new());
     /// assert!(!app.is_quitting());
@@ -332,6 +337,7 @@ impl App {
     ///     title: "A".into(),
     ///     layout: Layout::Single(Box::new(Stub { id: WidgetId::new("w") })),
     ///     hotkey: None,
+    ///     kind: sid_core::tab::TabKind::Core,
     /// }]);
     /// let mut app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
     ///
@@ -449,6 +455,11 @@ impl App {
             }
             "app.open_settings" => {
                 self.tabs.switch_to(&crate::tab::TabId::new("settings"));
+                Dispatch::Continue
+            }
+            "tab.close" => {
+                // Close the active tab if it is a Detail; no-op on Core.
+                let _ = self.tabs.close_active();
                 Dispatch::Continue
             }
             // No-ops in Plan 1; implemented in Plan 8.

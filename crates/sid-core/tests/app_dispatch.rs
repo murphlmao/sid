@@ -8,7 +8,7 @@ use sid_core::context::WidgetCtx;
 use sid_core::event::{Event, KeyChord};
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
-use sid_core::tab::{Tab, TabId, TabManager};
+use sid_core::tab::{Tab, TabId, TabKind, TabManager};
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ fn t(id: &'static str) -> Tab {
             id: WidgetId::new(id),
         })),
         hotkey: None,
+        kind: TabKind::Core,
     }
 }
 
@@ -315,4 +316,41 @@ fn plan8_actions_are_noop() {
         assert_eq!(d, Dispatch::Continue);
         assert!(!app.is_quitting());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 2 — tab.close action
+// ---------------------------------------------------------------------------
+
+fn detail(id: &'static str, parent_idx: usize) -> Tab {
+    Tab {
+        id: TabId::new(id),
+        title: id.into(),
+        layout: Layout::Single(Box::new(W {
+            id: WidgetId::new(id),
+        })),
+        hotkey: None,
+        kind: TabKind::Detail { parent_idx },
+    }
+}
+
+#[test]
+fn tab_close_action_drops_detail_tab() {
+    let tabs = TabManager::new(vec![t("workspaces")]);
+    let mut app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
+    app.tabs_mut().push_detail(detail("d1", 0)).unwrap();
+    app.tabs_mut().switch_to(&TabId::new("d1"));
+    assert_eq!(app.tabs().active().id.as_str(), "d1");
+    app.run_action(&sid_core::action::ActionId::new("tab.close"));
+    assert_eq!(app.tabs().active().id.as_str(), "workspaces");
+    assert_eq!(app.tabs().detail_count(), 0);
+}
+
+#[test]
+fn tab_close_action_on_core_is_noop() {
+    let tabs = TabManager::new(vec![t("workspaces"), t("ssh")]);
+    let mut app = App::new(tabs, KeybindMap::cosmos_default(), ActionRegistry::new());
+    app.run_action(&sid_core::action::ActionId::new("tab.close"));
+    assert_eq!(app.tabs().tabs().len(), 2);
+    assert_eq!(app.tabs().active().id.as_str(), "workspaces");
 }

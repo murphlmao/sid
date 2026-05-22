@@ -247,6 +247,14 @@ impl KeybindMap {
                 KeyModifiers::CONTROL,
                 &format!("tabs.jump.{i}"),
             );
+            // Alt fallback for terminals that don't deliver Ctrl+digit
+            // as a distinct chord (most VT-style terminals).
+            bind(
+                &mut m,
+                KeyCode::Char(c),
+                KeyModifiers::ALT,
+                &format!("tabs.jump.{i}"),
+            );
         }
         bind(
             &mut m,
@@ -266,6 +274,21 @@ impl KeybindMap {
             KeyModifiers::CONTROL,
             "app.open_settings",
         );
+        // Alt fallback for Ctrl+, (most terminals don't deliver it).
+        bind(
+            &mut m,
+            KeyCode::Char(','),
+            KeyModifiers::ALT,
+            "app.open_settings",
+        );
+        // Tab close — Ctrl for kitty-protocol-aware terminals, Alt fallback.
+        bind(
+            &mut m,
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+            "tab.close",
+        );
+        bind(&mut m, KeyCode::Char('w'), KeyModifiers::ALT, "tab.close");
         bind(
             &mut m,
             KeyCode::Char('d'),

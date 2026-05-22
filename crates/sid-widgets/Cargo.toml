@@ -27,7 +27,12 @@ tempfile.workspace = true
 insta.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = { workspace = true }
 # Used only by `tests/ssh_render.rs` to construct `Vt100Screen` (an impl
 # of `sid-core::adapters::pty::TerminalScreen`). Production code in
 # `sid-widgets` never names `sid-pty` — the binary wires concrete impls.
 sid-pty.workspace = true
+
+[[bench]]
+name = "tab_switch"
+harness = false

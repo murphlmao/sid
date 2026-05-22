@@ -6,7 +6,7 @@ use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
-use sid_core::tab::{Tab, TabId, TabManager};
+use sid_core::tab::{Tab, TabId, TabKind, TabManager};
 use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ fn tab(id: &'static str, title: &'static str, w: &'static str) -> Tab {
             title: w,
         })),
         hotkey: None,
+        kind: TabKind::Core,
     }
 }
 

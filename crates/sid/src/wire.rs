@@ -26,7 +26,7 @@ use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
 use sid_core::sys_probe::{SysProbe, SysSnapshot};
-use sid_core::tab::{Tab, TabId, TabManager};
+use sid_core::tab::{Tab, TabId, TabKind, TabManager};
 use sid_core::widget::Widget;
 use sid_core::workspace_discovery::{
     WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
@@ -723,6 +723,7 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
         "tabs.next",
         "tabs.prev",
         "app.open_settings",
+        "tab.close",
         "tab.detach",
         "tab.attach",
         "tab.reload",
@@ -751,6 +752,7 @@ fn tab(id: &str, title: &str, widget: Box<dyn Widget>, hotkey: Option<char>) -> 
         title: title.to_string(),
         layout: Layout::Single(widget),
         hotkey,
+        kind: TabKind::Core,
     }
 }
 
@@ -4905,13 +4907,13 @@ mod tests {
         }
     }
 
-    /// `build_app` registers 14 actions (8 named + 6 jump).
+    /// `build_app` registers 15 actions (9 named + 6 jump).
     #[test]
     fn build_app_registers_expected_actions() {
         let app = build_app(None, vec![]);
-        // 8 named + 6 jump actions
+        // 9 named (added tab.close in branch #1) + 6 jump actions
         let all: Vec<_> = app.actions().all().collect();
-        assert_eq!(all.len(), 14, "expected 14 actions, got {}", all.len());
+        assert_eq!(all.len(), 15, "expected 15 actions, got {}", all.len());
     }
 
     /// start_tab with "workspaces" ID stays at index 0.

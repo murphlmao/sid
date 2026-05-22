@@ -394,3 +394,66 @@ cargo update -p tokio --precise 1.47.0
 ```
 
 For the full testing playbook see [TESTING.md](TESTING.md).
+
+## Profiling with dhat
+
+`dhat` is a workspace dev-dependency in `Cargo.toml`. Use it to find
+allocation hot spots in the render loop or any path that shows up
+slower than its criterion budget. dhat measures allocation churn
+(not just resident memory): the heap allocator's lock contention is
+what causes UI jank, not memory pressure.
+
+### One-shot profile
+
+1. Enable the `dhat-heap` feature on the binary crate temporarily:
+
+   ```toml
+   # crates/sid/Cargo.toml
+   [features]
+   default = []
+   dhat-heap = ["dhat"]
+   ```
+
+2. Add the dhat profiler initialization to `crates/sid/src/main.rs`
+   inside a `#[cfg(feature = "dhat-heap")]` block at the top of `main`:
+
+   ```rust
+   #[cfg(feature = "dhat-heap")]
+   let _profiler = dhat::Profiler::new_heap();
+   ```
+
+3. Run a typical session and exit cleanly:
+
+   ```bash
+   cargo run --features dhat-heap -- --skip-discovery
+   # Interact for ~30 s: switch tabs, open a modal, close it,
+   # then quit (Ctrl+Q or your bound quit chord).
+   ```
+
+4. dhat writes `dhat-heap.json` to the project root. Open it in the
+   viewer (no installation required):
+
+   - <https://nnethercote.github.io/dh_view/dh_view.html> — load
+     `dhat-heap.json`.
+
+5. Look for entries with high `total_blocks` × `bytes` — those are the
+   per-frame allocators. Typical TUI offenders:
+   - per-frame `String` allocations in render paths
+   - `Vec<Row>` rebuilds in every `Table::new(...)`
+   - `Vec<&Workspace>` materializations in `visible_workspaces()`
+
+### Interpreting
+
+- Allocations per frame should be near-constant. A spike when you switch
+  tabs is the smoking gun for a hot-path regression.
+- Total bytes is less important than allocation **churn**.
+- If a function shows up high but only runs once per second, ignore it —
+  the budget is per-frame, not per-call.
+
+### Pair with criterion
+
+The criterion benches in `crates/sid-core/benches/` and
+`crates/sid-widgets/benches/` give you a per-function wall-clock
+measurement; dhat tells you whether allocations dominate that
+measurement. Use both: criterion to detect a regression, dhat to
+diagnose it.

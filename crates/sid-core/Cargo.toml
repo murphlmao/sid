@@ -26,6 +26,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "test-util"] }
 loom = { workspace = true }
 async-trait.workspace = true
+criterion = { workspace = true }
 
 [features]
 # Enables `loom` model-check tests. Run with:
@@ -34,3 +35,7 @@ loom = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[[bench]]
+name = "handle_event"
+harness = false

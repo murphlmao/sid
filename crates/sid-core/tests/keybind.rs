@@ -386,10 +386,14 @@ fn rebind_same_chord_overwrites_via_tuple_storage() {
 
 #[test]
 fn cosmos_default_iter_matches_expected_count() {
-    // 2 (next/prev) + 6 (jump 1..=6) + 5 (palette/quit/settings/detach/attach/reload = 6).
-    // Total: 2 + 6 + 6 = 14.
+    // Tabs:    2 (next/prev) + 6 Ctrl (jump 1..=6) + 6 Alt (jump 1..=6) = 14
+    // Globals: 6 single-modifier (palette/quit/settings/detach/attach/reload)
+    //          + 1 Alt fallback (settings)
+    //          + 2 Ctrl+W / Alt+W (tab.close)
+    //        = 9
+    // Total: 14 + 9 = 23.
     let map = KeybindMap::cosmos_default();
-    assert_eq!(map.iter().count(), 14);
+    assert_eq!(map.iter().count(), 23);
 }
 
 #[test]
@@ -397,4 +401,73 @@ fn cosmos_default_chord_for_quit_is_ctrl_q() {
     let map = KeybindMap::cosmos_default();
     let chord = map.chord_for_action(&ActionId::new("app.quit")).copied();
     assert_eq!(chord, Some(ctrl(KeyCode::Char('q'))));
+}
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 3 — Alt-modifier fallbacks + tab.close binding
+// ---------------------------------------------------------------------------
+
+fn alt(code: KeyCode) -> KeyChord {
+    KeyChord::new(code, KeyModifiers::ALT)
+}
+
+#[test]
+fn alt_digit_maps_to_tabs_jump() {
+    let m = KeybindMap::cosmos_default();
+    for i in 1..=6 {
+        let c = char::from_digit(i as u32, 10).unwrap();
+        let chord = alt(KeyCode::Char(c));
+        let action = m.lookup(&chord).expect("Alt+digit must be bound");
+        assert_eq!(action.as_str(), &format!("tabs.jump.{i}"));
+    }
+}
+
+#[test]
+fn alt_comma_opens_settings() {
+    let m = KeybindMap::cosmos_default();
+    let chord = alt(KeyCode::Char(','));
+    assert_eq!(
+        m.lookup(&chord).map(|a| a.as_str().to_string()),
+        Some("app.open_settings".to_string()),
+    );
+}
+
+#[test]
+fn ctrl_w_and_alt_w_both_close_tab() {
+    let m = KeybindMap::cosmos_default();
+    let c = ctrl(KeyCode::Char('w'));
+    let a = alt(KeyCode::Char('w'));
+    assert_eq!(
+        m.lookup(&c).map(|x| x.as_str().to_string()),
+        Some("tab.close".into())
+    );
+    assert_eq!(
+        m.lookup(&a).map(|x| x.as_str().to_string()),
+        Some("tab.close".into())
+    );
+}
+
+#[test]
+fn ctrl_digit_remains_bound_for_kitty_protocol_terminals() {
+    let m = KeybindMap::cosmos_default();
+    let c1 = ctrl(KeyCode::Char('1'));
+    assert_eq!(
+        m.lookup(&c1).map(|a| a.as_str().to_string()),
+        Some("tabs.jump.1".to_string()),
+    );
+}
+
+#[test]
+fn bare_digit_does_not_fire_tabs_jump_simulating_terminal_swallow() {
+    let m = KeybindMap::cosmos_default();
+    let b = bare(KeyCode::Char('1'));
+    assert!(
+        m.lookup(&b).is_none(),
+        "bare '1' must not be bound (would prevent typing)",
+    );
+    let alt1 = alt(KeyCode::Char('1'));
+    assert_eq!(
+        m.lookup(&alt1).map(|a| a.as_str().to_string()),
+        Some("tabs.jump.1".to_string()),
+    );
 }

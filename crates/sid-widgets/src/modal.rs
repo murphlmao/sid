@@ -402,6 +402,60 @@ impl ModalSpec {
         }
     }
 
+    /// Cycle the value of the focused [`Field::Choice`] or flip the focused
+    /// [`Field::Toggle`]. `dir > 0` advances forward, `dir < 0` goes
+    /// backward, `dir == 0` is a no-op. Non-value fields (Text / Password /
+    /// Picker / Display) and an empty modal are also no-ops.
+    ///
+    /// Routed to from [`route_key_to_modal`] on Left/Right arrow keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::modal::{Field, ModalSpec};
+    ///
+    /// let mut m = ModalSpec::new("id", "t", vec![Field::Choice {
+    ///     label: "k".into(),
+    ///     options: vec!["a".into(), "b".into()],
+    ///     selected: 0,
+    /// }]);
+    /// m.cycle_focused_value(1);
+    /// if let Field::Choice { selected, .. } = &m.fields[0] {
+    ///     assert_eq!(*selected, 1);
+    /// }
+    /// ```
+    pub fn cycle_focused_value(&mut self, dir: i8) {
+        if dir == 0 {
+            return;
+        }
+        let Some(field) = self.fields.get_mut(self.focus) else {
+            return;
+        };
+        match field {
+            Field::Choice {
+                options, selected, ..
+            } => {
+                if options.is_empty() {
+                    return;
+                }
+                let n = options.len();
+                let s = *selected;
+                *selected = if dir > 0 {
+                    (s + 1) % n
+                } else {
+                    (s + n - 1) % n
+                };
+            }
+            Field::Toggle { value, .. } => {
+                *value = !*value;
+            }
+            Field::Text { .. }
+            | Field::Password { .. }
+            | Field::Picker { .. }
+            | Field::Display { .. } => {}
+        }
+    }
+
     /// Collect all field values into a `(label, FieldValue)` Vec for the
     /// submit handler. Order matches the field declaration order.
     ///
@@ -508,13 +562,20 @@ pub enum ModalKeyOutcome {
 /// Route a single crossterm `KeyEvent` into `modal` and return what the caller
 /// should do next.
 ///
-/// - `Esc`                       → Cancel
-/// - `Tab` / `Shift+Tab`         → cycle focus, Consumed
-/// - `Backspace`                 → backspace on focused text/password/picker, Consumed
-/// - `Enter` on Toggle / Choice  → toggle/cycle the field, Consumed
-/// - `Enter` on Text / Password / Picker → Submit
-/// - `Char(c)` (no Ctrl/Alt)     → type_char, Consumed
-/// - any other key               → Consumed (modal swallows it)
+/// - `Esc`                                → Cancel
+/// - `Up` / `Shift+Tab` / `BackTab`       → cycle focus backward, Consumed
+/// - `Down` / `Tab` (no Shift)            → cycle focus forward, Consumed
+/// - `Left`                               → cycle focused Choice/Toggle backward, Consumed
+/// - `Right`                              → cycle focused Choice/Toggle forward, Consumed
+/// - `Backspace`                          → backspace on focused text/password/picker, Consumed
+/// - `Enter`                              → Submit (always — buttons stay decorative)
+/// - `Space` on Toggle / Choice           → flip/cycle the field, Consumed (legacy convenience)
+/// - `Char(c)` (no Ctrl/Alt)              → type_char, Consumed
+/// - any other key                        → Consumed (modal swallows it)
+///
+/// `Enter` no longer cycles a focused Choice — that's now Left/Right. This
+/// makes Enter unambiguously "submit the form" so users can confirm without
+/// accidentally changing the selection on the way out.
 ///
 /// # Examples
 ///
@@ -541,25 +602,35 @@ pub fn route_key_to_modal(
     use crossterm::event::{KeyCode, KeyModifiers};
     match (key.code, key.mods) {
         (KeyCode::Esc, _) => ModalKeyOutcome::Cancel,
-        (KeyCode::Tab, KeyModifiers::NONE) => {
+        (KeyCode::Up, _) | (KeyCode::BackTab, _) => {
+            modal.cycle_focus_backward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Down, _) => {
             modal.cycle_focus_forward();
             ModalKeyOutcome::Consumed
         }
-        (KeyCode::BackTab, _) => {
+        (KeyCode::Tab, m) if !m.contains(KeyModifiers::SHIFT) => {
+            modal.cycle_focus_forward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Tab, _) => {
             modal.cycle_focus_backward();
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Left, _) => {
+            modal.cycle_focused_value(-1);
+            ModalKeyOutcome::Consumed
+        }
+        (KeyCode::Right, _) => {
+            modal.cycle_focused_value(1);
             ModalKeyOutcome::Consumed
         }
         (KeyCode::Backspace, _) => {
             modal.backspace();
             ModalKeyOutcome::Consumed
         }
-        (KeyCode::Enter, _) => match modal.fields.get(modal.focus) {
-            Some(Field::Toggle { .. } | Field::Choice { .. }) => {
-                modal.space_or_enter_on_field();
-                ModalKeyOutcome::Consumed
-            }
-            _ => ModalKeyOutcome::Submit,
-        },
+        (KeyCode::Enter, _) => ModalKeyOutcome::Submit,
         (KeyCode::Char(' '), _)
             if matches!(
                 modal.fields.get(modal.focus),
@@ -879,6 +950,13 @@ fn render_field_value<'a>(theme: &'a Theme, field: &'a Field, focused: bool) -> 
             ));
             spans.push(Span::raw(" "));
             spans.push(Span::raw(if *value { "on" } else { "off" }));
+            if focused {
+                spans.push(Span::raw("   "));
+                spans.push(Span::styled(
+                    "‹ ›".to_string(),
+                    Style::default().fg(theme.muted.into()),
+                ));
+            }
         }
         Field::Choice {
             options, selected, ..
@@ -891,6 +969,13 @@ fn render_field_value<'a>(theme: &'a Theme, field: &'a Field, focused: bool) -> 
                 if i + 1 < options.len() {
                     spans.push(Span::raw("  "));
                 }
+            }
+            if focused {
+                spans.push(Span::raw("   "));
+                spans.push(Span::styled(
+                    "‹ ›".to_string(),
+                    Style::default().fg(theme.muted.into()),
+                ));
             }
         }
         Field::Picker { value, hint, .. } => {
