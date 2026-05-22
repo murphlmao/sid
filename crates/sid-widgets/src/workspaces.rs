@@ -978,6 +978,44 @@ impl ActionListState {
     }
 }
 
+// ─── WsFocus enum ────────────────────────────────────────────────────────────
+
+/// Which pane in the Workspaces tab currently owns keyboard input.
+///
+/// `Tab` cycles 2-way: `Tree ↔ SubView`. The accent border tracks the
+/// focused pane.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspaces::WsFocus;
+/// assert_ne!(WsFocus::Tree, WsFocus::SubView);
+/// assert_eq!(WsFocus::default(), WsFocus::Tree);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WsFocus {
+    /// The left-hand workspace tree.
+    #[default]
+    Tree,
+    /// The right-hand active sub-view ([`RightPane`]).
+    SubView,
+}
+
+impl WsFocus {
+    /// Cycle to the next focus (Tab).
+    pub fn next(self) -> Self {
+        match self {
+            WsFocus::Tree => WsFocus::SubView,
+            WsFocus::SubView => WsFocus::Tree,
+        }
+    }
+    /// Cycle to the previous focus (Shift+Tab).
+    pub fn prev(self) -> Self {
+        // 2-way: prev == next.
+        self.next()
+    }
+}
+
 // ─── RightPane enum ──────────────────────────────────────────────────────────
 
 /// The currently-active sub-view in the right pane of the Workspaces tab.
@@ -1250,6 +1288,9 @@ pub struct WorkspacesWidget {
     git_factory: Option<Arc<dyn GitProvider>>,
     /// Cached per-workspace git providers. Wrapped in Arc<Mutex<>> (Option A).
     open_repos: HashMap<PathBuf, Arc<Mutex<Box<dyn GitProvider>>>>,
+    /// Strict pane-focus marker. Tab toggles between [`WsFocus::Tree`] and
+    /// [`WsFocus::SubView`].
+    focused_pane: WsFocus,
 }
 
 impl WorkspacesWidget {
@@ -1274,7 +1315,31 @@ impl WorkspacesWidget {
             id: WidgetId::new("workspaces.root"),
             git_factory,
             open_repos: HashMap::new(),
+            focused_pane: WsFocus::default(),
         }
+    }
+
+    /// Currently-focused pane.
+    pub fn focused_pane(&self) -> WsFocus {
+        self.focused_pane
+    }
+
+    /// Stable string label for the focused pane.
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focused_pane {
+            WsFocus::Tree => "Tree",
+            WsFocus::SubView => "SubView",
+        }
+    }
+
+    /// Cycle focus forward (Tab).
+    pub fn focus_next(&mut self) {
+        self.focused_pane = self.focused_pane.next();
+    }
+
+    /// Cycle focus backward (Shift+Tab).
+    pub fn focus_prev(&mut self) {
+        self.focused_pane = self.focused_pane.prev();
     }
 
     /// Borrow the inner state.
@@ -1314,15 +1379,21 @@ impl WorkspacesWidget {
         let visible = self.state.visible_workspaces();
         let selected_path = self.state.selected_path();
 
+        let focused = self.focused_pane == WsFocus::Tree;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(" Workspaces ")
-            .title_style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            );
+            .title_style(title_style);
 
         if workspaces.is_empty() {
             let body = vec![
@@ -1372,11 +1443,21 @@ impl WorkspacesWidget {
     fn render_right_pane(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
         let label = self.state.right_pane().label();
         let title = format!(" {label} ");
+        let focused = self.focused_pane == WsFocus::SubView;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut title_style = Style::default().fg(theme.foreground.into());
+        if focused {
+            title_style = title_style.add_modifier(Modifier::BOLD);
+        }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(border_color.into()))
             .title(title)
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(title_style);
 
         let body: Vec<Line<'_>> = match self.state.right_pane() {
             RightPane::Branches(s) => {
@@ -1739,74 +1820,70 @@ impl Widget for WorkspacesWidget {
     fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(chord) = ev {
-            // 'r' from any sub-view opens the action menu
+            // Tab / Shift+Tab cycles the focused PANE (Tree ↔ SubView).
+            // This replaces the previous cycle-right-pane behavior; the
+            // right-pane sub-view is changed via in-sub-view shortcuts
+            // (`c` from Status → Commit, etc.) or the `r` shortcut for
+            // the Actions menu.
+            if chord.code == KeyCode::Tab && chord.mods == KeyModifiers::NONE {
+                self.focus_next();
+                return EventOutcome::Consumed;
+            }
+            if chord.code == KeyCode::Tab && chord.mods.contains(KeyModifiers::SHIFT) {
+                self.focus_prev();
+                return EventOutcome::Consumed;
+            }
+            if chord.code == KeyCode::BackTab {
+                self.focus_prev();
+                return EventOutcome::Consumed;
+            }
+            // Alt+<key> is reserved for future cross-pane actions.
+            if chord.mods.contains(KeyModifiers::ALT) {
+                // TODO: cross-pane actions on Alt+<key>
+                return EventOutcome::Bubble;
+            }
+
+            // Widget-global keybinds (fire regardless of focused pane).
+            // 'r' from any sub-view opens the action menu — preserved
+            // because it's a "widget action" not "pane navigation".
             if chord.code == KeyCode::Char('r') && chord.mods == KeyModifiers::NONE {
-                // Preserve existing actions if already in Actions pane; otherwise
-                // switch to a fresh ActionListState. Actual action population is done
-                // by the App layer after reading the selected workspace's metadata.
                 if !matches!(self.state.right_pane, RightPane::Actions(_)) {
                     self.state.right_pane = RightPane::Actions(ActionListState::default());
                 }
                 return EventOutcome::Consumed;
             }
 
-            // Tab / Shift+Tab cycles panes
-            if chord.code == KeyCode::Tab && chord.mods == KeyModifiers::NONE {
-                self.state.cycle_pane_next();
-                return EventOutcome::Consumed;
-            }
-            if chord.code == KeyCode::BackTab {
-                self.state.cycle_pane_prev();
-                return EventOutcome::Consumed;
-            }
-
-            // Tree navigation (left pane)
-            match (chord.code, chord.mods) {
-                (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                    // Only navigate tree if not in a sub-view that also uses j/k
-                    match &self.state.right_pane {
-                        RightPane::Branches(_)
-                        | RightPane::Status(_)
-                        | RightPane::Log(_)
-                        | RightPane::Diff(_)
-                        | RightPane::Actions(_) => {
-                            // Sub-view handles j/k, not the tree
-                        }
-                        RightPane::Commit(_) => {
+            // Pane-gated routing.
+            match self.focused_pane {
+                WsFocus::Tree => {
+                    match (chord.code, chord.mods) {
+                        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
                             self.state.select_next();
                             return EventOutcome::Consumed;
                         }
-                    }
-                }
-                (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                    match &self.state.right_pane {
-                        RightPane::Branches(_)
-                        | RightPane::Status(_)
-                        | RightPane::Log(_)
-                        | RightPane::Diff(_)
-                        | RightPane::Actions(_) => {}
-                        RightPane::Commit(_) => {
+                        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
                             self.state.select_prev();
                             return EventOutcome::Consumed;
                         }
+                        (KeyCode::Enter, KeyModifiers::NONE) => {
+                            self.state.toggle_expand_selected();
+                            return EventOutcome::Consumed;
+                        }
+                        _ => {}
                     }
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    self.state.toggle_expand_selected();
-                    return EventOutcome::Consumed;
+                WsFocus::SubView => {
+                    // Route to the active sub-view's handler.
+                    let chord = *chord;
+                    match &self.state.right_pane {
+                        RightPane::Branches(_) => return self.handle_branch_pane_event(&chord),
+                        RightPane::Status(_) => return self.handle_status_pane_event(&chord),
+                        RightPane::Log(_) => return self.handle_log_pane_event(&chord),
+                        RightPane::Diff(_) => return self.handle_diff_pane_event(&chord),
+                        RightPane::Commit(_) => return self.handle_commit_pane_event(&chord),
+                        RightPane::Actions(_) => return self.handle_actions_pane_event(&chord),
+                    }
                 }
-                _ => {}
-            }
-
-            // Route to the active sub-view
-            let chord = *chord;
-            match &self.state.right_pane {
-                RightPane::Branches(_) => return self.handle_branch_pane_event(&chord),
-                RightPane::Status(_) => return self.handle_status_pane_event(&chord),
-                RightPane::Log(_) => return self.handle_log_pane_event(&chord),
-                RightPane::Diff(_) => return self.handle_diff_pane_event(&chord),
-                RightPane::Commit(_) => return self.handle_commit_pane_event(&chord),
-                RightPane::Actions(_) => return self.handle_actions_pane_event(&chord),
             }
         }
         EventOutcome::Bubble

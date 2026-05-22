@@ -85,6 +85,36 @@ struct SettingsState {
     focused_category: u8,
 }
 
+/// Which pane in the Settings tab currently owns keyboard input.
+///
+/// `Tab` (and `Shift+Tab` for symmetry) toggles between the two. The accent
+/// border is rendered on the focused pane; the other uses the muted color.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::SettingsFocus;
+/// assert_eq!(SettingsFocus::default(), SettingsFocus::Categories);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SettingsFocus {
+    /// The left-hand category list.
+    #[default]
+    Categories,
+    /// The right-hand active sub-view.
+    SubView,
+}
+
+impl SettingsFocus {
+    /// Toggle to the other focus.
+    pub fn toggle(self) -> Self {
+        match self {
+            SettingsFocus::Categories => SettingsFocus::SubView,
+            SettingsFocus::SubView => SettingsFocus::Categories,
+        }
+    }
+}
+
 /// Tab widget for the Settings tab.
 ///
 /// The widget can be built in two flavours:
@@ -111,6 +141,7 @@ pub struct SettingsWidget {
     body: Option<ComingSoonBody>,
     categories: Vec<SettingsCategory>,
     focused_category: usize,
+    focused_pane: SettingsFocus,
 }
 
 impl SettingsWidget {
@@ -125,6 +156,7 @@ impl SettingsWidget {
             )),
             categories: Vec::new(),
             focused_category: 0,
+            focused_pane: SettingsFocus::default(),
         }
     }
 
@@ -154,7 +186,26 @@ impl SettingsWidget {
             body: None,
             categories,
             focused_category: 0,
+            focused_pane: SettingsFocus::default(),
         }
+    }
+
+    /// Currently-focused pane (Categories or SubView).
+    pub fn focused_pane(&self) -> SettingsFocus {
+        self.focused_pane
+    }
+
+    /// Stable string label for the focused pane.
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focused_pane {
+            SettingsFocus::Categories => "Categories",
+            SettingsFocus::SubView => "SubView",
+        }
+    }
+
+    /// Toggle the focused pane (2-way flip — same as Tab/Shift+Tab).
+    pub fn toggle_focused_pane(&mut self) {
+        self.focused_pane = self.focused_pane.toggle();
     }
 
     /// Ordered list of category labels (`["Theme", "Keybinds", ...]`).
@@ -251,12 +302,22 @@ impl SettingsWidget {
         let left = chunks[0];
         let right = chunks[1];
 
-        // Left pane: category list.
+        // Left pane: category list. Accent border on the focused pane.
+        let categories_focused = self.focused_pane == SettingsFocus::Categories;
+        let left_border = if categories_focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let mut left_title_style = Style::default().fg(theme.foreground.into());
+        if categories_focused {
+            left_title_style = left_title_style.add_modifier(Modifier::BOLD);
+        }
         let left_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
+            .border_style(Style::default().fg(left_border.into()))
             .title(" Categories ")
-            .title_style(Style::default().fg(theme.foreground.into()));
+            .title_style(left_title_style);
         let left_inner = left_block.inner(left);
         frame.render_widget(left_block, left);
         if left_inner.width > 0 && left_inner.height > 0 {
@@ -295,6 +356,30 @@ impl SettingsWidget {
                     .border_style(Style::default().fg(theme.muted.into()));
                 frame.render_widget(block, right);
             }
+        }
+
+        // Sub-view focus indicator: overlay an outer block over the right
+        // pane's border. Sub-views paint their own accent border; this
+        // overlay redraws the outer frame in the focused/muted color and
+        // preserves the sub-view's title so layout is unchanged.
+        if let Some(cat) = self.focused_category() {
+            let subview_focused = self.focused_pane == SettingsFocus::SubView;
+            let border_color = if subview_focused {
+                theme.accent_primary
+            } else {
+                theme.muted
+            };
+            let mut title_style = Style::default().fg(theme.foreground.into());
+            if subview_focused {
+                title_style = title_style.add_modifier(Modifier::BOLD);
+            }
+            let title = format!(" {} ", cat.label());
+            let overlay = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color.into()))
+                .title(title)
+                .title_style(title_style);
+            frame.render_widget(overlay, right);
         }
     }
 }
@@ -373,64 +458,77 @@ impl Widget for SettingsWidget {
         }
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(k) = ev {
+            // Tab / Shift+Tab / BackTab all TOGGLE the focused pane
+            // (Categories ↔ SubView). This is the user's specific
+            // complaint: previously Tab moved between category rows;
+            // now Tab flips which pane receives j/k.
             match k.code {
-                KeyCode::Tab if k.mods.contains(KeyModifiers::SHIFT) => {
-                    self.focus_prev();
-                    return EventOutcome::Consumed;
-                }
-                KeyCode::Tab => {
-                    self.focus_next();
-                    return EventOutcome::Consumed;
-                }
-                KeyCode::BackTab => {
-                    self.focus_prev();
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.toggle_focused_pane();
                     return EventOutcome::Consumed;
                 }
                 _ => {}
             }
-            // Route to the focused category's local handler.
-            if let Some(cat) = self.focused_category_mut() {
-                match cat {
-                    SettingsCategory::Theme(v) => match v.handle_event(ev) {
-                        ThemePickerOutcome::None => {}
-                        _ => return EventOutcome::Consumed,
-                    },
-                    SettingsCategory::Animation(v) => match k.code {
-                        KeyCode::Up => {
-                            v.focus_prev();
-                            return EventOutcome::Consumed;
+            // Alt+<key> is reserved for future cross-pane actions.
+            if k.mods.contains(KeyModifiers::ALT) {
+                // TODO: cross-pane actions on Alt+<key>
+                return EventOutcome::Bubble;
+            }
+            // Pane-gated routing.
+            match self.focused_pane {
+                SettingsFocus::Categories => match (k.code, k.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                        self.focus_next();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                        self.focus_prev();
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
+                SettingsFocus::SubView => {
+                    // Route to the focused category's local handler.
+                    if let Some(cat) = self.focused_category_mut() {
+                        match cat {
+                            SettingsCategory::Theme(v) => match v.handle_event(ev) {
+                                ThemePickerOutcome::None => {}
+                                _ => return EventOutcome::Consumed,
+                            },
+                            SettingsCategory::Animation(v) => match k.code {
+                                KeyCode::Up => {
+                                    v.focus_prev();
+                                    return EventOutcome::Consumed;
+                                }
+                                KeyCode::Down => {
+                                    v.focus_next();
+                                    return EventOutcome::Consumed;
+                                }
+                                KeyCode::Left => {
+                                    v.adjust_focused(-1);
+                                    return EventOutcome::Consumed;
+                                }
+                                KeyCode::Right => {
+                                    v.adjust_focused(1);
+                                    return EventOutcome::Consumed;
+                                }
+                                KeyCode::Char(' ') | KeyCode::Enter => {
+                                    v.adjust_focused(0);
+                                    return EventOutcome::Consumed;
+                                }
+                                _ => {}
+                            },
+                            SettingsCategory::Keybinds(_)
+                            | SettingsCategory::Behavior(_)
+                            | SettingsCategory::WorkspaceRoots(_)
+                            | SettingsCategory::QuickActions(_)
+                            | SettingsCategory::DbPath(_)
+                            | SettingsCategory::Reset(_) => {
+                                // Per-category event routing is implemented
+                                // by the binary wire path (which owns the
+                                // Store / ActionRegistry handles).
+                            }
                         }
-                        KeyCode::Down => {
-                            v.focus_next();
-                            return EventOutcome::Consumed;
-                        }
-                        KeyCode::Left => {
-                            v.adjust_focused(-1);
-                            return EventOutcome::Consumed;
-                        }
-                        KeyCode::Right => {
-                            v.adjust_focused(1);
-                            return EventOutcome::Consumed;
-                        }
-                        KeyCode::Char(' ') | KeyCode::Enter => {
-                            v.adjust_focused(0);
-                            return EventOutcome::Consumed;
-                        }
-                        _ => {}
-                    },
-                    SettingsCategory::Keybinds(_)
-                    | SettingsCategory::Behavior(_)
-                    | SettingsCategory::WorkspaceRoots(_)
-                    | SettingsCategory::QuickActions(_)
-                    | SettingsCategory::DbPath(_)
-                    | SettingsCategory::Reset(_) => {
-                        // Per-category event routing is implemented by the
-                        // binary wire path (which owns the relevant Store /
-                        // ActionRegistry handles). Sub-views expose typed
-                        // mutators; routing crossterm events to them is the
-                        // binary's job, not the composer's. Returning
-                        // `EventOutcome::Bubble` keeps the dispatch loop
-                        // free to fall through to higher-level handlers.
                     }
                 }
             }
@@ -577,20 +675,24 @@ mod tests {
     }
 
     #[test]
-    fn tab_event_cycles_forward() {
+    fn tab_event_flips_focused_pane() {
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::KeyChord;
         let mut w = small_widget();
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+        assert_eq!(w.focused_category_index(), 0);
         let ev = Event::Key(KeyChord::new(KeyCode::Tab, KeyModifiers::empty()));
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let outcome = w.handle_event(&ev, &mut ctx);
         assert_eq!(outcome, EventOutcome::Consumed);
-        assert_eq!(w.focused_category_index(), 1);
+        // Tab flips the focused pane — does NOT move category index.
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        assert_eq!(w.focused_category_index(), 0);
     }
 
     #[test]
-    fn shift_tab_event_cycles_backward() {
+    fn shift_tab_event_also_flips_focused_pane() {
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::KeyChord;
         let mut w = small_widget();
@@ -599,11 +701,12 @@ mod tests {
         let mut ctx = WidgetCtx::new(tx);
         let outcome = w.handle_event(&ev, &mut ctx);
         assert_eq!(outcome, EventOutcome::Consumed);
-        assert_eq!(w.focused_category_index(), 2);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        assert_eq!(w.focused_category_index(), 0);
     }
 
     #[test]
-    fn back_tab_event_cycles_backward() {
+    fn back_tab_event_also_flips_focused_pane() {
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::KeyChord;
         let mut w = small_widget();
@@ -611,19 +714,22 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         w.handle_event(&ev, &mut ctx);
-        assert_eq!(w.focused_category_index(), 2);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
     }
 
     #[test]
-    fn arrow_event_routes_to_focused_theme_picker() {
+    fn arrow_event_routes_to_focused_theme_picker_after_tab() {
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::KeyChord;
         let mut w = small_widget();
-        let ev = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::empty()));
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
-        let outcome = w.handle_event(&ev, &mut ctx);
-        // Theme picker consumed it (PreviewChanged).
+        // Tab to SubView so the theme picker receives keys.
+        let tab = Event::Key(KeyChord::new(KeyCode::Tab, KeyModifiers::empty()));
+        w.handle_event(&tab, &mut ctx);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        let down = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::empty()));
+        let outcome = w.handle_event(&down, &mut ctx);
         assert_eq!(outcome, EventOutcome::Consumed);
         if let Some(SettingsCategory::Theme(v)) = w.focused_category() {
             assert!(v.focused_index() > 0);
@@ -651,5 +757,101 @@ mod tests {
             w2.load_state(&bytes);
             prop_assert_eq!(w2.focused_category_index(), idx as usize);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Strict pane-focus model tests
+    // ---------------------------------------------------------------------
+
+    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> Event {
+        use sid_core::event::KeyChord;
+        Event::Key(KeyChord::new(code, mods))
+    }
+
+    fn ctx() -> WidgetCtx {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        WidgetCtx::new(tx)
+    }
+
+    #[test]
+    fn default_focus_is_categories() {
+        let w = small_widget();
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+        assert_eq!(w.focused_pane_label(), "Categories");
+    }
+
+    #[test]
+    fn settings_tab_flips_focus_pane() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    #[test]
+    fn settings_shift_tab_cycles_focus_backward() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        w.handle_event(&key(KeyCode::BackTab, KeyModifiers::SHIFT), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        w.handle_event(&key(KeyCode::BackTab, KeyModifiers::SHIFT), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    #[test]
+    fn settings_j_in_categories_changes_category() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+        assert_eq!(w.focused_category_index(), 0);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_category_index(), 1);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_category_index(), 2);
+    }
+
+    #[test]
+    fn settings_j_in_subview_does_not_change_category() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        // Tab to SubView.
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        let before = w.focused_category_index();
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        // Focused category index unchanged.
+        assert_eq!(w.focused_category_index(), before);
+    }
+
+    #[test]
+    fn settings_border_follows_focus() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        assert_eq!(w.focused_pane_label(), "Categories");
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane_label(), "SubView");
+        w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane_label(), "Categories");
+    }
+
+    #[test]
+    fn settings_alt_keys_bubble_and_do_not_change_pane() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        let pane_before = w.focused_pane();
+        let cat_before = w.focused_category_index();
+        let outcome = w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::ALT), &mut c);
+        assert_eq!(outcome, EventOutcome::Bubble);
+        assert_eq!(w.focused_pane(), pane_before);
+        assert_eq!(w.focused_category_index(), cat_before);
     }
 }

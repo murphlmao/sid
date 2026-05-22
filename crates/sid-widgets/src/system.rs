@@ -73,6 +73,15 @@ impl SystemState {
         self.focused
     }
 
+    /// Stable string label for the focused sub-panel.
+    pub fn focused_pane_label(&self) -> &'static str {
+        match self.focused {
+            SystemPane::PinnedConfigs => "PinnedConfigs",
+            SystemPane::Services => "Services",
+            SystemPane::QuickActions => "QuickActions",
+        }
+    }
+
     /// Cycle focus forward (PinnedConfigs → Services → QuickActions → wrap).
     pub fn cycle_focus_forward(&mut self) {
         self.focused = match self.focused {
@@ -997,9 +1006,14 @@ impl Widget for SystemWidget {
     fn handle_event(&mut self, ev: &Event, ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(chord) = ev {
+            // Tab / Shift+Tab cycle the focused pane FIRST.
             match (chord.code, chord.mods) {
                 (KeyCode::Tab, KeyModifiers::NONE) => {
                     self.state.cycle_focus_forward();
+                    return EventOutcome::Consumed;
+                }
+                (KeyCode::Tab, m) if m.contains(KeyModifiers::SHIFT) => {
+                    self.state.cycle_focus_backward();
                     return EventOutcome::Consumed;
                 }
                 (KeyCode::BackTab, _) => {
@@ -1008,6 +1022,16 @@ impl Widget for SystemWidget {
                 }
                 _ => {}
             }
+            // Alt+<key> is reserved for future cross-pane actions.
+            if chord.mods.contains(KeyModifiers::ALT) {
+                // TODO: cross-pane actions on Alt+<key>
+                return EventOutcome::Bubble;
+            }
+            // j/k routes to the focused sub-panel via the binary's wire
+            // layer (which owns the per-pane mutators). The widget itself
+            // bubbles navigation; the focused-pane enum guarantees the
+            // wire layer routes input to the same sub-panel that has the
+            // accent border.
         }
         self.body.handle_event(ev, ctx)
     }
