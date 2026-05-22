@@ -169,11 +169,11 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use sid_ui::themes::cosmos;
 
-fn render_view_to_string(v: &AnimationView, width: u16, height: u16) -> String {
+fn render_view_to_string(v: &AnimationView, width: u16, height: u16, focused: bool) -> String {
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
     let theme = cosmos();
-    term.draw(|f| v.render_into_frame(f, f.area(), &theme))
+    term.draw(|f| v.render_into_frame(f, f.area(), &theme, focused))
         .unwrap();
     let buf = term.backend().buffer();
     let mut s = String::new();
@@ -189,7 +189,7 @@ fn render_view_to_string(v: &AnimationView, width: u16, height: u16) -> String {
 #[test]
 fn animation_view_default_render() {
     let v = AnimationView::new(AnimationConfig::default());
-    let s = render_view_to_string(&v, 60, 14);
+    let s = render_view_to_string(&v, 60, 14, true);
     insta::assert_snapshot!("animation_view_default_render", s);
 }
 
@@ -201,6 +201,53 @@ fn animation_view_density_focused_at_50() {
     });
     v.focus_next(); // Density
     assert_eq!(v.focused_field(), AnimationField::Density);
-    let s = render_view_to_string(&v, 60, 14);
+    let s = render_view_to_string(&v, 60, 14, true);
     insta::assert_snapshot!("animation_view_density_focused_at_50", s);
+}
+
+/// Helper that, like `render_view_to_string`, captures the character grid
+/// plus the foreground style of the top-left border cell and the title-bar
+/// character so the snapshot distinguishes focused (accent_primary + bold)
+/// from unfocused (muted, non-bold) renders.
+fn render_view_with_style(v: &AnimationView, width: u16, height: u16, focused: bool) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| v.render_into_frame(f, f.area(), &theme, focused))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        s.push('\n');
+    }
+    let tl = buf.cell((0, 0)).unwrap();
+    s.push_str(&format!(
+        "border_top_left: fg={:?} modifier={:?}\n",
+        tl.fg, tl.modifier
+    ));
+    let title_cell = buf.cell((2, 0)).unwrap();
+    s.push_str(&format!(
+        "title_first_char: symbol={:?} fg={:?} modifier={:?}\n",
+        title_cell.symbol(),
+        title_cell.fg,
+        title_cell.modifier
+    ));
+    s
+}
+
+#[test]
+fn animation_view_render_focused() {
+    let v = AnimationView::new(AnimationConfig::default());
+    let s = render_view_with_style(&v, 60, 14, true);
+    insta::assert_snapshot!("animation_view_render_focused", s);
+}
+
+#[test]
+fn animation_view_render_unfocused() {
+    let v = AnimationView::new(AnimationConfig::default());
+    let s = render_view_with_style(&v, 60, 14, false);
+    insta::assert_snapshot!("animation_view_render_unfocused", s);
 }

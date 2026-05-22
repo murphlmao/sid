@@ -1,0 +1,18 @@
+---
+source: crates/sid-widgets/src/settings/keybind_editor.rs
+expression: s
+---
+┌ Keybinds ────────────────────────────────────────────────┐
+│> a                        (unbound)                      │
+│  b                        (unbound)                      │
+│  c                        (unbound)                      │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+border_top_left: fg=Rgb(212, 65, 65) modifier=NONE
+title_first_char: symbol="K" fg=Rgb(230, 230, 240) modifier=BOLD

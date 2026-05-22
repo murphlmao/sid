@@ -1,0 +1,18 @@
+---
+source: crates/sid-widgets/src/settings/behavior_toggles.rs
+expression: s
+---
+┌ Behavior ────────────────────────────────────────────────┐
+│> Auto-restore session                 ask                │
+│  Auto-scan workspace roots on startup on                 │
+│  State persist debounce (ms)          250                │
+│  Session heartbeat interval (s)       5                  │
+│  Default tab on launch                workspaces         │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+border_top_left: fg=Rgb(74, 74, 96) modifier=NONE
+title_first_char: symbol="B" fg=Rgb(230, 230, 240) modifier=NONE

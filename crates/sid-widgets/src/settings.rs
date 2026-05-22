@@ -208,6 +208,57 @@ impl SettingsWidget {
         self.focused_pane = self.focused_pane.toggle();
     }
 
+    /// Focus the pane that contains the given coordinate. No-op when the
+    /// coordinate falls outside `area`.
+    ///
+    /// Layout mirrors [`Self::render_into_frame`]: a 25/75 horizontal split.
+    /// Columns left of the 25% boundary focus [`SettingsFocus::Categories`];
+    /// everything else focuses [`SettingsFocus::SubView`]. No-op when the
+    /// widget has no categories (the entire area renders as an empty block).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    /// use sid_widgets::settings::SettingsFocus;
+    /// use sid_widgets::SettingsWidget;
+    /// use sid_ui::theme_registry::ThemeRegistry;
+    /// use sid_widgets::settings::theme_picker::ThemePickerView;
+    /// use sid_widgets::settings::reset::ResetView;
+    /// use sid_widgets::SettingsCategory;
+    ///
+    /// let r = ThemeRegistry::with_builtins();
+    /// let mut w = SettingsWidget::with_categories(vec![
+    ///     SettingsCategory::Theme(ThemePickerView::new(&r, "cosmos")),
+    ///     SettingsCategory::Reset(ResetView::new()),
+    /// ]);
+    /// let area = Rect { x: 0, y: 0, width: 100, height: 24 };
+    /// w.focus_at(area, 80, 5);
+    /// assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+    /// w.focus_at(area, 5, 5);
+    /// assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    /// ```
+    pub fn focus_at(&mut self, area: Rect, col: u16, row: u16) {
+        if self.categories.is_empty() {
+            return;
+        }
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        let split_col = area.x.saturating_add(area.width.saturating_mul(25) / 100);
+        self.focused_pane = if col < split_col {
+            SettingsFocus::Categories
+        } else {
+            SettingsFocus::SubView
+        };
+    }
+
     /// Ordered list of category labels (`["Theme", "Keybinds", ...]`).
     pub fn category_labels(&self) -> Vec<&'static str> {
         self.categories.iter().map(|c| c.label()).collect()
@@ -261,8 +312,9 @@ impl SettingsWidget {
     ///
     /// Layout: a 25%/75% horizontal split. The left pane lists the category
     /// labels with the focused row highlighted; the right pane delegates to
-    /// the focused sub-view's own `render_into_frame`. When the widget has no
-    /// categories the area is rendered as an empty bordered block.
+    /// the focused sub-view's own `render_into_frame`, passing `subview_focused`
+    /// so the sub-view paints its own accent-or-muted border. When the widget
+    /// has no categories the area is rendered as an empty bordered block.
     ///
     /// # Examples
     ///
@@ -340,46 +392,41 @@ impl SettingsWidget {
             frame.render_widget(Paragraph::new(rows), left_inner);
         }
 
-        // Right pane: focused sub-view.
+        // Right pane: focused sub-view. The sub-view owns its border and
+        // consults `subview_focused` to pick accent vs muted color and the
+        // bold title modifier.
+        let subview_focused = self.focused_pane == SettingsFocus::SubView;
         match self.focused_category() {
-            Some(SettingsCategory::Theme(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::Keybinds(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::Behavior(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::WorkspaceRoots(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::QuickActions(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::DbPath(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::Reset(v)) => v.render_into_frame(frame, right, theme),
-            Some(SettingsCategory::Animation(v)) => v.render_into_frame(frame, right, theme),
+            Some(SettingsCategory::Theme(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::Keybinds(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::Behavior(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::WorkspaceRoots(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::QuickActions(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::DbPath(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::Reset(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
+            Some(SettingsCategory::Animation(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
             None => {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme.muted.into()));
                 frame.render_widget(block, right);
             }
-        }
-
-        // Sub-view focus indicator: overlay an outer block over the right
-        // pane's border. Sub-views paint their own accent border; this
-        // overlay redraws the outer frame in the focused/muted color and
-        // preserves the sub-view's title so layout is unchanged.
-        if let Some(cat) = self.focused_category() {
-            let subview_focused = self.focused_pane == SettingsFocus::SubView;
-            let border_color = if subview_focused {
-                theme.accent_primary
-            } else {
-                theme.muted
-            };
-            let mut title_style = Style::default().fg(theme.foreground.into());
-            if subview_focused {
-                title_style = title_style.add_modifier(Modifier::BOLD);
-            }
-            let title = format!(" {} ", cat.label());
-            let overlay = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color.into()))
-                .title(title)
-                .title_style(title_style);
-            frame.render_widget(overlay, right);
         }
     }
 }
