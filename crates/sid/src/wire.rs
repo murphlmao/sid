@@ -7222,6 +7222,7 @@ mod tests {
                 is_up: true,
             }],
             captured_at_unix_secs: 1,
+            default_route_iface: None,
         }
     }
 

@@ -121,6 +121,7 @@ mod focus {
                 },
             ],
             captured_at_unix_secs: 1_700_000_000,
+            default_route_iface: None,
         }
     }
 
