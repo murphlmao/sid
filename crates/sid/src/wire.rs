@@ -26,7 +26,7 @@ use sid_core::event::Event as SidEvent;
 use sid_core::keybind::KeybindMap;
 use sid_core::layout::Layout;
 use sid_core::sys_probe::{SysProbe, SysSnapshot};
-use sid_core::tab::{Tab, TabId, TabManager};
+use sid_core::tab::{Tab, TabId, TabKind, TabManager};
 use sid_core::widget::Widget;
 use sid_core::workspace_discovery::{
     WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
@@ -751,6 +751,7 @@ fn tab(id: &str, title: &str, widget: Box<dyn Widget>, hotkey: Option<char>) -> 
         title: title.to_string(),
         layout: Layout::Single(widget),
         hotkey,
+        kind: TabKind::Core,
     }
 }
 
