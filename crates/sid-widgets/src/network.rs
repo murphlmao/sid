@@ -702,10 +702,12 @@ impl Widget for NetworkWidget {
 
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
-            FooterHint::new("K", "kill"),
             FooterHint::new("/", "filter"),
-            FooterHint::new("R", "refresh"),
+            FooterHint::new("s", "sort"),
+            FooterHint::new("K", "kill"),
+            FooterHint::new("Enter", "detail"),
             FooterHint::new("Tab", "pane"),
+            FooterHint::new("R", "refresh"),
         ]
     }
 
