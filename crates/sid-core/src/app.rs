@@ -473,6 +473,11 @@ impl App {
             // with the real "build WorkspaceDetailWidget + push as Detail
             // tab" flow.
             "workspaces.open_detail" => Dispatch::Continue,
+            // Branch #4: the NetworkWidget emits these. The binary wire
+            // layer's modal_for_active_tab_key surfaces the actual modal
+            // for Enter; "edit_stub" toasts "coming soon" — see the
+            // wire-layer dispatch.
+            "network.interface_detail" | "network.interface_edit_stub" => Dispatch::Continue,
             // No-ops in Plan 1; implemented in Plan 8.
             "tab.detach" | "tab.attach" | "tab.reload" => Dispatch::Continue,
             _ => {

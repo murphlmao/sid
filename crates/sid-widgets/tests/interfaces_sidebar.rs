@@ -97,3 +97,89 @@ fn set_data_empty_clears_selection() {
     assert_eq!(s.selected_index(), 0);
     assert!(s.selected_row().is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Branch #4 Task 4 — sort by score (WAN first, virtual last)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wan_iface_sorts_first_when_default_route_set() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![
+        iface("lo", true),
+        iface("docker0", true),
+        iface("wlan0", true),
+        iface("eth0", false),
+    ];
+    s.set_data_with_default_route(ifaces, Some("wlan0"));
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order[0], "wlan0", "wlan0 must sort first; got {order:?}");
+}
+
+#[test]
+fn loopback_and_docker_sort_last() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![
+        iface("lo", true),
+        iface("docker0", true),
+        iface("wlan0", true),
+    ];
+    s.set_data_with_default_route(ifaces, Some("wlan0"));
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order[0], "wlan0");
+    assert!(order.last() == Some(&"lo") || order.last() == Some(&"docker0"));
+}
+
+#[test]
+fn down_interfaces_sort_below_up_when_no_default_route() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![iface("eth0", false), iface("wlan0", true)];
+    s.set_data_with_default_route(ifaces, None);
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order, vec!["wlan0", "eth0"]);
+}
+
+#[test]
+fn alphabetical_tiebreak_within_score_bucket() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![iface("wlan1", true), iface("wlan0", true)];
+    s.set_data_with_default_route(ifaces, None);
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order, vec!["wlan0", "wlan1"]);
+}
+
+#[test]
+fn no_default_route_falls_back_to_score_only() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![iface("lo", true), iface("eth0", true)];
+    s.set_data_with_default_route(ifaces, None);
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order, vec!["eth0", "lo"]);
+}
+
+#[test]
+fn err_from_default_route_collapses_to_alphabetical_via_none() {
+    // sys_probe maps Err to Ok(None) at the snapshot layer; this test locks
+    // in that the sidebar's score function handles None cleanly (no special-
+    // case branch, just "no WAN to prioritize").
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![iface("eth0", true), iface("wlan0", true)];
+    s.set_data_with_default_route(ifaces, None);
+    let order: Vec<&str> = s.rows().iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(order, vec!["eth0", "wlan0"]);
+}
+
+#[test]
+fn sort_is_stable_across_repeated_set_data() {
+    let mut s = InterfacesSidebarState::new();
+    let ifaces = vec![
+        iface("eth0", true),
+        iface("eth1", true),
+        iface("wlan0", true),
+    ];
+    s.set_data_with_default_route(ifaces.clone(), Some("wlan0"));
+    let first: Vec<String> = s.rows().iter().map(|i| i.name.clone()).collect();
+    s.set_data_with_default_route(ifaces, Some("wlan0"));
+    let second: Vec<String> = s.rows().iter().map(|i| i.name.clone()).collect();
+    assert_eq!(first, second);
+}

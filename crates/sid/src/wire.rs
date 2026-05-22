@@ -2135,8 +2135,71 @@ fn modal_for_active_tab_key(
         "ssh" => ssh_modal_for_key(sid_app, chord),
         "database" => database_modal_for_key(sid_app, chord),
         "system" => system_modal_for_key(sid_app, chord),
+        "network" => network_modal_for_key(sid_app, chord),
         _ => None,
     }
+}
+
+/// Network-tab modal opener. `Enter` on a focused interface opens the
+/// read-only detail modal; `E` is reserved for the future edit flow and
+/// currently no-ops (the widget itself emits a stub action that the
+/// wire layer toasts).
+fn network_modal_for_key(
+    sid_app: &SidApp,
+    chord: sid_core::event::KeyChord,
+) -> Option<sid_widgets::ModalSpec> {
+    use crossterm::event::KeyCode;
+    use sid_widgets::{Field, ModalSpec};
+    if chord.code != KeyCode::Enter {
+        return None;
+    }
+    // Read the currently-selected interface off the Network widget.
+    let active = sid_app.app.tabs().active();
+    let net = active
+        .layout
+        .iter_widgets()
+        .next()
+        .and_then(|w| w.as_any().downcast_ref::<sid_widgets::NetworkWidget>())?;
+    if net.focused_pane_label() != "Interfaces" {
+        return None;
+    }
+    let iface = net.interfaces().selected_row()?;
+
+    let addrs = if iface.addrs.is_empty() {
+        "(none)".to_string()
+    } else {
+        iface.addrs.join(", ")
+    };
+    let fields = vec![
+        Field::Display {
+            label: "name".into(),
+            body: iface.name.clone(),
+        },
+        Field::Display {
+            label: "status".into(),
+            body: if iface.is_up { "up" } else { "down" }.into(),
+        },
+        Field::Display {
+            label: "addresses".into(),
+            body: addrs,
+        },
+        Field::Display {
+            label: "RX bytes".into(),
+            body: iface.rx_bytes.to_string(),
+        },
+        Field::Display {
+            label: "TX bytes".into(),
+            body: iface.tx_bytes.to_string(),
+        },
+    ];
+    Some(
+        ModalSpec::new(
+            format!("network.interface_detail:{}", iface.name),
+            format!("Interface: {}", iface.name),
+            fields,
+        )
+        .with_help("Edit (E) coming soon — read-only for now. Esc to close."),
+    )
 }
 
 /// Workspaces-tab modal opener. `N` creates, `A` adds a sub-repo to the
@@ -7222,6 +7285,7 @@ mod tests {
                 is_up: true,
             }],
             captured_at_unix_secs: 1,
+            default_route_iface: None,
         }
     }
 

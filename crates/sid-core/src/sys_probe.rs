@@ -55,6 +55,9 @@ pub struct SysSnapshot {
     pub listening_ports: Vec<ListeningPort>,
     /// Network interfaces captured at this tick.
     pub interfaces: Vec<NetInterface>,
+    /// Name of the interface holding the default route at probe time, if
+    /// any. Used by the Network tab to sort the primary WAN first.
+    pub default_route_iface: Option<String>,
     /// Time the snapshot was assembled, seconds since UNIX epoch.
     /// `0` for snapshots produced before the clock was readable (effectively
     /// only the default constructor's output).
@@ -242,6 +245,12 @@ fn collect_snapshot(provider: &Arc<Mutex<dyn SysProvider>>) -> Result<SysSnapsho
     let processes = guard.list_processes().map_err(SysProbeError::Sys)?;
     let listening_ports = guard.list_listening_ports().map_err(SysProbeError::Sys)?;
     let interfaces = guard.list_interfaces().map_err(SysProbeError::Sys)?;
+    // default_route_iface_name is best-effort: Err collapses to None so the
+    // sort falls back to alphabetical instead of bubbling the error up.
+    let default_route_iface = guard.default_route_iface_name().unwrap_or_else(|e| {
+        tracing::debug!("default_route_iface_name failed: {e}");
+        None
+    });
     let captured_at_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -250,6 +259,7 @@ fn collect_snapshot(provider: &Arc<Mutex<dyn SysProvider>>) -> Result<SysSnapsho
         processes,
         listening_ports,
         interfaces,
+        default_route_iface,
         captured_at_unix_secs,
     })
 }

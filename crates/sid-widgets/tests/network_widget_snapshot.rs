@@ -61,6 +61,7 @@ fn fixture_snapshot() -> SysSnapshot {
             },
         ],
         captured_at_unix_secs: 1_700_000_500,
+        default_route_iface: None,
     }
 }
 

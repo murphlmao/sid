@@ -45,6 +45,7 @@ fn snap_with_one_port() -> SysSnapshot {
             is_up: true,
         }],
         captured_at_unix_secs: 1_700_000_000,
+        default_route_iface: None,
     }
 }
 

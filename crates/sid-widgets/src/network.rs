@@ -314,7 +314,8 @@ impl NetworkWidget {
     pub fn apply_snapshot(&mut self, snap: sid_core::sys_probe::SysSnapshot) {
         self.ports.set_data(snap.listening_ports);
         self.procs.set_data(snap.processes);
-        self.ifs.set_data(snap.interfaces);
+        self.ifs
+            .set_data_with_default_route(snap.interfaces, snap.default_route_iface.as_deref());
     }
 
     /// Cycle focus forward (Tab).
@@ -701,10 +702,12 @@ impl Widget for NetworkWidget {
 
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
-            FooterHint::new("K", "kill"),
             FooterHint::new("/", "filter"),
-            FooterHint::new("R", "refresh"),
+            FooterHint::new("s", "sort"),
+            FooterHint::new("K", "kill"),
+            FooterHint::new("Enter", "detail"),
             FooterHint::new("Tab", "pane"),
+            FooterHint::new("R", "refresh"),
         ]
     }
 
@@ -714,7 +717,7 @@ impl Widget for NetworkWidget {
         // wire.rs body keeps using its own summary text in the meantime.
     }
 
-    fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
+    fn handle_event(&mut self, ev: &Event, ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         let Event::Key(chord) = ev else {
             return EventOutcome::Bubble;
@@ -806,6 +809,18 @@ impl Widget for NetworkWidget {
                 if let Some(pid) = self.focused_pid() {
                     self.kill_modal.open(pid);
                 }
+                EventOutcome::Consumed
+            }
+            KeyCode::Enter
+                if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
+            {
+                ctx.emit_action("network.interface_detail");
+                EventOutcome::Consumed
+            }
+            KeyCode::Char('E')
+                if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
+            {
+                ctx.emit_action("network.interface_edit_stub");
                 EventOutcome::Consumed
             }
             KeyCode::Char('k') | KeyCode::Up => {

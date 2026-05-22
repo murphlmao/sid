@@ -88,14 +88,17 @@ fn database_footer_hints() {
 fn network_footer_hints() {
     let w = NetworkWidget::new();
     let hints = w.footer_hint();
-    assert_hint(&hints, "K", "kill");
     assert_hint(&hints, "/", "filter");
-    assert_hint(&hints, "R", "refresh");
+    assert_hint(&hints, "s", "sort");
+    assert_hint(&hints, "K", "kill");
+    assert_hint(&hints, "Enter", "detail");
     assert_hint(&hints, "Tab", "pane");
+    assert_hint(&hints, "R", "refresh");
     assert_eq!(
         hints.len(),
-        4,
-        "NetworkWidget should expose exactly 4 footer hints"
+        6,
+        "NetworkWidget should expose exactly 6 footer hints (filter / sort \
+         / kill / detail / pane / refresh)"
     );
 }
 
