@@ -33,10 +33,11 @@ pub mod tools;
 use std::path::PathBuf;
 
 use rmcp::{
+    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ProtocolVersion, ServerCapabilities, ServerInfo},
     schemars::{self, JsonSchema},
-    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
+    tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
 
@@ -191,9 +192,10 @@ impl SidMcp {
         &self,
         Parameters(p): Parameters<FindPubItemParams>,
     ) -> Result<String, McpError> {
-        let hits = tools::find_pub_item::run(&self.workspace_root, &p.name, p.crate_name.as_deref())
-            .await
-            .map_err(|e| McpError::internal_error(format!("find_pub_item: {e}"), None))?;
+        let hits =
+            tools::find_pub_item::run(&self.workspace_root, &p.name, p.crate_name.as_deref())
+                .await
+                .map_err(|e| McpError::internal_error(format!("find_pub_item: {e}"), None))?;
         to_json_string(&hits)
     }
 
@@ -272,9 +274,13 @@ impl SidMcp {
         &self,
         Parameters(p): Parameters<CriterionCompareParams>,
     ) -> Result<String, McpError> {
-        let c = tools::criterion::run(&self.workspace_root, p.crate_name.as_deref(), p.threshold_pct)
-            .await
-            .map_err(|e| McpError::internal_error(format!("criterion_compare: {e}"), None))?;
+        let c = tools::criterion::run(
+            &self.workspace_root,
+            p.crate_name.as_deref(),
+            p.threshold_pct,
+        )
+        .await
+        .map_err(|e| McpError::internal_error(format!("criterion_compare: {e}"), None))?;
         to_json_string(&c)
     }
 }
@@ -308,9 +314,12 @@ impl ServerHandler for SidMcp {
 /// Convenience entry point for `sid mcp` subcommand: serve over stdio
 /// until the client disconnects.
 pub async fn run_stdio(workspace_root: PathBuf) -> Result<(), SidMcpError> {
-    use rmcp::{transport::stdio, ServiceExt};
+    use rmcp::{ServiceExt, transport::stdio};
     let server = SidMcp::new(workspace_root);
-    let service = server.serve(stdio()).await.map_err(SidMcpError::from_init)?;
+    let service = server
+        .serve(stdio())
+        .await
+        .map_err(SidMcpError::from_init)?;
     service.waiting().await.map_err(SidMcpError::from_run)?;
     Ok(())
 }

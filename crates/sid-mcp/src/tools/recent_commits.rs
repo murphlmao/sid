@@ -27,7 +27,12 @@ pub async fn run(
     count: u32,
 ) -> Result<Vec<Commit>, SidMcpError> {
     if let Some(c) = crate_name {
-        if !workspace_root.join("crates").join(c).join("Cargo.toml").exists() {
+        if !workspace_root
+            .join("crates")
+            .join(c)
+            .join("Cargo.toml")
+            .exists()
+        {
             return Err(SidMcpError::UnknownCrate(c.to_string()));
         }
     }

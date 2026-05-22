@@ -420,19 +420,10 @@ impl AnimationView {
     }
 
     fn build_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
-        let mut rows: Vec<Line<'static>> = Vec::with_capacity(FIELD_COUNT + 6);
-
-        rows.push(
-            Line::from("Animation".to_string()).style(
-                Style::default()
-                    .fg(theme.foreground.into())
-                    .add_modifier(Modifier::BOLD),
-            ),
-        );
-        rows.push(Line::from(
-            "-----------------------------------------".to_string(),
-        ));
-
+        let mut rows: Vec<Line<'static>> = Vec::with_capacity(FIELD_COUNT + 4);
+        // The outer Block already renders " Animation " in its title bar.
+        // The body just lists fields — no duplicate heading.
+        let _ = theme;
         let field_rows = [
             (
                 AnimationField::Enabled,

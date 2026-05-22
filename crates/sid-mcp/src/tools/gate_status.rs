@@ -40,7 +40,10 @@ pub struct GateStatus {
 ///
 /// NOTE: this is a best-effort *read* of cached state. The canonical "run the
 /// gate" entry point is the `/sid-gate` skill in the `sid-testing` plugin.
-pub async fn run(workspace_root: &Path, crate_name: Option<&str>) -> Result<GateStatus, SidMcpError> {
+pub async fn run(
+    workspace_root: &Path,
+    crate_name: Option<&str>,
+) -> Result<GateStatus, SidMcpError> {
     let log_dir = workspace_root.join("target/gate-logs");
     let scope = crate_name.unwrap_or("workspace").to_string();
 
@@ -161,11 +164,17 @@ mod tests {
 
     #[test]
     fn classify_clippy_with_error_is_fail() {
-        assert_eq!(classify_gate_log("clippy", "error: unused variable"), "FAIL");
+        assert_eq!(
+            classify_gate_log("clippy", "error: unused variable"),
+            "FAIL"
+        );
     }
     #[test]
     fn classify_clippy_with_only_warning_is_warn() {
-        assert_eq!(classify_gate_log("clippy", "warning: needless_collect"), "WARN");
+        assert_eq!(
+            classify_gate_log("clippy", "warning: needless_collect"),
+            "WARN"
+        );
     }
     #[test]
     fn classify_clippy_empty_is_pass() {
@@ -173,15 +182,24 @@ mod tests {
     }
     #[test]
     fn classify_test_failed_is_fail() {
-        assert_eq!(classify_gate_log("test", "test result: FAILED. 1 passed; 1 failed"), "FAIL");
+        assert_eq!(
+            classify_gate_log("test", "test result: FAILED. 1 passed; 1 failed"),
+            "FAIL"
+        );
     }
     #[test]
     fn classify_test_ok_is_pass() {
-        assert_eq!(classify_gate_log("test", "test result: ok. 847 passed; 0 failed"), "PASS");
+        assert_eq!(
+            classify_gate_log("test", "test result: ok. 847 passed; 0 failed"),
+            "PASS"
+        );
     }
     #[test]
     fn classify_fmt_with_diff_is_fail() {
-        assert_eq!(classify_gate_log("fmt", "Diff in src/foo.rs at line 42"), "FAIL");
+        assert_eq!(
+            classify_gate_log("fmt", "Diff in src/foo.rs at line 42"),
+            "FAIL"
+        );
     }
 
     #[tokio::test]

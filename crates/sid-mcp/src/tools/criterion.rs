@@ -60,7 +60,12 @@ pub async fn run(
     }
 
     if let Some(c) = crate_name {
-        if !workspace_root.join("crates").join(c).join("Cargo.toml").exists() {
+        if !workspace_root
+            .join("crates")
+            .join(c)
+            .join("Cargo.toml")
+            .exists()
+        {
             return Err(SidMcpError::UnknownCrate(c.to_string()));
         }
     }
@@ -177,8 +182,16 @@ mod tests {
         let bench_dir = root.join("target/criterion/faster_bench");
         std::fs::create_dir_all(bench_dir.join("base")).unwrap();
         std::fs::create_dir_all(bench_dir.join("new")).unwrap();
-        std::fs::write(bench_dir.join("base/estimates.json"), r#"{"mean":{"point_estimate":100.0}}"#).unwrap();
-        std::fs::write(bench_dir.join("new/estimates.json"), r#"{"mean":{"point_estimate":80.0}}"#).unwrap();
+        std::fs::write(
+            bench_dir.join("base/estimates.json"),
+            r#"{"mean":{"point_estimate":100.0}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            bench_dir.join("new/estimates.json"),
+            r#"{"mean":{"point_estimate":80.0}}"#,
+        )
+        .unwrap();
 
         let r = run(root, None, 10.0).await.unwrap();
         // -20% improvement; not a regression.

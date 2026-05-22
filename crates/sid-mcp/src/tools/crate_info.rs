@@ -96,7 +96,13 @@ pub async fn run(workspace_root: &Path, name: &str) -> Result<CrateInfo, SidMcpE
 fn is_pub_item_decl(trimmed: &str) -> bool {
     // Skip `pub use`, `pub mod`, `pub const`, `pub static` — they're not
     // the same shape of "API surface" CLAUDE.md cares about.
-    for prefix in ["pub fn ", "pub struct ", "pub trait ", "pub enum ", "pub async fn "] {
+    for prefix in [
+        "pub fn ",
+        "pub struct ",
+        "pub trait ",
+        "pub enum ",
+        "pub async fn ",
+    ] {
         if trimmed.starts_with(prefix) {
             return true;
         }
@@ -141,7 +147,11 @@ mod tests {
         let root = tmp.path();
         let cdir = root.join("crates/example");
         std::fs::create_dir_all(cdir.join("src")).unwrap();
-        std::fs::write(cdir.join("Cargo.toml"), "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n").unwrap();
+        std::fs::write(
+            cdir.join("Cargo.toml"),
+            "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
         std::fs::write(
             cdir.join("src/lib.rs"),
             "pub fn one() {}\npub struct Two {}\n\n#[test]\nfn t1() {}\n#[tokio::test]\nasync fn t2() {}\n",
@@ -165,7 +175,11 @@ mod tests {
         let root = tmp.path();
         let cdir = root.join("crates/sid-store");
         std::fs::create_dir_all(cdir.join("src")).unwrap();
-        std::fs::write(cdir.join("Cargo.toml"), "[package]\nname=\"sid-store\"\nversion=\"0.0.1\"\nedition=\"2024\"\n").unwrap();
+        std::fs::write(
+            cdir.join("Cargo.toml"),
+            "[package]\nname=\"sid-store\"\nversion=\"0.0.1\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
         std::fs::write(cdir.join("src/lib.rs"), "").unwrap();
 
         let info = run(root, "sid-store").await.unwrap();
