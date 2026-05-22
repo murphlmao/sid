@@ -491,11 +491,7 @@ pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> Str
 /// let s = render_to_string_with_styles(&w, 40, 6);
 /// assert!(s.contains("STYLES:"));
 /// ```
-pub fn render_to_string_with_styles(
-    widget: &SettingsWidget,
-    width: u16,
-    height: u16,
-) -> String {
+pub fn render_to_string_with_styles(widget: &SettingsWidget, width: u16, height: u16) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier};

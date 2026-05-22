@@ -16,10 +16,10 @@ use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
 use sid_widgets::settings::db_path::DbPathView;
 use sid_widgets::settings::keybind_editor::KeybindEditorView;
 use sid_widgets::settings::quick_actions::QuickActionsView;
-use sid_widgets::settings::{render_to_string, render_to_string_with_styles};
 use sid_widgets::settings::reset::ResetView;
 use sid_widgets::settings::theme_picker::ThemePickerView;
 use sid_widgets::settings::workspace_roots::WorkspaceRootsView;
+use sid_widgets::settings::{render_to_string, render_to_string_with_styles};
 use sid_widgets::{SettingsCategory, SettingsWidget};
 use tempfile::tempdir;
 

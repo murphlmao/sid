@@ -78,13 +78,7 @@ impl SystemctlCmdClient {
         //      collide with our raw-mode input. We surface SudoRequired as
         //      a toast and let the user re-run via their DE's polkit agent.
         let out = Command::new(&self.systemctl_path)
-            .args([
-                bus_flag,
-                "--no-pager",
-                "--no-ask-password",
-                action,
-                unit,
-            ])
+            .args([bus_flag, "--no-pager", "--no-ask-password", action, unit])
             .output()
             .map_err(|e| SystemctlError::Io(format!("spawn systemctl: {e}")))?;
         if out.status.success() {

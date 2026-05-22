@@ -595,8 +595,7 @@ mod tests {
         use sid_store::{OpenStore, RedbStore};
         use tempfile::tempdir;
         let d = tempdir().unwrap();
-        let store: Arc<dyn Store> =
-            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let store: Arc<dyn Store> = Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
         let v = AnimationView::with_store(AnimationConfig::default(), store);
         assert!(v.has_store());
     }
@@ -613,8 +612,7 @@ mod tests {
         use sid_store::{OpenStore, RedbStore};
         use tempfile::tempdir;
         let d = tempdir().unwrap();
-        let store: Arc<dyn Store> =
-            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let store: Arc<dyn Store> = Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
         let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
         let out = v.flush_via_embedded_store().unwrap();
         assert!(out, "flush with embedded store must return Ok(true)");
@@ -632,8 +630,7 @@ mod tests {
         use sid_store::{OpenStore, RedbStore};
         use tempfile::tempdir;
         let d = tempdir().unwrap();
-        let store: Arc<dyn Store> =
-            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let store: Arc<dyn Store> = Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
         let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
         // Mutate something first so dirty != false.
         v.focus_next(); // Density
@@ -647,10 +644,7 @@ mod tests {
         assert_eq!(out, EventOutcome::Consumed);
         assert!(!v.is_dirty(), "S press should clear the dirty flag");
         let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
-        assert!(
-            got.is_some(),
-            "S press should have written the setting key"
-        );
+        assert!(got.is_some(), "S press should have written the setting key");
     }
 
     #[test]
@@ -662,8 +656,7 @@ mod tests {
         use sid_store::{OpenStore, RedbStore};
         use tempfile::tempdir;
         let d = tempdir().unwrap();
-        let store: Arc<dyn Store> =
-            Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
+        let store: Arc<dyn Store> = Arc::new(RedbStore::open(&d.path().join("anim.redb")).unwrap());
         let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
