@@ -4907,13 +4907,13 @@ mod tests {
         }
     }
 
-    /// `build_app` registers 14 actions (8 named + 6 jump).
+    /// `build_app` registers 15 actions (9 named + 6 jump).
     #[test]
     fn build_app_registers_expected_actions() {
         let app = build_app(None, vec![]);
-        // 8 named + 6 jump actions
+        // 9 named (added tab.close in branch #1) + 6 jump actions
         let all: Vec<_> = app.actions().all().collect();
-        assert_eq!(all.len(), 14, "expected 14 actions, got {}", all.len());
+        assert_eq!(all.len(), 15, "expected 15 actions, got {}", all.len());
     }
 
     /// start_tab with "workspaces" ID stays at index 0.
