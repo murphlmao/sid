@@ -186,13 +186,19 @@ impl SysProbe {
     /// to all subscribers. Designed to be spawned on a Tokio task:
     ///
     /// ```ignore
-    /// tokio::spawn(async move { probe.run().await });
+    /// let probe = std::sync::Arc::new(probe);
+    /// let probe_for_task = std::sync::Arc::clone(&probe);
+    /// tokio::spawn(async move { probe_for_task.run().await });
     /// ```
+    ///
+    /// Takes `&self` so the caller can subscribe to the broadcast channel
+    /// from the same `Arc<SysProbe>` that drives the loop, and so each
+    /// subscriber receives the snapshots the loop actually emits.
     ///
     /// Returns only when the spawned task is cancelled — `run` itself never
     /// returns `Ok(())`. The `Err` arm is reserved for future infrastructure
     /// errors (none reachable today).
-    pub async fn run(self) {
+    pub async fn run(&self) {
         let mut interval = tokio::time::interval(self.interval);
         // Skip missed ticks rather than catching up; sysinfo poll loops
         // should not "burst" after a long sleep.
