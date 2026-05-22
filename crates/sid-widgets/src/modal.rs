@@ -402,6 +402,60 @@ impl ModalSpec {
         }
     }
 
+    /// Cycle the value of the focused [`Field::Choice`] or flip the focused
+    /// [`Field::Toggle`]. `dir > 0` advances forward, `dir < 0` goes
+    /// backward, `dir == 0` is a no-op. Non-value fields (Text / Password /
+    /// Picker / Display) and an empty modal are also no-ops.
+    ///
+    /// Routed to from [`route_key_to_modal`] on Left/Right arrow keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::modal::{Field, ModalSpec};
+    ///
+    /// let mut m = ModalSpec::new("id", "t", vec![Field::Choice {
+    ///     label: "k".into(),
+    ///     options: vec!["a".into(), "b".into()],
+    ///     selected: 0,
+    /// }]);
+    /// m.cycle_focused_value(1);
+    /// if let Field::Choice { selected, .. } = &m.fields[0] {
+    ///     assert_eq!(*selected, 1);
+    /// }
+    /// ```
+    pub fn cycle_focused_value(&mut self, dir: i8) {
+        if dir == 0 {
+            return;
+        }
+        let Some(field) = self.fields.get_mut(self.focus) else {
+            return;
+        };
+        match field {
+            Field::Choice {
+                options, selected, ..
+            } => {
+                if options.is_empty() {
+                    return;
+                }
+                let n = options.len();
+                let s = *selected;
+                *selected = if dir > 0 {
+                    (s + 1) % n
+                } else {
+                    (s + n - 1) % n
+                };
+            }
+            Field::Toggle { value, .. } => {
+                *value = !*value;
+            }
+            Field::Text { .. }
+            | Field::Password { .. }
+            | Field::Picker { .. }
+            | Field::Display { .. } => {}
+        }
+    }
+
     /// Collect all field values into a `(label, FieldValue)` Vec for the
     /// submit handler. Order matches the field declaration order.
     ///

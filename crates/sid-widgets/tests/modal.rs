@@ -184,3 +184,136 @@ fn snapshot_all_five_field_types_mixed_focus() {
     assert!(!s.contains("hunter2"), "password leaked:\n{s}");
     insta::assert_snapshot!("modal_all_field_types", s);
 }
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 4 — ModalSpec::cycle_focused_value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cycle_focused_value_advances_choice_forward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(1);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 1);
+    } else {
+        panic!("expected Choice");
+    }
+}
+
+#[test]
+fn cycle_focused_value_choice_wraps_backward() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(-1);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 2);
+    } else {
+        panic!("expected Choice");
+    }
+}
+
+#[test]
+fn cycle_focused_value_toggle_flips() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Toggle {
+            label: "on".into(),
+            value: false,
+        }],
+    );
+    m.cycle_focused_value(1);
+    if let Field::Toggle { value, .. } = &m.fields[0] {
+        assert!(*value);
+    } else {
+        panic!("expected Toggle");
+    }
+    m.cycle_focused_value(-1);
+    if let Field::Toggle { value, .. } = &m.fields[0] {
+        assert!(!*value);
+    } else {
+        panic!("expected Toggle");
+    }
+}
+
+#[test]
+fn cycle_focused_value_text_is_noop() {
+    let mut m = ModalSpec::new("id", "t", vec![text("n", "hello")]);
+    m.cycle_focused_value(1);
+    if let Field::Text { value, .. } = &m.fields[0] {
+        assert_eq!(value, "hello");
+    } else {
+        panic!("expected Text");
+    }
+}
+
+#[test]
+fn cycle_focused_value_on_empty_modal_is_noop() {
+    let mut m = ModalSpec::new("id", "t", vec![]);
+    m.cycle_focused_value(1);
+    assert!(m.fields.is_empty());
+}
+
+#[test]
+fn cycle_focused_value_zero_dir_is_noop() {
+    let mut m = ModalSpec::new(
+        "id",
+        "t",
+        vec![Field::Choice {
+            label: "c".into(),
+            options: vec!["a".into(), "b".into()],
+            selected: 0,
+        }],
+    );
+    m.cycle_focused_value(0);
+    if let Field::Choice { selected, .. } = &m.fields[0] {
+        assert_eq!(*selected, 0);
+    }
+}
+
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn cycle_choice_then_reverse_is_identity(
+        n_options in 2usize..10,
+        start in 0usize..10,
+        steps in 0usize..50,
+    ) {
+        let start = start % n_options;
+        let opts: Vec<String> = (0..n_options).map(|i| format!("o{i}")).collect();
+        let mut m = ModalSpec::new(
+            "id",
+            "t",
+            vec![Field::Choice {
+                label: "k".into(),
+                options: opts,
+                selected: start,
+            }],
+        );
+        for _ in 0..steps {
+            m.cycle_focused_value(1);
+        }
+        for _ in 0..steps {
+            m.cycle_focused_value(-1);
+        }
+        if let Field::Choice { selected, .. } = &m.fields[0] {
+            prop_assert_eq!(*selected, start);
+        }
+    }
+}
