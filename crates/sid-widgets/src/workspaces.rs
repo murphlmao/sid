@@ -1436,17 +1436,13 @@ impl WorkspacesWidget {
         if workspaces.is_empty() {
             let body = vec![
                 Line::from(Span::styled(
-                    "no workspaces registered yet",
+                    "no workspaces yet — press N to add one",
                     Style::default().fg(theme.muted.into()),
                 )),
                 Line::from(Span::raw("")),
                 Line::from(Span::styled(
-                    "  sid workspace add /path/to/repo",
+                    "  or, from a shell: sid workspace add /path/to/repo",
                     Style::default().fg(theme.foreground.into()),
-                )),
-                Line::from(Span::styled(
-                    "  (or put repos under ~/vcs/)",
-                    Style::default().fg(theme.muted.into()),
                 )),
             ];
             frame.render_widget(Paragraph::new(body).block(block), rect);

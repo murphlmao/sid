@@ -3,10 +3,10 @@ source: crates/sid-widgets/tests/workspaces_render.rs
 expression: s
 ---
 ┌ Workspaces ──────────┐┌ Branches ────────────────────────────────────────────┐
-│no workspaces register││(no branches loaded — select a workspace)             │
+│no workspaces yet — pr││(no branches loaded — select a workspace)             │
 │                      ││                                                      │
-│  sid workspace add /p││                                                      │
-│  (or put repos under ││                                                      │
+│  or, from a shell: si││                                                      │
+│                      ││                                                      │
 │                      ││                                                      │
 │                      ││                                                      │
 │                      ││                                                      │
