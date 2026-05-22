@@ -51,6 +51,7 @@ impl SystemctlCmdClient {
             .args([
                 bus_flag,
                 "--no-pager",
+                "--no-ask-password",
                 "--plain",
                 "--no-legend",
                 "list-units",
@@ -69,8 +70,21 @@ impl SystemctlCmdClient {
 
     fn run_action(&self, bus: UnitBus, unit: &str, action: &str) -> Result<(), SystemctlError> {
         let bus_flag = bus_flag(bus);
+        // `--no-ask-password` makes systemctl/polkit return the auth-required
+        // error immediately instead of starting an interactive password agent.
+        // Critical for two reasons:
+        //   1. Tests against a real system bus don't block on a sudo prompt.
+        //   2. The TUI owns the terminal; a polkit ttyagent prompt would
+        //      collide with our raw-mode input. We surface SudoRequired as
+        //      a toast and let the user re-run via their DE's polkit agent.
         let out = Command::new(&self.systemctl_path)
-            .args([bus_flag, "--no-pager", action, unit])
+            .args([
+                bus_flag,
+                "--no-pager",
+                "--no-ask-password",
+                action,
+                unit,
+            ])
             .output()
             .map_err(|e| SystemctlError::Io(format!("spawn systemctl: {e}")))?;
         if out.status.success() {
@@ -178,8 +192,9 @@ impl SystemctlClient for SystemctlCmdClient {
 
     fn status(&self, bus: UnitBus, unit: &str) -> Result<SystemUnit, SystemctlError> {
         let bus_flag = bus_flag(bus);
+        // See note on `run_action` for why `--no-ask-password` is binding.
         let out = Command::new(&self.systemctl_path)
-            .args([bus_flag, "--no-pager", "status", unit])
+            .args([bus_flag, "--no-pager", "--no-ask-password", "status", unit])
             .output()
             .map_err(|e| SystemctlError::Io(format!("spawn systemctl: {e}")))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
