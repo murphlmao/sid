@@ -1756,10 +1756,12 @@ fn ssh_new_modal() -> sid_widgets::ModalSpec {
 
 /// Build the "Edit Host" modal pre-filled with the host's current values.
 fn ssh_edit_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
+    use sid_store::SshAuthKind;
     use sid_widgets::{Field, ModalSpec};
-    let auth_idx = match host.identity_file.as_deref() {
-        Some(_) => 0, // Key
-        None => 2,    // Agent (best guess; user can change)
+    let auth_idx = match host.auth_kind {
+        SshAuthKind::Key => 0,
+        SshAuthKind::Password => 1,
+        SshAuthKind::Agent => 2,
     };
     ModalSpec::new(
         format!("ssh.edit:{}", host.alias),
@@ -2776,7 +2778,7 @@ fn submit_ssh_new(
     let user = string_value(values, "user").unwrap_or_default();
     let port_str = string_value(values, "port").unwrap_or_default();
     let identity_file = string_value(values, "identity_file").filter(|s| !s.is_empty());
-    let _auth = choice_value(values, "auth").unwrap_or_default();
+    let auth_kind = parse_auth_choice(choice_value(values, "auth").as_deref());
     if alias.is_empty() || host.is_empty() || user.is_empty() {
         return Err(anyhow::anyhow!("alias, host, and user are required"));
     }
@@ -2793,6 +2795,7 @@ fn submit_ssh_new(
         last_connected: 0,
         command_history: Vec::new(),
         last_sftp_path: None,
+        auth_kind,
     };
     sid_app
         .store
@@ -2800,6 +2803,19 @@ fn submit_ssh_new(
         .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
     refresh_ssh_widget(sid_app);
     Ok(alias)
+}
+
+/// Translate the modal's `auth` Choice value to a typed [`SshAuthKind`].
+/// Unknown / missing values fall back to [`SshAuthKind::Agent`] — the
+/// most permissive default that works on standard setups without
+/// further user configuration.
+fn parse_auth_choice(choice: Option<&str>) -> sid_store::SshAuthKind {
+    use sid_store::SshAuthKind;
+    match choice {
+        Some("Key") => SshAuthKind::Key,
+        Some("Password") => SshAuthKind::Password,
+        _ => SshAuthKind::Agent,
+    }
 }
 
 /// Handle a `ssh.remove:<alias>` submit. Confirms via the Choice field
@@ -2837,7 +2853,7 @@ fn submit_ssh_edit(
     let user = string_value(values, "user").unwrap_or_default();
     let port_str = string_value(values, "port").unwrap_or_default();
     let identity_file = string_value(values, "identity_file").filter(|s| !s.is_empty());
-    let _auth = choice_value(values, "auth").unwrap_or_default();
+    let auth_kind = parse_auth_choice(choice_value(values, "auth").as_deref());
     if new_alias.is_empty() || host.is_empty() || user.is_empty() {
         return Err(anyhow::anyhow!("alias, host, and user are required"));
     }
@@ -2868,6 +2884,7 @@ fn submit_ssh_edit(
         last_connected,
         command_history,
         last_sftp_path,
+        auth_kind,
     };
     // If alias changed, remove the old key first so we don't leak a dupe.
     if new_alias != alias_in_id {
@@ -4887,6 +4904,8 @@ mod tests {
         assert_eq!(hosts[0].alias, "my-prod");
         assert_eq!(hosts[0].port, 22);
         assert!(hosts[0].identity_file.is_none());
+        // The Auth choice persists — the user picked "Key" above.
+        assert_eq!(hosts[0].auth_kind, sid_store::SshAuthKind::Key);
 
         // The widget should see it too.
         let widget_aliases: Vec<String> = sid_app
@@ -4906,6 +4925,42 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(widget_aliases.contains(&"my-prod".to_string()));
+    }
+
+    /// The `auth` Choice value persists through `ssh.new` for every variant.
+    #[test]
+    fn ssh_new_submit_persists_each_auth_kind() {
+        use sid_store::SshAuthKind;
+        use sid_widgets::{FieldValue, ModalId};
+
+        let cases = [
+            ("Key", SshAuthKind::Key),
+            ("Password", SshAuthKind::Password),
+            ("Agent", SshAuthKind::Agent),
+            // Unknown / missing value falls back to Agent (most permissive).
+            ("WeirdNotAnOption", SshAuthKind::Agent),
+        ];
+        for (label, expected) in cases {
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            let id = ModalId("ssh.new".to_string());
+            let values = vec![
+                ("alias".to_string(), FieldValue::Text(format!("h-{label}"))),
+                ("host".to_string(), FieldValue::Text("h".into())),
+                ("user".to_string(), FieldValue::Text("u".into())),
+                ("port".to_string(), FieldValue::Text("22".into())),
+                (
+                    "identity_file".to_string(),
+                    FieldValue::Picker(String::new()),
+                ),
+                ("auth".to_string(), FieldValue::Choice(label.into())),
+            ];
+            dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+            let hosts = sid_app.store.list_ssh_hosts().unwrap();
+            assert_eq!(
+                hosts[0].auth_kind, expected,
+                "{label} choice should persist as {expected:?}"
+            );
+        }
     }
 
     /// `ssh.new` requires alias, host, user. Empty alias → Err.
@@ -4968,6 +5023,7 @@ mod tests {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
             })
             .unwrap();
         // Refresh the widget to pick up the new host.
@@ -5006,6 +5062,7 @@ mod tests {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
             })
             .unwrap();
         let id = ModalId("ssh.remove:keep".to_string());
@@ -5035,6 +5092,7 @@ mod tests {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
             })
             .unwrap();
         let id = ModalId("ssh.remove:doomed".to_string());
@@ -5246,6 +5304,7 @@ mod tests {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
             })
             .unwrap();
         refresh_ssh_widget(sid_app);

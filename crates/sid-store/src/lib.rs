@@ -714,19 +714,48 @@ pub enum SshHostSource {
     Manual,
 }
 
-/// A registered SSH host. The `alias` is the primary key.
+/// Preferred authentication method for an SSH host.
 ///
-/// # Versioning
-///
-/// On-disk format is `[version: u8][postcard-encoded payload]`. Version 1
-/// records lack the `last_sftp_path` field; the [`decode_ssh_host`] helper
-/// migrates them in-memory by setting that field to `None`. Going forward,
-/// new records are written with version 2.
+/// Used by the SSH widget's connect flow to pick which auth method to try
+/// first. Stored on disk as part of [`SshHost`] (v3+). Older records (v1/v2)
+/// migrate to [`SshAuthKind::Agent`] which works without any explicit
+/// configuration on most modern setups.
 ///
 /// # Examples
 ///
 /// ```
-/// use sid_store::{SshHost, SshHostSource};
+/// use sid_store::SshAuthKind;
+/// assert_eq!(SshAuthKind::default(), SshAuthKind::Agent);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SshAuthKind {
+    /// Public-key auth using the host's `identity_file`.
+    Key,
+    /// Password (prompted at connect time, never stored on disk via this
+    /// field — passwords live in the secrets table).
+    Password,
+    /// SSH agent forwarding. Default for backward-compatible records that
+    /// were written before this field existed.
+    #[default]
+    Agent,
+}
+
+/// A registered SSH host. The `alias` is the primary key.
+///
+/// # Versioning
+///
+/// On-disk format is `[version: u8][postcard-encoded payload]`. Older
+/// versions are migrated forward on read by [`decode_ssh_host`]:
+/// - v1 records lack `last_sftp_path` (added in v2) and `auth_kind`
+///   (added in v3). Both default to `None` / [`SshAuthKind::Agent`].
+/// - v2 records lack `auth_kind` only; same default.
+///
+/// New records are always written at the current version.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource};
 /// let h = SshHost {
 ///     alias: "dev".into(),
 ///     host: "10.0.0.1".into(),
@@ -737,6 +766,7 @@ pub enum SshHostSource {
 ///     last_connected: 0,
 ///     command_history: Vec::new(),
 ///     last_sftp_path: None,
+///     auth_kind: SshAuthKind::Agent,
 /// };
 /// assert_eq!(h.alias, "dev");
 /// ```
@@ -754,15 +784,18 @@ pub struct SshHost {
     /// `F` / SFTP persist). `None` for new hosts and for records written by
     /// pre-v2 versions of sid.
     pub last_sftp_path: Option<String>,
+    /// Preferred authentication method. Persisted from the Add/Edit modal's
+    /// `auth` choice. Records from pre-v3 versions migrate to
+    /// [`SshAuthKind::Agent`].
+    pub auth_kind: SshAuthKind,
 }
 
-/// Current on-disk version for [`SshHost`] records. Bumped to `2` when the
-/// `last_sftp_path` field was added.
-pub const SSH_HOST_VERSION: u8 = 2;
+/// Current on-disk version for [`SshHost`] records.
+/// - v1 → v2: added `last_sftp_path`.
+/// - v2 → v3: added `auth_kind`.
+pub const SSH_HOST_VERSION: u8 = 3;
 
-/// V1 wire layout of [`SshHost`] — kept private so the codec module can
-/// migrate older records on read. Mirrors the field layout that shipped
-/// before `last_sftp_path` was introduced.
+/// V1 wire layout — pre-`last_sftp_path`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SshHostV1 {
     alias: String,
@@ -787,6 +820,38 @@ impl From<SshHostV1> for SshHost {
             last_connected: v.last_connected,
             command_history: v.command_history,
             last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        }
+    }
+}
+
+/// V2 wire layout — pre-`auth_kind`, but with `last_sftp_path`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SshHostV2 {
+    alias: String,
+    host: String,
+    port: u16,
+    user: String,
+    identity_file: Option<String>,
+    source: SshHostSource,
+    last_connected: Epoch,
+    command_history: Vec<String>,
+    last_sftp_path: Option<String>,
+}
+
+impl From<SshHostV2> for SshHost {
+    fn from(v: SshHostV2) -> Self {
+        SshHost {
+            alias: v.alias,
+            host: v.host,
+            port: v.port,
+            user: v.user,
+            identity_file: v.identity_file,
+            source: v.source,
+            last_connected: v.last_connected,
+            command_history: v.command_history,
+            last_sftp_path: v.last_sftp_path,
+            auth_kind: SshAuthKind::Agent,
         }
     }
 }
@@ -805,7 +870,7 @@ impl From<SshHostV1> for SshHost {
 ///
 /// Round-tripping a current (v2) record:
 /// ```
-/// use sid_store::{SshHost, SshHostSource, SSH_HOST_VERSION, decode_ssh_host};
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource, SSH_HOST_VERSION, decode_ssh_host};
 /// use sid_store::codec::encode_versioned;
 /// let h = SshHost {
 ///     alias: "a".into(),
@@ -817,6 +882,7 @@ impl From<SshHostV1> for SshHost {
 ///     last_connected: 0,
 ///     command_history: vec![],
 ///     last_sftp_path: Some("/tmp".into()),
+///     auth_kind: SshAuthKind::Agent,
 /// };
 /// let bytes = encode_versioned(SSH_HOST_VERSION, &h).unwrap();
 /// let back = decode_ssh_host(&bytes).unwrap();
@@ -833,8 +899,13 @@ pub fn decode_ssh_host(bytes: &[u8]) -> Result<SshHost, SidError> {
             Ok(old.into())
         }
         2 => {
-            let cur: SshHost = postcard::from_bytes(rest)
+            let mid: SshHostV2 = postcard::from_bytes(rest)
                 .map_err(|e| SidError::Storage(format!("ssh_host v2 decode: {e}")))?;
+            Ok(mid.into())
+        }
+        3 => {
+            let cur: SshHost = postcard::from_bytes(rest)
+                .map_err(|e| SidError::Storage(format!("ssh_host v3 decode: {e}")))?;
             Ok(cur)
         }
         other => Err(SidError::Storage(format!(

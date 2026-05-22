@@ -104,6 +104,7 @@ fn ssh_j_only_acts_on_focused_pane() {
             last_connected: 0,
             command_history: vec![],
             last_sftp_path: None,
+            auth_kind: sid_store::SshAuthKind::Agent,
         },
         SshHost {
             alias: "bravo".into(),
@@ -115,6 +116,7 @@ fn ssh_j_only_acts_on_focused_pane() {
             last_connected: 0,
             command_history: vec![],
             last_sftp_path: None,
+            auth_kind: sid_store::SshAuthKind::Agent,
         },
     ];
     let state = sid_widgets::ssh::SshState::new(hosts, vec![]);

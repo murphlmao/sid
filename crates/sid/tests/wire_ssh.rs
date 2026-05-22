@@ -1,5 +1,5 @@
 use sid::wire::build_app_full;
-use sid_store::{SshHost, SshHostSource};
+use sid_store::{SshAuthKind, SshHost, SshHostSource};
 
 fn host(alias: &str) -> SshHost {
     SshHost {
@@ -12,6 +12,7 @@ fn host(alias: &str) -> SshHost {
         last_connected: 0,
         command_history: Vec::new(),
         last_sftp_path: None,
+        auth_kind: SshAuthKind::Agent,
     }
 }
 

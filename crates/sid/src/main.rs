@@ -863,6 +863,7 @@ fn handle_ssh_cmd(store: &dyn Store, op: SshOp) -> Result<()> {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: sid_store::SshAuthKind::Agent,
             };
             store
                 .upsert_ssh_host(&h)

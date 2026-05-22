@@ -65,7 +65,7 @@ fn k_opens_kill_modal_targeting_focused_pid() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     assert!(w.kill_modal().is_confirm_sigterm());
     assert_eq!(w.kill_modal().target_pid(), Some(Pid::from_u32(1234)));
 }
@@ -75,7 +75,7 @@ fn y_in_confirm_sigterm_enters_awaiting_term() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     w.handle_event(&key(KeyCode::Char('y')), &mut c);
     assert!(w.kill_modal().is_awaiting_term());
 }
@@ -85,7 +85,7 @@ fn esc_in_modal_closes_it() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     w.handle_event(&key(KeyCode::Esc), &mut c);
     assert!(w.kill_modal().is_closed());
 }
@@ -139,7 +139,7 @@ fn snapshot_modal_confirm_sigterm() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     insta::assert_snapshot!(
         "network_modal_confirm_sigterm",
         render_to_string(&w, 80, 24)
@@ -151,7 +151,7 @@ fn snapshot_modal_awaiting_term() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     // confirm_with_grace uses Instant::now()+grace; using handle_event 'y'
     // implicitly calls confirm() which uses Instant::now(). The state
     // transition to AwaitingTerm depends only on prior state, not the
@@ -165,7 +165,7 @@ fn snapshot_modal_confirm_sigkill() {
     let mut w = NetworkWidget::new();
     w.apply_snapshot(snap_with_one_port());
     let mut c = ctx();
-    w.handle_event(&key(KeyCode::Char('k')), &mut c);
+    w.handle_event(&key(KeyCode::Char('K')), &mut c);
     w.handle_event(&key(KeyCode::Char('y')), &mut c);
     // Drive a deterministic transition via the modal's tick(): force a
     // deadline-elapsed alive scenario. We need direct access through the

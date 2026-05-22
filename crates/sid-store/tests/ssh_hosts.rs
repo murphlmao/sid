@@ -1,4 +1,4 @@
-use sid_store::{OpenStore, RedbStore, SshHost, SshHostSource, Store, now_epoch};
+use sid_store::{OpenStore, RedbStore, SshAuthKind, SshHost, SshHostSource, Store, now_epoch};
 use tempfile::tempdir;
 
 fn host(alias: &str, host: &str, user: &str) -> SshHost {
@@ -12,6 +12,7 @@ fn host(alias: &str, host: &str, user: &str) -> SshHost {
         last_connected: now_epoch(),
         command_history: Vec::new(),
         last_sftp_path: None,
+        auth_kind: SshAuthKind::Agent,
     }
 }
 
@@ -97,6 +98,7 @@ fn list_with_many_hosts_returns_all() {
                 last_connected: 0,
                 command_history: Vec::new(),
                 last_sftp_path: None,
+                auth_kind: SshAuthKind::Agent,
             })
             .unwrap();
     }
@@ -117,6 +119,7 @@ fn long_command_history_round_trips() {
         last_connected: 0,
         command_history: (0..500).map(|i| format!("cmd {i}")).collect(),
         last_sftp_path: None,
+        auth_kind: SshAuthKind::Agent,
     };
     store.upsert_ssh_host(&h).unwrap();
     let back = store.get_ssh_host("a").unwrap().unwrap();
@@ -163,6 +166,62 @@ fn decode_v1_blob_maps_to_v2_with_none_last_sftp_path() {
     assert_eq!(migrated.last_sftp_path, None, "v1 → v2 sets None");
 }
 
+/// A v2 record written before `auth_kind` was added must decode cleanly,
+/// with `auth_kind == Agent` (the migration default).
+#[test]
+fn decode_v2_blob_maps_to_v3_with_agent_auth_kind() {
+    use serde::{Deserialize, Serialize};
+    use sid_store::codec::encode_versioned;
+    use sid_store::{SshHostSource, decode_ssh_host};
+
+    // Mirror of the pre-v3 wire shape (v2 had `last_sftp_path` but no `auth_kind`).
+    #[derive(Serialize, Deserialize)]
+    struct OldSshHostV2 {
+        alias: String,
+        host: String,
+        port: u16,
+        user: String,
+        identity_file: Option<String>,
+        source: SshHostSource,
+        last_connected: i64,
+        command_history: Vec<String>,
+        last_sftp_path: Option<String>,
+    }
+
+    let old = OldSshHostV2 {
+        alias: "v2-host".into(),
+        host: "h".into(),
+        port: 22,
+        user: "u".into(),
+        identity_file: Some("~/.ssh/id_ed25519".into()),
+        source: SshHostSource::Manual,
+        last_connected: 17,
+        command_history: vec!["ls".into()],
+        last_sftp_path: Some("/var/log".into()),
+    };
+    let bytes = encode_versioned(2, &old).unwrap();
+    let migrated = decode_ssh_host(&bytes).unwrap();
+    assert_eq!(migrated.alias, "v2-host");
+    assert_eq!(migrated.last_sftp_path.as_deref(), Some("/var/log"));
+    assert_eq!(
+        migrated.auth_kind,
+        SshAuthKind::Agent,
+        "v2 → v3 sets Agent as the most permissive default"
+    );
+}
+
+/// New (v3) records round-trip through upsert/get with `auth_kind` intact.
+#[test]
+fn upsert_get_round_trips_auth_kind() {
+    let dir = tempdir().unwrap();
+    let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+    let mut h = host("a", "h", "u");
+    h.auth_kind = SshAuthKind::Key;
+    store.upsert_ssh_host(&h).unwrap();
+    let back = store.get_ssh_host("a").unwrap().unwrap();
+    assert_eq!(back.auth_kind, SshAuthKind::Key);
+}
+
 /// New (v2) records round-trip through upsert/get with `last_sftp_path` intact.
 #[test]
 fn upsert_get_round_trips_last_sftp_path() {
@@ -195,6 +254,7 @@ proptest! {
             last_connected: 0,
             command_history: Vec::new(),
             last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
         };
         store.upsert_ssh_host(&entry).unwrap();
         let back = store.get_ssh_host(&alias).unwrap().unwrap();
