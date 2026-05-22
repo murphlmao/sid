@@ -53,11 +53,12 @@ pub async fn run(
             continue;
         }
         // Skip tests and benches dirs — we only care about pub items in src/.
-        if entry
-            .path()
-            .components()
-            .any(|c| matches!(c.as_os_str().to_str(), Some("tests") | Some("benches") | Some("target")))
-        {
+        if entry.path().components().any(|c| {
+            matches!(
+                c.as_os_str().to_str(),
+                Some("tests") | Some("benches") | Some("target")
+            )
+        }) {
             continue;
         }
 
@@ -183,7 +184,11 @@ mod tests {
         let root = tmp.path();
         let cdir = root.join("crates/example");
         std::fs::create_dir_all(cdir.join("src")).unwrap();
-        std::fs::write(cdir.join("Cargo.toml"), "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n").unwrap();
+        std::fs::write(
+            cdir.join("Cargo.toml"),
+            "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
         std::fs::write(
             cdir.join("src/lib.rs"),
             "/// A documented thing.\n/// ```\n/// let x = 1;\n/// ```\npub fn documented() {}\n\npub fn undocumented() {}\n",

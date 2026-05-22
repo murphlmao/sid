@@ -132,7 +132,11 @@ mod tests {
         let root = tmp.path();
         let cdir = root.join("crates/example");
         std::fs::create_dir_all(cdir.join("src")).unwrap();
-        std::fs::write(cdir.join("Cargo.toml"), "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n").unwrap();
+        std::fs::write(
+            cdir.join("Cargo.toml"),
+            "[package]\nname=\"example\"\nversion=\"0.0.1\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
         std::fs::write(
             cdir.join("src/lib.rs"),
             "/// A widget.\npub struct Widget {}\n\npub fn build_widget() {}\n",

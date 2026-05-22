@@ -16,7 +16,7 @@ use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
 use sid_widgets::settings::db_path::DbPathView;
 use sid_widgets::settings::keybind_editor::KeybindEditorView;
 use sid_widgets::settings::quick_actions::QuickActionsView;
-use sid_widgets::settings::render_to_string;
+use sid_widgets::settings::{render_to_string, render_to_string_with_styles};
 use sid_widgets::settings::reset::ResetView;
 use sid_widgets::settings::theme_picker::ThemePickerView;
 use sid_widgets::settings::workspace_roots::WorkspaceRootsView;
@@ -134,4 +134,35 @@ fn snapshot_db_path_focused() {
     ]);
     let s = render_to_string(&w, 80, 12);
     insta::assert_snapshot!("settings_db_path_focused", s);
+}
+
+// ---------------------------------------------------------------------------
+// Composer-level focus snapshots — capture fg/bold so the diff between
+// "categories focused" and "sub-view focused" is visible in insta output.
+// `render_to_string` alone only captures `cell.symbol()` and would not show
+// any change when focus flips.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_categories_focused_with_styles() {
+    let mut w = SettingsWidget::with_categories(vec![
+        SettingsCategory::Theme(theme_view()),
+        SettingsCategory::Reset(ResetView::new()),
+    ]);
+    // Default: categories pane is focused.
+    let s = render_to_string_with_styles(&w, 80, 24);
+    insta::assert_snapshot!("settings_focus_categories_with_styles", s);
+    let _ = &mut w; // silence unused-mut if focus_next API changes
+}
+
+#[test]
+fn snapshot_subview_focused_with_styles() {
+    let mut w = SettingsWidget::with_categories(vec![
+        SettingsCategory::Theme(theme_view()),
+        SettingsCategory::Reset(ResetView::new()),
+    ]);
+    // Flip focus to the sub-view pane.
+    w.toggle_focused_pane();
+    let s = render_to_string_with_styles(&w, 80, 24);
+    insta::assert_snapshot!("settings_focus_subview_with_styles", s);
 }

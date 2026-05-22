@@ -3,8 +3,6 @@ source: crates/sid-widgets/tests/animation_view.rs
 expression: s
 ---
 ┌ Animation ───────────────────────────────────────────────┐
-│Animation                                                 │
-│-----------------------------------------                 │
 │> * Enabled                  [on]                         │
 │  o Density                  30 / 100                     │
 │  o FPS                      8 / 30                       │
@@ -15,6 +13,8 @@ expression: s
 │[ Space/Enter: toggle/cycle ]                             │
 │[ Left/Right: decrement/increment ]                       │
 │[ S: save ]                                               │
+│                                                          │
+│                                                          │
 └──────────────────────────────────────────────────────────┘
 border_top_left: fg=Rgb(74, 74, 96) modifier=NONE
 title_first_char: symbol="A" fg=Rgb(230, 230, 240) modifier=NONE

@@ -464,6 +464,93 @@ pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> Str
     s
 }
 
+/// Render the widget into a fixed test buffer and emit BOTH the symbol grid
+/// AND a parallel style-marker grid that captures fg color + bold per cell.
+/// Used by composer-level snapshots that need to demonstrate the focused-vs-
+/// unfocused border-and-title difference (which [`render_to_string`] doesn't
+/// see because it only writes `cell.symbol()`).
+///
+/// Style markers are single characters chosen for readability in snapshot
+/// diffs:
+/// - ` ` — default / background
+/// - `m` — muted (theme.muted; unfocused borders, subtle text)
+/// - `a` — accent_primary (theme.accent_primary; focused borders)
+/// - `f` — foreground (theme.foreground; ordinary text)
+/// - `o` — other tracked color (everything else with a non-default fg)
+/// - `B` — bold modifier overlaid on the above (uppercase indicates bold)
+///
+/// The output is two blocks separated by a blank line and a `STYLES:` header.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::SettingsWidget;
+/// use sid_widgets::settings::render_to_string_with_styles;
+///
+/// let w = SettingsWidget::with_categories(vec![]);
+/// let s = render_to_string_with_styles(&w, 40, 6);
+/// assert!(s.contains("STYLES:"));
+/// ```
+pub fn render_to_string_with_styles(
+    widget: &SettingsWidget,
+    width: u16,
+    height: u16,
+) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+    use sid_ui::themes::cosmos;
+    let backend = TestBackend::new(width, height);
+    let mut term = Terminal::new(backend).unwrap();
+    let theme = cosmos();
+    term.draw(|f| widget.render_into_frame(f, f.area(), &theme))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // Symbol grid first (unchanged from render_to_string).
+    let mut sym = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            sym.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        sym.push('\n');
+    }
+
+    // Style grid, one char per cell.
+    let muted: Color = theme.muted.into();
+    let accent: Color = theme.accent_primary.into();
+    let fg: Color = theme.foreground.into();
+    let mut styles = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let cell = match buf.cell((x, y)) {
+                Some(c) => c,
+                None => {
+                    styles.push(' ');
+                    continue;
+                }
+            };
+            let bold = cell.modifier.contains(Modifier::BOLD);
+            let base = match cell.fg {
+                c if c == muted => 'm',
+                c if c == accent => 'a',
+                c if c == fg => 'f',
+                Color::Reset => ' ',
+                _ => 'o',
+            };
+            // Bold uppercase, plain lowercase, blank stays blank.
+            styles.push(if bold && base != ' ' {
+                base.to_ascii_uppercase()
+            } else {
+                base
+            });
+        }
+        styles.push('\n');
+    }
+
+    format!("{sym}\nSTYLES:\n{styles}")
+}
+
 impl Default for SettingsWidget {
     fn default() -> Self {
         Self::new()
