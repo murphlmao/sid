@@ -1223,6 +1223,20 @@ impl WorkspacesState {
         self.selected_visible_idx = (self.selected_visible_idx + n - 1) % n;
     }
 
+    /// Whether `path` is currently expanded. Used by callers that want to
+    /// collapse only when expanded (e.g., the Left-arrow handler).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::workspaces::WorkspacesState;
+    /// let s = WorkspacesState::new(vec![]);
+    /// assert!(!s.is_expanded(std::path::Path::new("/nonexistent")));
+    /// ```
+    pub fn is_expanded(&self, path: &std::path::Path) -> bool {
+        self.expanded.contains(path)
+    }
+
     /// Expand or collapse the selected umbrella workspace. No-op on non-umbrella.
     pub fn toggle_expand_selected(&mut self) {
         let path = match self.visible_workspaces().get(self.selected_visible_idx) {
@@ -1851,7 +1865,7 @@ impl Widget for WorkspacesWidget {
         // The widget keeps its state pure; rendering is a TUI-layer concern.
     }
 
-    fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
+    fn handle_event(&mut self, ev: &Event, ctx: &mut WidgetCtx) -> EventOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         if let Event::Key(chord) = ev {
             // Tab / Shift+Tab cycles the focused PANE (Tree ↔ SubView).
@@ -1898,8 +1912,36 @@ impl Widget for WorkspacesWidget {
                         self.state.select_prev();
                         return EventOutcome::Consumed;
                     }
-                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                    (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
+                        // Expand umbrella (or no-op on leaf).
                         self.state.toggle_expand_selected();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
+                        // Collapse only when currently expanded.
+                        if let Some(ws) = self.state.selected_workspace()
+                            && ws.kind == WorkspaceKind::Umbrella
+                            && self.state.is_expanded(&ws.path)
+                        {
+                            self.state.toggle_expand_selected();
+                        }
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        // Leaf repos emit "workspaces.open_detail" so the wire
+                        // layer can build a WorkspaceDetailWidget and push it
+                        // as a new tab (branch #3). Umbrellas keep the
+                        // toggle-expand behavior for muscle memory.
+                        let kind = self.state.selected_workspace().map(|w| w.kind.clone());
+                        match kind {
+                            Some(WorkspaceKind::Umbrella) => {
+                                self.state.toggle_expand_selected();
+                            }
+                            Some(WorkspaceKind::Repo) => {
+                                ctx.emit_action("workspaces.open_detail");
+                            }
+                            None => {}
+                        }
                         return EventOutcome::Consumed;
                     }
                     _ => {}
