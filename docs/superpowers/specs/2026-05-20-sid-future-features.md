@@ -255,6 +255,26 @@ These items came up during the [TUI UX interaction overhaul spec](2026-05-22-tui
 
 ---
 
+### Settings live-apply — remaining sub-views
+
+**What it does.** WorkspaceRoots, KeybindEditor, QuickActions, DbPath, and Reset each grow their own `Outcome` enum and emit it the same way `BehaviorToggles` does. Wire layer dispatches each to the matching `Store::put_*`.
+
+**Why deferred.** Branch #5 of the interaction overhaul shipped BehaviorToggles end-to-end as the proof-of-concept. The remaining five categories follow an identical pattern but each touches a slightly different Store surface (e.g., `WorkspaceRoots` writes the JSON-array setting; `Keybinds` writes the keybind map). Splitting it into a follow-up keeps the substrate branch's scope reviewable.
+
+**v1 hook.** `PendingSettingsOutcome` in `sid-widgets::settings` is the typed queue; new variants get added per sub-view. The wire-layer drain (`apply_pending_settings_outcomes`) already exists — just match on the new variants.
+
+---
+
+### Settings undo ring + `u` chord
+
+**What it does.** Per-session ring buffer (capacity 10, 30-second TTL per entry) of recently-applied setting changes. Each success toast carries `(u: undo)` text; pressing `u` while the head toast is live re-applies the prior value.
+
+**Why deferred.** Branch #5 shipped live-apply without the ring to keep scope focused on the user-reported "settings won't apply" bug. The property test `settings_undo::random_toggle_undo_sequence_preserves_baseline` encodes the contract the ring must satisfy.
+
+**v1 hook.** The toast queue + per-session SidApp state already exist; the ring is a `VecDeque<UndoEntry>` on `SidApp` plus the `u`-chord interceptor in `wire::run_event_loop`. The toast-text marker `(u: undo)` is the head-check trigger.
+
+---
+
 ### Workspace scan-on-demand command-palette action
 
 **What it does.** A `workspaces.scan_now` action in the command palette runs the existing `scan_workspace_root` over user-defined roots and presents discovered repos as a "promote these?" picker.
