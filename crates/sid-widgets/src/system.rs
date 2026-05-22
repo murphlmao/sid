@@ -689,6 +689,18 @@ impl SystemWidget {
         self.journal = j;
     }
 
+    /// Focus the pane that contains the given coordinate.
+    ///
+    /// SystemWidget renders only the focused pane at a time (the strip at the
+    /// top is a label-only switcher, not a 3-pane layout). There is therefore
+    /// no spatial mapping from coordinate to pane on a single click — this
+    /// method is a deliberate no-op so the wire-layer click router can call
+    /// it uniformly across every widget. Pane switching on the System tab is
+    /// done via Tab / Shift+Tab.
+    pub fn focus_at(&mut self, _area: Rect, _col: u16, _row: u16) {
+        // Intentional no-op. See doc comment.
+    }
+
     /// Render the widget into a ratatui [`Frame`]. Used by the insta
     /// snapshot tests and by the future direct-frame plumbing.
     ///

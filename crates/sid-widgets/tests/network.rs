@@ -204,4 +204,60 @@ mod focus {
         w.handle_event(&key(KeyCode::Char('K'), KeyModifiers::SHIFT), &mut c);
         assert!(w.kill_modal().is_confirm_sigterm());
     }
+
+    // -----------------------------------------------------------------------
+    // focus_at — mouse-click pane routing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn focus_at_top_left_focuses_interfaces() {
+        use ratatui::layout::Rect;
+        let mut w = NetworkWidget::new();
+        // Default focus is Ports; click into the sidebar to switch.
+        assert_eq!(w.focus(), NetFocus::Ports);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // Click in the 22-col sidebar (col 5 is well inside).
+        w.focus_at(area, 5, 10);
+        assert_eq!(w.focus(), NetFocus::Interfaces);
+    }
+
+    #[test]
+    fn focus_at_top_right_focuses_ports() {
+        use ratatui::layout::Rect;
+        let mut w = NetworkWidget::new();
+        // Pre-flip focus to Processes so the test proves focus_at moves it.
+        w.focus_next();
+        assert_eq!(w.focus(), NetFocus::Processes);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // col 50 is right of the 22-col sidebar; row 5 is in the top 45%
+        // (45% of 40 = 18).
+        w.focus_at(area, 50, 5);
+        assert_eq!(w.focus(), NetFocus::Ports);
+    }
+
+    #[test]
+    fn focus_at_bottom_right_focuses_processes() {
+        use ratatui::layout::Rect;
+        let mut w = NetworkWidget::new();
+        assert_eq!(w.focus(), NetFocus::Ports);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // col 50 is right of the sidebar; row 30 is past the top 45%.
+        w.focus_at(area, 50, 30);
+        assert_eq!(w.focus(), NetFocus::Processes);
+    }
 }

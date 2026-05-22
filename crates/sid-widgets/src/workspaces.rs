@@ -1342,6 +1342,44 @@ impl WorkspacesWidget {
         self.focused_pane = self.focused_pane.prev();
     }
 
+    /// Focus the pane that contains the given coordinate. No-op when the
+    /// coordinate falls outside `area`.
+    ///
+    /// Layout mirrors [`Self::render_into_frame`]: a 30/70 horizontal split.
+    /// Columns left of the 30% boundary focus [`WsFocus::Tree`]; everything
+    /// else focuses [`WsFocus::SubView`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    /// use sid_widgets::WorkspacesWidget;
+    /// use sid_widgets::workspaces::WsFocus;
+    /// let mut w = WorkspacesWidget::new(vec![], None);
+    /// let area = Rect { x: 0, y: 0, width: 100, height: 24 };
+    /// w.focus_at(area, 80, 5);
+    /// assert_eq!(w.focused_pane(), WsFocus::SubView);
+    /// w.focus_at(area, 5, 5);
+    /// assert_eq!(w.focused_pane(), WsFocus::Tree);
+    /// ```
+    pub fn focus_at(&mut self, area: Rect, col: u16, row: u16) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        let split_col = area.x.saturating_add(area.width.saturating_mul(30) / 100);
+        self.focused_pane = if col < split_col {
+            WsFocus::Tree
+        } else {
+            WsFocus::SubView
+        };
+    }
+
     /// Borrow the inner state.
     pub fn state(&self) -> &WorkspacesState {
         &self.state
@@ -1855,23 +1893,21 @@ impl Widget for WorkspacesWidget {
 
             // Pane-gated routing.
             match self.focused_pane {
-                WsFocus::Tree => {
-                    match (chord.code, chord.mods) {
-                        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                            self.state.select_next();
-                            return EventOutcome::Consumed;
-                        }
-                        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                            self.state.select_prev();
-                            return EventOutcome::Consumed;
-                        }
-                        (KeyCode::Enter, KeyModifiers::NONE) => {
-                            self.state.toggle_expand_selected();
-                            return EventOutcome::Consumed;
-                        }
-                        _ => {}
+                WsFocus::Tree => match (chord.code, chord.mods) {
+                    (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                        self.state.select_next();
+                        return EventOutcome::Consumed;
                     }
-                }
+                    (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                        self.state.select_prev();
+                        return EventOutcome::Consumed;
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        self.state.toggle_expand_selected();
+                        return EventOutcome::Consumed;
+                    }
+                    _ => {}
+                },
                 WsFocus::SubView => {
                     // Route to the active sub-view's handler.
                     let chord = *chord;

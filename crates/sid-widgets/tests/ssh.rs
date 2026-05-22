@@ -145,3 +145,58 @@ fn ssh_border_follows_focus() {
     w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
     assert_eq!(w.focused_pane_label(), "Hosts");
 }
+
+// ---------------------------------------------------------------------------
+// focus_at — mouse-click pane routing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn focus_at_top_left_focuses_hosts() {
+    use ratatui::layout::Rect;
+    let mut w = SshWidget::new();
+    // Pre-flip focus so we can prove `focus_at` mutates back to Hosts.
+    w.focus_next();
+    assert_eq!(w.focused_pane(), SshFocus::Detail);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    // Click well inside the left pane (col 5 of a 40-wide left pane).
+    w.focus_at(area, 5, 3);
+    assert_eq!(w.focused_pane(), SshFocus::Hosts);
+}
+
+#[test]
+fn focus_at_top_right_focuses_detail() {
+    use ratatui::layout::Rect;
+    let mut w = SshWidget::new();
+    assert_eq!(w.focused_pane(), SshFocus::Hosts);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    // Click well inside the right pane (col 80; right pane starts at col 40).
+    w.focus_at(area, 80, 3);
+    assert_eq!(w.focused_pane(), SshFocus::Detail);
+}
+
+#[test]
+fn focus_at_outside_area_is_noop() {
+    use ratatui::layout::Rect;
+    let mut w = SshWidget::new();
+    let area = Rect {
+        x: 10,
+        y: 10,
+        width: 50,
+        height: 20,
+    };
+    let original = w.focused_pane();
+    w.focus_at(area, 5, 5); // left of area.x
+    assert_eq!(w.focused_pane(), original);
+    w.focus_at(area, 200, 5); // right of area.right()
+    assert_eq!(w.focused_pane(), original);
+}
