@@ -343,8 +343,8 @@ async fn main() -> Result<()> {
     // store. Dispatch before opening sid.redb so Claude Code can spawn
     // an MCP session in parallel with a running TUI.
     if let Some(Cmd::Mcp) = cli.cmd {
-        let workspace_root = std::env::current_dir()
-            .context("cannot read current dir for sid mcp")?;
+        let workspace_root =
+            std::env::current_dir().context("cannot read current dir for sid mcp")?;
         sid_mcp::run_stdio(workspace_root)
             .await
             .map_err(|e| anyhow!("sid-mcp: {e}"))?;
@@ -518,12 +518,12 @@ async fn main() -> Result<()> {
         tracing::warn!("hydrate quick-actions failed: {e}");
     }
 
-    // Restore last active tab from the previous session, if any.
-    if let Ok(Some(prev)) = store.current_session() {
-        if let Some(tab_id) = prev.active_tab {
-            let _ = app.tabs_mut().switch_to(&tab_id);
-        }
-    }
+    // Restoration of the previous session's active tab is handled via a
+    // user-facing modal pushed by `wire::maybe_push_resume_modal` below,
+    // after the SidApp is fully constructed. The modal lets the user pick
+    // between resuming the prior tab and starting fresh; the unconditional
+    // auto-restore that used to live here would have made "Start fresh"
+    // unreachable.
 
     // Construct the SysProbe and spawn its polling loop so the Network tab
     // sees fresh snapshots while the TUI runs. We subscribe BEFORE spawning
@@ -573,6 +573,11 @@ async fn main() -> Result<()> {
         toasts: toast::ToastQueue::new(4),
         jobs,
     };
+
+    // Offer the user a resume-or-start-fresh modal if the previous session
+    // was recent enough and had a recorded active tab. No-op when there's no
+    // prior session (e.g. first launch on a fresh store).
+    wire::maybe_push_resume_modal(&mut sid_app);
 
     // Set up terminal. Mouse capture is enabled so the event pump receives
     // wheel scrolls and click events alongside keyboard input; the wire layer

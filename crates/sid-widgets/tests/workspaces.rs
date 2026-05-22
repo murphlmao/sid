@@ -146,4 +146,41 @@ mod focus {
         w.handle_event(&key(KeyCode::Char('r'), KeyModifiers::NONE), &mut c);
         assert!(matches!(w.state().right_pane(), RightPane::Actions(_)));
     }
+
+    // -----------------------------------------------------------------------
+    // focus_at — mouse-click pane routing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn focus_at_top_left_focuses_tree() {
+        use ratatui::layout::Rect;
+        let mut w = WorkspacesWidget::new(vec![], None);
+        // Pre-flip focus so we can prove `focus_at` mutates back to Tree.
+        w.focus_next();
+        assert_eq!(w.focused_pane(), WsFocus::SubView);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 24,
+        };
+        w.focus_at(area, 5, 5);
+        assert_eq!(w.focused_pane(), WsFocus::Tree);
+    }
+
+    #[test]
+    fn focus_at_top_right_focuses_subview() {
+        use ratatui::layout::Rect;
+        let mut w = WorkspacesWidget::new(vec![], None);
+        assert_eq!(w.focused_pane(), WsFocus::Tree);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 24,
+        };
+        // col 80 is in the right 70%.
+        w.focus_at(area, 80, 5);
+        assert_eq!(w.focused_pane(), WsFocus::SubView);
+    }
 }

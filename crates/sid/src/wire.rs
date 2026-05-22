@@ -703,6 +703,107 @@ pub fn save_active_tab(store: &dyn Store, session_id: &str, app: &App) -> SidRes
     store.upsert_session(&sess)
 }
 
+/// Resume-window threshold: a previous session is only offered as a resume
+/// candidate if it ended within this many nanoseconds of "now". 60 minutes,
+/// expressed in nanoseconds because [`sid_store::Epoch`] is wall-clock
+/// nanoseconds since UNIX epoch (see [`sid_store::now_epoch`]).
+pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
+
+/// If the prior session ended within [`RESUME_WINDOW_NS`] (or is still
+/// recorded as running, i.e. `ended_at == None`) AND had a known active
+/// tab, push a `"session.resume"` modal onto the stack so the user can
+/// pick between resuming the tab or starting fresh.
+///
+/// No-op when:
+/// - no prior session exists,
+/// - the session has no `active_tab`, or
+/// - the session ended more than [`RESUME_WINDOW_NS`] in the past.
+///
+/// The submit handler for the pushed modal lives in [`dispatch_modal_submit`]
+/// (key prefix `"session.resume"`).
+///
+/// # Examples
+///
+/// ```no_run
+/// use sid::wire::{build_app, maybe_push_resume_modal, NoopSystemctlClient, NoopTerminalSpawner, SidApp};
+/// use sid::toast::ToastQueue;
+/// use sid_job::JobQueue;
+/// use sid_store::{OpenStore, RedbStore, Store};
+/// use std::path::Path;
+/// use std::sync::Arc;
+///
+/// let store = Arc::new(RedbStore::open(Path::new("/tmp/resume_test.redb")).unwrap());
+/// let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> =
+///     Arc::new(sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>));
+/// let mut sid_app = SidApp {
+///     app: build_app(None, vec![]),
+///     store,
+///     session_id: "sess-1".to_string(),
+///     sys_probe: None,
+///     sys_rx: None,
+///     systemctl: Arc::new(NoopSystemctlClient),
+///     spawner: Arc::new(NoopTerminalSpawner),
+///     postgres: sid_db_clients::PostgresClient::factory(),
+///     sqlite: sid_db_clients::SqliteClient::factory(),
+///     secrets,
+///     animation: sid_core::animation::AnimationConfig::default(),
+///     fx_state: None,
+///     modal_stack: Vec::new(),
+///     pending_submits: Vec::new(),
+///     toasts: ToastQueue::new(4),
+///     jobs: Arc::new(JobQueue::new()),
+/// };
+/// // With a fresh store there's no prior session — no modal is pushed.
+/// maybe_push_resume_modal(&mut sid_app);
+/// assert!(sid_app.modal_stack.is_empty());
+/// ```
+pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
+    use sid_widgets::{Field, ModalSpec};
+    let Ok(Some(prev)) = sid_app.store.current_session() else {
+        return;
+    };
+    let Some(active_tab) = prev.active_tab.clone() else {
+        return;
+    };
+    // Sessions still recorded as "open" (ended_at == None) are also valid
+    // resume candidates — that's the common case where a process exited
+    // without a clean `end_session`.
+    let now = now_epoch();
+    let elapsed_ns: Option<u64> = prev.ended_at.map(|e| now.saturating_sub(e));
+    let recent_enough = match elapsed_ns {
+        None => true,
+        Some(ns) => ns < RESUME_WINDOW_NS,
+    };
+    if !recent_enough {
+        return;
+    }
+    let elapsed_secs = elapsed_ns.map(|ns| ns / 1_000_000_000).unwrap_or(0);
+    let when = if prev.ended_at.is_none() {
+        "(no ended_at; session still recorded as running)".to_string()
+    } else if elapsed_secs == 0 {
+        "(just now)".to_string()
+    } else if elapsed_secs < 60 {
+        format!("({elapsed_secs}s ago)")
+    } else {
+        format!("({}m ago)", elapsed_secs / 60)
+    };
+    let help = format!(
+        "Last tab was '{tab}' {when}. Resume restores the tab; Start fresh keeps the launch default.",
+        tab = active_tab.as_str(),
+    );
+    let modal = ModalSpec::new(
+        format!("session.resume:{}", active_tab.as_str()),
+        "Resume previous session?",
+        vec![Field::Choice {
+            label: "action".into(),
+            options: vec!["Resume".into(), "Start fresh".into()],
+            selected: 0,
+        }],
+    )
+    .with_help(help);
+    sid_app.modal_stack.push(modal);
+}
+
 /// Draw one frame: tab strip on top, active panel body, help bar on bottom,
 /// optional command-palette overlay centred over everything.
 ///
@@ -1351,14 +1452,14 @@ where
         };
 
         // Translate mouse events into synthetic key events (scroll → j/k)
-        // or direct tab switches (click on the tab strip). Other mouse kinds
-        // are dropped for v1. See `route_mouse_event` for the policy.
+        // or direct tab switches (click on the tab strip), and route in-body
+        // left-clicks to the active widget's `focus_at`. Other mouse kinds
+        // are dropped. See `route_mouse_event` for the policy.
         // We rewrite `ev` in place so the rest of the loop treats the result
         // as the originating event.
-        // TODO: route LeftDown to widget for focus-on-click once focus model
-        // is committed (parallel agent's PR).
         let ev = if let SidEvent::Mouse(m) = ev {
-            match route_mouse_event(sid_app, terminal_size_rect(terminal), m) {
+            let full_area = terminal_size_rect(terminal);
+            match route_mouse_event(sid_app, full_area, m) {
                 MouseRouting::Synthesize(chord) => SidEvent::Key(chord),
                 MouseRouting::SwitchToTab(idx) => {
                     if let Some(tab) = sid_app.app.tabs().tabs().get(idx) {
@@ -1368,6 +1469,15 @@ where
                     // Switching the tab is the whole action; tick the loop.
                     continue;
                 }
+                MouseRouting::FocusInBody { col, row } => {
+                    // Body clicks are a no-op when a modal is open — the
+                    // modal owns input and visually covers the body. The
+                    // user dismisses the modal first, then clicks again.
+                    if sid_app.modal_stack.is_empty() {
+                        dispatch_focus_at_for_active_tab(sid_app, full_area, col, row);
+                    }
+                    continue;
+                }
                 MouseRouting::Drop => continue,
             }
         } else {
@@ -1375,14 +1485,23 @@ where
         };
 
         // Route key events. If a modal is open it intercepts everything except
-        // global-quit. Otherwise check per-tab modal triggers; if one fires we
-        // open the modal and swallow the event. Otherwise dispatch normally.
+        // global-quit and global-detach. Otherwise check per-tab modal triggers;
+        // if one fires we open the modal and swallow the event. Otherwise
+        // dispatch normally.
         let mut handled = false;
         if let SidEvent::Key(chord) = ev {
             // Global quit always wins, even with a modal open.
             let is_global_quit = chord.code == crossterm::event::KeyCode::Char('q')
                 && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
-            if !is_global_quit && !sid_app.modal_stack.is_empty() {
+            // Global detach: Ctrl+D spawns a new terminal pointed at the
+            // current tab. Like Ctrl+Q it bypasses modal interception so
+            // the user can detach from a wedged modal too.
+            let is_global_detach = chord.code == crossterm::event::KeyCode::Char('d')
+                && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
+            if is_global_detach {
+                handle_ctrl_d_detach(sid_app);
+                handled = true;
+            } else if !is_global_quit && !sid_app.modal_stack.is_empty() {
                 handled = true;
                 let outcome = {
                     let modal = sid_app
@@ -1420,11 +1539,58 @@ where
     Ok(())
 }
 
+/// Spawn a new external terminal window running `sid --start-tab <active>`.
+///
+/// Triggered by `Ctrl+D` in [`run_event_loop`]. Fire-and-forget — no IPC, no
+/// re-attach. Pushes a [`Toast::success`] on a clean spawn or a [`Toast::error`]
+/// if the spawner couldn't launch (e.g., kitty missing).
+///
+/// The command line is `<current_exe> --start-tab <id>`; `current_exe` falls
+/// back to the literal string `"sid"` if it can't be resolved (the PATH
+/// lookup is then the spawner's problem). The working directory is the
+/// current process's CWD (so the detached window inherits whatever workspace
+/// context the user was in).
+pub fn handle_ctrl_d_detach(sid_app: &mut SidApp) {
+    let tab_id = sid_app.app.tabs().active().id.as_str().to_string();
+    let exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sid".to_string());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Build a shell-safe command line. We single-quote the exe path and tab
+    // id so paths containing spaces (or other unusual characters) survive
+    // through `sh -c "<cmd>"` style spawners.
+    let cmd = format!("{} --start-tab {}", shell_quote(&exe), shell_quote(&tab_id));
+    let req = SpawnRequest { cwd, cmd };
+    match sid_app.spawner.spawn(req) {
+        Ok(()) => {
+            sid_app
+                .toasts
+                .push(Toast::success(format!("detached {tab_id} to new window")));
+        }
+        Err(e) => {
+            sid_app
+                .toasts
+                .push(Toast::error(format!("detach failed: {e}")));
+        }
+    }
+}
+
+/// Wrap `s` in single quotes for safe interpolation into a shell command
+/// line. Embedded single quotes are escaped via `'\''`. Always returns a
+/// non-empty quoted string.
+fn shell_quote(s: &str) -> String {
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{escaped}'")
+}
+
 /// What the mouse-event router decided to do with a raw [`crossterm::event::MouseEvent`].
 ///
-/// The three cases match the policy in [`route_mouse_event`]: scrolls become
+/// The cases match the policy in [`route_mouse_event`]: scrolls become
 /// synthetic key events (so widget lists scroll through their existing j/k
-/// handlers), clicks on the tab strip switch tabs, anything else is dropped.
+/// handlers), clicks on the tab strip switch tabs, clicks inside the body
+/// region become a focus-pane request on the active widget, anything else
+/// is dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseRouting {
     /// Translate the mouse event into a key chord that the rest of the loop
@@ -1432,8 +1598,13 @@ pub enum MouseRouting {
     Synthesize(sid_core::event::KeyChord),
     /// Switch directly to the tab at the given zero-based index.
     SwitchToTab(usize),
-    /// Drop the event silently. v1 routes only scrolls and tab clicks; any
-    /// other mouse kind ends up here.
+    /// Left-click landed inside the per-tab body region. The wire-layer
+    /// dispatches this to the active widget's `focus_at(body_rect, col, row)`
+    /// so the clicked pane gains focus. Carries the click coordinate; the
+    /// dispatch site recomputes `body_rect` from the live terminal size.
+    FocusInBody { col: u16, row: u16 },
+    /// Drop the event silently. The router falls through to this for any
+    /// kind not handled above.
     Drop,
 }
 
@@ -1460,13 +1631,71 @@ where
         })
 }
 
+/// Compute the per-tab body [`Rect`] given the full terminal area.
+///
+/// Mirrors the body layout in [`draw`]:
+/// - Strip the outer `Borders::ALL` (one cell on each side).
+/// - The first two rows of the inner area are the tab strip.
+/// - The bottom `footer_h + status_h` rows are footer/status (heights vary
+///   with available room — see [`draw`] for the same arithmetic).
+/// - Returns `None` when the body would have zero width or height.
+///
+/// # Examples
+///
+/// ```
+/// use ratatui::layout::Rect;
+/// use sid::wire::body_rect;
+///
+/// let full = Rect { x: 0, y: 0, width: 120, height: 40 };
+/// let body = body_rect(full).unwrap();
+/// // Body is inside the outer border (x >= 1, y >= 1 + tabs_h) and strictly
+/// // smaller than `full` on every axis.
+/// assert!(body.x >= 1);
+/// assert!(body.y >= 3);
+/// assert!(body.width < full.width);
+/// assert!(body.height < full.height);
+///
+/// // A tiny terminal yields None.
+/// let tiny = Rect { x: 0, y: 0, width: 1, height: 1 };
+/// assert!(body_rect(tiny).is_none());
+/// ```
+pub fn body_rect(full_area: Rect) -> Option<Rect> {
+    if full_area.width < 2 || full_area.height < 2 {
+        return None;
+    }
+    let inner = Rect {
+        x: full_area.x.saturating_add(1),
+        y: full_area.y.saturating_add(1),
+        width: full_area.width.saturating_sub(2),
+        height: full_area.height.saturating_sub(2),
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    let tabs_h: u16 = 2;
+    let status_h: u16 = if inner.height >= 12 { 1 } else { 0 };
+    let footer_h: u16 = if inner.height >= 10 { 2 } else { 1 };
+    let body_h = inner.height.saturating_sub(tabs_h + status_h + footer_h);
+    if body_h == 0 {
+        return None;
+    }
+    Some(Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(tabs_h),
+        width: inner.width,
+        height: body_h,
+    })
+}
+
 /// Decide what to do with a raw mouse event.
 ///
-/// Policy (v1):
+/// Policy:
 ///
 /// - `MouseEventKind::ScrollUp`   → `KeyChord(Char('k'), NONE)` (focus prev row).
 /// - `MouseEventKind::ScrollDown` → `KeyChord(Char('j'), NONE)` (focus next row).
 /// - `MouseEventKind::Down(Left)` on the tab strip → switch to that tab.
+/// - `MouseEventKind::Down(Left)` inside the per-tab body → [`MouseRouting::FocusInBody`]
+///   so the active widget can focus the clicked pane.
 /// - Anything else → [`MouseRouting::Drop`].
 ///
 /// The tab strip is the second row of the rendered frame (y = 1, just below
@@ -1504,30 +1733,84 @@ pub fn route_mouse_event(
             // == full_area.y + 1 (because the outer Block::ALL borders eat
             // a row on each side).
             let tab_row = full_area.y.saturating_add(1);
-            if m.row != tab_row {
+            if m.row == tab_row {
+                // Compute per-tab horizontal extents using the same layout the
+                // tab strip painter uses: [marker(1)][space(1)][title(N)][gap(2 if not last)].
+                // The first tab starts at inner.x == full_area.x + 1.
+                let mut x = full_area.x.saturating_add(1);
+                let tabs = sid_app.app.tabs().tabs();
+                for (i, t) in tabs.iter().enumerate() {
+                    let title_width = t.title.chars().count() as u16;
+                    // Marker glyph + space + title.
+                    let span = 2u16.saturating_add(title_width);
+                    let end = x.saturating_add(span);
+                    if m.column >= x && m.column < end {
+                        return MouseRouting::SwitchToTab(i);
+                    }
+                    x = end.saturating_add(2); // 2-char gap between tabs
+                    if i + 1 == tabs.len() {
+                        break;
+                    }
+                }
                 return MouseRouting::Drop;
             }
-            // Compute per-tab horizontal extents using the same layout the
-            // tab strip painter uses: [marker(1)][space(1)][title(N)][gap(2 if not last)].
-            // The first tab starts at inner.x == full_area.x + 1.
-            let mut x = full_area.x.saturating_add(1);
-            let tabs = sid_app.app.tabs().tabs();
-            for (i, t) in tabs.iter().enumerate() {
-                let title_width = t.title.chars().count() as u16;
-                // Marker glyph + space + title.
-                let span = 2u16.saturating_add(title_width);
-                let end = x.saturating_add(span);
-                if m.column >= x && m.column < end {
-                    return MouseRouting::SwitchToTab(i);
-                }
-                x = end.saturating_add(2); // 2-char gap between tabs
-                if i + 1 == tabs.len() {
-                    break;
+            // Body region: route to the active widget for focus-on-click.
+            // The dispatch site recomputes `body_rect` from the live
+            // terminal size and hands it to the widget's `focus_at`.
+            if let Some(body) = body_rect(full_area) {
+                if m.row >= body.y
+                    && m.row < body.y.saturating_add(body.height)
+                    && m.column >= body.x
+                    && m.column < body.x.saturating_add(body.width)
+                {
+                    return MouseRouting::FocusInBody {
+                        col: m.column,
+                        row: m.row,
+                    };
                 }
             }
             MouseRouting::Drop
         }
         _ => MouseRouting::Drop,
+    }
+}
+
+/// Dispatch a `MouseRouting::FocusInBody` to whichever widget is on the
+/// active tab. Recomputes `body_rect` from `full_area`, then calls the
+/// widget's `focus_at`. No-op when the active tab has no widget that
+/// supports focus-on-click (Workspaces / SSH / Database / Network / System /
+/// Settings are all covered today).
+pub fn dispatch_focus_at_for_active_tab(sid_app: &mut SidApp, full_area: Rect, col: u16, row: u16) {
+    let Some(body) = body_rect(full_area) else {
+        return;
+    };
+    let layout = &mut sid_app.app.tabs_mut().active_mut().layout;
+    let Some(w) = layout.iter_widgets_mut().next() else {
+        return;
+    };
+    let any_ref = w as &mut dyn std::any::Any;
+    if let Some(ws) = any_ref.downcast_mut::<WorkspacesWidget>() {
+        ws.focus_at(body, col, row);
+        return;
+    }
+    if let Some(ssh) = any_ref.downcast_mut::<SshWidget>() {
+        ssh.focus_at(body, col, row);
+        return;
+    }
+    if let Some(db) = any_ref.downcast_mut::<DatabaseWidget>() {
+        db.focus_at(body, col, row);
+        return;
+    }
+    if let Some(net) = any_ref.downcast_mut::<NetworkWidget>() {
+        net.focus_at(body, col, row);
+        return;
+    }
+    if let Some(sys) = any_ref.downcast_mut::<SystemWidget>() {
+        sys.focus_at(body, col, row);
+        return;
+    }
+    if let Some(settings) = any_ref.downcast_mut::<SettingsWidget>() {
+        settings.focus_at(body, col, row);
     }
 }
 
@@ -2755,10 +3038,33 @@ fn dispatch_modal_submit(
             .push(Toast::success(format!("quick action '{label}' added")));
     } else if let Some(qa_id) = key.strip_prefix("system.remove_quick_action:") {
         submit_system_remove_quick_action(sid_app, qa_id, values)?;
+    } else if let Some(tab_id) = key.strip_prefix("session.resume:") {
+        submit_session_resume(sid_app, tab_id, values);
     } else {
         tracing::debug!("unhandled modal submit id={key}");
     }
     Ok(())
+}
+
+/// Handler for the `session.resume:<tab_id>` modal. If the user picked
+/// `"Resume"`, switch to `tab_id`; if `"Start fresh"`, no-op. `switch_to`
+/// is best-effort — an unknown tab id silently leaves focus where it is
+/// (the modal can't construct an unknown tab, but a future plan could
+/// remove a tab the previous session had open).
+fn submit_session_resume(
+    sid_app: &mut SidApp,
+    tab_id: &str,
+    values: &[(String, sid_widgets::FieldValue)],
+) {
+    let choice = choice_value(values, "action").unwrap_or_default();
+    if choice == "Resume" {
+        let id = TabId::new(tab_id);
+        // `switch_to` returns false when the id isn't present; we ignore
+        // that — the user already picked Resume, but the tab list may have
+        // shifted between sessions.
+        let _ = sid_app.app.tabs_mut().switch_to(&id);
+    }
+    // "Start fresh" is intentionally a no-op.
 }
 
 // ---------------------------------------------------------------------------
@@ -5679,15 +5985,32 @@ mod tests {
         assert_eq!(outcome, MouseRouting::SwitchToTab(1));
     }
 
-    /// A left click on a row that is NOT the tab strip row is dropped
-    /// (until focus-on-click lands in a future PR).
+    /// A left click on a row that is NOT the tab strip row but IS inside the
+    /// body region routes to [`MouseRouting::FocusInBody`] for the active
+    /// widget to focus the clicked pane.
     #[test]
-    fn mouse_left_click_off_tab_strip_drops() {
+    fn mouse_left_click_in_body_routes_to_focus_in_body() {
         let sid_app = build_test_sid_app(Some("workspaces"));
         let m = mouse_event(
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
             10,
             5,
+        );
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        assert_eq!(outcome, MouseRouting::FocusInBody { col: 10, row: 5 });
+    }
+
+    /// A left click outside the body (e.g. on the footer row near the bottom)
+    /// is dropped.
+    #[test]
+    fn mouse_left_click_outside_body_drops() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        let m = mouse_event(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            10,
+            // full_area is 120x40; the footer occupies the bottom 2 rows. y=39 is the very
+            // last row, well below the body.
+            39,
         );
         let outcome = route_mouse_event(&sid_app, full_area(), m);
         assert_eq!(outcome, MouseRouting::Drop);
@@ -6481,5 +6804,312 @@ mod tests {
             messages.iter().any(|m| m.contains("prod-pg")),
             "expected toast mentioning 'prod-pg'; got: {messages:?}"
         );
+    }
+
+    // ─── Feature 1 — Session resume modal ────────────────────────────────────
+
+    /// Helper: write a SessionRecord into the store with a controlled ended_at.
+    fn write_session(store: &dyn Store, id: &str, active_tab: Option<&str>, ended_at: Option<u64>) {
+        let rec = SessionRecord {
+            id: id.to_string(),
+            started_at: now_epoch().saturating_sub(10_000_000_000),
+            last_active: now_epoch(),
+            ended_at,
+            active_tab: active_tab.map(TabId::new),
+            open_tabs: vec![],
+        };
+        store.upsert_session(&rec).unwrap();
+    }
+
+    #[test]
+    fn resume_modal_pushes_when_recent_session_with_tab() {
+        let mut sid_app = build_test_sid_app(None);
+        // Recent session that ended 30s ago, with active_tab = ssh.
+        let ended = now_epoch().saturating_sub(30 * 1_000_000_000);
+        write_session(&*sid_app.store, "sess-prev", Some("ssh"), Some(ended));
+        assert!(sid_app.modal_stack.is_empty());
+        maybe_push_resume_modal(&mut sid_app);
+        assert_eq!(sid_app.modal_stack.len(), 1);
+        assert_eq!(sid_app.modal_stack[0].id.0, "session.resume:ssh");
+        assert_eq!(sid_app.modal_stack[0].title, "Resume previous session?");
+        // Single choice field named "action" with Resume / Start fresh.
+        assert_eq!(sid_app.modal_stack[0].fields.len(), 1);
+        if let sid_widgets::Field::Choice { label, options, .. } = &sid_app.modal_stack[0].fields[0]
+        {
+            assert_eq!(label, "action");
+            assert_eq!(options, &vec!["Resume".to_string(), "Start fresh".into()]);
+        } else {
+            panic!("expected a Choice field");
+        }
+    }
+
+    #[test]
+    fn resume_modal_does_not_push_when_no_session() {
+        let mut sid_app = build_test_sid_app(None);
+        // Fresh store has no session record.
+        assert!(sid_app.store.current_session().unwrap().is_none());
+        maybe_push_resume_modal(&mut sid_app);
+        assert!(sid_app.modal_stack.is_empty());
+    }
+
+    #[test]
+    fn resume_modal_does_not_push_when_session_too_old() {
+        let mut sid_app = build_test_sid_app(None);
+        // Session ended 2 hours ago — beyond the 60-minute window.
+        let two_hours_ns = 2 * 60 * 60 * 1_000_000_000u64;
+        let ended = now_epoch().saturating_sub(two_hours_ns);
+        write_session(&*sid_app.store, "sess-old", Some("ssh"), Some(ended));
+        maybe_push_resume_modal(&mut sid_app);
+        assert!(sid_app.modal_stack.is_empty());
+    }
+
+    #[test]
+    fn resume_modal_does_not_push_when_session_has_no_active_tab() {
+        let mut sid_app = build_test_sid_app(None);
+        // Recent but no active_tab — nothing to resume.
+        let ended = now_epoch().saturating_sub(1_000_000_000);
+        write_session(&*sid_app.store, "sess-no-tab", None, Some(ended));
+        maybe_push_resume_modal(&mut sid_app);
+        assert!(sid_app.modal_stack.is_empty());
+    }
+
+    #[test]
+    fn resume_modal_pushes_when_session_never_ended() {
+        // ended_at == None — treat as recent (process exited without
+        // clean end_session).
+        let mut sid_app = build_test_sid_app(None);
+        write_session(&*sid_app.store, "sess-running", Some("system"), None);
+        maybe_push_resume_modal(&mut sid_app);
+        assert_eq!(sid_app.modal_stack.len(), 1);
+        assert_eq!(sid_app.modal_stack[0].id.0, "session.resume:system");
+    }
+
+    #[test]
+    fn dispatch_session_resume_choice_resume_switches_tab() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), "workspaces");
+        let id = ModalId("session.resume:database".to_string());
+        let values = vec![("action".into(), FieldValue::Choice("Resume".into()))];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), "database");
+    }
+
+    #[test]
+    fn dispatch_session_resume_choice_start_fresh_does_nothing() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let before = sid_app.app.tabs().active().id.as_str().to_string();
+        let id = ModalId("session.resume:database".to_string());
+        let values = vec![("action".into(), FieldValue::Choice("Start fresh".into()))];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), before);
+    }
+
+    #[test]
+    fn dispatch_session_resume_with_unknown_tab_is_silent() {
+        // The modal id encodes a tab id that no longer exists in the tab
+        // list. `switch_to` returns false; dispatch must not panic and the
+        // active tab must stay where it was.
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let before = sid_app.app.tabs().active().id.as_str().to_string();
+        let id = ModalId("session.resume:not-a-real-tab".to_string());
+        let values = vec![("action".into(), FieldValue::Choice("Resume".into()))];
+        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), before);
+    }
+
+    // ─── Feature 2 — Ctrl+D detach ───────────────────────────────────────────
+
+    /// Test double for `TerminalSpawner` that records each spawn request and
+    /// returns a configurable outcome. `Send + Sync` because the wire layer
+    /// stores spawners in `Arc<dyn TerminalSpawner>`.
+    #[derive(Default)]
+    struct MockTerminalSpawner {
+        requests: std::sync::Mutex<Vec<SpawnRequest>>,
+        next_result: std::sync::Mutex<Option<Result<(), SpawnerError>>>,
+    }
+
+    impl MockTerminalSpawner {
+        fn new() -> Self {
+            Self::default()
+        }
+        fn with_failure(err: SpawnerError) -> Self {
+            let m = Self::default();
+            *m.next_result.lock().unwrap() = Some(Err(err));
+            m
+        }
+        fn requests(&self) -> Vec<SpawnRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl TerminalSpawner for MockTerminalSpawner {
+        fn spawn(&self, req: SpawnRequest) -> Result<(), SpawnerError> {
+            self.requests.lock().unwrap().push(req);
+            self.next_result.lock().unwrap().take().unwrap_or(Ok(()))
+        }
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    /// `handle_ctrl_d_detach` builds a SpawnRequest carrying the current
+    /// `sid` exe path and `--start-tab <active>`, calls the spawner, and
+    /// pushes a success toast.
+    #[test]
+    fn ctrl_d_on_active_tab_invokes_spawner_with_start_tab_arg() {
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let mock = Arc::new(MockTerminalSpawner::new());
+        sid_app.spawner = mock.clone() as Arc<dyn TerminalSpawner>;
+        handle_ctrl_d_detach(&mut sid_app);
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1, "expected exactly one spawn call");
+        // The command line should reference --start-tab and the active tab.
+        assert!(
+            reqs[0].cmd.contains("--start-tab"),
+            "cmd should contain --start-tab; got: {}",
+            reqs[0].cmd
+        );
+        assert!(
+            reqs[0].cmd.contains("ssh"),
+            "cmd should contain the active tab id 'ssh'; got: {}",
+            reqs[0].cmd
+        );
+        // Success toast.
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Success),
+            "expected a Success toast; got: {kinds:?}"
+        );
+    }
+
+    /// `handle_ctrl_d_detach` surfaces a spawner failure as an error toast.
+    #[test]
+    fn ctrl_d_when_spawner_fails_pushes_error_toast() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let mock = Arc::new(MockTerminalSpawner::with_failure(
+            SpawnerError::TerminalMissing("kitty".into()),
+        ));
+        sid_app.spawner = mock.clone() as Arc<dyn TerminalSpawner>;
+        handle_ctrl_d_detach(&mut sid_app);
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(
+            kinds.contains(&crate::toast::ToastKind::Error),
+            "expected an Error toast on spawner failure; got: {kinds:?}"
+        );
+        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("detach failed")),
+            "expected toast mentioning 'detach failed'; got: {messages:?}"
+        );
+    }
+
+    /// `handle_ctrl_d_detach` with the default `NoopTerminalSpawner` also
+    /// pushes an error toast (the noop returns `TerminalMissing`).
+    #[test]
+    fn ctrl_d_with_noop_spawner_pushes_error_toast() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // build_test_sid_app already uses NoopTerminalSpawner; just call.
+        handle_ctrl_d_detach(&mut sid_app);
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(kinds.contains(&crate::toast::ToastKind::Error));
+    }
+
+    // ─── Feature 3 — Mouse click-to-focus dispatch ───────────────────────────
+
+    /// A synthesized LeftDown event inside the body region dispatches to the
+    /// active widget's `focus_at` and changes `focused_pane`.
+    #[test]
+    fn mouse_click_in_body_dispatches_focus_at() {
+        use ratatui::layout::Rect;
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // WorkspacesWidget defaults to Tree focus. Flip it manually so we
+        // can prove the click changed it back.
+        if let Some(w) = sid_app
+            .app
+            .tabs_mut()
+            .active_mut()
+            .layout
+            .iter_widgets_mut()
+            .next()
+        {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(ws) = any_ref.downcast_mut::<sid_widgets::WorkspacesWidget>() {
+                ws.focus_next();
+                assert_eq!(ws.focused_pane(), sid_widgets::workspaces::WsFocus::SubView);
+            }
+        }
+        // Click in the left half of the body — should focus Tree.
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let body = body_rect(full).expect("body rect");
+        // col is well inside the left 30% of body.
+        let col = body.x + body.width / 10;
+        let row = body.y + body.height / 2;
+        dispatch_focus_at_for_active_tab(&mut sid_app, full, col, row);
+        if let Some(w) = sid_app.app.tabs().active().layout.iter_widgets().next() {
+            if let Some(ws) = w.as_any().downcast_ref::<sid_widgets::WorkspacesWidget>() {
+                assert_eq!(ws.focused_pane(), sid_widgets::workspaces::WsFocus::Tree);
+            } else {
+                panic!("expected WorkspacesWidget");
+            }
+        }
+    }
+
+    #[test]
+    fn route_mouse_returns_focus_in_body_for_body_click() {
+        let sid_app = build_test_sid_app(Some("workspaces"));
+        // Click in the middle of the body region (well below the tab strip
+        // and well above the footer).
+        let m = mouse_event(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            60,
+            20,
+        );
+        let outcome = route_mouse_event(&sid_app, full_area(), m);
+        assert_eq!(outcome, MouseRouting::FocusInBody { col: 60, row: 20 });
+    }
+
+    #[test]
+    fn body_rect_full_area_matches_draw_layout() {
+        use ratatui::layout::Rect;
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let body = body_rect(full).expect("body rect");
+        // Inner is (1, 1, 118, 38); after tabs(2) + status(1) + footer(2) the body
+        // is 38 - 5 = 33 rows tall, starting at row 3.
+        assert_eq!(body.x, 1);
+        assert_eq!(body.y, 3);
+        assert_eq!(body.width, 118);
+        assert_eq!(body.height, 33);
+    }
+
+    #[test]
+    fn body_rect_tiny_terminal_returns_none() {
+        use ratatui::layout::Rect;
+        let tiny = Rect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        };
+        assert!(body_rect(tiny).is_none());
+        let zero = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        assert!(body_rect(zero).is_none());
     }
 }

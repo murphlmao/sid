@@ -142,4 +142,39 @@ mod focus {
         // Alt+Tab falls through. So focus stays.
         assert_eq!(w.state().focused_pane(), before);
     }
+
+    // -----------------------------------------------------------------------
+    // focus_at — mouse-click pane routing (no-op for SystemWidget since only
+    // one pane is rendered at a time).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn focus_at_top_left_does_not_change_focus() {
+        use ratatui::layout::Rect;
+        let mut w = SystemWidget::new();
+        let before = w.state().focused_pane();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        w.focus_at(area, 5, 5);
+        assert_eq!(w.state().focused_pane(), before);
+    }
+
+    #[test]
+    fn focus_at_top_right_does_not_change_focus() {
+        use ratatui::layout::Rect;
+        let mut w = SystemWidget::new();
+        let before = w.state().focused_pane();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        w.focus_at(area, 80, 5);
+        assert_eq!(w.state().focused_pane(), before);
+    }
 }

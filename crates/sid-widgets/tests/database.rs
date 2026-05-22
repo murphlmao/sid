@@ -191,4 +191,65 @@ mod focus {
         w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
         assert_eq!(w.focused_pane_label(), "History");
     }
+
+    // -----------------------------------------------------------------------
+    // focus_at — mouse-click pane routing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn focus_at_top_left_focuses_connections() {
+        use ratatui::layout::Rect;
+        let mut w = DatabaseWidget::new(vec![conn("c1")]);
+        // Pre-flip focus so we can prove `focus_at` mutates back to Connections.
+        w.focus_next();
+        assert_eq!(w.focused_pane(), DbFocus::Editor);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // Click well inside the left 30% pane (col 5 of a 30-wide left pane).
+        w.focus_at(area, 5, 5);
+        assert_eq!(w.focused_pane(), DbFocus::Connections);
+    }
+
+    #[test]
+    fn focus_at_top_right_focuses_editor() {
+        use ratatui::layout::Rect;
+        let mut w = DatabaseWidget::new(vec![]);
+        assert_eq!(w.focused_pane(), DbFocus::Connections);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // Top-right region (col 70 of right pane; top 30% of height = rows 0..12).
+        w.focus_at(area, 70, 2);
+        assert_eq!(w.focused_pane(), DbFocus::Editor);
+    }
+
+    #[test]
+    fn focus_at_middle_right_focuses_results_or_history() {
+        use ratatui::layout::Rect;
+        let mut w = DatabaseWidget::new(vec![]);
+        // Default RightPane is Editor; focus_at on middle still picks Results
+        // because Results is the default middle-pane focus.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        // Row 20 is below the editor band (12 rows) and above the bottom status
+        // row, so it lands on the middle pane.
+        w.focus_at(area, 70, 20);
+        assert_eq!(w.focused_pane(), DbFocus::Results);
+
+        // Now flip the visible RightPane to History; focus_at should follow.
+        w.state_mut().set_right_pane(RightPane::History);
+        w.focus_at(area, 70, 20);
+        assert_eq!(w.focused_pane(), DbFocus::History);
+    }
 }

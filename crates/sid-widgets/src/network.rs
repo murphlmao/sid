@@ -335,6 +335,57 @@ impl NetworkWidget {
         };
     }
 
+    /// Focus the pane that contains the given coordinate. No-op when the
+    /// coordinate falls outside `area`.
+    ///
+    /// Layout mirrors [`Self::render_into_frame`]: a 22-column [`Focus::Interfaces`]
+    /// sidebar on the left, then the right side split 45%/55% vertically
+    /// ([`Focus::Ports`] on top, [`Focus::Processes`] on the bottom).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    /// use sid_widgets::NetworkWidget;
+    /// use sid_widgets::network::Focus;
+    /// let mut w = NetworkWidget::new();
+    /// let area = Rect { x: 0, y: 0, width: 100, height: 40 };
+    /// // Click in the sidebar: focuses Interfaces.
+    /// w.focus_at(area, 5, 5);
+    /// assert_eq!(w.focus(), Focus::Interfaces);
+    /// // Top-right region (45%): Ports.
+    /// w.focus_at(area, 80, 5);
+    /// assert_eq!(w.focus(), Focus::Ports);
+    /// // Bottom-right region: Processes.
+    /// w.focus_at(area, 80, 30);
+    /// assert_eq!(w.focus(), Focus::Processes);
+    /// ```
+    pub fn focus_at(&mut self, area: Rect, col: u16, row: u16) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        let sidebar_w: u16 = 22;
+        let split_col = area.x.saturating_add(sidebar_w.min(area.width));
+        if col < split_col {
+            self.focus = Focus::Interfaces;
+            return;
+        }
+        // Right column: top 45% is Ports, bottom is Processes.
+        let ports_h = area.height.saturating_mul(45) / 100;
+        let ports_end_row = area.y.saturating_add(ports_h);
+        self.focus = if row < ports_end_row {
+            Focus::Ports
+        } else {
+            Focus::Processes
+        };
+    }
+
     /// PID of the currently-selected row in the focused pane, if any.
     /// Used by the kill action to pick the target.
     pub fn focused_pid(&self) -> Option<Pid> {

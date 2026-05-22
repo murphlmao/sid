@@ -590,6 +590,68 @@ impl DatabaseWidget {
         self.sync_right_pane_with_focus();
     }
 
+    /// Focus the pane that contains the given coordinate. No-op when the
+    /// coordinate falls outside `area`.
+    ///
+    /// Layout mirrors [`Self::render_into_frame`]: a 30/70 horizontal split.
+    /// The left 30% focuses [`DbFocus::Connections`]. On the right, the top
+    /// 30% of the vertical span focuses [`DbFocus::Editor`]; the remainder
+    /// (excluding the bottom status row) focuses whichever of
+    /// [`DbFocus::Results`] / [`DbFocus::History`] mirrors the currently
+    /// active [`RightPane`]. The status row at the very bottom is a no-op
+    /// click target.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    /// use sid_widgets::DatabaseWidget;
+    /// use sid_widgets::database::DbFocus;
+    /// let mut w = DatabaseWidget::new(vec![]);
+    /// let area = Rect { x: 0, y: 0, width: 100, height: 40 };
+    /// // Left column → Connections.
+    /// w.focus_at(area, 5, 5);
+    /// assert_eq!(w.focused_pane(), DbFocus::Connections);
+    /// // Top-right → Editor.
+    /// w.focus_at(area, 80, 2);
+    /// assert_eq!(w.focused_pane(), DbFocus::Editor);
+    /// ```
+    pub fn focus_at(&mut self, area: Rect, col: u16, row: u16) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        if col < area.x || col >= area.x.saturating_add(area.width) {
+            return;
+        }
+        if row < area.y || row >= area.y.saturating_add(area.height) {
+            return;
+        }
+        let split_col = area.x.saturating_add(area.width.saturating_mul(30) / 100);
+        if col < split_col {
+            self.focused_pane = DbFocus::Connections;
+            return;
+        }
+        // Right side: top 30% is editor, then results/history, then a 1-row
+        // status. The 1-row status at the very bottom is a no-op click.
+        let editor_h = area.height.saturating_mul(30) / 100;
+        let editor_end_row = area.y.saturating_add(editor_h);
+        let status_row = area.y.saturating_add(area.height).saturating_sub(1);
+        if row < editor_end_row {
+            self.focused_pane = DbFocus::Editor;
+        } else if row >= status_row {
+            // Status row: ignore (return without mutation).
+            return;
+        } else {
+            // Middle pane: mirror the currently-visible RightPane so the
+            // focus reflects what the user actually clicked on.
+            self.focused_pane = match self.state.right_pane() {
+                RightPane::History => DbFocus::History,
+                _ => DbFocus::Results,
+            };
+        }
+        self.sync_right_pane_with_focus();
+    }
+
     fn sync_right_pane_with_focus(&mut self) {
         match self.focused_pane {
             DbFocus::Editor => self.state.set_right_pane(RightPane::Editor),
