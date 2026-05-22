@@ -172,7 +172,11 @@ fn err_from_default_route_collapses_to_alphabetical_via_none() {
 #[test]
 fn sort_is_stable_across_repeated_set_data() {
     let mut s = InterfacesSidebarState::new();
-    let ifaces = vec![iface("eth0", true), iface("eth1", true), iface("wlan0", true)];
+    let ifaces = vec![
+        iface("eth0", true),
+        iface("eth1", true),
+        iface("wlan0", true),
+    ];
     s.set_data_with_default_route(ifaces.clone(), Some("wlan0"));
     let first: Vec<String> = s.rows().iter().map(|i| i.name.clone()).collect();
     s.set_data_with_default_route(ifaces, Some("wlan0"));

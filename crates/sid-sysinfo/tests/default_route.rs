@@ -21,10 +21,7 @@ fn empty_body_returns_none() {
 
 #[test]
 fn header_only_returns_none() {
-    assert_eq!(
-        parse_proc_net_route("Iface\tDestination\tGateway\n"),
-        None
-    );
+    assert_eq!(parse_proc_net_route("Iface\tDestination\tGateway\n"), None);
 }
 
 #[test]

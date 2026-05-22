@@ -3,8 +3,8 @@ source: crates/sid-widgets/tests/network_widget_snapshot.rs
 expression: s
 ---
 ┌ Interfaces ────────┐┌ Listening ports ───────────────────────────────────────┐
-│  * lo              ││PORT    PID     PROTO  COMMAND        ADDR              │
-│  * eth0            ││22      1       tcp    sshd           0.0.0.0           │
+│  * eth0            ││PORT    PID     PROTO  COMMAND        ADDR              │
+│  * lo              ││22      1       tcp    sshd           0.0.0.0           │
 │                    ││                                                        │
 │                    ││                                                        │
 │                    ││                                                        │
