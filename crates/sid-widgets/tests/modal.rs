@@ -324,7 +324,7 @@ proptest! {
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use sid_core::event::KeyChord;
-use sid_widgets::modal::{route_key_to_modal, ModalKeyOutcome};
+use sid_widgets::modal::{ModalKeyOutcome, route_key_to_modal};
 
 fn chord(code: KeyCode, mods: KeyModifiers) -> KeyChord {
     KeyChord { code, mods }
@@ -336,8 +336,14 @@ fn up_cycles_focus_backward() {
         "id",
         "t",
         vec![
-            Field::Toggle { label: "a".into(), value: false },
-            Field::Toggle { label: "b".into(), value: false },
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
         ],
     );
     m.focus = 1;
@@ -352,8 +358,14 @@ fn down_cycles_focus_forward() {
         "id",
         "t",
         vec![
-            Field::Toggle { label: "a".into(), value: false },
-            Field::Toggle { label: "b".into(), value: false },
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
         ],
     );
     let outcome = route_key_to_modal(&mut m, chord(KeyCode::Down, KeyModifiers::NONE));
@@ -436,8 +448,14 @@ fn shift_tab_cycles_focus_backward() {
         "id",
         "t",
         vec![
-            Field::Toggle { label: "a".into(), value: false },
-            Field::Toggle { label: "b".into(), value: false },
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
         ],
     );
     m.focus = 0;
@@ -451,8 +469,14 @@ fn tab_with_shift_cycles_focus_backward() {
         "id",
         "t",
         vec![
-            Field::Toggle { label: "a".into(), value: false },
-            Field::Toggle { label: "b".into(), value: false },
+            Field::Toggle {
+                label: "a".into(),
+                value: false,
+            },
+            Field::Toggle {
+                label: "b".into(),
+                value: false,
+            },
         ],
     );
     m.focus = 0;
@@ -499,7 +523,10 @@ fn unfocused_choice_does_not_render_cycle_hint() {
         "id",
         "Test",
         vec![
-            Field::Toggle { label: "first".into(), value: false },
+            Field::Toggle {
+                label: "first".into(),
+                value: false,
+            },
             Field::Choice {
                 label: "action".into(),
                 options: vec!["Resume".into(), "Start fresh".into()],

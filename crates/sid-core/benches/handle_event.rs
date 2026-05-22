@@ -13,7 +13,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use crossterm::event::{KeyCode, KeyModifiers};
 use sid_core::action::ActionRegistry;
 use sid_core::app::App;

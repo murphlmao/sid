@@ -437,8 +437,14 @@ fn ctrl_w_and_alt_w_both_close_tab() {
     let m = KeybindMap::cosmos_default();
     let c = ctrl(KeyCode::Char('w'));
     let a = alt(KeyCode::Char('w'));
-    assert_eq!(m.lookup(&c).map(|x| x.as_str().to_string()), Some("tab.close".into()));
-    assert_eq!(m.lookup(&a).map(|x| x.as_str().to_string()), Some("tab.close".into()));
+    assert_eq!(
+        m.lookup(&c).map(|x| x.as_str().to_string()),
+        Some("tab.close".into())
+    );
+    assert_eq!(
+        m.lookup(&a).map(|x| x.as_str().to_string()),
+        Some("tab.close".into())
+    );
 }
 
 #[test]

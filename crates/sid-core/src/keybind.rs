@@ -288,12 +288,7 @@ impl KeybindMap {
             KeyModifiers::CONTROL,
             "tab.close",
         );
-        bind(
-            &mut m,
-            KeyCode::Char('w'),
-            KeyModifiers::ALT,
-            "tab.close",
-        );
+        bind(&mut m, KeyCode::Char('w'), KeyModifiers::ALT, "tab.close");
         bind(
             &mut m,
             KeyCode::Char('d'),

@@ -7,9 +7,9 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use ratatui::backend::TestBackend;
+use criterion::{Criterion, criterion_group, criterion_main};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use sid_ui::themes::cosmos;
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
@@ -22,7 +22,8 @@ fn bench_workspaces_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_workspaces", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
@@ -35,7 +36,8 @@ fn bench_ssh_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_ssh", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
@@ -48,7 +50,8 @@ fn bench_database_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_database", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
@@ -61,7 +64,8 @@ fn bench_network_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_network", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
@@ -74,7 +78,8 @@ fn bench_system_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_system", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
@@ -87,7 +92,8 @@ fn bench_settings_render(c: &mut Criterion) {
     let theme = cosmos();
     c.bench_function("tab_render_settings", |b| {
         b.iter(|| {
-            term.draw(|f| w.render_into_frame(f, f.area(), &theme)).unwrap();
+            term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+                .unwrap();
             black_box(())
         });
     });
