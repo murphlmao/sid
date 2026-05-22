@@ -469,3 +469,53 @@ fn arrow_keys_on_empty_modal_are_noop_not_panic() {
     let _ = route_key_to_modal(&mut m, chord(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(m.focus, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Branch #1 Task 6 — focused Choice/Toggle render ‹ › cycle hint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn focused_choice_renders_cycle_hint() {
+    let mut m = ModalSpec::new(
+        "id",
+        "Test",
+        vec![Field::Choice {
+            label: "action".into(),
+            options: vec!["Resume".into(), "Start fresh".into()],
+            selected: 0,
+        }],
+    );
+    m.focus = 0;
+    let rendered = render_modal_to_string(&m, 80, 12);
+    assert!(
+        rendered.contains('‹') && rendered.contains('›'),
+        "expected cycle hint glyphs in:\n{rendered}",
+    );
+}
+
+#[test]
+fn unfocused_choice_does_not_render_cycle_hint() {
+    let mut m = ModalSpec::new(
+        "id",
+        "Test",
+        vec![
+            Field::Toggle { label: "first".into(), value: false },
+            Field::Choice {
+                label: "action".into(),
+                options: vec!["Resume".into(), "Start fresh".into()],
+                selected: 0,
+            },
+        ],
+    );
+    m.focus = 0; // Toggle focused; Choice unfocused.
+    let rendered = render_modal_to_string(&m, 100, 14);
+    // Hint should appear on the focused row (Toggle) but not on Choice row.
+    let choice_line = rendered
+        .lines()
+        .find(|l| l.contains("Resume"))
+        .expect("Choice row should be rendered");
+    assert!(
+        !choice_line.contains('‹') && !choice_line.contains('›'),
+        "unfocused Choice row leaked cycle hint: {choice_line}",
+    );
+}

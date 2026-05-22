@@ -12,7 +12,7 @@ expression: s
                 │  passphrase                                  │                
                 │  •••••••                                     │                
                 │  use_agent                                   │                
-                │> [x] on                                      │                
+                │> [x] on   ‹ ›                                │                
                 │  algorithm                                   │                
                 │  (●) Ed25519  ( ) RSA-4096                   │                
                 │  identity                                    │                

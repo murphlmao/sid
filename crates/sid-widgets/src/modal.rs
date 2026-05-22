@@ -950,6 +950,13 @@ fn render_field_value<'a>(theme: &'a Theme, field: &'a Field, focused: bool) -> 
             ));
             spans.push(Span::raw(" "));
             spans.push(Span::raw(if *value { "on" } else { "off" }));
+            if focused {
+                spans.push(Span::raw("   "));
+                spans.push(Span::styled(
+                    "‹ ›".to_string(),
+                    Style::default().fg(theme.muted.into()),
+                ));
+            }
         }
         Field::Choice {
             options, selected, ..
@@ -962,6 +969,13 @@ fn render_field_value<'a>(theme: &'a Theme, field: &'a Field, focused: bool) -> 
                 if i + 1 < options.len() {
                     spans.push(Span::raw("  "));
                 }
+            }
+            if focused {
+                spans.push(Span::raw("   "));
+                spans.push(Span::styled(
+                    "‹ ›".to_string(),
+                    Style::default().fg(theme.muted.into()),
+                ));
             }
         }
         Field::Picker { value, hint, .. } => {
