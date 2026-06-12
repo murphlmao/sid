@@ -59,10 +59,10 @@ fix starts with a test that reproduces the bug before the fix is written). The t
   the existing `#[cfg(test)] mod tests {` block (located at the bottom of the file, after
   `fn build_test_sid_app`).
 
-- [ ] Locate the existing `#[cfg(test)] mod tests` block in `crates/sid/src/wire.rs`. Find
+- [x] Locate the existing `#[cfg(test)] mod tests` block in `crates/sid/src/wire.rs`. Find
   the `build_test_sid_app` helper function inside it and note its signature.
 
-- [ ] Add the following test immediately after the last existing `#[test]` in that block:
+- [x] Add the following test immediately after the last existing `#[test]` in that block:
 
 ```rust
 /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`
@@ -127,7 +127,7 @@ async fn animation_only_ticks_on_tick_event() {
 }
 ```
 
-- [ ] Run the test to confirm it **fails** before any code change:
+- [x] Run the test to confirm it **fails** before any code change:
   ```
   cargo test -p sid animation_only_ticks_on_tick_event 2>&1 | tail -20
   ```
@@ -140,7 +140,7 @@ async fn animation_only_ticks_on_tick_event() {
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — `run_event_loop` function, lines 1562–1710.
 
-- [ ] In `run_event_loop`, move the `fx.tick(...)` block (currently at lines 1596–1612,
+- [x] In `run_event_loop`, move the `fx.tick(...)` block (currently at lines 1596–1612,
   before `terminal.draw(...)`) so that it executes AFTER `rx.recv().await` and ONLY when
   the received event is `SidEvent::Tick`.
 
@@ -197,19 +197,19 @@ async fn animation_only_ticks_on_tick_event() {
   claimed "we don't tick stars while a modal is open" but the code did not enforce that guard.
   The `sid_app.modal_stack.is_empty()` check is now real.
 
-- [ ] Run the regression test to confirm it now **passes**:
+- [x] Run the regression test to confirm it now **passes**:
   ```
   cargo test -p sid animation_only_ticks_on_tick_event 2>&1 | tail -10
   ```
   Expected: `test animation_only_ticks_on_tick_event ... ok`.
 
-- [ ] Run the full `sid` test suite to check no regressions:
+- [x] Run the full `sid` test suite to check no regressions:
   ```
   cargo test -p sid 2>&1 | tail -20
   ```
   Expected: all tests pass.
 
-- [ ] Commit:
+- [x] Commit:
   ```
   fix(sid): gate fx.tick() on SidEvent::Tick only, skip during modals
   ```
@@ -221,7 +221,7 @@ async fn animation_only_ticks_on_tick_event() {
 **Files:**
 - Modify: `crates/sid/src/main.rs` — line 602 (`spawn_event_pump` call).
 
-- [ ] In `crates/sid/src/main.rs`, change the hardcoded `Duration::from_millis(250)` at
+- [x] In `crates/sid/src/main.rs`, change the hardcoded `Duration::from_millis(250)` at
   line 602 to be derived from the already-loaded `animation` config. The `animation` local
   is created at line 551 (`let animation = wire::load_animation_config(&*store);`) and is
   still in scope at line 602.
@@ -242,7 +242,7 @@ async fn animation_only_ticks_on_tick_event() {
 
   At default `fps = 8`, `tick_ms = 125` — matching the spec's "once every 125ms".
 
-- [ ] Add a regression test to `crates/sid/src/wire.rs` tests confirming the tick interval
+- [x] Add a regression test to `crates/sid/src/wire.rs` tests confirming the tick interval
   derivation formula is correct (pure arithmetic — no runtime needed):
 
   ```rust
@@ -265,13 +265,13 @@ async fn animation_only_ticks_on_tick_event() {
   ```
   Expected: `ok`.
 
-- [ ] Run the full `sid` test suite:
+- [x] Run the full `sid` test suite:
   ```
   cargo test -p sid 2>&1 | tail -20
   ```
   Expected: all tests pass.
 
-- [ ] Commit:
+- [x] Commit:
   ```
   fix(sid): derive event pump tick interval from animation.fps (was hardcoded 250ms)
   ```
@@ -288,7 +288,7 @@ changes settings and presses `S`.
   `PendingSettingsOutcome`.
 - Modify: `crates/sid/src/wire.rs` — add test, then (Task 5) add drain handler.
 
-- [ ] Open `crates/sid-widgets/src/settings/mod.rs`. Find the `PendingSettingsOutcome` enum.
+- [x] Open `crates/sid-widgets/src/settings/mod.rs`. Find the `PendingSettingsOutcome` enum.
   It currently has one variant: `BehaviorToggled { key: String, value: ToggleValue }`.
 
   Add:
@@ -300,7 +300,7 @@ changes settings and presses `S`.
   AnimationChanged(sid_core::animation::AnimationConfig),
   ```
 
-- [ ] Open `crates/sid-widgets/src/settings/animation.rs`. In `handle_event` at line 319,
+- [x] Open `crates/sid-widgets/src/settings/animation.rs`. In `handle_event` at line 319,
   find the `S`-key match arms (lines 327–333). After `self.try_save()` succeeds, we need to
   emit the new config as a `PendingSettingsOutcome`. However, `handle_event` currently has no
   access to the `SettingsWidget`'s pending-outcome queue.
@@ -309,12 +309,12 @@ changes settings and presses `S`.
   `BehaviorTogglesView` emits outcomes by inspecting `crates/sid-widgets/src/settings/
   behavior_toggles.rs` — look for where it pushes to the outcome queue.
 
-- [ ] Read `crates/sid-widgets/src/settings/behavior_toggles.rs` to understand how outcomes
+- [x] Read `crates/sid-widgets/src/settings/behavior_toggles.rs` to understand how outcomes
   are enqueued. The pattern is: each sub-view returns an outcome type to the parent
   `SettingsWidget`, which aggregates into `pending_outcomes`. Follow the same pattern for
   `AnimationView`.
 
-- [ ] In `crates/sid-widgets/src/settings/animation.rs`, change `handle_event` to return
+- [x] In `crates/sid-widgets/src/settings/animation.rs`, change `handle_event` to return
   an `Option<AnimationConfig>` (the newly saved config) on a successful S-save, instead of
   always returning `EventOutcome::Consumed`. Specifically, change `try_save` to return
   `Option<AnimationConfig>` — `Some(self.cfg.clone())` on `Ok(true)`, `None` otherwise.
@@ -352,7 +352,7 @@ changes settings and presses `S`.
   (look at the actual code before implementing), adapt to the real pattern. Do NOT reference
   a function that doesn't exist. Read the actual behavior_toggles.rs first.
 
-- [ ] Add a failing test in `crates/sid/src/wire.rs` that asserts `SidApp.animation` is
+- [x] Add a failing test in `crates/sid/src/wire.rs` that asserts `SidApp.animation` is
   updated after a settings save event sequence:
 
   ```rust
@@ -427,7 +427,7 @@ changes settings and presses `S`.
   }
   ```
 
-- [ ] This test requires `SettingsWidget::push_pending_outcome` to be a public method. Add it
+- [x] This test requires `SettingsWidget::push_pending_outcome` to be a public method. Add it
   to `crates/sid-widgets/src/settings.rs`:
   ```rust
   /// Inject an outcome directly into the pending queue. Used by tests to
@@ -438,7 +438,7 @@ changes settings and presses `S`.
   }
   ```
 
-- [ ] Run the test to confirm it **fails** before the fix in Task 5:
+- [x] Run the test to confirm it **fails** before the fix in Task 5:
   ```
   cargo test -p sid animation_config_propagates_after_settings_save 2>&1 | tail -20
   ```
@@ -452,7 +452,7 @@ changes settings and presses `S`.
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — `apply_pending_settings_outcomes` function (~line 1716).
 
-- [ ] In `apply_pending_settings_outcomes`, add a match arm for the new
+- [x] In `apply_pending_settings_outcomes`, add a match arm for the new
   `PendingSettingsOutcome::AnimationChanged` variant. The arm must:
   1. Replace `sid_app.animation` with the new config.
   2. Toggle `sid_app.fx_state`:
@@ -510,25 +510,25 @@ changes settings and presses `S`.
   }
   ```
 
-- [ ] Run the regression test from Task 4 to confirm it now **passes**:
+- [x] Run the regression test from Task 4 to confirm it now **passes**:
   ```
   cargo test -p sid animation_config_propagates_after_settings_save 2>&1 | tail -10
   ```
   Expected: `ok`.
 
-- [ ] Run the full `sid` test suite:
+- [x] Run the full `sid` test suite:
   ```
   cargo test -p sid 2>&1 | tail -20
   ```
   Expected: all tests pass.
 
-- [ ] Run clippy on `sid` and `sid-widgets`:
+- [x] Run clippy on `sid` and `sid-widgets`:
   ```
   cargo clippy -p sid -p sid-widgets --all-targets -- -D warnings 2>&1 | tail -20
   ```
   Expected: no warnings.
 
-- [ ] Commit:
+- [x] Commit:
   ```
   fix(sid,sid-widgets): propagate AnimationConfig live to SidApp after Settings S-save
   ```
@@ -545,7 +545,7 @@ can re-introduce a dead animation silently.
 - Create: `crates/sid/tests/snapshots/` (directory, if it doesn't exist).
 - Modify: `crates/sid/src/wire.rs` — add `animation_frames_differ` test.
 
-- [ ] Add the following test in the `#[cfg(test)] mod tests` block of
+- [x] Add the following test in the `#[cfg(test)] mod tests` block of
   `crates/sid/src/wire.rs`:
 
   ```rust
@@ -626,7 +626,7 @@ can re-introduce a dead animation silently.
   }
   ```
 
-- [ ] Run the test once to generate the snapshot file:
+- [x] Run the test once to generate the snapshot file:
   ```
   cargo test -p sid animation_frames_differ_after_tick 2>&1 | tail -15
   ```
@@ -636,13 +636,13 @@ can re-introduce a dead animation silently.
   INSTA_UPDATE=always cargo test -p sid animation_frames_differ_after_tick 2>&1 | tail -10
   ```
 
-- [ ] Run the test again to confirm it passes (snapshot now exists):
+- [x] Run the test again to confirm it passes (snapshot now exists):
   ```
   cargo test -p sid animation_frames_differ_after_tick 2>&1 | tail -10
   ```
   Expected: `ok`.
 
-- [ ] Commit (include the generated `.snap` file):
+- [x] Commit (include the generated `.snap` file):
   ```
   test(sid): snapshot animation output after 2 ticks — guards against dead-animation regression
   ```
@@ -659,19 +659,19 @@ This task closes the loop so that the `S`-key path in the real UI actually emits
 - Modify: `crates/sid-widgets/src/settings.rs` — `handle_event` or equivalent dispatch point
   where sub-view outcomes are converted to `PendingSettingsOutcome`.
 
-- [ ] Before making any changes, read `crates/sid-widgets/src/settings/behavior_toggles.rs`
+- [x] Before making any changes, read `crates/sid-widgets/src/settings/behavior_toggles.rs`
   in full to understand how `BehaviorTogglesView` enqueues a `PendingSettingsOutcome` into
   the parent `SettingsWidget`. Identify the exact calling convention: does it return an
   outcome type, does it push to a shared queue, or does it emit via `WidgetCtx`?
 
-- [ ] Follow the same pattern for `AnimationView`. The goal: when `try_save` returns
+- [x] Follow the same pattern for `AnimationView`. The goal: when `try_save` returns
   `Some(cfg)`, the `AnimationView::handle_event` caller (the `SettingsWidget`) pushes
   `PendingSettingsOutcome::AnimationChanged(cfg)` into its `pending_outcomes` queue.
 
   Implementation depends on what `behavior_toggles.rs` reveals. Do NOT invent an API;
   mirror the existing pattern exactly.
 
-- [ ] Add a unit test in `crates/sid-widgets/tests/settings_animation.rs` (new file)
+- [x] Add a unit test in `crates/sid-widgets/tests/settings_animation.rs` (new file)
   verifying that after `handle_event(S)` on a bound `AnimationView`, the parent
   `SettingsWidget`'s `pending_outcomes` contains one `AnimationChanged` entry:
 
@@ -721,18 +721,18 @@ This task closes the loop so that the `S`-key path in the real UI actually emits
 
   Adapt the navigation step once you've read the actual `SettingsWidget` API.
 
-- [ ] Run:
+- [x] Run:
   ```
   cargo test -p sid-widgets s_key_emits_animation_changed_outcome 2>&1 | tail -10
   ```
   Expected: `ok`.
 
-- [ ] Run clippy on `sid-widgets`:
+- [x] Run clippy on `sid-widgets`:
   ```
   cargo clippy -p sid-widgets --all-targets -- -D warnings 2>&1 | tail -10
   ```
 
-- [ ] Commit:
+- [x] Commit:
   ```
   feat(sid-widgets): AnimationView S-key emits AnimationChanged outcome for live-apply
   ```
@@ -741,19 +741,19 @@ This task closes the loop so that the `S`-key path in the real UI actually emits
 
 ### Task 8: Final integration check
 
-- [ ] Run the targeted test suite covering all changed crates:
+- [x] Run the targeted test suite covering all changed crates:
   ```
   cargo test -p sid -p sid-widgets -p sid-fx 2>&1 | tail -30
   ```
   Expected: all tests pass.
 
-- [ ] Run clippy across all affected crates:
+- [x] Run clippy across all affected crates:
   ```
   cargo clippy -p sid -p sid-widgets -p sid-fx --all-targets -- -D warnings 2>&1 | tail -20
   ```
   Expected: zero warnings.
 
-- [ ] Confirm fmt:
+- [x] Confirm fmt:
   ```
   cargo fmt -p sid -p sid-widgets -p sid-fx -- --check 2>&1 | tail -10
   ```
