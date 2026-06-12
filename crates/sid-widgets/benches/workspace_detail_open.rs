@@ -14,19 +14,16 @@ use ratatui::backend::TestBackend;
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
 use sid_ui::themes::cosmos;
-use sid_widgets::workspace_detail::{CiStatus, RepoSummary, WorkspaceDetailWidget};
+use sid_widgets::workspace_detail::WorkspaceDetailWidget;
+use sid_widgets::{RepoGit, SatelliteRow};
 
-fn make_summaries(n: usize) -> Vec<RepoSummary> {
+fn make_satellites(n: usize) -> Vec<SatelliteRow> {
     (0..n)
-        .map(|i| RepoSummary {
+        .map(|i| SatelliteRow {
             path: PathBuf::from(format!("/vcs/x/repo_{i}")),
             name: format!("repo_{i}"),
-            branch: "main".into(),
-            ahead: 0,
-            behind: 0,
-            dirty: 0,
-            last_commit_age_secs: 60,
-            ci_status: CiStatus::Unknown,
+            is_umbrella: false,
+            git: RepoGit::loaded("main".into(), 0, 0, 0),
         })
         .collect()
 }
@@ -44,7 +41,7 @@ fn bench_open_and_render(c: &mut Criterion) {
     c.bench_function("workspace_detail_open_5_subrepos_first_frame", |b| {
         b.iter(|| {
             let mut w = WorkspaceDetailWidget::new(ws.clone(), None);
-            w.apply_scan_results(make_summaries(5));
+            w.apply_satellites(make_satellites(5));
             let backend = TestBackend::new(120, 40);
             let mut term = Terminal::new(backend).unwrap();
             term.draw(|f| w.render_into_frame(f, f.area(), &theme))

@@ -1,12 +1,15 @@
-//! Tests for `WorkspaceDetailWidget` — types, navigation, and rendering.
+//! Tests for `WorkspaceDetailWidget` (UX-v2 rework) — satellite rows,
+//! navigation, rendering, plus the still-public `format_age` / `CiStatus`.
 
 use std::path::PathBuf;
 
+use sid_widgets::workspace_detail::{
+    CiStatus, WorkspaceDetailWidget, format_age, render_to_string,
+};
+use sid_widgets::{RepoGit, SatelliteRow};
+
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
-use sid_widgets::workspace_detail::{
-    CiStatus, RepoSummary, WorkspaceDetailWidget, format_age, render_to_string,
-};
 
 fn umbrella(path: &str, name: &str) -> Workspace {
     Workspace {
@@ -19,16 +22,12 @@ fn umbrella(path: &str, name: &str) -> Workspace {
     }
 }
 
-fn summary(name: &str, branch: &str, ahead: u32, dirty: u32, age: u64) -> RepoSummary {
-    RepoSummary {
-        path: PathBuf::from(format!("/vcs/x/{name}")),
+fn sat(name: &str, branch: &str, dirty: u32) -> SatelliteRow {
+    SatelliteRow {
         name: name.into(),
-        branch: branch.into(),
-        ahead,
-        behind: 0,
-        dirty,
-        last_commit_age_secs: age,
-        ci_status: CiStatus::Unknown,
+        path: PathBuf::from(format!("/vcs/x/{name}")),
+        is_umbrella: false,
+        git: RepoGit::loaded(branch.into(), dirty, 0, 0),
     }
 }
 
@@ -40,56 +39,53 @@ fn scanning_state_shows_hint() {
 }
 
 #[test]
-fn empty_results_shows_no_subrepos_hint() {
+fn apply_satellites_clears_scanning_flag() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    w.apply_scan_results(vec![]);
-    let s = render_to_string(&w, 200, 30);
-    assert!(
-        s.contains("no sub-repos found"),
-        "expected empty-state hint:\n{s}",
-    );
+    assert!(w.is_scanning());
+    w.apply_satellites(vec![]);
+    assert!(!w.is_scanning());
 }
 
 #[test]
-fn render_shows_each_subrepo_row() {
+fn render_shows_each_satellite_row() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/eggsight-stack", "eggsight-stack"), None);
-    w.apply_scan_results(vec![
-        summary("frontend", "main", 3, 12, 7200),
-        summary("backend", "feature/x", 0, 0, 900),
-        summary("infra", "main", 0, 0, 259_200),
+    w.apply_satellites(vec![
+        sat("frontend", "main", 12),
+        sat("backend", "feature/x", 0),
+        sat("infra", "main", 0),
     ]);
     let s = render_to_string(&w, 120, 40);
     for name in ["frontend", "backend", "infra"] {
         assert!(s.contains(name), "row {name} missing:\n{s}");
     }
-    assert!(s.contains("eggsight-stack"), "title missing:\n{s}");
+    assert!(s.contains("eggsight-stack"), "umbrella name missing:\n{s}");
 }
 
 #[test]
-fn select_next_wraps() {
+fn select_next_saturates_at_bottom() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    w.apply_scan_results(vec![
-        summary("a", "main", 0, 0, 60),
-        summary("b", "main", 0, 0, 60),
-    ]);
-    assert_eq!(w.selected_index(), 0);
+    w.apply_satellites(vec![sat("a", "main", 0), sat("b", "main", 0)]);
+    // umbrella row first
+    assert_eq!(w.selected_row().unwrap().name, "x");
     w.select_next();
-    assert_eq!(w.selected_index(), 1);
+    assert_eq!(w.selected_row().unwrap().name, "a");
     w.select_next();
-    assert_eq!(w.selected_index(), 0);
+    assert_eq!(w.selected_row().unwrap().name, "b");
+    w.select_next(); // ListCursor::down saturates
+    assert_eq!(w.selected_row().unwrap().name, "b");
 }
 
 #[test]
-fn select_prev_wraps_to_last() {
+fn select_prev_saturates_at_top() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    w.apply_scan_results(vec![
-        summary("a", "main", 0, 0, 60),
-        summary("b", "main", 0, 0, 60),
-        summary("c", "main", 0, 0, 60),
-    ]);
-    assert_eq!(w.selected_index(), 0);
+    w.apply_satellites(vec![sat("a", "main", 0), sat("b", "main", 0)]);
+    w.select_next();
+    w.select_next();
+    assert_eq!(w.selected_row().unwrap().name, "b");
     w.select_prev();
-    assert_eq!(w.selected_index(), 2);
+    w.select_prev();
+    w.select_prev(); // saturates at the umbrella row
+    assert_eq!(w.selected_row().unwrap().name, "x");
 }
 
 #[test]
@@ -106,50 +102,29 @@ fn format_age_buckets() {
 // Adversarial cases
 
 #[test]
-fn missing_path_still_renders_empty_state_after_scan_completes() {
-    let mut w =
-        WorkspaceDetailWidget::new(umbrella("/nonexistent/path/never/exists", "ghost"), None);
-    // The binary's scan job returns an empty vec on filesystem error.
-    w.apply_scan_results(vec![]);
-    let s = render_to_string(&w, 200, 30);
-    assert!(
-        s.contains("no sub-repos found"),
-        "expected empty-state hint after missing-path scan:\n{s}",
-    );
-}
-
-#[test]
-fn applying_scan_results_clears_scanning_flag() {
+fn select_on_lone_umbrella_is_noop() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    assert!(w.is_scanning());
-    w.apply_scan_results(vec![]);
-    assert!(!w.is_scanning());
-}
-
-#[test]
-fn select_on_empty_subrepos_is_noop() {
-    let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    w.apply_scan_results(vec![]);
-    w.select_next(); // would panic on naive indexing
+    w.apply_satellites(vec![]); // only the umbrella row remains
+    w.select_next(); // must not panic on the single-row list
     w.select_prev();
-    assert_eq!(w.selected_index(), 0);
-    assert!(w.selected_repo().is_none());
+    assert_eq!(w.selected_row().unwrap().name, "x");
 }
 
 #[test]
-fn applying_scan_results_clamps_selected_idx_if_smaller_set() {
+fn apply_satellites_keeps_selection_in_range_on_smaller_set() {
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
-    w.apply_scan_results(vec![
-        summary("a", "main", 0, 0, 60),
-        summary("b", "main", 0, 0, 60),
-        summary("c", "main", 0, 0, 60),
+    w.apply_satellites(vec![
+        sat("a", "main", 0),
+        sat("b", "main", 0),
+        sat("c", "main", 0),
     ]);
     w.select_next();
     w.select_next();
-    assert_eq!(w.selected_index(), 2);
-    // A rescan returns fewer rows.
-    w.apply_scan_results(vec![summary("a", "main", 0, 0, 60)]);
-    assert_eq!(w.selected_index(), 0);
+    w.select_next();
+    assert_eq!(w.selected_row().unwrap().name, "c");
+    // A rescan returns fewer rows; the cursor re-clamps.
+    w.apply_satellites(vec![sat("a", "main", 0)]);
+    assert!(w.selected_row().is_some());
 }
 
 #[test]

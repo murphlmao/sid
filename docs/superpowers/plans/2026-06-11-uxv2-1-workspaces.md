@@ -923,7 +923,7 @@ Rewrite the widget's rendering: an umbrella git header line, a left satellite li
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail.rs` (replace `render_into_frame`/`render_table`/`render_drilldown` and the `Widget` impl; keep `render_to_string` at the bottom)
 
-- [ ] **Step 1: Snapshot + behavior tests first**
+- [x] **Step 1: Snapshot + behavior tests first**
 
 Append to the `#[cfg(test)] mod tests` block:
 
@@ -986,12 +986,12 @@ Append to the `#[cfg(test)] mod tests` block:
 
 Note: confirm `WidgetCtx::new` / `ActionRegistry::new` signatures by reading how existing `workspaces.rs` tests construct a `WidgetCtx` (grep `WidgetCtx::new` under `crates/sid-core/src` and `crates/sid-widgets`); mirror exactly. If `WidgetCtx` needs a different constructor, use the same pattern the existing detail/workspaces tests use.
 
-- [ ] **Step 2: Run (expect failure — snapshots missing / behavior)**
+- [x] **Step 2: Run (expect failure — snapshots missing / behavior)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Expected: snapshot tests fail pending acceptance; `handle_enter_on_ops_menu_drills_in` fails until the new `handle_event` lands.
 
-- [ ] **Step 3: Implement the renderer + Widget impl**
+- [x] **Step 3: Implement the renderer + Widget impl**
 
 Replace `render_into_frame` (line 211), `render_table` (220), `render_drilldown` (312), and the `Widget` impl (344–389). Layout: a top header line (1 row), then a horizontal 40/60 split below it. The left list renders each `SatelliteRow` with `git.header_summary()`; the umbrella row is marked with a leading glyph. The right pane switches on `split.top()`:
 
@@ -1287,14 +1287,14 @@ impl Widget for WorkspaceDetailWidget {
 
 Note for the executor: the ops menu currently always enters `Outgoing` on the first drill (`enter_op(DetailOp::Outgoing)`); selecting a *different* op from the menu is a pane-list interaction left for a follow-up — the master plan's binding requirement is the ops → list → commit → diff stack working with `←` popping, which this delivers. The `DetailOp::ALL` list still renders so the other ops are discoverable. If you want per-op selection in this branch, add an ops-menu `ListCursor` and gate `enter_op` on its target; keep it minimal.
 
-- [ ] **Step 4: Re-run + accept snapshots**
+- [x] **Step 4: Re-run + accept snapshots**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Then: `cargo insta review` (accept `detail_list_and_ops_menu`, `detail_outgoing_commits`).
 Re-run: `cargo test -p sid-widgets workspace_detail`
 Expected: snapshot + behavior tests pass; the `render_to_string` doc test (`assert!(s.contains("scanning"))`) passes because the empty-satellite render still prints "scanning for satellites…".
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail.rs crates/sid-widgets/src/snapshots/

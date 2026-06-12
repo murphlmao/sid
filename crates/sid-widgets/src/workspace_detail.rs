@@ -313,26 +313,206 @@ impl WorkspaceDetailWidget {
         &self.pane_list
     }
 
-    /// ratatui-aware draw. Interim placeholder body — Task 5 replaces this with
-    /// the umbrella-header + satellite-list + drill-in-pane renderer. Kept here
-    /// so the crate (and [`render_to_string`]) compiles between Task 4 and 5.
+    /// Draw the detail tab: umbrella header row, then a 40/60 list/pane split.
     pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        self.render_header(frame, rows[0], theme);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(rows[1]);
+        self.render_list(frame, cols[0], theme);
+        self.render_pane(frame, cols[1], theme);
+    }
+
+    fn render_header(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let umbrella_git = self
+            .rows
+            .first()
+            .map(|r| r.git.header_summary())
+            .unwrap_or_default();
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", self.workspace.name),
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(umbrella_git, Style::default().fg(theme.foreground.into())),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_list(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let focused = self.split.focus() == SplitFocus::List;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary.into()))
-            .title(format!(" {} ", self.workspace.name));
-        let line = if self.scanning {
-            Line::from(Span::styled(
+            .border_style(Style::default().fg(border_color.into()))
+            .title(" Repos ");
+        if self.scanning && self.rows.len() <= 1 {
+            let body = Paragraph::new(Line::from(Span::styled(
                 "  scanning for satellites…",
                 Style::default().fg(theme.muted.into()),
-            ))
-        } else {
-            Line::from(Span::styled(
-                "  loaded",
-                Style::default().fg(theme.foreground.into()),
-            ))
+            )))
+            .block(block);
+            frame.render_widget(body, area);
+            return;
+        }
+        let sel = match self.list.target() {
+            CursorTarget::Item(i) => Some(i),
+            _ => None,
         };
-        frame.render_widget(Paragraph::new(line).block(block), area);
+        let lines: Vec<Line<'_>> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let glyph = if r.is_umbrella { '▾' } else { '·' };
+                let marker = if Some(i) == sel { '>' } else { ' ' };
+                let label = format!("{marker} {glyph} {}  {}", r.name, r.git.header_summary());
+                let style = if Some(i) == sel {
+                    Style::default()
+                        .fg(theme.background.into())
+                        .bg(theme.accent_primary.into())
+                } else {
+                    Style::default().fg(theme.foreground.into())
+                };
+                Line::from(Span::styled(label, style))
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
+    fn render_pane(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+        let focused = self.split.focus() == SplitFocus::Pane;
+        let border_color = if focused {
+            theme.accent_primary
+        } else {
+            theme.muted
+        };
+        let title = match self.split.top() {
+            None => " Ops ".to_string(),
+            Some(DetailView::Op(op)) => format!(" {} ", op.label()),
+            Some(DetailView::Diff(_)) => " Diff ".to_string(),
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color.into()))
+            .title(title);
+        let body: Vec<Line<'_>> = match self.split.top() {
+            None => DetailOp::ALL
+                .iter()
+                .map(|op| {
+                    Line::from(Span::styled(
+                        format!("  {}", op.label()),
+                        Style::default().fg(theme.foreground.into()),
+                    ))
+                })
+                .collect(),
+            Some(DetailView::Op(DetailOp::Outgoing | DetailOp::Log)) => {
+                self.render_commit_lines(theme)
+            }
+            Some(DetailView::Op(DetailOp::Branches)) => self.render_branch_lines(theme),
+            Some(DetailView::Op(DetailOp::Stash)) => vec![Line::from(Span::styled(
+                "  (no stash entries)",
+                Style::default().fg(theme.muted.into()),
+            ))],
+            Some(DetailView::Op(DetailOp::Worktrees)) => vec![Line::from(Span::styled(
+                "  (no linked worktrees)",
+                Style::default().fg(theme.muted.into()),
+            ))],
+            Some(DetailView::Diff(idx)) => self.render_diff_lines(*idx, theme),
+        };
+        frame.render_widget(Paragraph::new(body).block(block), area);
+    }
+
+    fn render_commit_lines(&self, theme: &Theme) -> Vec<Line<'_>> {
+        if self.detail.commits.is_empty() {
+            return vec![Line::from(Span::styled(
+                "  (no commits)",
+                Style::default().fg(theme.muted.into()),
+            ))];
+        }
+        let sel = match self.pane_list.target() {
+            CursorTarget::Item(i) => Some(i),
+            _ => None,
+        };
+        self.detail
+            .commits
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let short: String = c.oid.chars().take(8).collect();
+                let marker = if Some(i) == sel { '>' } else { ' ' };
+                Line::from(vec![
+                    Span::styled(
+                        format!("{marker} {short}"),
+                        Style::default().fg(theme.accent_warning.into()),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        c.summary.clone(),
+                        Style::default().fg(theme.foreground.into()),
+                    ),
+                ])
+            })
+            .collect()
+    }
+
+    fn render_branch_lines(&self, theme: &Theme) -> Vec<Line<'_>> {
+        if self.detail.branches.is_empty() {
+            return vec![Line::from(Span::styled(
+                "  (no branches loaded)",
+                Style::default().fg(theme.muted.into()),
+            ))];
+        }
+        let sel = match self.pane_list.target() {
+            CursorTarget::Item(i) => Some(i),
+            _ => None,
+        };
+        self.detail
+            .branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let glyph = if b.is_current { '●' } else { '○' };
+                let marker = if Some(i) == sel { '>' } else { ' ' };
+                Line::from(Span::styled(
+                    format!("{marker} {glyph} {}", b.name),
+                    Style::default().fg(theme.foreground.into()),
+                ))
+            })
+            .collect()
+    }
+
+    fn render_diff_lines(&self, idx: usize, theme: &Theme) -> Vec<Line<'_>> {
+        // The binary loads diff entries for the drilled commit into detail.diff.
+        const MAX: usize = 200;
+        let _ = idx; // diff is per-commit; the binary fills detail.diff for the drilled commit
+        if self.detail.diff.is_empty() {
+            return vec![Line::from(Span::styled(
+                "  (no diff loaded)",
+                Style::default().fg(theme.muted.into()),
+            ))];
+        }
+        self.detail
+            .diff
+            .iter()
+            .flat_map(|e| e.patch.lines())
+            .skip(self.diff_scroll)
+            .take(MAX)
+            .map(|l| Line::from(Span::raw(l.to_string())))
+            .collect()
     }
 }
 
@@ -357,10 +537,10 @@ impl Widget for WorkspaceDetailWidget {
 
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
+            FooterHint::new("j/k", "select"),
+            FooterHint::new("→/⏎", "drill in"),
+            FooterHint::new("←", "back"),
             FooterHint::new("Ctrl+W", "close"),
-            FooterHint::new("Enter", "focus right"),
-            FooterHint::new("b", "sync branches (stub)"),
-            FooterHint::new("j/k", "select repo"),
         ]
     }
 
@@ -369,16 +549,54 @@ impl Widget for WorkspaceDetailWidget {
         let Event::Key(chord) = ev else {
             return EventOutcome::Bubble;
         };
-        match (chord.code, chord.mods) {
-            (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                self.select_next();
-                EventOutcome::Consumed
-            }
-            (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                self.select_prev();
-                EventOutcome::Consumed
-            }
-            _ => EventOutcome::Bubble,
+        match self.split.focus() {
+            SplitFocus::List => match (chord.code, chord.mods) {
+                (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                    self.select_next();
+                    EventOutcome::Consumed
+                }
+                (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                    self.select_prev();
+                    EventOutcome::Consumed
+                }
+                (KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter, KeyModifiers::NONE) => {
+                    // Enter the ops menu: push the first op (Outgoing).
+                    self.enter_op(DetailOp::Outgoing);
+                    EventOutcome::Consumed
+                }
+                _ => EventOutcome::Bubble,
+            },
+            SplitFocus::Pane => match (chord.code, chord.mods) {
+                (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
+                    self.pop_view();
+                    EventOutcome::Consumed
+                }
+                (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                    self.pane_next();
+                    if matches!(self.split.top(), Some(DetailView::Diff(_))) {
+                        self.diff_scroll_down();
+                    }
+                    EventOutcome::Consumed
+                }
+                (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                    self.pane_prev();
+                    if matches!(self.split.top(), Some(DetailView::Diff(_))) {
+                        self.diff_scroll_up();
+                    }
+                    EventOutcome::Consumed
+                }
+                (KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter, KeyModifiers::NONE) => {
+                    // From a commit list, drill into the diff.
+                    if matches!(
+                        self.split.top(),
+                        Some(DetailView::Op(DetailOp::Outgoing | DetailOp::Log))
+                    ) {
+                        self.drill_into_commit();
+                    }
+                    EventOutcome::Consumed
+                }
+                _ => EventOutcome::Bubble,
+            },
         }
     }
 }
@@ -584,5 +802,89 @@ mod tests {
         w.select_next(); // moving the list selection re-roots the right pane
         assert_eq!(w.split().focus(), SplitFocus::List);
         assert_eq!(w.split().depth(), 0);
+    }
+
+    fn loaded_widget() -> WorkspaceDetailWidget {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        w.apply_row_git(
+            std::path::Path::new("/stack"),
+            RepoGit::loaded("main".into(), 2, 3, 0),
+        );
+        w.apply_satellites(vec![
+            SatelliteRow {
+                name: "api".into(),
+                path: "/stack/api".into(),
+                is_umbrella: false,
+                git: RepoGit::loaded("main".into(), 0, 0, 0),
+            },
+            SatelliteRow {
+                name: "web".into(),
+                path: "/stack/web".into(),
+                is_umbrella: false,
+                git: RepoGit::loaded("feat/x".into(), 5, 0, 1),
+            },
+        ]);
+        w
+    }
+
+    #[test]
+    fn snapshot_detail_list_and_ops_menu() {
+        let w = loaded_widget();
+        let s = render_to_string(&w, 100, 24);
+        insta::assert_snapshot!("detail_list_and_ops_menu", s);
+    }
+
+    #[test]
+    fn snapshot_detail_outgoing_commits() {
+        let mut w = loaded_widget();
+        w.enter_op(DetailOp::Outgoing);
+        w.apply_detail(RepoDetail {
+            commits: vec![
+                CommitInfo {
+                    oid: "deadbeef0".into(),
+                    summary: "feat: thing".into(),
+                    author_name: "a".into(),
+                    author_email: "a@b".into(),
+                    timestamp_secs: 0,
+                    parents: vec![],
+                },
+                CommitInfo {
+                    oid: "cafebabe1".into(),
+                    summary: "fix: bug".into(),
+                    author_name: "a".into(),
+                    author_email: "a@b".into(),
+                    timestamp_secs: 0,
+                    parents: vec![],
+                },
+            ],
+            ..RepoDetail::default()
+        });
+        let s = render_to_string(&w, 100, 24);
+        insta::assert_snapshot!("detail_outgoing_commits", s);
+    }
+
+    #[test]
+    fn header_shows_umbrella_git_summary() {
+        let w = loaded_widget();
+        let s = render_to_string(&w, 100, 24);
+        // umbrella header carries branch · dirty · outgoing
+        assert!(s.contains("main"));
+        assert!(s.contains("↑3"));
+    }
+
+    #[test]
+    fn handle_enter_on_ops_menu_drills_in() {
+        use sid_core::context::WidgetCtx;
+        use sid_core::event::Event;
+        let mut w = loaded_widget();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let ev = Event::Key(sid_core::event::KeyChord {
+            code: crossterm::event::KeyCode::Enter,
+            mods: crossterm::event::KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        // Enter on the ops menu (default selection 0 = Outgoing) drills in
+        assert_eq!(w.split().focus(), SplitFocus::Pane);
     }
 }
