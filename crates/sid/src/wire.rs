@@ -250,6 +250,10 @@ pub struct SidApp {
     /// Lower-right corner toast queue. Pushed by modal submit handlers
     /// (success / error) and by completed background jobs.
     pub toasts: ToastQueue,
+    /// Per-session settings undo ring. Capped at
+    /// [`crate::settings_undo::UNDO_RING_CAP`] entries; entries are evicted
+    /// when they exceed TTL ([`crate::settings_undo::UNDO_TTL`]).
+    pub undo_ring: std::collections::VecDeque<crate::settings_undo::UndoEntry>,
     /// Job queue used for asynchronous subprocess work (ssh-copy-id, ssh-keygen,
     /// ssh -vv, ssh-add, etc.). Each spawned task pushes a [`JobOutcome`];
     /// the event loop drains completed outcomes once per iteration and
@@ -1898,6 +1902,28 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         }
         let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
         true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && chord.code == crossterm::event::KeyCode::Char('u')
+        && chord.mods == crossterm::event::KeyModifiers::NONE
+    {
+        // Settings undo interceptor. Pops the head entry from the undo ring
+        // when it is within the TTL and re-applies the prior value.
+        // Runs ONLY when no modal or form is open to avoid swallowing `u` in
+        // text-input contexts.
+        if let Some(entry) = sid_app.undo_ring.pop_back() {
+            if entry.is_expired() {
+                // Entry too old — discard and let the key fall through.
+                false
+            } else {
+                apply_undo_entry(sid_app, entry);
+                true
+            }
+        } else {
+            // No undo entry available — let the key fall through to the widget.
+            false
+        }
     } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
         sid_app.modal_stack.push(modal);
         true
@@ -1912,7 +1938,6 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
 fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
     use sid_core::layout::Layout;
     use sid_store::TypedSettings;
-    use sid_widgets::settings::PendingSettingsOutcome;
     use sid_widgets::settings::behavior_toggles::ToggleValue;
 
     // Find the settings tab; bail if it's not present (custom test setups).
@@ -1937,27 +1962,358 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
     }
 
     for outcome in outcomes {
-        let PendingSettingsOutcome::BehaviorToggled { key, value } = outcome;
-        let put_result = match &value {
-            ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
-            ToggleValue::Choice { options, selected } => {
-                let picked = options.get(*selected).cloned().unwrap_or_default();
-                sid_app.store.put_string(key, &picked)
+        use crate::settings_undo::{UNDO_RING_CAP, UndoEntry, UndoPayload};
+        use sid_widgets::settings::PendingSettingsOutcome::*;
+        match outcome {
+            BehaviorToggled { key, value } => {
+                // Read prior value before write so it can be restored.
+                let prior_toggle = read_prior_toggle(&*sid_app.store, key, &value);
+                let put_result = match &value {
+                    ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
+                    ToggleValue::Choice { options, selected } => {
+                        let picked = options.get(*selected).cloned().unwrap_or_default();
+                        sid_app.store.put_string(key, &picked)
+                    }
+                    ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
+                    ToggleValue::String(s) => sid_app.store.put_string(key, s),
+                };
+                match put_result {
+                    Ok(()) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::success(format!("Saved {key} (u: undo)")));
+                        if let Some(prior) = prior_toggle {
+                            push_undo(
+                                &mut sid_app.undo_ring,
+                                UndoEntry {
+                                    payload: UndoPayload::BehaviorToggle { key, prior },
+                                    recorded_at: std::time::Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Save failed for {key}: {e}")));
+                    }
+                }
             }
-            ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
-            ToggleValue::String(s) => sid_app.store.put_string(key, s),
-        };
-        match put_result {
-            Ok(()) => {
-                sid_app.toasts.push(Toast::success(format!("Saved {key}")));
+            WorkspaceRootsChanged(new_roots) => {
+                use sid_store::{SettingValue, settings_keys};
+                // Read prior roots before write.
+                let prior_roots = read_prior_roots(&*sid_app.store);
+                let json = serde_json::to_string(&new_roots)
+                    .map_err(|e| sid_core::SidError::Storage(e.to_string()));
+                let put_result = json.and_then(|s| {
+                    sid_app.store.put_setting(
+                        settings_keys::WORKSPACE_ROOTS,
+                        &SettingValue(s.into_bytes()),
+                    )
+                });
+                match put_result {
+                    Ok(()) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::success("Workspace roots saved (u: undo)"));
+                        push_undo(
+                            &mut sid_app.undo_ring,
+                            UndoEntry {
+                                payload: UndoPayload::WorkspaceRoots { prior: prior_roots },
+                                recorded_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Workspace roots save failed: {e}")));
+                    }
+                }
             }
-            Err(e) => {
-                sid_app
+            QuickActionUpserted(qa) => {
+                // Read prior record if it exists.
+                let prior_qa = sid_app.store.get_quick_action(&qa.id).ok().flatten();
+                match sid_app.store.upsert_quick_action(&qa) {
+                    Ok(()) => {
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Quick action '{}' saved (u: undo)",
+                            qa.id
+                        )));
+                        if let Some(prior) = prior_qa {
+                            push_undo(
+                                &mut sid_app.undo_ring,
+                                UndoEntry {
+                                    payload: UndoPayload::QuickActionUpserted { prior },
+                                    recorded_at: std::time::Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Quick action save failed: {e}")));
+                    }
+                }
+            }
+            QuickActionRemoved(id) => {
+                // Read prior record so it can be restored.
+                let prior_qa = sid_app.store.get_quick_action(&id).ok().flatten();
+                match sid_app.store.remove_quick_action(&id) {
+                    Ok(()) => {
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Quick action '{id}' removed (u: undo)"
+                        )));
+                        if let Some(prior) = prior_qa {
+                            push_undo(
+                                &mut sid_app.undo_ring,
+                                UndoEntry {
+                                    payload: UndoPayload::QuickActionRemoved { prior },
+                                    recorded_at: std::time::Instant::now(),
+                                },
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Quick action remove failed: {e}")));
+                    }
+                }
+            }
+            KeybindApplied {
+                profile_name,
+                map_snapshot,
+            } => {
+                use sid_store::keybind_load::{load_keybind_profile, save_keybind_profile};
+                // Read prior map before write.
+                let prior_map = load_keybind_profile(&*sid_app.store, &profile_name)
+                    .ok()
+                    .flatten();
+                match save_keybind_profile(&*sid_app.store, &profile_name, &map_snapshot) {
+                    Ok(()) => {
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Keybinds saved to '{profile_name}' (u: undo)"
+                        )));
+                        push_undo(
+                            &mut sid_app.undo_ring,
+                            UndoEntry {
+                                payload: UndoPayload::Keybind {
+                                    profile_name,
+                                    prior: prior_map.unwrap_or_default(),
+                                },
+                                recorded_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Keybind save failed: {e}")));
+                    }
+                }
+            }
+            ThemeApplied { name } => {
+                use sid_store::{TypedSettings, settings_keys};
+                // Read prior theme before write.
+                let prior_theme = sid_app
+                    .store
+                    .get_string(settings_keys::THEME_NAME)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "cosmos".into());
+                match sid_app.store.put_string(settings_keys::THEME_NAME, &name) {
+                    Ok(()) => {
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Theme '{}' applied (u: undo)",
+                            name
+                        )));
+                        push_undo(
+                            &mut sid_app.undo_ring,
+                            UndoEntry {
+                                payload: UndoPayload::Theme { prior: prior_theme },
+                                recorded_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Theme save failed: {e}")));
+                    }
+                }
+            }
+            DbPathOverrideWritten(notice) => {
+                sid_app.toasts.push(Toast::info(format!(
+                    "DB path written to {} — restart to apply",
+                    notice.sid_toml_path.display()
+                )));
+                // DB path change requires a restart — intentionally not undoable.
+            }
+            FactoryResetConfirmed => {
+                use sid_widgets::settings::reset::ResetView;
+                let mut rv = ResetView::new();
+                rv.open_confirm();
+                match rv.confirm(&*sid_app.store) {
+                    Ok(n) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::success(format!("Reset {n} settings to defaults")));
+                        // Factory reset is intentionally not undoable.
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Reset failed: {e}")));
+                    }
+                }
+            }
+        }
+        let _ = UNDO_RING_CAP; // suppress unused import warning in older editions
+    }
+}
+
+/// Re-apply the prior value stored in `entry` to the store.
+/// Pushes a success toast on success; error toast on failure.
+fn apply_undo_entry(sid_app: &mut SidApp, entry: crate::settings_undo::UndoEntry) {
+    use crate::settings_undo::UndoPayload;
+    use sid_store::TypedSettings;
+    match entry.payload {
+        UndoPayload::BehaviorToggle { key, prior } => {
+            use sid_widgets::settings::behavior_toggles::ToggleValue;
+            let res = match &prior {
+                ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
+                ToggleValue::Choice { options, selected } => {
+                    let picked = options.get(*selected).cloned().unwrap_or_default();
+                    sid_app.store.put_string(key, &picked)
+                }
+                ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
+                ToggleValue::String(s) => sid_app.store.put_string(key, s),
+            };
+            match res {
+                Ok(()) => sid_app.toasts.push(Toast::success(format!("Undid {key}"))),
+                Err(e) => sid_app
                     .toasts
-                    .push(Toast::error(format!("Save failed for {key}: {e}")));
+                    .push(Toast::error(format!("Undo failed for {key}: {e}"))),
+            }
+        }
+        UndoPayload::WorkspaceRoots { prior } => {
+            use sid_store::{SettingValue, settings_keys};
+            let json = serde_json::to_string(&prior)
+                .map_err(|e| sid_core::SidError::Storage(e.to_string()));
+            let res = json.and_then(|s| {
+                sid_app.store.put_setting(
+                    settings_keys::WORKSPACE_ROOTS,
+                    &SettingValue(s.into_bytes()),
+                )
+            });
+            match res {
+                Ok(()) => sid_app.toasts.push(Toast::success("Undid workspace roots")),
+                Err(e) => sid_app
+                    .toasts
+                    .push(Toast::error(format!("Workspace roots undo failed: {e}"))),
+            }
+        }
+        UndoPayload::QuickActionUpserted { prior } => {
+            match sid_app.store.upsert_quick_action(&prior) {
+                Ok(()) => sid_app.toasts.push(Toast::success(format!(
+                    "Restored quick action '{}'",
+                    prior.id
+                ))),
+                Err(e) => sid_app
+                    .toasts
+                    .push(Toast::error(format!("Quick action undo failed: {e}"))),
+            }
+        }
+        UndoPayload::QuickActionRemoved { prior } => {
+            match sid_app.store.upsert_quick_action(&prior) {
+                Ok(()) => sid_app.toasts.push(Toast::success(format!(
+                    "Restored quick action '{}'",
+                    prior.id
+                ))),
+                Err(e) => sid_app
+                    .toasts
+                    .push(Toast::error(format!("Quick action restore failed: {e}"))),
+            }
+        }
+        UndoPayload::Keybind {
+            profile_name,
+            prior,
+        } => {
+            use sid_store::keybind_load::save_keybind_profile;
+            match save_keybind_profile(&*sid_app.store, &profile_name, &prior) {
+                Ok(()) => sid_app.toasts.push(Toast::success(format!(
+                    "Undid keybinds for '{profile_name}'"
+                ))),
+                Err(e) => sid_app
+                    .toasts
+                    .push(Toast::error(format!("Keybind undo failed: {e}"))),
+            }
+        }
+        UndoPayload::Theme { prior } => {
+            use sid_store::settings_keys;
+            match sid_app.store.put_string(settings_keys::THEME_NAME, &prior) {
+                Ok(()) => sid_app
+                    .toasts
+                    .push(Toast::success(format!("Undid theme → '{prior}'"))),
+                Err(e) => sid_app
+                    .toasts
+                    .push(Toast::error(format!("Theme undo failed: {e}"))),
             }
         }
     }
+}
+
+/// Push an undo entry, evicting the oldest when at cap.
+fn push_undo(
+    ring: &mut std::collections::VecDeque<crate::settings_undo::UndoEntry>,
+    entry: crate::settings_undo::UndoEntry,
+) {
+    use crate::settings_undo::UNDO_RING_CAP;
+    if ring.len() == UNDO_RING_CAP {
+        ring.pop_front();
+    }
+    ring.push_back(entry);
+}
+
+/// Read the current value of `key` as a [`sid_widgets::settings::behavior_toggles::ToggleValue`]
+/// in the same shape as `new_value`, for use as the undo-ring "prior".
+fn read_prior_toggle(
+    store: &dyn sid_store::Store,
+    key: &'static str,
+    new_value: &sid_widgets::settings::behavior_toggles::ToggleValue,
+) -> Option<sid_widgets::settings::behavior_toggles::ToggleValue> {
+    use sid_store::TypedSettings;
+    use sid_widgets::settings::behavior_toggles::ToggleValue;
+    Some(match new_value {
+        ToggleValue::Bool(_) => ToggleValue::Bool(store.get_bool(key).ok()??.to_owned()),
+        ToggleValue::Choice { options, .. } => {
+            let s = store.get_string(key).ok()??;
+            let selected = options.iter().position(|o| o == &s).unwrap_or(0);
+            ToggleValue::Choice {
+                options: options.clone(),
+                selected,
+            }
+        }
+        ToggleValue::U64 { min, max, step, .. } => ToggleValue::U64 {
+            value: store.get_u64(key).ok()??,
+            min: *min,
+            max: *max,
+            step: *step,
+        },
+        ToggleValue::String(_) => ToggleValue::String(store.get_string(key).ok()??),
+    })
+}
+
+/// Read the current workspace roots from the store, or return an empty vec on
+/// error/absent.
+fn read_prior_roots(store: &dyn sid_store::Store) -> Vec<std::path::PathBuf> {
+    use sid_store::settings_keys;
+    let Ok(Some(sv)) = store.get_setting(settings_keys::WORKSPACE_ROOTS) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<std::path::PathBuf>>(&sv.0).unwrap_or_default()
 }
 
 /// If the Workspaces widget has a pending `take_pending_open_detail` flag,
@@ -5892,6 +6248,7 @@ mod tests {
             form_origin_tab: None,
             pending_submits: Vec::new(),
             toasts: ToastQueue::new(4),
+            undo_ring: std::collections::VecDeque::new(),
             jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
             ssh_client_factory: build_ssh_client_factory_fn(),
             ssh_outcome_tx,
@@ -9352,5 +9709,91 @@ mod tests {
             assert!(s.contains("x"));
             assert!(s.contains("y"));
         }
+    }
+
+    // ---- undo ring + u-chord interceptor ----
+
+    #[test]
+    fn u_chord_with_empty_ring_returns_false() {
+        use crossterm::event::KeyCode;
+        let mut sid_app = build_test_sid_app(None);
+        let chord = chord(KeyCode::Char('u'));
+        let consumed = route_key_event(&mut sid_app, chord);
+        assert!(!consumed, "u with empty ring should not be consumed");
+    }
+
+    #[test]
+    fn u_chord_with_fresh_entry_applies_and_is_consumed() {
+        use crate::settings_undo::{UndoEntry, UndoPayload};
+        use crossterm::event::KeyCode;
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(None);
+        // Seed the store with a theme value to undo.
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::THEME_NAME, "void")
+            .unwrap();
+        // Push an undo entry that restores "cosmos".
+        sid_app.undo_ring.push_back(UndoEntry {
+            payload: UndoPayload::Theme {
+                prior: "cosmos".into(),
+            },
+            recorded_at: std::time::Instant::now(),
+        });
+        let chord = chord(KeyCode::Char('u'));
+        let consumed = route_key_event(&mut sid_app, chord);
+        assert!(consumed, "u with valid entry should be consumed");
+        let stored = sid_app
+            .store
+            .get_string(sid_store::settings_keys::THEME_NAME)
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("cosmos"),
+            "prior theme should be restored"
+        );
+        assert!(sid_app.undo_ring.is_empty(), "entry popped from ring");
+    }
+
+    #[test]
+    fn u_chord_with_expired_entry_returns_false_and_discards() {
+        use crate::settings_undo::{UNDO_TTL, UndoEntry, UndoPayload};
+        use crossterm::event::KeyCode;
+        let mut sid_app = build_test_sid_app(None);
+        let mut entry = UndoEntry {
+            payload: UndoPayload::Theme {
+                prior: "cosmos".into(),
+            },
+            recorded_at: std::time::Instant::now(),
+        };
+        entry.recorded_at =
+            std::time::Instant::now() - UNDO_TTL - std::time::Duration::from_millis(1);
+        sid_app.undo_ring.push_back(entry);
+        let chord = chord(KeyCode::Char('u'));
+        let consumed = route_key_event(&mut sid_app, chord);
+        assert!(!consumed, "expired entry should not be consumed");
+        assert!(
+            sid_app.undo_ring.is_empty(),
+            "expired entry should be discarded"
+        );
+    }
+
+    #[test]
+    fn u_chord_ring_cap_evicts_oldest() {
+        use crate::settings_undo::{UNDO_RING_CAP, UndoEntry, UndoPayload};
+        // Fill the ring beyond cap and verify it doesn't exceed cap.
+        let mut ring: std::collections::VecDeque<UndoEntry> = std::collections::VecDeque::new();
+        for i in 0..=(UNDO_RING_CAP + 5) {
+            push_undo(
+                &mut ring,
+                UndoEntry {
+                    payload: UndoPayload::Theme {
+                        prior: format!("theme_{i}"),
+                    },
+                    recorded_at: std::time::Instant::now(),
+                },
+            );
+        }
+        assert_eq!(ring.len(), UNDO_RING_CAP, "ring capped at UNDO_RING_CAP");
     }
 }
