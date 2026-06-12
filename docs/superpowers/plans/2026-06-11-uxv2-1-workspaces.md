@@ -2081,7 +2081,7 @@ Per master-plan decision 6, the overview list gains a synthetic "+ add new" firs
 - Modify: `crates/sid-widgets/src/workspaces.rs` (`WorkspacesState` — add `add_new: bool` + a `ListCursor`-backed selection; or a minimal flag + Enter arm)
 - Modify: `crates/sid/src/wire.rs` (hydrate `add_new` from `load_show_add_new_row` when constructing/refreshing the widget; handle the add-new Enter outcome)
 
-- [ ] **Step 1: Failing tests (widget side)**
+- [x] **Step 1: Failing tests (widget side)**
 
 ```rust
     #[test]
@@ -2110,12 +2110,12 @@ Per master-plan decision 6, the overview list gains a synthetic "+ add new" firs
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::add_new`
 Expected: `set_show_add_new_row` / `add_new_selected` / `take_pending_add_new` missing.
 
-- [ ] **Step 3: Implement on the widget**
+- [x] **Step 3: Implement on the widget**
 
 Add to `WorkspacesWidget` (next to `pending_open_detail`):
 
@@ -2205,7 +2205,7 @@ In the Enter arm (Task 6's rewrite), gate on add-new first:
 
 In `render_tree` (line 1447), prepend a `+ add new` line when `show_add_new_row` is true, styled accent and highlighted when `add_new_selected()`.
 
-- [ ] **Step 4: Wire hydration + drain in the binary**
+- [x] **Step 4: Wire hydration + drain in the binary**
 
 In `build_app_full` (line 707) and `refresh_workspaces_widget` (line 4772), after constructing/replacing the widget state, call `ww.set_show_add_new_row(load_show_add_new_row(&*store))`. Drain the add-new flag in the same place `maybe_open_pending_workspace_detail` runs (line 1701 area): a new `maybe_open_pending_new_form(sid_app)` that, if the workspaces widget's `take_pending_add_new()` is true, calls `open_form(sid_app, workspaces_new_form())`.
 
@@ -2228,12 +2228,12 @@ Add a wire test:
 
 Note for the executor: `workspaces_widget_mut` may not exist — reuse the downcast pattern from `maybe_open_pending_workspace_detail` (line 1788) inline, or extract a small `fn workspaces_widget_mut(&mut SidApp) -> Option<&mut WorkspacesWidget>` helper and use it in both spots (additive, single definition). Keep the test honest: set the flag through the real key path if a public setter for `pending_add_new` is undesirable, else add a `#[cfg(test)]` seam. Prefer driving the real `handle_event` Enter on the add-new row.
 
-- [ ] **Step 5: Re-run (expect pass)**
+- [x] **Step 5: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::add_new && cargo test -p sid add_new_enter_opens`
 Expected: PASS. Accept any churned overview snapshot via `cargo insta review` if the `+ add new` row changed a golden file.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspaces.rs crates/sid/src/wire.rs crates/sid-widgets/src/snapshots/

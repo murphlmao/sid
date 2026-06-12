@@ -1191,6 +1191,11 @@ impl WorkspacesState {
         self.visible_workspaces().len()
     }
 
+    /// Index of the currently-selected visible item (into `visible_workspaces`).
+    pub fn selected_visible_idx(&self) -> usize {
+        self.selected_visible_idx
+    }
+
     /// Path of the currently selected workspace, or `None` if the list is empty.
     pub fn selected_path(&self) -> Option<&Path> {
         self.visible_workspaces()
@@ -1315,6 +1320,14 @@ pub struct WorkspacesWidget {
     /// open (`Ctrl+Enter` / `O`). The wire layer reads this to choose
     /// `push_background` over `push_detail`.
     pending_open_background: bool,
+    /// Whether the synthetic "+ add new" first row is shown (hydrated by the
+    /// binary from `load_show_add_new_row`).
+    show_add_new_row: bool,
+    /// True when the tree cursor sits on the synthetic add-new row (only
+    /// meaningful while `show_add_new_row` is enabled).
+    at_add_new: bool,
+    /// True when the cursor sat on the add-new row and Enter was pressed.
+    pending_add_new: bool,
 }
 
 impl WorkspacesWidget {
@@ -1342,6 +1355,9 @@ impl WorkspacesWidget {
             focused_pane: WsFocus::default(),
             pending_open_detail: None,
             pending_open_background: false,
+            show_add_new_row: false,
+            at_add_new: false,
+            pending_add_new: false,
         }
     }
 
@@ -1360,6 +1376,24 @@ impl WorkspacesWidget {
     /// open was requested; the wire layer then uses `push_background`.
     pub fn take_pending_open_background(&mut self) -> bool {
         std::mem::take(&mut self.pending_open_background)
+    }
+
+    /// Hydrate the add-new-row toggle from settings; moves the cursor onto the
+    /// add-new row when enabled, clears it when disabled.
+    pub fn set_show_add_new_row(&mut self, show: bool) {
+        self.show_add_new_row = show;
+        self.at_add_new = show; // cursor lands on add-new row when the row is first enabled
+    }
+
+    /// Whether the cursor currently points at the synthetic add-new row.
+    /// True when `show_add_new_row` is enabled and `at_add_new` is set.
+    pub fn add_new_selected(&self) -> bool {
+        self.show_add_new_row && self.at_add_new
+    }
+
+    /// Drain the add-new-pressed flag.
+    pub fn take_pending_add_new(&mut self) -> bool {
+        std::mem::take(&mut self.pending_add_new)
     }
 
     /// Currently-focused pane.
@@ -1476,27 +1510,52 @@ impl WorkspacesWidget {
             .title(" Workspaces ")
             .title_style(title_style);
 
+        let on_add_new = self.add_new_selected();
+
+        // Synthetic "+ add new" first row, governed by the behavior toggle.
+        let add_new_line = |theme: &Theme| {
+            let marker = if on_add_new { '>' } else { ' ' };
+            let style = if on_add_new {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.accent_primary.into())
+            };
+            Line::from(Span::styled(format!("{marker} + add new"), style))
+        };
+
         if workspaces.is_empty() {
-            let body = vec![
-                Line::from(Span::styled(
-                    "no workspaces yet — press N to add one",
-                    Style::default().fg(theme.muted.into()),
-                )),
-                Line::from(Span::raw("")),
-                Line::from(Span::styled(
-                    "  or, from a shell: sid workspace add /path/to/repo",
-                    Style::default().fg(theme.foreground.into()),
-                )),
-            ];
+            let mut body: Vec<Line<'_>> = Vec::new();
+            if self.show_add_new_row {
+                body.push(add_new_line(theme));
+                body.push(Line::from(Span::raw("")));
+            }
+            body.push(Line::from(Span::styled(
+                "no workspaces yet — press N to add one",
+                Style::default().fg(theme.muted.into()),
+            )));
+            body.push(Line::from(Span::raw("")));
+            body.push(Line::from(Span::styled(
+                "  or, from a shell: sid workspace add /path/to/repo",
+                Style::default().fg(theme.foreground.into()),
+            )));
             frame.render_widget(Paragraph::new(body).block(block), rect);
             return;
         }
 
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible.len());
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible.len() + 1);
+        if self.show_add_new_row {
+            lines.push(add_new_line(theme));
+        }
         for w in &visible {
-            let is_selected = selected_path
-                .map(|p| p == w.path.as_path())
-                .unwrap_or(false);
+            // The real-row highlight is suppressed while the cursor sits on the
+            // synthetic add-new row.
+            let is_selected = !on_add_new
+                && selected_path
+                    .map(|p| p == w.path.as_path())
+                    .unwrap_or(false);
             let indent = if w.parent.is_some() { "    " } else { "" };
             let glyph = match w.kind {
                 WorkspaceKind::Umbrella => '▾',
@@ -1949,11 +2008,23 @@ impl Widget for WorkspacesWidget {
             match self.focused_pane {
                 WsFocus::Tree => match (chord.code, chord.mods) {
                     (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                        self.state.select_next();
+                        if self.at_add_new {
+                            self.at_add_new = false;
+                            // state.selected_visible_idx stays at 0 — first real item
+                        } else {
+                            self.state.select_next();
+                        }
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                        self.state.select_prev();
+                        if self.at_add_new {
+                            self.at_add_new = false;
+                            self.state.select_prev(); // wraps to last visible item
+                        } else if self.show_add_new_row && self.state.selected_visible_idx() == 0 {
+                            self.at_add_new = true; // land on add-new row
+                        } else {
+                            self.state.select_prev();
+                        }
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
@@ -1972,6 +2043,11 @@ impl Widget for WorkspacesWidget {
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if self.add_new_selected() {
+                            ctx.emit_action("workspaces.add_new");
+                            self.pending_add_new = true;
+                            return EventOutcome::Consumed;
+                        }
                         // Decision 8: Enter on ANY node opens it as a pushed
                         // subrepo tab — umbrella, satellite, or single repo all
                         // get the same detail layout. Inline tree expansion
@@ -2297,5 +2373,73 @@ mod tests {
         let _ = w.handle_event(&ev, &mut ctx);
         assert!(w.state().is_expanded(std::path::Path::new("/stack")));
         assert!(w.take_pending_open_detail().is_none());
+    }
+
+    // ─── UX-v2: "+ add new" row honoring show_add_new_row ─────────────────────
+
+    #[test]
+    fn add_new_row_selectable_and_signals_open_form() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(true);
+        // cursor starts on the add-new row when enabled
+        assert!(w.add_new_selected());
+        let (_rx, mut ctx) = test_ctx();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        assert!(w.take_pending_add_new());
+        // Enter on add-new must NOT also queue a detail open
+        assert!(w.take_pending_open_detail().is_none());
+    }
+
+    #[test]
+    fn add_new_disabled_hides_row() {
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(false);
+        assert!(!w.add_new_selected());
+    }
+
+    #[test]
+    fn down_off_add_new_lands_on_first_item() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(true);
+        assert!(w.add_new_selected());
+        let (_rx, mut ctx) = test_ctx();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Down,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        // cursor leaves the add-new row and lands on the first real item
+        assert!(!w.add_new_selected());
+        assert_eq!(w.state().selected_workspace().unwrap().name, "gen4");
+    }
+
+    #[test]
+    fn up_from_first_item_lands_back_on_add_new() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(true);
+        // move down to the first item, then back up onto the add-new row
+        let (_rx, mut ctx) = test_ctx();
+        let down = Event::Key(KeyChord {
+            code: KeyCode::Down,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&down, &mut ctx);
+        assert!(!w.add_new_selected());
+        let up = Event::Key(KeyChord {
+            code: KeyCode::Up,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&up, &mut ctx);
+        assert!(w.add_new_selected());
     }
 }

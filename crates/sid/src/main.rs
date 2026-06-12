@@ -589,6 +589,10 @@ async fn main() -> Result<()> {
         ssh_shutdown_tx: None,
     };
 
+    // Hydrate the Workspaces overview "+ add new" row from the persisted
+    // `show_add_new_row` behavior toggle (default on).
+    wire::hydrate_workspaces_add_new_row(&mut sid_app);
+
     // Offer the user a resume-or-start-fresh modal if the previous session
     // was recent enough and had a recorded active tab. No-op when there's no
     // prior session (e.g. first launch on a fresh store).

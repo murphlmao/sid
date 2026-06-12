@@ -1792,6 +1792,9 @@ where
             // Workspaces widget signalled that the user pressed Enter on a
             // Repo leaf. If so, open a detail tab.
             maybe_open_pending_workspace_detail(sid_app);
+            // Or, if the user pressed Enter on the "+ add new" row, open the
+            // create-new side-pane form.
+            maybe_open_pending_new_form(sid_app);
             // Drain settings outcomes (live-apply behavior toggles, etc.).
             apply_pending_settings_outcomes(sid_app);
             let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
@@ -2192,6 +2195,46 @@ fn load_repo_git(
     // (honest, not a guess); a follow-up that grows the trait can wire a real
     // ahead/behind count.
     RepoGit::loaded(branch, dirty, 0, 0)
+}
+
+/// Mutable handle to the Workspaces overview widget, if the tab is installed
+/// and the layout is a single widget. Used by the add-new-row hydration and
+/// drain paths.
+fn workspaces_widget_mut(sid_app: &mut SidApp) -> Option<&mut sid_widgets::WorkspacesWidget> {
+    use sid_core::layout::Layout;
+    for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
+        if tab.id.as_str() != "workspaces" {
+            continue;
+        }
+        if let Layout::Single(w) = &mut tab.layout {
+            return w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::WorkspacesWidget>();
+        }
+        return None;
+    }
+    None
+}
+
+/// Hydrate the Workspaces overview's `show_add_new_row` toggle from the store's
+/// `show_add_new_row` setting (default on). Call once after the app is built;
+/// the flag is widget-level so it survives state refreshes.
+pub fn hydrate_workspaces_add_new_row(sid_app: &mut SidApp) {
+    let show = load_show_add_new_row(&*sid_app.store);
+    if let Some(ww) = workspaces_widget_mut(sid_app) {
+        ww.set_show_add_new_row(show);
+    }
+}
+
+/// If the Workspaces widget signalled an add-new press (Enter on the synthetic
+/// "+ add new" row), open the create-new side-pane form. No-op otherwise.
+fn maybe_open_pending_new_form(sid_app: &mut SidApp) {
+    let pressed = workspaces_widget_mut(sid_app)
+        .map(|ww| ww.take_pending_add_new())
+        .unwrap_or(false);
+    if pressed && sid_app.form.is_none() {
+        open_form(sid_app, workspaces_new_form());
+    }
 }
 
 /// Spawn a new external terminal window running `sid --start-tab <active>`.
@@ -6396,6 +6439,40 @@ mod tests {
         {
             assert_eq!(f.value_string(), "true");
         }
+    }
+
+    #[test]
+    fn add_new_enter_opens_create_form() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Enable + select the add-new row, then drive a real Enter through the
+        // widget so it flags pending_add_new the way the user would.
+        if let Some(ww) = workspaces_widget_mut(&mut sid_app) {
+            ww.set_show_add_new_row(true);
+            assert!(ww.add_new_selected());
+            let (_tx, _rx) = std::sync::mpsc::channel::<String>();
+            let mut ctx = sid_core::context::WidgetCtx::new(_tx);
+            let ev = Event::Key(KeyChord {
+                code: KeyCode::Enter,
+                mods: KeyModifiers::NONE,
+            });
+            let _ = ww.handle_event(&ev, &mut ctx);
+        }
+        assert!(sid_app.form.is_none());
+        maybe_open_pending_new_form(&mut sid_app);
+        // A form is now open with id workspaces.create.
+        let form = sid_app.form.as_ref().expect("create form opened");
+        assert_eq!(form.spec.id.0, "workspaces.create");
+    }
+
+    #[test]
+    fn hydrate_workspaces_add_new_row_defaults_on() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        hydrate_workspaces_add_new_row(&mut sid_app);
+        let ww = workspaces_widget_mut(&mut sid_app).expect("workspaces widget");
+        // default setting is on, so the add-new row is selected at startup
+        assert!(ww.add_new_selected());
     }
 
     #[test]
