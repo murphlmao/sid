@@ -341,6 +341,71 @@ pub fn build_systemctl_client() -> Arc<dyn SystemctlClient> {
     }
 }
 
+/// Build the active [`SecretStore`] implementation.
+///
+/// Reads [`sid_store::settings_keys::USE_OS_KEYRING`] from `store`. When
+/// `true`, constructs a [`sid_secrets::KeyringStore`] and probes the keyring
+/// daemon with a round-trip write/read/delete of a sentinel key. On probe
+/// failure, falls back to [`sid_secrets::PlainStore`] and logs a warning.
+///
+/// Returns `(store, used_keyring)` — the bool lets `main.rs` push a fallback
+/// toast when the keyring was requested but unavailable.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use sid_store::{OpenStore, RedbStore, Store};
+/// use tempfile::tempdir;
+/// use sid::wire::build_secret_store;
+///
+/// let dir = tempdir().unwrap();
+/// let redb = Arc::new(RedbStore::open(&dir.path().join("s.redb")).unwrap());
+/// // Setting absent → PlainStore returned, used_keyring = false.
+/// let (secrets, used_keyring) = build_secret_store(&*redb, Arc::clone(&redb) as Arc<dyn Store>);
+/// assert!(!used_keyring);
+/// let id = sid_core::adapters::secrets::SecretId::new("smoke.test");
+/// use sid_core::adapters::secrets::SecretStore;
+/// secrets.put(&id, b"val").unwrap();
+/// assert_eq!(secrets.get(&id).unwrap().unwrap(), b"val".to_vec());
+/// ```
+pub fn build_secret_store(
+    store: &RedbStore,
+    plain_arc: Arc<dyn Store>,
+) -> (Arc<dyn sid_core::adapters::secrets::SecretStore>, bool) {
+    use sid_store::TypedSettings;
+    let want_keyring = store
+        .get_bool(sid_store::settings_keys::USE_OS_KEYRING)
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+    if want_keyring {
+        let ks = sid_secrets::KeyringStore::new();
+        let probe_key = sid_core::adapters::secrets::SecretId::new("sid.__keyring_probe");
+        let probe_ok = sid_core::adapters::secrets::SecretStore::put(&ks, &probe_key, b"probe")
+            .and_then(|_| sid_core::adapters::secrets::SecretStore::get(&ks, &probe_key))
+            .and_then(|v| {
+                if v.as_deref() == Some(b"probe") {
+                    sid_core::adapters::secrets::SecretStore::delete(&ks, &probe_key)
+                } else {
+                    Err(sid_core::adapters::secrets::SecretError::Storage(
+                        "keyring probe read-back mismatch".into(),
+                    ))
+                }
+            })
+            .is_ok();
+
+        if probe_ok {
+            tracing::info!("OS keyring available — using KeyringStore");
+            return (Arc::new(ks), true);
+        } else {
+            tracing::warn!("OS keyring requested but probe failed — falling back to PlainStore");
+        }
+    }
+
+    (Arc::new(sid_secrets::PlainStore::new(plain_arc)), false)
+}
+
 /// Resolve the terminal spawner. Logs and falls back to
 /// [`NoopTerminalSpawner`] if `kitty` is missing.
 pub fn build_terminal_spawner() -> Arc<dyn TerminalSpawner> {

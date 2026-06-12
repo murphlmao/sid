@@ -69,6 +69,25 @@ pub mod settings_keys {
     /// assert_eq!(settings_keys::SHOW_ADD_NEW_ROW, "show_add_new_row");
     /// ```
     pub const SHOW_ADD_NEW_ROW: &str = "show_add_new_row";
+    /// Whether to use the OS keyring (libsecret / Keychain) instead of the
+    /// plaintext redb secrets table. Value is `"true"` or `"false"`. Defaults
+    /// to `false` (plain store).
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::USE_OS_KEYRING, "use_os_keyring");
+    /// ```
+    pub const USE_OS_KEYRING: &str = "use_os_keyring";
+    /// Whether the one-time redb→keyring secret migration has completed
+    /// successfully. Set to `"true"` by `main.rs` after a zero-failure
+    /// `migrate_to_keyring` run. Absent or `"false"` means migration is
+    /// pending (will be retried next startup).
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::KEYRING_MIGRATION_DONE, "keyring_migration_done");
+    /// ```
+    pub const KEYRING_MIGRATION_DONE: &str = "keyring_migration_done";
 }
 
 /// String-typed setting helpers. Default impls call [`Store::get_setting`] /

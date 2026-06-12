@@ -546,9 +546,8 @@ async fn main() -> Result<()> {
     let spawner = wire::build_terminal_spawner();
     let postgres = sid_db_clients::PostgresClient::factory();
     let sqlite = sid_db_clients::SqliteClient::factory();
-    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
-        sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
-    );
+    let (secrets, keyring_active) =
+        wire::build_secret_store(&store, Arc::clone(&store) as Arc<dyn Store>);
 
     // Background animation: load persisted AnimationConfig if any, else default.
     let animation = wire::load_animation_config(&*store);
@@ -587,6 +586,20 @@ async fn main() -> Result<()> {
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
     };
+
+    // Push a toast if the user requested OS keyring but it was unavailable.
+    {
+        use sid_store::TypedSettings;
+        let wanted = store
+            .get_bool(sid_store::settings_keys::USE_OS_KEYRING)
+            .unwrap_or(None)
+            .unwrap_or(false);
+        if wanted && !keyring_active {
+            sid_app.toasts.push(crate::toast::Toast::error(
+                "OS keyring unavailable — secrets stored as plaintext",
+            ));
+        }
+    }
 
     // Offer the user a resume-or-start-fresh modal if the previous session
     // was recent enough and had a recorded active tab. No-op when there's no
