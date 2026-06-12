@@ -296,6 +296,10 @@ proptest! {
     }
 }
 
+fn manager_with_two_tabs() -> TabManager {
+    TabManager::new(vec![make_tab("a"), make_tab("b")])
+}
+
 // ---------------------------------------------------------------------------
 // Branch #1 — dynamic-tab API (TabKind, push_detail, close_active, detail_count)
 // ---------------------------------------------------------------------------
@@ -386,4 +390,29 @@ proptest! {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// push_background — background open (Ctrl+Enter / O)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_background_keeps_active_and_adds_tab() {
+    let mut mgr = manager_with_two_tabs();
+    let before = mgr.active_index();
+    let n = mgr.tabs().len();
+    mgr.push_background(detail_tab("bg", 0)).unwrap();
+    assert_eq!(mgr.active_index(), before);
+    assert_eq!(mgr.tabs().len(), n + 1);
+}
+
+#[test]
+fn push_background_propagates_push_detail_errors() {
+    // push_detail rejects TabKind::Core — a core-kind tab triggers the same error.
+    // Active index must remain unchanged after the rejected call.
+    let mut mgr = manager_with_two_tabs();
+    let bad = make_tab("bad-core"); // TabKind::Core — will be rejected
+    let before = mgr.active_index();
+    assert!(mgr.push_background(bad).is_err());
+    assert_eq!(mgr.active_index(), before);
 }

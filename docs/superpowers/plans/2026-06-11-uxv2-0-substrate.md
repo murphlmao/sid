@@ -1277,7 +1277,7 @@ git commit -m "feat(sid-widgets): SplitView — list/pane focus with drill-in st
 **Files:**
 - Modify: `crates/sid-core/src/tab.rs` (next to `push_detail`, ~line 309 — read `push_detail` first and mirror its validation/error behavior exactly)
 
-- [ ] **Step 1: Implementation**
+- [x] **Step 1: Implementation**
 
 ```rust
 /// Push a detail tab WITHOUT switching the active index — the background
@@ -1313,7 +1313,7 @@ the current implementation, but verify), compute the restore index accordingly. 
 `Tab::new` doc-test constructor call to the real `Tab` constructor signature in this file
 (check how existing doc tests in tab.rs build a `Tab`).
 
-- [ ] **Step 2: Tests (in tab.rs's existing test mod)**
+- [x] **Step 2: Tests (in tab.rs's existing test mod)**
 
 ```rust
 #[test]
@@ -1342,7 +1342,7 @@ fn push_background_propagates_push_detail_errors() {
 Run: `cargo test -p sid-core tab::` and `cargo test -p sid-core --doc tab`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-core/src/tab.rs

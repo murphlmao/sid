@@ -399,4 +399,44 @@ impl TabManager {
             .filter(|t| matches!(t.kind, TabKind::Detail { .. }))
             .count()
     }
+
+    /// Push a detail tab WITHOUT switching the active index — the background
+    /// variant of [`TabManager::push_detail`] backing `Ctrl+Enter` / `O`
+    /// "open in background tab".
+    ///
+    /// Same validation and error conditions as `push_detail`; the only
+    /// difference is that the currently-active tab stays active.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use sid_core::tab::{Tab, TabId, TabKind, TabManager};
+    /// # use sid_core::layout::Layout;
+    /// # use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+    /// # struct W { id: WidgetId }
+    /// # impl Widget for W {
+    /// #     fn id(&self) -> &WidgetId { &self.id }
+    /// #     fn title(&self) -> &str { "t" }
+    /// #     fn render(&self, _: &mut dyn RenderTarget) {}
+    /// #     fn handle_event(&mut self, _: &sid_core::event::Event, _: &mut sid_core::context::WidgetCtx) -> EventOutcome { EventOutcome::Bubble }
+    /// #     fn as_any(&self) -> &dyn std::any::Any { self }
+    /// #     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    /// # }
+    /// # fn mk(id: &'static str, k: TabKind) -> Tab {
+    /// #     Tab { id: TabId::new(id), title: id.into(),
+    /// #           layout: Layout::Single(Box::new(W { id: WidgetId::new(id) })),
+    /// #           hotkey: None, kind: k }
+    /// # }
+    /// let mut mgr = TabManager::new(vec![mk("home", TabKind::Core)]);
+    /// let before = mgr.active_index();
+    /// mgr.push_background(mk("ws-detail", TabKind::Detail { parent_idx: 0 })).unwrap();
+    /// assert_eq!(mgr.active_index(), before); // focus unchanged
+    /// assert_eq!(mgr.tabs().len(), 2);
+    /// ```
+    pub fn push_background(&mut self, tab: Tab) -> Result<(), crate::SidError> {
+        let active = self.active_index();
+        self.push_detail(tab)?;
+        self.jump(active);
+        Ok(())
+    }
 }
