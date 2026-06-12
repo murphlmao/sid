@@ -1017,7 +1017,7 @@ git commit -m "feat(sid-widgets): FormPane — focus cycling, validation gate, d
 - Create: `crates/sid-widgets/src/form/render.rs` (replace placeholder; uncomment `pub use` in `form/mod.rs`)
 - Create: `crates/sid-widgets/tests/snapshots/` entries via insta (auto)
 
-- [ ] **Step 1: Write the renderer**
+- [x] **Step 1: Write the renderer**
 
 Follow the rendering conventions of `crates/sid-widgets/src/modal.rs` (theme access, style
 helpers) — read its render fn first and reuse its theme-to-ratatui plumbing. Public surface:
@@ -1058,7 +1058,7 @@ rules: focused frame `fg(theme.accent_primary)`, unfocused `fg(theme.border)`, e
 `fg(theme.danger)` (check the actual Theme field names in `crates/sid-ui/src/themes.rs` —
 use the same fields modal.rs uses for its accent/border/danger styling).
 
-- [ ] **Step 2: Snapshot tests**
+- [x] **Step 2: Snapshot tests**
 
 In `render.rs` test mod, render into a fixed 60x24 `Buffer` and snapshot the ASCII (same
 golden-file pattern used by existing widget snapshot tests — find one with
@@ -1096,7 +1096,7 @@ mod tests {
 Run: `cargo test -p sid-widgets form::render` then `cargo insta review` (accept the 4 new snapshots).
 Expected: 5 tests pass after snapshot acceptance.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/ crates/sid-widgets/src/snapshots/
