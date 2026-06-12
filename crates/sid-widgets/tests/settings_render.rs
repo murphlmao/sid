@@ -33,7 +33,7 @@ fn keybind_view() -> KeybindEditorView {
     reg.register(Action::new("app.quit", "Quit"));
     reg.register(Action::new("app.help", "Help"));
     reg.register(Action::new("workspaces.next", "Next workspace"));
-    KeybindEditorView::new(&reg, KeybindMap::cosmos_default())
+    KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos")
 }
 
 fn workspaces_view() -> WorkspaceRootsView {

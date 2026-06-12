@@ -64,9 +64,12 @@ pub enum UndoPayload {
         prior: Vec<std::path::PathBuf>,
     },
     /// Undo a quick-action upsert: restore by re-upserting the prior record.
+    ///
+    /// Only recorded when a prior record existed before the upsert. Net-new
+    /// quick-action adds (no prior) record no undo entry and carry no toast
+    /// suffix — there is no pre-change state to restore.
     QuickActionUpserted {
-        /// The quick-action that was overwritten (or was absent → `None` for
-        /// a net-new add that should be deleted; handled by the caller).
+        /// The quick-action that was overwritten.
         prior: sid_store::QuickAction,
     },
     /// Undo a quick-action removal: restore by re-inserting.

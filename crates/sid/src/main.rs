@@ -451,6 +451,14 @@ async fn main() -> Result<()> {
             .flatten()
             .unwrap_or_else(|| "cosmos".into())
     };
+    let active_keybind_profile = {
+        use sid_store::TypedSettings;
+        store
+            .get_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "cosmos".into())
+    };
     let active_keybinds = wire::load_active_keybinds(&*store);
     let action_registry_for_keybinds = sid_core::action::ActionRegistry::new();
     let workspace_roots_paths: Vec<std::path::PathBuf> = wire::default_discovery_roots();
@@ -472,6 +480,7 @@ async fn main() -> Result<()> {
         sid_widgets::settings::keybind_editor::KeybindEditorView::new(
             &action_registry_for_keybinds,
             active_keybinds,
+            active_keybind_profile,
         ),
     ));
     {

@@ -73,7 +73,7 @@ const DANGEROUS_ACTIONS: &[&str] = &["app.quit"];
 ///
 /// let mut reg = ActionRegistry::new();
 /// reg.register(Action::new("app.quit", "Quit"));
-/// let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+/// let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
 /// assert_eq!(view.focused_action().map(|a| a.as_str()), Some("app.quit"));
 /// ```
 pub struct KeybindEditorView {
@@ -85,10 +85,18 @@ pub struct KeybindEditorView {
     /// Warnings emitted by the last `on_chord_captured` call (consumed by the
     /// rendering code; cleared when capture transitions back to `Idle`).
     warnings: Vec<&'static str>,
+    /// The active keybind profile name (e.g. `"cosmos"`). Threaded in at
+    /// construction so [`KeybindEditorOutcome::Applied`] always carries the
+    /// correct name, even when a non-default profile is active.
+    profile_name: String,
 }
 
 impl KeybindEditorView {
-    /// Build a new editor view from a registry snapshot and a binding map.
+    /// Build a new editor view from a registry snapshot, a binding map, and
+    /// the active profile name.
+    ///
+    /// `profile_name` is emitted verbatim in [`KeybindEditorOutcome::Applied`]
+    /// so the wire layer persists changes to the correct profile.
     ///
     /// The action list is taken from `registry.all()`; iteration order is the
     /// registry's id-sorted order.
@@ -100,10 +108,14 @@ impl KeybindEditorView {
     /// use sid_core::keybind::KeybindMap;
     /// use sid_widgets::settings::keybind_editor::KeybindEditorView;
     ///
-    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
     /// assert!(view.focused_action().is_none());
     /// ```
-    pub fn new(registry: &ActionRegistry, map: KeybindMap) -> Self {
+    pub fn new(
+        registry: &ActionRegistry,
+        map: KeybindMap,
+        profile_name: impl Into<String>,
+    ) -> Self {
         let actions: Vec<_> = registry.all().map(|a| a.id.clone()).collect();
         Self {
             actions,
@@ -111,6 +123,7 @@ impl KeybindEditorView {
             focused: 0,
             capture: CaptureState::new(),
             warnings: Vec::new(),
+            profile_name: profile_name.into(),
         }
     }
 
@@ -125,7 +138,7 @@ impl KeybindEditorView {
     ///
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
-    /// let view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// assert_eq!(view.focused_action().unwrap().as_str(), "a");
     /// ```
     pub fn focused_action(&self) -> Option<&ActionId> {
@@ -145,7 +158,7 @@ impl KeybindEditorView {
     ///
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("app.quit", "Quit"));
-    /// let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+    /// let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
     /// let quit = KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
     /// assert_eq!(view.binding_for(&ActionId::new("app.quit")), Some(quit));
     /// ```
@@ -165,7 +178,7 @@ impl KeybindEditorView {
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
     /// reg.register(Action::new("b", "B"));
-    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// view.next();
     /// assert_eq!(view.focused_action().unwrap().as_str(), "b");
     /// ```
@@ -187,7 +200,7 @@ impl KeybindEditorView {
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
     /// reg.register(Action::new("b", "B"));
-    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// view.prev();
     /// assert_eq!(view.focused_action().unwrap().as_str(), "b");
     /// ```
@@ -211,7 +224,7 @@ impl KeybindEditorView {
     /// use sid_core::keybind_capture::CaptureState;
     /// use sid_widgets::settings::keybind_editor::KeybindEditorView;
     ///
-    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
     /// assert_eq!(view.capture_state(), &CaptureState::Idle);
     /// ```
     pub fn capture_state(&self) -> &CaptureState {
@@ -231,7 +244,7 @@ impl KeybindEditorView {
     ///
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
-    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// view.enter_capture();
     /// assert!(matches!(view.capture_state(), CaptureState::Waiting { .. }));
     /// ```
@@ -254,7 +267,7 @@ impl KeybindEditorView {
     ///
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
-    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// view.enter_capture();
     /// view.cancel_capture();
     /// assert_eq!(view.capture_state(), &CaptureState::Idle);
@@ -273,7 +286,7 @@ impl KeybindEditorView {
     /// use sid_core::keybind::KeybindMap;
     /// use sid_widgets::settings::keybind_editor::KeybindEditorView;
     ///
-    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
     /// assert_eq!(view.map().iter().count(), 0);
     /// ```
     pub fn map(&self) -> &KeybindMap {
@@ -297,7 +310,7 @@ impl KeybindEditorView {
     ///
     /// let mut reg = ActionRegistry::new();
     /// reg.register(Action::new("a", "A"));
-    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+    /// let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
     /// view.enter_capture();
     /// view.on_chord_captured(KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
     /// // Unbound chord, no conflict — applies and returns to Idle.
@@ -348,7 +361,7 @@ impl KeybindEditorView {
     /// use sid_core::keybind::KeybindMap;
     /// use sid_widgets::settings::keybind_editor::KeybindEditorView;
     ///
-    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
     /// assert!(view.dangerous_action_warnings().is_empty());
     /// ```
     pub fn dangerous_action_warnings(&self) -> &[&'static str] {
@@ -488,7 +501,7 @@ impl KeybindEditorView {
     /// use sid_core::keybind::KeybindMap;
     /// use sid_widgets::settings::keybind_editor::{KeybindEditorOutcome, KeybindEditorView};
     ///
-    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
     /// // Empty registry — Enter is a no-op.
     /// ```
     pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> KeybindEditorOutcome {
@@ -533,7 +546,7 @@ impl KeybindEditorView {
                                         return KeybindEditorOutcome::Applied {
                                             action,
                                             chord: c,
-                                            profile_name: "cosmos".into(),
+                                            profile_name: self.profile_name.clone(),
                                             map_snapshot: self.map.clone(),
                                         };
                                     }
@@ -560,7 +573,7 @@ impl KeybindEditorView {
                                                 return KeybindEditorOutcome::Applied {
                                                     action,
                                                     chord: c,
-                                                    profile_name: "cosmos".into(),
+                                                    profile_name: self.profile_name.clone(),
                                                     map_snapshot: self.map.clone(),
                                                 };
                                             }
@@ -608,19 +621,19 @@ mod tests {
 
     #[test]
     fn empty_registry_focused_action_is_none() {
-        let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+        let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
         assert!(view.focused_action().is_none());
     }
 
     #[test]
     fn focused_starts_at_zero() {
-        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         assert_eq!(view.focused_action().unwrap().as_str(), "a");
     }
 
     #[test]
     fn next_cycles() {
-        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         view.next();
         view.next();
         view.next();
@@ -629,28 +642,28 @@ mod tests {
 
     #[test]
     fn prev_cycles() {
-        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         view.prev();
         assert_eq!(view.focused_action().unwrap().as_str(), "c");
     }
 
     #[test]
     fn enter_capture_from_idle_transitions_to_waiting() {
-        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         view.enter_capture();
         assert!(matches!(view.capture_state(), CaptureState::Waiting { .. }));
     }
 
     #[test]
     fn enter_capture_with_empty_registry_is_noop() {
-        let mut view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new(), "cosmos");
         view.enter_capture();
         assert_eq!(view.capture_state(), &CaptureState::Idle);
     }
 
     #[test]
     fn cancel_capture_returns_to_idle() {
-        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         view.enter_capture();
         view.cancel_capture();
         assert_eq!(view.capture_state(), &CaptureState::Idle);
@@ -660,7 +673,7 @@ mod tests {
     fn binding_for_quit_returns_ctrl_q() {
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("app.quit", "Quit"));
-        let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+        let view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
         let chord = view.binding_for(&ActionId::new("app.quit")).unwrap();
         assert_eq!(chord.code, KeyCode::Char('q'));
         assert_eq!(chord.mods, KeyModifiers::CONTROL);
@@ -668,13 +681,13 @@ mod tests {
 
     #[test]
     fn binding_for_unbound_returns_none() {
-        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         assert!(view.binding_for(&ActionId::new("a")).is_none());
     }
 
     #[test]
     fn capture_unbound_chord_applies_immediately() {
-        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let mut view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         view.enter_capture();
         view.on_chord_captured(KeyChord::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
         assert_eq!(view.capture_state(), &CaptureState::Idle);
@@ -691,7 +704,7 @@ mod tests {
             chord: KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
             action: ActionId::new("b"),
         });
-        let mut view = KeybindEditorView::new(&small_registry(), map);
+        let mut view = KeybindEditorView::new(&small_registry(), map, "cosmos");
         view.enter_capture();
         view.on_chord_captured(KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(matches!(
@@ -708,7 +721,7 @@ mod tests {
             chord,
             action: ActionId::new("b"),
         });
-        let mut view = KeybindEditorView::new(&small_registry(), map);
+        let mut view = KeybindEditorView::new(&small_registry(), map, "cosmos");
         view.enter_capture(); // focused = "a"
         view.on_chord_captured(chord);
         view.confirm_overwrite_yes();
@@ -724,7 +737,7 @@ mod tests {
             chord,
             action: ActionId::new("b"),
         });
-        let mut view = KeybindEditorView::new(&small_registry(), map);
+        let mut view = KeybindEditorView::new(&small_registry(), map, "cosmos");
         view.enter_capture();
         view.on_chord_captured(chord);
         view.confirm_overwrite_no();
@@ -739,7 +752,7 @@ mod tests {
             chord,
             action: ActionId::new("a"),
         });
-        let mut view = KeybindEditorView::new(&small_registry(), map);
+        let mut view = KeybindEditorView::new(&small_registry(), map, "cosmos");
         view.enter_capture(); // focused = "a"
         view.on_chord_captured(chord);
         assert_eq!(view.capture_state(), &CaptureState::Idle);
@@ -752,7 +765,7 @@ mod tests {
     fn rebind_quit_emits_dangerous_warning_and_still_applies() {
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("app.quit", "Quit"));
-        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
         view.enter_capture();
         view.on_chord_captured(KeyChord::new(KeyCode::Char('Q'), KeyModifiers::CONTROL));
         // app.quit is dangerous so warning fired (was *being* rebound).
@@ -768,7 +781,7 @@ mod tests {
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("app.quit", "Quit"));
         reg.register(Action::new("custom", "Custom"));
-        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
         // Focus "custom" then attempt to grab Ctrl+Q (already bound to app.quit).
         view.next();
         view.enter_capture();
@@ -792,7 +805,7 @@ mod tests {
     fn empty_warnings_after_cancel() {
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("app.quit", "Quit"));
-        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default());
+        let mut view = KeybindEditorView::new(&reg, KeybindMap::cosmos_default(), "cosmos");
         view.enter_capture();
         view.on_chord_captured(KeyChord::new(KeyCode::Char('Q'), KeyModifiers::CONTROL));
         view.cancel_capture();
@@ -805,7 +818,7 @@ mod tests {
         for i in 0..1000 {
             reg.register(Action::new(format!("act.{i:04}"), format!("Action {i}")));
         }
-        let mut view = KeybindEditorView::new(&reg, KeybindMap::new());
+        let mut view = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
         for _ in 0..1000 {
             view.next();
         }
@@ -824,7 +837,7 @@ mod tests {
             chord: chord_a,
             action: ActionId::new("a"),
         });
-        let mut view = KeybindEditorView::new(&small_registry(), map);
+        let mut view = KeybindEditorView::new(&small_registry(), map, "cosmos");
         view.enter_capture();
         let chord_b = KeyChord::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
         view.on_chord_captured(chord_b);
@@ -879,14 +892,14 @@ mod tests {
 
     #[test]
     fn keybind_editor_render_focused() {
-        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         let s = render_with_focus(&view, true);
         insta::assert_snapshot!("keybind_editor_render_focused", s);
     }
 
     #[test]
     fn keybind_editor_render_unfocused() {
-        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
+        let view = KeybindEditorView::new(&small_registry(), KeybindMap::new(), "cosmos");
         let s = render_with_focus(&view, false);
         insta::assert_snapshot!("keybind_editor_render_unfocused", s);
     }
@@ -898,7 +911,7 @@ mod tests {
         use sid_core::keybind_capture::CaptureState;
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
-        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
         let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
         let _ = v.handle_event(&ev);
         assert!(
@@ -914,7 +927,7 @@ mod tests {
         use sid_core::keybind_capture::CaptureState;
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
-        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
         v.enter_capture();
         let ev = Event::Key(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE));
         let _ = v.handle_event(&ev);
@@ -927,7 +940,7 @@ mod tests {
         use sid_core::event::{Event, KeyChord};
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
-        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
         v.enter_capture();
         let chord_ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         let out = v.handle_event(&chord_ev);
@@ -935,5 +948,30 @@ mod tests {
             matches!(out, KeybindEditorOutcome::Applied { .. }),
             "capturing a chord emits Applied"
         );
+    }
+
+    /// Fix 3: editor constructed with a non-default profile name threads that
+    /// name through to `Applied`. The wire layer uses the profile name to
+    /// persist changes to the correct keybind profile.
+    #[test]
+    fn applied_outcome_carries_construction_time_profile_name() {
+        use sid_core::action::Action;
+        use sid_core::event::{Event, KeyChord};
+        let mut reg = ActionRegistry::new();
+        reg.register(Action::new("a", "A"));
+        // Construct with a non-default profile name.
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "x");
+        v.enter_capture();
+        let chord_ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        let out = v.handle_event(&chord_ev);
+        match out {
+            KeybindEditorOutcome::Applied { profile_name, .. } => {
+                assert_eq!(
+                    profile_name, "x",
+                    "Applied must carry the profile name from construction"
+                );
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
     }
 }
