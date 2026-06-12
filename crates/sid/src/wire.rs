@@ -1294,7 +1294,9 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
             let p = Paragraph::new(Line::from(spans));
             frame.render_widget(p, footer_split[0]);
         } else if let Some(w) = widget {
-            let hints = w.footer_hint();
+            // Cap at the first 4 hints; always append `? help` so the
+            // overlay is discoverable. The full list lives in the overlay.
+            let hints = slim_footer_hints(w.footer_hint());
             let spans: Vec<Span> = hints
                 .iter()
                 .flat_map(|h| {
@@ -2376,9 +2378,9 @@ fn modal_for_active_tab_key(
     {
         return None;
     }
-    // Global help modal: `?` on any tab.
+    // Global help overlay: `?` on any tab.
     if chord.code == KeyCode::Char('?') {
-        return Some(help_modal_for_active_tab(sid_app));
+        return Some(build_help_overlay(sid_app));
     }
     match sid_app.app.tabs().active().id.as_str() {
         "workspaces" => workspaces_modal_for_key(sid_app, chord),
@@ -2921,42 +2923,56 @@ fn ssh_sftp_persist_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
 }
 
 /// Build the help modal showing per-tab footer hints + global hints.
-fn help_modal_for_active_tab(sid_app: &SidApp) -> sid_widgets::ModalSpec {
+/// Build the `?` help overlay: global chords, then the active tab's bindings.
+///
+/// Sources, in order:
+/// 1. A fixed global section (tab strip, background-open, form keys, quit).
+/// 2. The active widget's `footer_hint()` list — every entry, not just the
+///    few the slim footer shows.
+///
+/// The overlay uses two `Field::Display` fields so the global and per-tab
+/// sections stay visually separated in the modal renderer.
+fn build_help_overlay(sid_app: &SidApp) -> sid_widgets::ModalSpec {
     use sid_widgets::{Field, ModalSpec};
-    let tab_id = sid_app.app.tabs().active().id.as_str().to_string();
-    let tab_title = sid_app.app.tabs().active().title.clone();
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("{tab_title}:"));
+    let mut global_body = String::new();
+    global_body.push_str("Tab/S-Tab  cycle tabs (C-Tab next, C-S-Tab back on kitty terms)\n");
+    global_body.push_str("C-Enter/O  open in background tab\n");
+    global_body.push_str("→ / ←      enter / leave pane\n");
+    global_body.push_str("C-W        close tab\n");
+    global_body.push_str("Ctrl+Q     quit\n");
+    global_body.push_str("Ctrl+F     palette\n");
+    global_body.push_str("Ctrl+,     settings\n");
+    global_body.push_str("?          this help");
+    let mut tab_body = String::new();
     if let Some(w) = sid_app.app.tabs().active().layout.iter_widgets().next() {
         let hints = w.footer_hint();
         if hints.is_empty() {
-            lines.push("  (no tab-local actions)".into());
+            tab_body.push_str("(no tab-local actions)");
         } else {
-            for h in hints {
-                lines.push(format!("  {}: {}", h.chord, h.label));
+            for h in &hints {
+                tab_body.push_str(&format!("{:<10} {}\n", h.chord, h.label));
+            }
+            // trim trailing newline
+            if tab_body.ends_with('\n') {
+                tab_body.pop();
             }
         }
     } else {
-        lines.push("  (no widget)".into());
+        tab_body.push_str("(no widget)");
     }
-    lines.push(String::new());
-    lines.push("Global:".into());
-    lines.push("  Ctrl+Q: quit".into());
-    lines.push("  Ctrl+F: palette".into());
-    lines.push("  Ctrl+\u{2190}/\u{2192}: tabs".into());
-    lines.push("  Ctrl+1..6: jump to tab".into());
-    lines.push("  Ctrl+,: settings".into());
-    lines.push("  ?: this help".into());
     ModalSpec::new(
-        format!("help:{tab_id}"),
-        format!("Help — {tab_title}"),
-        // `Field::Display` paints each `\n`-separated line on its own row.
-        // Previously this used `Field::Text` whose single-row renderer
-        // showed literal `\n` characters or clipped the body to one line.
-        vec![Field::Display {
-            label: "keys".into(),
-            body: lines.join("\n"),
-        }],
+        "help.overlay",
+        "Keybinds",
+        vec![
+            Field::Display {
+                label: "Global".into(),
+                body: global_body,
+            },
+            Field::Display {
+                label: "This tab".into(),
+                body: tab_body,
+            },
+        ],
     )
     .with_help("Esc closes.")
 }
@@ -4132,6 +4148,15 @@ fn open_discard_confirm_modal(sid_app: &mut SidApp) {
         )
         .with_help("Unsaved edits will be lost."),
     );
+}
+
+/// Slim the per-tab footer hint list: keep at most the first 4 entries and
+/// always append `? help` so the overlay is discoverable. The full hint list
+/// is available via the overlay itself.
+fn slim_footer_hints(mut hints: Vec<sid_core::FooterHint>) -> Vec<sid_core::FooterHint> {
+    hints.truncate(4);
+    hints.push(sid_core::FooterHint::new("?", "help"));
+    hints
 }
 
 /// Footer hint strip shown while a side-pane form is active. Substitutes the
@@ -7015,50 +7040,62 @@ mod tests {
         assert!(h.last_sftp_path.is_none());
     }
 
-    /// `?` on any tab opens the help modal for that tab.
+    /// `?` on any tab opens the help overlay (fixed id "help.overlay").
     #[test]
     fn ssh_help_modal_lists_footer_hints() {
         let sid_app = build_test_sid_app(Some("ssh"));
         let modal =
             modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
-        assert_eq!(modal.id.0, "help:ssh");
-        // The keys field should contain the SshWidget's footer hints (N/G/S/K/X/?).
-        // Help modals use `Field::Display` so multi-line bodies render one
-        // row per `\n`-separated line.
-        let keys_val = modal
+        // Overlay now uses a fixed id regardless of active tab.
+        assert_eq!(modal.id.0, "help.overlay");
+        // The "This tab" Display field should contain the SshWidget's footer
+        // hints (N/G/S/K/X/?).
+        let tab_body = modal
             .fields
             .iter()
             .find_map(|f| match f {
-                sid_widgets::Field::Display { label, body } if label == "keys" => {
+                sid_widgets::Field::Display { label, body } if label == "This tab" => {
                     Some(body.clone())
                 }
                 _ => None,
             })
             .unwrap_or_default();
-        for ch in ["N:", "G:", "S:", "K:", "X:", "?:"] {
+        for ch in ["N", "G", "S", "K", "X", "?"] {
             assert!(
-                keys_val.contains(ch),
-                "expected help to mention {ch}; got: {keys_val}"
+                tab_body.contains(ch),
+                "expected tab body to mention {ch}; got: {tab_body}"
             );
         }
-        // Global hints too.
-        assert!(keys_val.contains("Ctrl+Q"));
+        // Global hints in the "Global" field.
+        let global_body = modal
+            .fields
+            .iter()
+            .find_map(|f| match f {
+                sid_widgets::Field::Display { label, body } if label == "Global" => {
+                    Some(body.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert!(
+            global_body.contains("Ctrl+Q"),
+            "global body must mention Ctrl+Q; got: {global_body}"
+        );
     }
 
-    /// `?` on the Workspaces tab also opens a help modal (id keyed by tab).
+    /// `?` on any other tab also opens the overlay with the fixed id.
     #[test]
     fn ssh_help_modal_opens_on_other_tabs_too() {
         let sid_app = build_test_sid_app(Some("workspaces"));
         let modal =
             modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
-        assert_eq!(modal.id.0, "help:workspaces");
+        // Always "help.overlay" — not keyed per tab.
+        assert_eq!(modal.id.0, "help.overlay");
     }
 
-    /// The help modal uses `Field::Display` so multi-line bodies render
-    /// one row per `\n`-separated line. The body must contain newline
-    /// characters (proving the modal will paint multi-row) and the field
-    /// variant must be `Display` (so the renderer takes the multi-row path
-    /// instead of clipping to a single value row).
+    /// The help overlay uses two `Field::Display` fields — one for Global,
+    /// one for the active tab — so multi-line bodies render one row per
+    /// `\n`-separated line.
     #[test]
     fn help_modal_uses_display_field_with_multiline_body() {
         let sid_app = build_test_sid_app(Some("workspaces"));
@@ -7067,17 +7104,102 @@ mod tests {
         let first_field = modal.fields.first().expect("help modal has a field");
         match first_field {
             sid_widgets::Field::Display { label, body } => {
-                assert_eq!(label, "keys");
+                assert_eq!(label, "Global");
                 assert!(
                     body.contains('\n'),
-                    "help body must contain newlines so the Display renderer paints multi-row"
+                    "Global body must contain newlines so the Display renderer paints multi-row"
                 );
                 assert!(
-                    body.contains("Global:"),
-                    "help body must contain Global section"
+                    body.contains("Ctrl+Q"),
+                    "Global body must contain Ctrl+Q hint"
                 );
             }
             other => panic!("help modal first field must be Display; got {other:?}"),
+        }
+        // Second field is "This tab".
+        let second_field = modal.fields.get(1).expect("help modal has two fields");
+        match second_field {
+            sid_widgets::Field::Display { label, .. } => {
+                assert_eq!(label, "This tab");
+            }
+            other => panic!("help modal second field must be Display; got {other:?}"),
+        }
+    }
+
+    // ─── Task 10 — Help overlay ─────────────────────────────────────────────
+
+    /// `?` on the database tab opens the overlay; the "This tab" Display
+    /// body contains a known database hint label.
+    #[test]
+    fn question_mark_opens_help_overlay_with_tab_section() {
+        let sid_app = build_test_sid_app(Some("database"));
+        let modal =
+            modal_for_active_tab_key(&sid_app, plain_chord('?')).expect("? always opens help");
+        assert_eq!(modal.id.0, "help.overlay", "overlay must use the fixed id");
+        assert_eq!(modal.title, "Keybinds", "overlay title must be Keybinds");
+        // Second field is the per-tab section.
+        let tab_body = modal
+            .fields
+            .iter()
+            .find_map(|f| match f {
+                sid_widgets::Field::Display { label, body } if label == "This tab" => {
+                    Some(body.clone())
+                }
+                _ => None,
+            })
+            .expect("overlay must have a 'This tab' field");
+        // DatabaseWidget advertises "new" as its first hint.
+        assert!(
+            tab_body.contains("new"),
+            "tab section must contain the 'new' hint; got: {tab_body}"
+        );
+    }
+
+    /// When a form is active, `?` is consumed by the form as a literal
+    /// character and must NOT push the help overlay onto the modal stack.
+    #[test]
+    fn question_mark_inside_form_types_literally() {
+        let mut sid_app = build_test_sid_app(Some("database"));
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        assert!(sid_app.form.is_some(), "form must be open");
+        // Route `?` through the wire layer.
+        route_key_event(&mut sid_app, plain_chord('?'));
+        // No modal must have been pushed.
+        assert!(
+            sid_app.modal_stack.is_empty(),
+            "form must consume '?' without opening the help overlay"
+        );
+        // The first text field in section 0 ("name") must now contain '?'.
+        let form = sid_app.form.as_ref().unwrap();
+        let val = form.spec.sections[0].fields[0].value_string();
+        assert!(
+            val.ends_with('?'),
+            "form field must have received '?' as literal input; got: {val:?}"
+        );
+    }
+
+    /// A widget with 6 hints produces a slimmed footer list of 4 + `? help`.
+    #[test]
+    fn footer_caps_hints_and_appends_help() {
+        use sid_core::FooterHint;
+        // 6 hints — same as DatabaseWidget
+        let six_hints: Vec<FooterHint> = (0..6)
+            .map(|i| FooterHint::new(format!("K{i}"), format!("action{i}")))
+            .collect();
+        let slimmed = slim_footer_hints(six_hints);
+        assert_eq!(
+            slimmed.len(),
+            5,
+            "4 capped + 1 '? help' = 5; got {}",
+            slimmed.len()
+        );
+        // Last entry must be the `?` hint.
+        let last = slimmed.last().unwrap();
+        assert_eq!(last.chord, "?");
+        assert_eq!(last.label, "help");
+        // First 4 are the originals.
+        for (i, h) in slimmed.iter().take(4).enumerate() {
+            assert_eq!(h.chord, format!("K{i}"));
         }
     }
 

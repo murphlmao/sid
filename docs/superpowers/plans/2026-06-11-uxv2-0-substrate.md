@@ -1673,7 +1673,7 @@ git commit -m "feat(sid): host FormPane side panes — event interception, 40/60
 **Files:**
 - Modify: `crates/sid/src/wire.rs` (global key routing + an overlay builder fn)
 
-- [ ] **Step 1: Overlay builder on the existing modal substrate**
+- [x] **Step 1: Overlay builder on the existing modal substrate**
 
 The modal `Field::Display` was designed for exactly this ("help drawers" per its doc
 comment). Build the cheatsheet as a modal of Display fields — no new render surface needed:
@@ -1690,7 +1690,7 @@ comment). Build the cheatsheet as a modal of Display fields — no new render su
 ///    uses, so the overlay can never drift from reality.
 fn build_help_overlay(sid_app: &SidApp) -> sid_widgets::ModalSpec {
     let mut body = String::new();
-    body.push_str("Tab/S-Tab  cycle tabs (C-Tab back on kitty terms)\n");
+    body.push_str("Tab/S-Tab  cycle tabs (C-Tab next, C-S-Tab back on kitty terms)\n");
     body.push_str("C-Enter/O  open in background tab\n");
     body.push_str("→ / ←      enter / leave pane\n");
     body.push_str("C-W        close tab\n");
@@ -1718,13 +1718,13 @@ Routing: in the global key handling (same neighborhood as the strip-nav match), 
 list focus and no form/modal open → `sid_app.modal = Some(build_help_overlay(sid_app))`.
 Any key dismisses (the modal's existing Esc/secondary path).
 
-- [ ] **Step 2: Slim the footer**
+- [x] **Step 2: Slim the footer**
 
 Where the footer renders the active widget's hints, cap at the first 4 entries and always
 append `? help`. (Branches keep their `footer_hint()` lists ordered most-used-first, per
 master plan decision 13.)
 
-- [ ] **Step 3: Tests (wire.rs test mod)**
+- [x] **Step 3: Tests (wire.rs test mod)**
 
 ```rust
 #[test]
@@ -1748,7 +1748,7 @@ fn footer_caps_hints_and_appends_help() {
 Run: `cargo test -p sid help_overlay question_mark footer_caps`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
