@@ -8,7 +8,7 @@ expression: s
 │  State persist debounce (ms)          250                │
 │  Session heartbeat interval (s)       5                  │
 │  Default tab on launch                workspaces         │
-│                                                          │
+│  Use OS keyring for secrets (requires restart) off       │
 │                                                          │
 │                                                          │
 │                                                          │
