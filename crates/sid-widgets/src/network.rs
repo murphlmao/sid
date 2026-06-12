@@ -1283,6 +1283,49 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_detail_pane_clean() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use sid_core::adapters::sys::NetInterface;
+        use sid_ui::themes::cosmos;
+
+        use crate::form::FormPane;
+        use crate::network::detail_pane::{NetInterfacePrefs, build_form_spec};
+
+        let iface = NetInterface {
+            name: "eth0".into(),
+            addrs: vec!["192.168.1.10".into()],
+            rx_bytes: 1_500_000,
+            tx_bytes: 300_000,
+            is_up: true,
+        };
+        let prefs = NetInterfacePrefs {
+            pinned: false,
+            alias: String::new(),
+        };
+        let spec = build_form_spec(&iface, &prefs, true);
+        let pane = FormPane::new(spec);
+        let backend = TestBackend::new(60, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| {
+            let area = f.area();
+            let buf = f.buffer_mut();
+            crate::form::render_form_pane(buf, area, &pane, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            s.push('\n');
+        }
+        insta::assert_snapshot!("detail_pane_clean", s);
+    }
+
+    #[test]
     fn render_to_string_shows_alias_label() {
         use sid_core::adapters::sys::NetInterface;
         use std::collections::HashMap;
