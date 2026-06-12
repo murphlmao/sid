@@ -1311,6 +1311,10 @@ pub struct WorkspacesWidget {
     /// pushes it as a detail tab. Kept here so the widget owns the signal
     /// without the binary needing a custom action-channel listener.
     pending_open_detail: Option<sid_store::Workspace>,
+    /// Set alongside `pending_open_detail` when the user requested a *background*
+    /// open (`Ctrl+Enter` / `O`). The wire layer reads this to choose
+    /// `push_background` over `push_detail`.
+    pending_open_background: bool,
 }
 
 impl WorkspacesWidget {
@@ -1337,6 +1341,7 @@ impl WorkspacesWidget {
             open_repos: HashMap::new(),
             focused_pane: WsFocus::default(),
             pending_open_detail: None,
+            pending_open_background: false,
         }
     }
 
@@ -1349,6 +1354,12 @@ impl WorkspacesWidget {
     /// tab.
     pub fn take_pending_open_detail(&mut self) -> Option<sid_store::Workspace> {
         self.pending_open_detail.take()
+    }
+
+    /// Drain the background-open flag. Returns `true` once after a background
+    /// open was requested; the wire layer then uses `push_background`.
+    pub fn take_pending_open_background(&mut self) -> bool {
+        std::mem::take(&mut self.pending_open_background)
     }
 
     /// Currently-focused pane.
@@ -1923,6 +1934,17 @@ impl Widget for WorkspacesWidget {
                 return EventOutcome::Consumed;
             }
 
+            // Background-open: Ctrl+Enter (kitty) / Shift+O (universal). Opens
+            // the selected node as a background tab without switching focus.
+            if chord.is_background_open() {
+                if let Some(ws) = self.state.selected_workspace().cloned() {
+                    ctx.emit_action("workspaces.open_detail_background");
+                    self.pending_open_detail = Some(ws);
+                    self.pending_open_background = true;
+                }
+                return EventOutcome::Consumed;
+            }
+
             // Pane-gated routing.
             match self.focused_pane {
                 WsFocus::Tree => match (chord.code, chord.mods) {
@@ -1950,23 +1972,14 @@ impl Widget for WorkspacesWidget {
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
-                        // Leaf repos emit "workspaces.open_detail" so the wire
-                        // layer can build a WorkspaceDetailWidget and push it
-                        // as a new tab (branch #3). Umbrellas keep the
-                        // toggle-expand behavior for muscle memory.
+                        // Decision 8: Enter on ANY node opens it as a pushed
+                        // subrepo tab — umbrella, satellite, or single repo all
+                        // get the same detail layout. Inline tree expansion
+                        // stays on →/↓/←.
                         let selected = self.state.selected_workspace().cloned();
-                        match selected.as_ref().map(|w| &w.kind) {
-                            Some(WorkspaceKind::Umbrella) => {
-                                self.state.toggle_expand_selected();
-                            }
-                            Some(WorkspaceKind::Repo) => {
-                                // Emit the action for the keybind tracker
-                                // (logs / future analytics) AND set the
-                                // pending-flag the binary will drain.
-                                ctx.emit_action("workspaces.open_detail");
-                                self.pending_open_detail = selected;
-                            }
-                            None => {}
+                        if let Some(ws) = selected {
+                            ctx.emit_action("workspaces.open_detail");
+                            self.pending_open_detail = Some(ws);
                         }
                         return EventOutcome::Consumed;
                     }
@@ -2219,5 +2232,70 @@ mod tests {
         assert_eq!(s.selected_action().unwrap().label, "Test");
         s.select_prev();
         assert_eq!(s.selected_action().unwrap().label, "Build");
+    }
+
+    // ─── UX-v2: Enter opens any node; Ctrl+Enter/O background-open ────────────
+
+    fn umbrella_ws() -> Workspace {
+        Workspace {
+            path: std::path::PathBuf::from("/stack"),
+            name: "gen4".into(),
+            kind: WorkspaceKind::Umbrella,
+            manifest_hash: 0,
+            last_seen: 0,
+            parent: None,
+        }
+    }
+
+    fn test_ctx() -> (std::sync::mpsc::Receiver<String>, WidgetCtx) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (rx, WidgetCtx::new(tx))
+    }
+
+    #[test]
+    fn enter_on_umbrella_now_opens_detail_not_just_expand() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        let (_rx, mut ctx) = test_ctx();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        let opened = w.take_pending_open_detail();
+        assert!(opened.is_some());
+        assert_eq!(opened.unwrap().name, "gen4");
+    }
+
+    #[test]
+    fn background_open_sets_background_flag() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        let (_rx, mut ctx) = test_ctx();
+        // Shift+O is the universal background-open fallback.
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::SHIFT,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        assert!(w.take_pending_open_background());
+        assert!(w.take_pending_open_detail().is_some());
+    }
+
+    #[test]
+    fn right_arrow_still_expands_umbrella_without_opening() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        let (_rx, mut ctx) = test_ctx();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        });
+        let _ = w.handle_event(&ev, &mut ctx);
+        assert!(w.state().is_expanded(std::path::Path::new("/stack")));
+        assert!(w.take_pending_open_detail().is_none());
     }
 }

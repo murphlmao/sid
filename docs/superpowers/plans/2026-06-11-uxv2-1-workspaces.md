@@ -1310,7 +1310,7 @@ The overview (`workspaces.rs`) today opens a detail tab only for `Repo` leaves; 
 **Files:**
 - Modify: `crates/sid-widgets/src/workspaces.rs` (the Enter arm at lines 1952–1972; add a `pending_open_background: bool` flag next to `pending_open_detail` at line 1313; add a drain method)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Append to `workspaces.rs`'s `#[cfg(test)] mod tests`:
 
@@ -1373,12 +1373,12 @@ Append to `workspaces.rs`'s `#[cfg(test)] mod tests`:
 
 (Confirm `WidgetCtx::new` / `ActionRegistry::new` signatures from existing tests before running — same caveat as Task 5.)
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::enter_on_umbrella workspaces::tests::background_open workspaces::tests::right_arrow_still`
 Expected: `take_pending_open_background` missing; umbrella Enter still only expands.
 
-- [ ] **Step 3: Add the background flag + drain, and rewrite the Enter arm**
+- [x] **Step 3: Add the background flag + drain, and rewrite the Enter arm**
 
 Add the field next to `pending_open_detail` (struct at line 1298, `pending_open_detail` at 1313):
 
@@ -1435,12 +1435,12 @@ And add a background-open arm just before the pane-gated routing `match self.foc
 
 Note for the executor: `is_background_open()` matches `Char('O')` regardless of which modifier flavor the terminal sends, and `Ctrl+Enter` on kitty terminals. Place this check before the `Tab`/`Alt` handlers only if `O` would otherwise be swallowed — it would not (no existing arm binds `O`), so placing it after the `'r'` handler is correct. The umbrella `→/↓/←` expansion arms (lines 1937–1951) are untouched.
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspaces`
 Expected: the 3 new tests pass; existing workspaces tests still green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspaces.rs
