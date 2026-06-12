@@ -182,6 +182,8 @@ pub enum JobOutcome {
 ///     animation: sid_core::animation::AnimationConfig::default(),
 ///     fx_state: None,
 ///     modal_stack: Vec::new(),
+///     form: None,
+///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::<JobOutcome>::new()),
@@ -233,6 +235,15 @@ pub struct SidApp {
     /// Stack of open modals. The topmost entry intercepts key events; widgets
     /// see them only when the stack is empty. New modals push on top.
     pub modal_stack: Vec<sid_widgets::ModalSpec>,
+    /// Active side-pane form, if any. When `Some` and `form_origin_tab` points
+    /// at the active tab, the form occupies the right 60% of the tab body and
+    /// intercepts every key (after modals) until it submits or cancels. The
+    /// UX-v2 add/edit substrate; branches 1-5 open forms via [`open_form`].
+    pub form: Option<sid_widgets::form::FormPane>,
+    /// Tab the active [`form`](Self::form) belongs to. The form only renders
+    /// and only intercepts keys while this matches the active tab id, so a form
+    /// opened on the Database tab stays put when the user cycles to SSH.
+    pub form_origin_tab: Option<sid_core::tab::TabId>,
     /// Modals submitted on the previous frame whose handler hasn't run yet.
     /// Drained at the top of [`run_event_loop`] each iteration.
     pub pending_submits: Vec<(sid_widgets::ModalId, Vec<(String, sid_widgets::FieldValue)>)>,
@@ -541,8 +552,8 @@ pub fn load_animation_config(store: &dyn Store) -> AnimationConfig {
     AnimationConfig::default()
 }
 
-/// Load the `show_add_new_row` setting, which controls whether new rows are
-/// shown in list-based widgets. Defaults to `true` if unset.
+/// Load the `show_add_new_row` setting, which controls whether list panels
+/// render the synthetic "+ add new" first row. Defaults to `true` if unset.
 ///
 /// The setting is stored as `b"true"` or `b"false"`; any value other than
 /// `b"false"` is treated as `true`.
@@ -897,6 +908,8 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 ///     animation: sid_core::animation::AnimationConfig::default(),
 ///     fx_state: None,
 ///     modal_stack: Vec::new(),
+///     form: None,
+///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::new()),
@@ -993,6 +1006,8 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 ///     animation: sid_core::animation::AnimationConfig::default(),
 ///     fx_state: None,
 ///     modal_stack: Vec::new(),
+///     form: None,
+///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
 ///     toasts: sid::toast::ToastQueue::new(4),
 ///     jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
@@ -1059,11 +1074,38 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         height: tabs_h.min(inner.height),
     };
     y = y.saturating_add(tabs_rect.height);
-    let body_rect = Rect {
+    let full_body_rect = Rect {
         x: inner.x,
         y,
         width: inner.width,
         height: body_h,
+    };
+    // When a form is active for the active tab, split the body 40/60: the
+    // widget keeps the left 40%, the form pane takes the right 60%. Otherwise
+    // the widget owns the whole body and `form_area` is zero-width.
+    let form_active =
+        sid_app.form.is_some() && sid_app.form_origin_tab.as_ref() == Some(&app.tabs().active().id);
+    let (body_rect, form_area) = if form_active {
+        let list_w = (full_body_rect.width as u32 * 40 / 100) as u16;
+        (
+            Rect {
+                width: list_w,
+                ..full_body_rect
+            },
+            Rect {
+                x: full_body_rect.x + list_w,
+                width: full_body_rect.width - list_w,
+                ..full_body_rect
+            },
+        )
+    } else {
+        (
+            full_body_rect,
+            Rect {
+                width: 0,
+                ..full_body_rect
+            },
+        )
     };
     y = y.saturating_add(body_h);
     let status_rect = Rect {
@@ -1190,6 +1232,15 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         frame.render_widget(body, body_rect);
     }
 
+    // ─── Side-pane form (UX-v2) ───────────────────────────────────────────
+    // Drawn into the right 60% of the body when a form is active for the
+    // active tab. `form_area` is zero-width otherwise.
+    if form_area.width > 0 {
+        if let Some(form) = &sid_app.form {
+            sid_widgets::form::render_form_pane(frame.buffer_mut(), form_area, form, &theme);
+        }
+    }
+
     // ─── Status line (above footer) ───────────────────────────────────────
     if status_h > 0 {
         let status_text = build_status_line(sid_app);
@@ -1213,7 +1264,36 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
         })
         .split(footer_rect);
     if footer_h >= 2 {
-        if let Some(w) = widget {
+        // While a form is active, the footer advertises the form contract
+        // (Tab/⏎/⎋) instead of the underlying widget's per-tab hints.
+        let form_hints = if form_active {
+            Some(form_footer_hints())
+        } else {
+            None
+        };
+        if let Some(hints) = form_hints.as_ref() {
+            let spans: Vec<Span> = hints
+                .iter()
+                .flat_map(|h| {
+                    [
+                        Span::styled("  [ ", TextStyle::default().fg(ui_to_ratatui(theme.muted))),
+                        Span::styled(
+                            h.chord.clone(),
+                            TextStyle::default()
+                                .fg(ui_to_ratatui(theme.accent_primary))
+                                .add_modifier(TextMod::BOLD),
+                        ),
+                        Span::styled(
+                            format!(": {}", h.label),
+                            TextStyle::default().fg(ui_to_ratatui(theme.foreground)),
+                        ),
+                        Span::styled(" ]", TextStyle::default().fg(ui_to_ratatui(theme.muted))),
+                    ]
+                })
+                .collect();
+            let p = Paragraph::new(Line::from(spans));
+            frame.render_widget(p, footer_split[0]);
+        } else if let Some(w) = widget {
             let hints = w.footer_hint();
             let spans: Vec<Span> = hints
                 .iter()
@@ -1552,6 +1632,8 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///         animation: sid_core::animation::AnimationConfig::default(),
 ///         fx_state: None,
 ///         modal_stack: Vec::new(),
+///         form: None,
+///         form_origin_tab: None,
 ///         pending_submits: Vec::new(),
 ///         toasts: sid::toast::ToastQueue::new(4),
 ///         jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
@@ -1660,10 +1742,13 @@ where
                     continue;
                 }
                 MouseRouting::FocusInBody { col, row } => {
-                    // Body clicks are a no-op when a modal is open — the
-                    // modal owns input and visually covers the body. The
-                    // user dismisses the modal first, then clicks again.
-                    if sid_app.modal_stack.is_empty() {
+                    // Body clicks are a no-op when a modal or form is open.
+                    // Modals own input and visually cover the body; forms
+                    // are keyboard-only this iteration and their 60 % pane
+                    // would otherwise route clicks through `body_rect` at
+                    // full width into the hidden background widget. The user
+                    // dismisses the modal / form first, then clicks again.
+                    if sid_app.modal_stack.is_empty() && sid_app.form.is_none() {
                         dispatch_focus_at_for_active_tab(sid_app, full_area, col, row);
                     }
                     continue;
@@ -1674,49 +1759,13 @@ where
             ev
         };
 
-        // Route key events. If a modal is open it intercepts everything except
-        // global-quit and global-detach. Otherwise check per-tab modal triggers;
-        // if one fires we open the modal and swallow the event. Otherwise
-        // dispatch normally.
-        let mut handled = false;
-        if let SidEvent::Key(chord) = ev {
-            // Global quit always wins, even with a modal open.
-            let is_global_quit = chord.code == crossterm::event::KeyCode::Char('q')
-                && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
-            // Global detach: Ctrl+D spawns a new terminal pointed at the
-            // current tab. Like Ctrl+Q it bypasses modal interception so
-            // the user can detach from a wedged modal too.
-            let is_global_detach = chord.code == crossterm::event::KeyCode::Char('d')
-                && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
-            if is_global_detach {
-                handle_ctrl_d_detach(sid_app);
-                handled = true;
-            } else if !is_global_quit && !sid_app.modal_stack.is_empty() {
-                handled = true;
-                let outcome = {
-                    let modal = sid_app
-                        .modal_stack
-                        .last_mut()
-                        .expect("modal_stack non-empty");
-                    sid_widgets::route_key_to_modal(modal, chord)
-                };
-                match outcome {
-                    sid_widgets::ModalKeyOutcome::Consumed => {}
-                    sid_widgets::ModalKeyOutcome::Cancel => {
-                        sid_app.modal_stack.pop();
-                    }
-                    sid_widgets::ModalKeyOutcome::Submit => {
-                        let popped = sid_app.modal_stack.pop().expect("modal popped");
-                        let values = popped.collect_values();
-                        sid_app.pending_submits.push((popped.id, values));
-                    }
-                }
-            } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord)
-            {
-                sid_app.modal_stack.push(modal);
-                handled = true;
-            }
-        }
+        // Route key events through the layered interception (modal → form →
+        // tab-strip → per-tab modal trigger). Mouse events fall straight
+        // through to the widget dispatch below.
+        let handled = match &ev {
+            SidEvent::Key(chord) => route_key_event(sid_app, *chord),
+            _ => false,
+        };
 
         if !handled {
             let dispatch = sid_app.app.handle_event(&ev);
@@ -1733,6 +1782,126 @@ where
         }
     }
     Ok(())
+}
+
+/// Layered key-event interception, ahead of the per-widget dispatch.
+///
+/// Returns `true` when the chord was consumed here (the loop then skips
+/// `App::handle_event`). The precedence, highest first:
+///
+/// 1. **Global detach** (`Ctrl+D`) — bypasses every overlay so the user can
+///    detach from a wedged modal.
+/// 2. **Modal stack** — the topmost modal intercepts everything but global
+///    quit/detach. Submit pushes onto `pending_submits`; Cancel pops.
+/// 3. **Side-pane form** — when a form is open for the active tab and no modal
+///    is open, it intercepts every key. Submit routes to
+///    [`dispatch_form_submit`]; Cancel closes the pane; RequestDiscardConfirm
+///    opens the discard modal.
+/// 4. **Tab strip** — `strip_nav` cycling, gated on CONTROL modifier and no
+///    modal/form active (`Ctrl+Tab` → next, `Ctrl+Shift+Tab` → prev).
+///    Plain `Tab`/`Shift+Tab`/`BackTab` fall through to widgets for
+///    intra-widget focus. Branches 1–5 adopt `strip_nav` for plain Tab as
+///    they migrate widgets to the list/pane focus model.
+/// 5. **Per-tab modal trigger** — opens a modal for the active tab if the
+///    chord matches its opener.
+///
+/// Global quit (`Ctrl+Q`) is deliberately *not* consumed here: it falls
+/// through to `App::handle_event`, which maps it to `app.quit`.
+fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bool {
+    // Global quit always wins, even with a modal open.
+    let is_global_quit = chord.code == crossterm::event::KeyCode::Char('q')
+        && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
+    // Global detach: Ctrl+D spawns a new terminal pointed at the current tab.
+    // Like Ctrl+Q it bypasses modal interception so the user can detach from a
+    // wedged modal too.
+    let is_global_detach = chord.code == crossterm::event::KeyCode::Char('d')
+        && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
+    if is_global_detach {
+        handle_ctrl_d_detach(sid_app);
+        true
+    } else if !is_global_quit && !sid_app.modal_stack.is_empty() {
+        let outcome = {
+            let modal = sid_app
+                .modal_stack
+                .last_mut()
+                .expect("modal_stack non-empty");
+            sid_widgets::route_key_to_modal(modal, chord)
+        };
+        match outcome {
+            sid_widgets::ModalKeyOutcome::Consumed => {}
+            sid_widgets::ModalKeyOutcome::Cancel => {
+                sid_app.modal_stack.pop();
+            }
+            sid_widgets::ModalKeyOutcome::Submit => {
+                let popped = sid_app.modal_stack.pop().expect("modal popped");
+                let values = popped.collect_values();
+                sid_app.pending_submits.push((popped.id, values));
+            }
+        }
+        true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_some()
+        && sid_app.form_origin_tab.as_ref() == Some(&sid_app.app.tabs().active().id)
+    {
+        // Active form (on the active tab) intercepts every key after modals.
+        // Mirror of the modal interception block: a modal wins if both are
+        // somehow open (guarded by `modal_stack.is_empty()` above). Branches
+        // 1-5 register `dispatch_form_submit` arms.
+        let outcome = {
+            let form = sid_app.form.as_mut().expect("form is_some");
+            form.handle_key(chord)
+        };
+        match outcome {
+            sid_widgets::form::FormEvent::Continue => {}
+            sid_widgets::form::FormEvent::Cancel => {
+                sid_app.form = None;
+                sid_app.form_origin_tab = None;
+            }
+            sid_widgets::form::FormEvent::Submit(values) => {
+                let id = sid_app
+                    .form
+                    .as_ref()
+                    .expect("form is_some")
+                    .spec
+                    .id
+                    .0
+                    .clone();
+                dispatch_form_submit(sid_app, &id, values);
+            }
+            sid_widgets::form::FormEvent::RequestDiscardConfirm => {
+                open_discard_confirm_modal(sid_app);
+            }
+        }
+        true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL)
+        && chord.strip_nav() != sid_core::event::StripNav::None
+    {
+        // Tab-strip cycling — interim rule (orchestrator ruling, 2026-06-12):
+        // fires ONLY on Ctrl-modified chords (Ctrl+Tab → next,
+        // Ctrl+Shift+Tab → prev). Plain Tab/Shift+Tab/BackTab fall through to
+        // widgets, which consume them for intra-widget focus today. Branches
+        // 1-5 adopt strip_nav for plain Tab as they migrate widgets to the
+        // list/pane focus model.
+        //
+        // Gate on no modal and no form — both claim Tab for their own focus
+        // rings and are intercepted above.
+        match chord.strip_nav() {
+            sid_core::event::StripNav::Next => sid_app.app.tabs_mut().next(),
+            sid_core::event::StripNav::Prev => sid_app.app.tabs_mut().prev(),
+            sid_core::event::StripNav::None => {}
+        }
+        let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
+        true
+    } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
+        sid_app.modal_stack.push(modal);
+        true
+    } else {
+        false
+    }
 }
 
 /// Drain the active Settings widget's pending outcomes (if any) and
@@ -3852,10 +4021,128 @@ fn dispatch_modal_submit(
         submit_system_remove_quick_action(sid_app, qa_id, values)?;
     } else if let Some(tab_id) = key.strip_prefix("session.resume:") {
         submit_session_resume(sid_app, tab_id, values);
+    } else if key == "form.discard_confirm" {
+        // Discard-changes confirm for an open side-pane form. Submit means the
+        // user chose "Discard" (default selection is "Keep editing", and Esc
+        // cancels the modal without touching the form). Any non-"Discard"
+        // selection leaves the form open.
+        if choice_value(values, "confirm").as_deref() == Some("Discard") {
+            sid_app.form = None;
+            sid_app.form_origin_tab = None;
+        }
     } else {
         tracing::debug!("unhandled modal submit id={key}");
     }
     Ok(())
+}
+
+/// Open `spec` as the side-pane form of the currently-active tab.
+///
+/// Any prior form is replaced. The form occupies the right 60% of the tab body
+/// and intercepts every key (after modals) until it submits or cancels. The
+/// UX-v2 add/edit substrate entry point; branches 1-5 call this with their own
+/// [`FormSpec`](sid_widgets::form::FormSpec) and register the matching
+/// `dispatch_form_submit` arm.
+///
+/// # Invariants
+///
+/// **Replacement without discard-confirm.** This function replaces any prior
+/// form unconditionally. Callers opening from flows where a dirty form might
+/// already be active must route through the discard-confirm first (see
+/// [`open_discard_confirm_modal`]). Branches adding `open_form` call sites:
+/// check `form.is_none()` before calling, or accept silent replacement
+/// consciously and document why.
+///
+/// **Tab-close suppression.** While a form is active on the origin tab,
+/// [`route_key_event`] consumes every key on that tab, so the origin tab
+/// cannot be closed from the keyboard. Any future non-keyboard tab-close path
+/// (palette action, pointer gesture, programmatic close) **must** clear both
+/// `form` and `form_origin_tab` for the closed tab, or the form will strand
+/// invisibly — active on a tab that no longer exists.
+///
+/// # Examples
+///
+/// ```no_run
+/// use sid::wire::{open_form, SidApp};
+/// use sid_widgets::form::{FormSpec, FormSection, FormField, SectionKind};
+/// use sid_widgets::modal::Field;
+///
+/// # fn demo(sid_app: &mut SidApp) {
+/// let spec = FormSpec::new(
+///     "example.edit",
+///     "Edit",
+///     vec![FormSection {
+///         title: "Details".into(),
+///         kind: SectionKind::Editable,
+///         fields: vec![FormField::new(
+///             "name",
+///             Field::Text { label: "name".into(), value: String::new(), placeholder: None },
+///         )],
+///     }],
+/// );
+/// open_form(sid_app, spec);
+/// assert!(sid_app.form.is_some());
+/// # }
+/// ```
+#[allow(dead_code)] // Substrate API: branches 1-5 call this to open their add/edit forms.
+pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::form::FormSpec) {
+    sid_app.form_origin_tab = Some(sid_app.app.tabs().active().id.clone());
+    sid_app.form = Some(sid_widgets::form::FormPane::new(spec));
+}
+
+/// Route a submitted form's values by form id, then close the form.
+///
+/// Branches 1-5 register their own arms here keyed on the form id; the
+/// substrate ships with only the wildcard, which toasts an "unhandled form
+/// submit" diagnostic. Either way the form closes on submit — a successful
+/// submit is terminal.
+fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::form::FormValues) {
+    // Substrate ships only the wildcard; branches 1-5 insert their own
+    // `"<form.id>" => { ... }` arms above it (which is why this stays a `match`
+    // even while it has a single arm).
+    #[allow(clippy::match_single_binding)]
+    match id {
+        _ => {
+            let _ = &values;
+            sid_app
+                .toasts
+                .push(Toast::error(format!("unhandled form submit: {id}")));
+        }
+    }
+    sid_app.form = None;
+    sid_app.form_origin_tab = None;
+}
+
+/// Open the standard "Discard changes?" confirm for a dirty side-pane form.
+///
+/// Reuses the modal substrate: a single Choice with "Keep editing" (default)
+/// and "Discard". Esc cancels the modal and leaves the form untouched; picking
+/// "Discard" and submitting closes the form (see the `form.discard_confirm`
+/// arm of [`dispatch_modal_submit`]).
+fn open_discard_confirm_modal(sid_app: &mut SidApp) {
+    sid_app.modal_stack.push(
+        sid_widgets::ModalSpec::new(
+            "form.discard_confirm",
+            "Discard changes?",
+            vec![sid_widgets::modal::Field::Choice {
+                label: "confirm".into(),
+                options: vec!["Keep editing".into(), "Discard".into()],
+                selected: 0,
+            }],
+        )
+        .with_help("Unsaved edits will be lost."),
+    );
+}
+
+/// Footer hint strip shown while a side-pane form is active. Substitutes the
+/// active widget's hints with the fixed form contract: `Tab` cycles fields,
+/// `⏎` saves, `⎋` cancels.
+fn form_footer_hints() -> Vec<sid_core::FooterHint> {
+    vec![
+        sid_core::FooterHint::new("Tab", "fields"),
+        sid_core::FooterHint::new("⏎", "save"),
+        sid_core::FooterHint::new("⎋", "cancel"),
+    ]
 }
 
 /// Handler for the `session.resume:<tab_id>` modal. If the user picked
@@ -5576,6 +5863,8 @@ mod tests {
             animation: AnimationConfig::default(),
             fx_state: None,
             modal_stack: Vec::new(),
+            form: None,
+            form_origin_tab: None,
             pending_submits: Vec::new(),
             toasts: ToastQueue::new(4),
             jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
@@ -5712,6 +6001,31 @@ mod tests {
         // Any non-"false" value should be treated as true.
         store
             .put_string(sid_store::settings_keys::SHOW_ADD_NEW_ROW, "garbage")
+            .unwrap();
+        assert!(load_show_add_new_row(&store));
+    }
+
+    /// Cross-crate contract: the loader reads exactly what `put_bool` writes.
+    /// `put_bool(.., false)` must round-trip to `load_show_add_new_row == false`
+    /// — the loader's lenient `!= b"false"` check must agree with sid-store's
+    /// canonical bool encoding.
+    #[test]
+    fn load_show_add_new_row_round_trips_put_bool_false() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_bool(sid_store::settings_keys::SHOW_ADD_NEW_ROW, false)
+            .unwrap();
+        assert!(!load_show_add_new_row(&store));
+    }
+
+    /// And `put_bool(.., true)` round-trips to `true`.
+    #[test]
+    fn load_show_add_new_row_round_trips_put_bool_true() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_bool(sid_store::settings_keys::SHOW_ADD_NEW_ROW, true)
             .unwrap();
         assert!(load_show_add_new_row(&store));
     }
@@ -7970,6 +8284,458 @@ mod tests {
             height: 0,
         };
         assert!(body_rect(zero).is_none());
+    }
+
+    // ----- Form hosting (UX-v2 substrate) ----------------------------------
+
+    /// A minimal two-field editable form spec for hosting tests.
+    fn test_form_spec(id: &str) -> sid_widgets::form::FormSpec {
+        use sid_widgets::form::{FormField, FormSection, FormSpec, SectionKind};
+        use sid_widgets::modal::Field;
+        FormSpec::new(
+            id,
+            "Test form",
+            vec![FormSection {
+                title: "Details".into(),
+                kind: SectionKind::Editable,
+                fields: vec![
+                    FormField::new(
+                        "name",
+                        Field::Text {
+                            label: "name".into(),
+                            value: String::new(),
+                            placeholder: None,
+                        },
+                    ),
+                    FormField::new(
+                        "host",
+                        Field::Text {
+                            label: "host".into(),
+                            value: String::new(),
+                            placeholder: None,
+                        },
+                    ),
+                ],
+            }],
+        )
+    }
+
+    fn chord(code: crossterm::event::KeyCode) -> sid_core::event::KeyChord {
+        sid_core::event::KeyChord::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn chord_mods(
+        code: crossterm::event::KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> sid_core::event::KeyChord {
+        sid_core::event::KeyChord::new(code, mods)
+    }
+
+    /// `open_form` records the origin tab and installs the pane; a `Tab` chord
+    /// routed through the wire is consumed by the form (focus advances) and the
+    /// active tab is left unchanged.
+    #[test]
+    fn open_form_renders_split_and_form_consumes_tab() {
+        use crossterm::event::KeyCode;
+        use sid_widgets::form::PaneFocusState;
+
+        let mut sid_app = build_test_sid_app(Some("database"));
+        let before_idx = sid_app.app.tabs().active_index();
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        assert!(sid_app.form.is_some());
+        assert_eq!(
+            sid_app.form_origin_tab.as_ref().map(|t| t.as_str()),
+            Some("database")
+        );
+        assert_eq!(
+            sid_app.form.as_ref().unwrap().focus,
+            PaneFocusState::Field(0)
+        );
+
+        // Tab is intercepted by the form (returns true = handled) and advances
+        // focus; the active tab index does not move.
+        let handled = route_key_event(&mut sid_app, chord(KeyCode::Tab));
+        assert!(handled, "form must consume Tab");
+        assert_eq!(
+            sid_app.form.as_ref().unwrap().focus,
+            PaneFocusState::Field(1),
+            "Tab should advance the form's focus"
+        );
+        assert_eq!(
+            sid_app.app.tabs().active_index(),
+            before_idx,
+            "tab strip must not cycle while a form is active"
+        );
+    }
+
+    /// A form opened on one tab does not intercept keys while another tab is
+    /// active — the chord falls through to the active widget and the form's
+    /// values are untouched.
+    #[test]
+    fn form_only_intercepts_on_origin_tab() {
+        use crossterm::event::KeyCode;
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        let values_before = sid_app.form.as_ref().unwrap().spec.values();
+
+        // Switch to a different tab (index 1 = ssh).
+        sid_app.app.tabs_mut().jump(1);
+        assert_ne!(sid_app.app.tabs().active().id.as_str(), "workspaces");
+
+        // A char key is NOT consumed by the off-origin form.
+        let handled = route_key_event(&mut sid_app, chord(KeyCode::Char('x')));
+        assert!(
+            !handled,
+            "form on a non-active tab must not intercept the key"
+        );
+        // The form's values are unchanged (it never saw the key).
+        assert_eq!(sid_app.form.as_ref().unwrap().spec.values(), values_before);
+    }
+
+    /// Submitting a form whose id has no registered arm toasts an "unhandled
+    /// form submit" diagnostic and closes the pane.
+    #[test]
+    fn submit_unknown_form_id_toasts_and_closes() {
+        use crossterm::event::KeyCode;
+        use sid_widgets::form::PaneFocusState;
+
+        let mut sid_app = build_test_sid_app(Some("database"));
+        open_form(&mut sid_app, test_form_spec("totally.unknown.form"));
+        // Move focus onto the Save button, then press Enter to submit.
+        sid_app.form.as_mut().unwrap().focus = PaneFocusState::Primary;
+        let handled = route_key_event(&mut sid_app, chord(KeyCode::Enter));
+        assert!(handled, "Enter on Save must be consumed by the form");
+
+        assert!(sid_app.form.is_none(), "form must close after submit");
+        assert!(sid_app.form_origin_tab.is_none());
+        let toast_text = sid_app
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect::<String>();
+        assert!(
+            toast_text.contains("unhandled form submit"),
+            "expected diagnostic toast, got: {toast_text:?}"
+        );
+    }
+
+    /// With no form active, Ctrl+Tab cycles forward and Ctrl+Shift+Tab cycles
+    /// backward. Interim rule: only Ctrl-modified chords reach the strip-nav
+    /// branch; plain Tab/BackTab fall through to widgets.
+    #[test]
+    fn strip_nav_cycles_tabs_when_no_form_active() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        assert_eq!(sid_app.app.tabs().active_index(), 0);
+
+        // Ctrl+Tab -> forward (+1).
+        assert!(route_key_event(
+            &mut sid_app,
+            chord_mods(KeyCode::Tab, KeyModifiers::CONTROL)
+        ));
+        assert_eq!(sid_app.app.tabs().active_index(), 1);
+
+        // Ctrl+Shift+Tab -> back (-1).
+        assert!(route_key_event(
+            &mut sid_app,
+            chord_mods(KeyCode::Tab, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        ));
+        assert_eq!(sid_app.app.tabs().active_index(), 0);
+    }
+
+    /// Strip-nav is suppressed while a form is active — Ctrl+Tab goes to the
+    /// form's interception layer, not the tab strip.
+    #[test]
+    fn strip_nav_suppressed_while_form_active() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        let before = sid_app.app.tabs().active_index();
+        // Ctrl+Tab must not cycle the strip while a form is open; the form
+        // interception block fires first and consumes the key.
+        route_key_event(
+            &mut sid_app,
+            chord_mods(KeyCode::Tab, KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            sid_app.app.tabs().active_index(),
+            before,
+            "Ctrl+Tab must not cycle tabs while a form owns it"
+        );
+    }
+
+    /// Plain Tab/Shift+Tab/BackTab must NOT be consumed by the strip-nav branch
+    /// — they fall through to widgets for intra-widget focus cycling.
+    #[test]
+    fn plain_tab_falls_through_to_widget() {
+        use crossterm::event::KeyCode;
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let before = sid_app.app.tabs().active_index();
+
+        // Plain Tab: route_key_event returns false (fall-through) and the
+        // active tab index is unchanged.
+        let consumed = route_key_event(&mut sid_app, chord(KeyCode::Tab));
+        assert!(
+            !consumed,
+            "plain Tab must fall through (return false) — it belongs to the widget"
+        );
+        assert_eq!(
+            sid_app.app.tabs().active_index(),
+            before,
+            "plain Tab must not cycle the tab strip"
+        );
+
+        // BackTab: same contract.
+        let consumed = route_key_event(&mut sid_app, chord(KeyCode::BackTab));
+        assert!(
+            !consumed,
+            "BackTab must fall through (return false) — it belongs to the widget"
+        );
+        assert_eq!(
+            sid_app.app.tabs().active_index(),
+            before,
+            "BackTab must not cycle the tab strip"
+        );
+    }
+
+    /// A modal wins over a form: while a modal is open the form does not see
+    /// the key (modal_stack interception fires first).
+    #[test]
+    fn modal_wins_over_form() {
+        use crossterm::event::KeyCode;
+
+        let mut sid_app = build_test_sid_app(Some("database"));
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        let form_focus_before = sid_app.form.as_ref().unwrap().focus;
+        // Push a benign modal on top.
+        sid_app.modal_stack.push(sid_widgets::ModalSpec::new(
+            "test.modal",
+            "Test",
+            vec![sid_widgets::modal::Field::Display {
+                label: "info".into(),
+                body: "hello".into(),
+            }],
+        ));
+        // Tab is consumed by the modal, not the form.
+        assert!(route_key_event(&mut sid_app, chord(KeyCode::Tab)));
+        assert_eq!(
+            sid_app.form.as_ref().unwrap().focus,
+            form_focus_before,
+            "modal must intercept before the form sees the key"
+        );
+    }
+
+    /// A dirty form leaving via Esc opens the discard-confirm modal; choosing
+    /// "Discard" and submitting it closes the form.
+    #[test]
+    fn dirty_form_esc_opens_discard_confirm_and_discard_closes() {
+        use crossterm::event::KeyCode;
+
+        let mut sid_app = build_test_sid_app(Some("database"));
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        // Type a char to dirty the form.
+        route_key_event(&mut sid_app, chord(KeyCode::Char('a')));
+        assert!(sid_app.form.as_ref().unwrap().dirty);
+
+        // Esc on a dirty form requests the discard confirm modal.
+        assert!(route_key_event(&mut sid_app, chord(KeyCode::Esc)));
+        assert!(
+            sid_app.form.is_some(),
+            "form stays open until the user confirms discard"
+        );
+        assert_eq!(
+            sid_app.modal_stack.last().map(|m| m.id.0.as_str()),
+            Some("form.discard_confirm")
+        );
+
+        // Select "Discard" (Right cycles the Choice) then submit the modal.
+        let modal = sid_app.modal_stack.last_mut().unwrap();
+        sid_widgets::route_key_to_modal(modal, chord(KeyCode::Right));
+        let outcome = sid_widgets::route_key_to_modal(
+            sid_app.modal_stack.last_mut().unwrap(),
+            chord(KeyCode::Enter),
+        );
+        assert_eq!(outcome, sid_widgets::ModalKeyOutcome::Submit);
+        let popped = sid_app.modal_stack.pop().unwrap();
+        let values = popped.collect_values();
+        dispatch_modal_submit(&mut sid_app, &popped.id, &values).unwrap();
+
+        assert!(
+            sid_app.form.is_none(),
+            "confirming discard must close the form"
+        );
+        assert!(sid_app.form_origin_tab.is_none());
+    }
+
+    /// While a form is active, a body click does NOT route through
+    /// `dispatch_focus_at_for_active_tab` — the background widget's focus
+    /// state must be unchanged. Regression test for the guard introduced in
+    /// the same commit (`modal_stack.is_empty() && form.is_none()`).
+    #[test]
+    fn body_click_suppressed_while_form_is_active() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+
+        // Record the WorkspacesWidget's focused pane before we do anything.
+        fn ws_focus(sid_app: &SidApp) -> Option<sid_widgets::workspaces::WsFocus> {
+            sid_app
+                .app
+                .tabs()
+                .active()
+                .layout
+                .iter_widgets()
+                .next()
+                .and_then(|w| w.as_any().downcast_ref::<sid_widgets::WorkspacesWidget>())
+                .map(|ws| ws.focused_pane())
+        }
+
+        // Flip the workspaces focus to SubView so we have a detectable baseline.
+        if let Some(w) = sid_app
+            .app
+            .tabs_mut()
+            .active_mut()
+            .layout
+            .iter_widgets_mut()
+            .next()
+        {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(ws) = any_ref.downcast_mut::<sid_widgets::WorkspacesWidget>() {
+                ws.focus_next(); // Tree → SubView
+            }
+        }
+        let focus_before = ws_focus(&sid_app);
+
+        // Open a form — this is what the guard must detect.
+        open_form(&mut sid_app, test_form_spec("body_click_suppressed.test"));
+        assert!(sid_app.form.is_some(), "form must be open");
+
+        // Simulate a body click in the left half (which, without the guard,
+        // would dispatch into the hidden background WorkspacesWidget and flip
+        // focus back to Tree).
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            20, // col — well inside the left pane
+            15, // row — inside the body region
+        );
+        let routing = route_mouse_event(&sid_app, full_area(), m);
+        // The event still resolves to FocusInBody (route_mouse_event does not
+        // know about forms); the suppression happens one layer up.
+        assert_eq!(
+            routing,
+            MouseRouting::FocusInBody { col: 20, row: 15 },
+            "route_mouse_event resolves to FocusInBody regardless of form state"
+        );
+
+        // Exercise the guard path directly (mirrors the event-loop arm).
+        if sid_app.modal_stack.is_empty() && sid_app.form.is_none() {
+            dispatch_focus_at_for_active_tab(&mut sid_app, full_area(), 20, 15);
+        }
+        // form.is_some() → guard does NOT call dispatch_focus_at — focus unchanged.
+        assert_eq!(
+            ws_focus(&sid_app),
+            focus_before,
+            "background widget focus must be unchanged while a form is open"
+        );
+    }
+
+    /// While a form is active on the origin tab, the `tab.close` keybind chord
+    /// (Alt+W / Ctrl+W) is consumed by the form and the tab count is unchanged.
+    /// This is the close-invariant regression test described in the doc-comment
+    /// added to `open_form`.
+    #[test]
+    fn tab_close_keybind_consumed_by_form_on_origin_tab() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let parent_idx = sid_app.app.tabs().active_index();
+        let tab_count_before = sid_app.app.tabs().tabs().len();
+
+        // Push a Detail tab and switch to it so the origin tab holds the form.
+        let detail_tab = sid_core::tab::Tab {
+            id: sid_core::tab::TabId::new("ws-detail-test"),
+            title: "Test Detail".into(),
+            layout: {
+                use sid_core::layout::Layout;
+                use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+                struct Stub {
+                    id: WidgetId,
+                }
+                impl Widget for Stub {
+                    fn id(&self) -> &WidgetId {
+                        &self.id
+                    }
+                    fn title(&self) -> &str {
+                        "stub"
+                    }
+                    fn render(&self, _: &mut dyn RenderTarget) {}
+                    fn handle_event(
+                        &mut self,
+                        _: &sid_core::event::Event,
+                        _: &mut sid_core::context::WidgetCtx,
+                    ) -> EventOutcome {
+                        EventOutcome::Bubble
+                    }
+                    fn as_any(&self) -> &dyn std::any::Any {
+                        self
+                    }
+                    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                        self
+                    }
+                }
+                Layout::Single(Box::new(Stub {
+                    id: WidgetId::new("stub"),
+                }))
+            },
+            hotkey: None,
+            kind: sid_core::tab::TabKind::Detail { parent_idx },
+        };
+        sid_app
+            .app
+            .tabs_mut()
+            .push_detail(detail_tab)
+            .expect("push detail");
+        // Switch to the detail tab so it is the active (origin) tab for the form.
+        assert!(
+            sid_app
+                .app
+                .tabs_mut()
+                .switch_to(&sid_core::tab::TabId::new("ws-detail-test")),
+            "switch to detail tab"
+        );
+        let tab_count_with_detail = sid_app.app.tabs().tabs().len();
+        assert_eq!(tab_count_with_detail, tab_count_before + 1);
+
+        // Open a form on the detail tab.
+        open_form(&mut sid_app, test_form_spec("close-invariant.test"));
+        assert!(sid_app.form.is_some());
+        assert_eq!(
+            sid_app.form_origin_tab.as_ref().map(|t| t.as_str()),
+            Some("ws-detail-test")
+        );
+
+        // Drive the tab.close keybind (Alt+W) through route_key_event.
+        let close_chord = chord_mods(KeyCode::Char('w'), KeyModifiers::ALT);
+        let handled = route_key_event(&mut sid_app, close_chord);
+
+        // The form consumed the key (returns true) and the tab count is unchanged.
+        assert!(
+            handled,
+            "form must consume Alt+W while active on origin tab"
+        );
+        assert_eq!(
+            sid_app.app.tabs().tabs().len(),
+            tab_count_with_detail,
+            "tab count must not decrease — form intercepted Alt+W before tab.close"
+        );
+        assert!(
+            sid_app.form.is_some(),
+            "form must still be open (Alt+W has no form binding, treated as Consumed)"
+        );
     }
 
     // ----- SSH live-connect wiring -----------------------------------------

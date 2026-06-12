@@ -1503,7 +1503,7 @@ git commit -m "feat(sid-core,sid): StripNav/background-open chord helpers + kitt
   2. the event-routing section of the main loop (where modal events are intercepted — form interception goes immediately after modal interception, modal wins when both are somehow open)
   3. the `draw` fn (where the body rect is computed — split it when a form is active for the active tab)
 
-- [ ] **Step 1: Event interception**
+- [x] **Step 1: Event interception**
 
 Mirror the modal interception block. Shape:
 
@@ -1566,12 +1566,15 @@ the executor writes by copying an existing delete-confirm modal — exact field 
 there; the behavior contract is in the comment above.)
 
 Tab-strip semantics in the same routing section: where the loop currently handles tab
-cycling keys, replace the raw key match with `chord.strip_nav()` so `Tab`/`Ctrl+Tab`→`tabs.next()`,
-`Shift+Tab`/`Ctrl+Shift+Tab`/`BackTab`→`tabs.prev()` — gated on no form/modal being active for
-the active tab (when a form is active, the interception above already consumed the key, so
-no extra gating code is needed — verify by test).
+cycling keys, use `chord.strip_nav()` — **interim rule (orchestrator ruling, 2026-06-12)**:
+wire-level cycling fires ONLY on Ctrl-modified chords (`Ctrl+Tab` → `tabs.next()`,
+`Ctrl+Shift+Tab` → `tabs.prev()`). Plain `Tab`/`Shift+Tab`/`BackTab` fall through to
+widgets, which consume them for intra-widget focus today. Branches 1–5 adopt `strip_nav`
+for plain Tab as they migrate widgets to the list/pane focus model. Gated on no form/modal
+being active for the active tab (when a form is active, the interception above already
+consumed the key, so no extra gating code is needed — verify by test).
 
-- [ ] **Step 2: Split render**
+- [x] **Step 2: Split render**
 
 In `draw`, where the active widget's body rect is computed:
 
@@ -1610,7 +1613,7 @@ fn form_footer_hints() -> Vec<sid_core::FooterHint> {
 }
 ```
 
-- [ ] **Step 3: Helper to open a form (the API branches 1-5 call)**
+- [x] **Step 3: Helper to open a form (the API branches 1-5 call)**
 
 ```rust
 /// Open `spec` as the side-pane form of the currently-active tab.
@@ -1622,7 +1625,7 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::FormSpec) {
 }
 ```
 
-- [ ] **Step 4: Integration tests (wire.rs test mod — use the existing test fixtures that build a `SidApp` for modal tests; same construction)**
+- [x] **Step 4: Integration tests (wire.rs test mod — use the existing test fixtures that build a `SidApp` for modal tests; same construction)**
 
 ```rust
 #[test]
@@ -1647,7 +1650,8 @@ fn submit_unknown_form_id_toasts_and_closes() {
 
 #[test]
 fn strip_nav_cycles_tabs_when_no_form_active() {
-    // Tab -> active_index+1; BackTab -> back; Ctrl+Shift+Tab -> back; Ctrl+Tab -> forward.
+    // Ctrl+Tab -> active_index+1; Ctrl+Shift+Tab -> back.
+    // (Interim rule: plain Tab/BackTab fall through — see strip-nav routing note above.)
 }
 ```
 
@@ -1655,7 +1659,7 @@ Run: `cargo test -p sid wire::` (scope to the new test names if the mod is huge:
 `cargo test -p sid form_only_intercepts strip_nav_cycles open_form_renders submit_unknown`)
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs

@@ -575,6 +575,8 @@ async fn main() -> Result<()> {
         animation,
         fx_state,
         modal_stack: Vec::new(),
+        form: None,
+        form_origin_tab: None,
         pending_submits: Vec::new(),
         toasts: toast::ToastQueue::new(4),
         jobs,
