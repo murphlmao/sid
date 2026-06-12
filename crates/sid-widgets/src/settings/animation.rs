@@ -337,11 +337,7 @@ impl AnimationView {
     /// let ev = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::NONE));
     /// assert!(matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None));
     /// ```
-    pub fn handle_event(
-        &mut self,
-        ev: &Event,
-        _ctx: &mut WidgetCtx,
-    ) -> AnimationViewOutcome {
+    pub fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> AnimationViewOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         let Event::Key(k) = ev else {
             return AnimationViewOutcome::None;
@@ -349,12 +345,8 @@ impl AnimationView {
         match (k.code, k.mods) {
             // Uppercase `S` (any non-Ctrl modifiers) or `Ctrl+S` — persist
             // via the embedded store.
-            (KeyCode::Char('S'), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.try_save()
-            }
-            (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.try_save()
-            }
+            (KeyCode::Char('S'), m) if !m.contains(KeyModifiers::CONTROL) => self.try_save(),
+            (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => self.try_save(),
             (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
                 self.focus_next();
                 AnimationViewOutcome::None
@@ -672,7 +664,8 @@ mod tests {
         let out = v.handle_event(&ev, &mut ctx);
         assert!(
             matches!(out, AnimationViewOutcome::Saved(_)),
-            "S with store should return Saved, got {:?}", out
+            "S with store should return Saved, got {:?}",
+            out
         );
         assert!(!v.is_dirty(), "S press should clear the dirty flag");
         let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
@@ -696,7 +689,8 @@ mod tests {
         let out = v.handle_event(&ev, &mut ctx);
         assert!(
             matches!(out, AnimationViewOutcome::Saved(_)),
-            "Ctrl+S with store should return Saved, got {:?}", out
+            "Ctrl+S with store should return Saved, got {:?}",
+            out
         );
         let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
         assert!(got.is_some(), "Ctrl+S press should have written the key");
@@ -712,9 +706,10 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert!(
-            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
-        );
+        assert!(matches!(
+            v.handle_event(&ev, &mut ctx),
+            AnimationViewOutcome::None
+        ));
         assert_eq!(v.focused_field(), AnimationField::Density);
     }
 
@@ -730,9 +725,10 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert!(
-            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
-        );
+        assert!(matches!(
+            v.handle_event(&ev, &mut ctx),
+            AnimationViewOutcome::None
+        ));
         assert_eq!(v.focused_field(), AnimationField::Enabled);
     }
 
@@ -746,8 +742,9 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert!(
-            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
-        );
+        assert!(matches!(
+            v.handle_event(&ev, &mut ctx),
+            AnimationViewOutcome::None
+        ));
     }
 }

@@ -9427,9 +9427,7 @@ mod tests {
                 .downcast_mut::<sid_widgets::SettingsWidget>()
                 .expect("must downcast to SettingsWidget");
             settings_widget.push_pending_outcome(
-                sid_widgets::settings::PendingSettingsOutcome::AnimationChanged(
-                    new_cfg.clone(),
-                ),
+                sid_widgets::settings::PendingSettingsOutcome::AnimationChanged(new_cfg.clone()),
             );
         }
 
@@ -9562,20 +9560,16 @@ mod tests {
 
         // Send two key-press events then a Tick, then close the channel so the
         // loop exits after draining them.
-        tx.send(sid_core::event::Event::Key(
-            sid_core::event::KeyChord::new(
-                crossterm::event::KeyCode::Char('j'),
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ))
+        tx.send(sid_core::event::Event::Key(sid_core::event::KeyChord::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        )))
         .await
         .unwrap();
-        tx.send(sid_core::event::Event::Key(
-            sid_core::event::KeyChord::new(
-                crossterm::event::KeyCode::Char('k'),
-                crossterm::event::KeyModifiers::NONE,
-            ),
-        ))
+        tx.send(sid_core::event::Event::Key(sid_core::event::KeyChord::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        )))
         .await
         .unwrap();
         tx.send(sid_core::event::Event::Tick).await.unwrap();

@@ -7,13 +7,13 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use sid_core::Widget;
 use sid_core::animation::AnimationConfig;
 use sid_core::context::WidgetCtx;
 use sid_core::event::{Event, KeyChord};
-use sid_core::Widget;
 use sid_store::{OpenStore, RedbStore, Store};
-use sid_widgets::settings::animation::AnimationView;
 use sid_widgets::settings::PendingSettingsOutcome;
+use sid_widgets::settings::animation::AnimationView;
 use sid_widgets::{SettingsCategory, SettingsWidget};
 use tempfile::tempdir;
 
@@ -53,7 +53,12 @@ fn s_key_emits_animation_changed_outcome() {
 
     // The pending queue must contain exactly one AnimationChanged outcome.
     let outcomes = settings.take_pending_outcomes();
-    assert_eq!(outcomes.len(), 1, "expected one pending outcome after S, got {}", outcomes.len());
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "expected one pending outcome after S, got {}",
+        outcomes.len()
+    );
     assert!(
         matches!(outcomes[0], PendingSettingsOutcome::AnimationChanged(_)),
         "outcome must be AnimationChanged, got {:?}",
@@ -75,7 +80,11 @@ fn ctrl_s_emits_animation_changed_outcome() {
     settings.handle_event(&key(KeyCode::Char('s'), KeyModifiers::CONTROL), &mut ctx);
 
     let outcomes = settings.take_pending_outcomes();
-    assert_eq!(outcomes.len(), 1, "expected one pending outcome after Ctrl+S");
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "expected one pending outcome after Ctrl+S"
+    );
     assert!(
         matches!(outcomes[0], PendingSettingsOutcome::AnimationChanged(_)),
         "outcome must be AnimationChanged"

@@ -730,12 +730,10 @@ impl Widget for SettingsWidget {
                                         //    layer to drain and apply live.
                                         ctx.emit_action_with_payload(
                                             "settings.outcome.animation_changed",
-                                            serde_json::to_string(&cfg)
-                                                .unwrap_or_default(),
+                                            serde_json::to_string(&cfg).unwrap_or_default(),
                                         );
-                                        self.pending_outcomes.push(
-                                            PendingSettingsOutcome::AnimationChanged(cfg),
-                                        );
+                                        self.pending_outcomes
+                                            .push(PendingSettingsOutcome::AnimationChanged(cfg));
                                         return EventOutcome::Consumed;
                                     }
                                     AnimationViewOutcome::None => {}
