@@ -2645,6 +2645,39 @@ pub fn dispatch_ssh_form_key(sid_app: &mut SidApp, chord: sid_core::event::KeyCh
             open_form(sid_app, spec);
             true
         }
+        _ if chord.is_background_open() => {
+            // Ctrl+Enter or Shift+O: background-open a new SSH session tab for
+            // the host currently shown in the inspector pane.
+            let Some(form) = sid_app.form.as_ref() else {
+                return false;
+            };
+            let id = form.spec.id.0.clone();
+            let Some(alias) = id.strip_prefix("ssh.inspect:") else {
+                return false;
+            };
+            let alias = alias.to_string();
+            let parent_idx = sid_app.app.tabs().active_index();
+            let new_tab = Tab {
+                id: TabId::new("ssh"),
+                title: format!("SSH · {alias}"),
+                layout: Layout::Single(Box::new(sid_widgets::SshWidget::new())),
+                hotkey: None,
+                kind: TabKind::Detail { parent_idx },
+            };
+            match sid_app.app.tabs_mut().push_background(new_tab) {
+                Ok(()) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::info(format!("Opened SSH · {alias} in background")));
+                }
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("background open failed: {e}")));
+                }
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -6742,6 +6775,51 @@ mod tests {
         let id = app.form.as_ref().unwrap().spec.id.0.clone();
         assert_eq!(id, "ssh.inspect:inspector-test");
     }
+
+    // --- Task 5: background-open ---
+
+    #[test]
+    fn background_open_from_inspector_pushes_tab_and_toasts() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "bg-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host.clone()]);
+        // Open inspector.
+        open_form(
+            &mut app,
+            sid_widgets::ssh::SshInspector::from_host(&host).to_form_spec(),
+        );
+        let tab_count_before = app.app.tabs().tabs().len();
+        let chord = KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::SHIFT,
+        };
+        let opened = dispatch_ssh_form_key(&mut app, chord);
+        assert!(opened, "Shift+O must trigger background-open");
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before + 1,
+            "one new tab must be pushed"
+        );
+        assert!(
+            app.toasts.iter().any(|t| t.message.contains("bg-host")),
+            "toast must mention the alias"
+        );
+    }
+
+    // --- Task 4 (continued): add-new cursor ---
 
     #[test]
     fn add_new_cursor_enter_drains_to_open_form() {
