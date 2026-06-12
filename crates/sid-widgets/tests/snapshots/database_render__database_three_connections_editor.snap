@@ -3,10 +3,10 @@ source: crates/sid-widgets/tests/database_render.rs
 expression: s
 ---
 ┌ Connections ───────────────┐┌ SQL ───────────────────────────────────────────────────────────────┐
-│> o prod-db (postgres)      ││SELECT * FROM users;                                                │
+│+ add new                   ││SELECT * FROM users;                                                │
+│  o prod-db (postgres)      ││                                                                    │
 │  o analytics (sqlite)      ││                                                                    │
 │  o scratch (sqlite)        ││                                                                    │
-│                            ││                                                                    │
 │                            ││                                                                    │
 │                            │└────────────────────────────────────────────────────────────────────┘
 │                            │┌ Results · no results yet ──────────────────────────────────────────┐

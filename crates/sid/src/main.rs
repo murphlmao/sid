@@ -512,6 +512,7 @@ async fn main() -> Result<()> {
             ssh_config_entries: ssh_cfg_entries,
             start_ssh_alias,
             db_connections,
+            show_add_new_row: wire::load_show_add_new_row(&*store),
             pinned_configs,
             quick_actions,
             settings_categories,

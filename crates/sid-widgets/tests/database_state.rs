@@ -16,9 +16,23 @@ fn conn(id: &str, k: DbKind) -> DbConnection {
 }
 
 // Task 21: connection-list state.
+// UX-v2: DatabaseState::new() now defaults to add_new=true, so the cursor
+// starts on the synthetic +add new row, not the first connection.
 #[test]
-fn new_state_selects_first_connection() {
+fn new_state_starts_on_add_new_row() {
     let s = DatabaseState::new(vec![conn("a", DbKind::Sqlite), conn("b", DbKind::Postgres)]);
+    // With add_new=true, cursor at AddNew — selected_connection() is None.
+    assert!(s.selected_connection().is_none());
+    assert!(s.is_add_new_selected());
+}
+
+// Using new_with_add_new(…, false) gives the old Item(0) start behavior.
+#[test]
+fn new_state_no_add_new_selects_first_connection() {
+    let s = DatabaseState::new_with_add_new(
+        vec![conn("a", DbKind::Sqlite), conn("b", DbKind::Postgres)],
+        false,
+    );
     assert_eq!(s.selected_connection().unwrap().id, "a");
 }
 
@@ -30,9 +44,15 @@ fn empty_state_has_no_selection() {
 
 #[test]
 fn select_next_and_prev_cycle() {
-    let mut s = DatabaseState::new(vec![conn("a", DbKind::Sqlite), conn("b", DbKind::Sqlite)]);
+    // Use add_new=false so navigation starts on Item(0) not AddNew.
+    let mut s = DatabaseState::new_with_add_new(
+        vec![conn("a", DbKind::Sqlite), conn("b", DbKind::Sqlite)],
+        false,
+    );
+    assert_eq!(s.selected_connection().unwrap().id, "a");
     s.select_next();
     assert_eq!(s.selected_connection().unwrap().id, "b");
+    // wrap from last back to first
     s.select_next();
     assert_eq!(s.selected_connection().unwrap().id, "a");
     s.select_prev();

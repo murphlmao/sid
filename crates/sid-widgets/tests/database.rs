@@ -153,7 +153,8 @@ mod focus {
 
     #[test]
     fn j_only_acts_on_focused_pane() {
-        let mut w = DatabaseWidget::new(vec![conn("a"), conn("b")]);
+        // Use new_with_add_new(…, false) so the cursor starts on Item(0) not +AddNew.
+        let mut w = DatabaseWidget::new_with_add_new(vec![conn("a"), conn("b")], false);
         let mut c = ctx();
         w.set_results_for_tests(results_page());
         // Focus is Connections. j should advance connection selection.

@@ -569,7 +569,6 @@ pub fn load_animation_config(store: &dyn Store) -> AnimationConfig {
 /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
 /// assert_eq!(load_show_add_new_row(&store), true);
 /// ```
-#[allow(dead_code)]
 pub fn load_show_add_new_row(store: &dyn Store) -> bool {
     match store.get_setting(sid_store::settings_keys::SHOW_ADD_NEW_ROW) {
         Ok(Some(val)) => val.0 != b"false",
@@ -671,16 +670,34 @@ pub fn build_app_full(
 /// each widget can be constructed with real data instead of empty defaults.
 /// Used by `main.rs`; tests typically use `BuildAppData::just_workspaces`
 /// which keeps every other field empty.
-#[derive(Default)]
 pub struct BuildAppData {
     pub workspaces: Vec<Workspace>,
     pub ssh_hosts: Vec<sid_store::SshHost>,
     pub ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
     pub start_ssh_alias: Option<String>,
     pub db_connections: Vec<sid_store::DbConnection>,
+    /// Whether the `+add new` synthetic row is shown in the database connections list.
+    /// Defaults to `true`. Set from `settings_keys::SHOW_ADD_NEW_ROW` at startup.
+    pub show_add_new_row: bool,
     pub pinned_configs: Vec<sid_store::PinnedConfig>,
     pub quick_actions: Vec<sid_store::QuickAction>,
     pub settings_categories: Vec<sid_widgets::SettingsCategory>,
+}
+
+impl Default for BuildAppData {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            ssh_hosts: Vec::new(),
+            ssh_config_entries: Vec::new(),
+            start_ssh_alias: None,
+            db_connections: Vec::new(),
+            show_add_new_row: true,
+            pinned_configs: Vec::new(),
+            quick_actions: Vec::new(),
+            settings_categories: Vec::new(),
+        }
+    }
 }
 
 impl BuildAppData {
@@ -747,7 +764,10 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
         tab(
             "database",
             "Database",
-            Box::new(DatabaseWidget::new(data.db_connections)),
+            Box::new(DatabaseWidget::new_with_add_new(
+                data.db_connections,
+                data.show_add_new_row,
+            )),
             Some('3'),
         ),
         tab(
@@ -1777,6 +1797,8 @@ where
             maybe_open_pending_workspace_detail(sid_app);
             // Drain settings outcomes (live-apply behavior toggles, etc.).
             apply_pending_settings_outcomes(sid_app);
+            // Drain database widget commands (OpenConnectionForm, TestConnection, ...).
+            drain_database_commands(sid_app);
             let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
             if matches!(dispatch, Dispatch::Quit) {
                 break;
@@ -3065,8 +3087,12 @@ fn read_key_fingerprint(path: &str) -> (Option<String>, Option<String>) {
     (fp, rest)
 }
 
-/// Database-tab modal opener. `N` adds a new connection; `Del` / `D` removes
-/// the selected one.
+/// Database-tab modal opener. `Del` / `D` removes the selected connection.
+///
+/// The `N` / `n` key previously opened a `database.new` modal here; that path
+/// has been replaced by the UX-v2 side-pane form (via `DbCommand::OpenConnectionForm`
+/// emitted by the widget). `N` now bubbles through the widget and is NOT intercepted
+/// by this function.
 fn database_modal_for_key(
     sid_app: &SidApp,
     chord: sid_core::event::KeyChord,
@@ -3074,39 +3100,8 @@ fn database_modal_for_key(
     use crossterm::event::KeyCode;
     use sid_widgets::{Field, ModalSpec};
     match chord.code {
-        KeyCode::Char('N') | KeyCode::Char('n') => Some(
-            ModalSpec::new(
-                "database.new",
-                "Add Connection",
-                vec![
-                    Field::Text {
-                        label: "id".into(),
-                        value: String::new(),
-                        placeholder: Some("stable id, e.g. prod-pg".into()),
-                    },
-                    Field::Text {
-                        label: "name".into(),
-                        value: String::new(),
-                        placeholder: Some("display label".into()),
-                    },
-                    Field::Choice {
-                        label: "kind".into(),
-                        options: vec!["Postgres".into(), "SQLite".into()],
-                        selected: 0,
-                    },
-                    Field::Text {
-                        label: "dsn".into(),
-                        value: String::new(),
-                        placeholder: Some("postgres://user@host/db or /path/to/file.sqlite".into()),
-                    },
-                    Field::Password {
-                        label: "password".into(),
-                        value: String::new(),
-                    },
-                ],
-            )
-            .with_help("Password is stored in the secrets table (Postgres only)."),
-        ),
+        // database.new modal path removed — connections now use the form substrate
+        // via "database.connection". submit_database_new kept temporarily for safety.
         KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d') => {
             let conn = database_selected_connection(sid_app)?;
             let id = conn.id.clone();
@@ -3299,6 +3294,58 @@ fn hostname_or_local() -> String {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "localhost".to_string())
     })
+}
+
+/// Drain commands queued by the `DatabaseWidget` event handler.
+///
+/// `DbCommand::OpenConnectionForm` opens a side-pane form (unconditionally —
+/// callers must not have a dirty form pending). `DbCommand::TestConnection`
+/// spawns an off-thread connection probe. All other commands remain for the
+/// binary's legacy handlers to consume on future frames.
+pub(crate) fn drain_database_commands(sid_app: &mut SidApp) {
+    use sid_widgets::database::DbCommand;
+
+    // Pull the commands out of the widget; we need the SidApp borrow back
+    // before calling helpers that borrow it mutably again.
+    let cmds: Vec<DbCommand> = sid_app
+        .app
+        .tabs_mut()
+        .tabs_mut()
+        .iter_mut()
+        .find(|t| t.id.as_str() == "database")
+        .and_then(|t| t.layout.iter_widgets_mut().next())
+        .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+        .map(|w| w.state_mut().drain_commands())
+        .unwrap_or_default();
+
+    for cmd in cmds {
+        match cmd {
+            DbCommand::OpenConnectionForm { prefill } => {
+                let spec = db_connection_form_spec(prefill.as_ref());
+                open_form(sid_app, spec);
+            }
+            DbCommand::TestConnection { conn_id } => {
+                spawn_test_connection(sid_app, conn_id);
+            }
+            // All other commands pass through to the legacy wire handlers.
+            other => {
+                // Re-queue for future handling (legacy connect/run/etc paths).
+                if let Some(t) = sid_app
+                    .app
+                    .tabs_mut()
+                    .tabs_mut()
+                    .iter_mut()
+                    .find(|t| t.id.as_str() == "database")
+                {
+                    if let Some(w) = t.layout.iter_widgets_mut().next() {
+                        if let Some(db) = w.as_any_mut().downcast_mut::<DatabaseWidget>() {
+                            db.state_mut().push_command(other);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Drain any queued modal submits and call the corresponding handler.
@@ -4011,12 +4058,7 @@ fn dispatch_modal_submit(
         submit_ssh_debug(sid_app, alias, values)?;
     } else if key.starts_with("help:") {
         // Read-only help modal; submit is a no-op (Esc closes it).
-    } else if key == "database.new" {
-        let conn_id = submit_database_new(sid_app, values)?;
-        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
-        sid_app
-            .toasts
-            .push(Toast::success(format!("connection '{conn_id}' saved")));
+        // "database.new" modal retired by UX-v2 — connections are created via the side-pane form ("database.connection" in dispatch_form_submit).
     } else if let Some(conn_id) = key.strip_prefix("database.remove:") {
         submit_database_remove(sid_app, conn_id, values)?;
     } else if key == "system.pin_config" {
@@ -4113,11 +4155,15 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::form::FormSpec) {
 /// submit" diagnostic. Either way the form closes on submit — a successful
 /// submit is terminal.
 fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::form::FormValues) {
-    // Substrate ships only the wildcard; branches 1-5 insert their own
-    // `"<form.id>" => { ... }` arms above it (which is why this stays a `match`
-    // even while it has a single arm).
-    #[allow(clippy::match_single_binding)]
+    // Branch-specific arms keyed on form id. Wildcard handles unknown ids.
     match id {
+        "database.connection" => {
+            if let Err(e) = submit_db_connection_form(sid_app, values) {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("save connection: {e}")));
+            }
+        }
         _ => {
             let _ = &values;
             sid_app
@@ -4874,6 +4920,8 @@ where
 /// Handle a `database.new` submit: validate, persist the connection, and
 /// (for Postgres) write the password to the secret store. Returns the
 /// new connection id so the caller can populate a toast.
+// TODO: remove in follow-up cleanup once database.connection path is proven stable.
+#[allow(dead_code)]
 fn submit_database_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
@@ -4944,6 +4992,405 @@ fn submit_database_remove(
         .toasts
         .push(Toast::success(format!("connection '{conn_id}' removed")));
     Ok(())
+}
+
+/// Build a [`sid_widgets::form::FormSpec`] for adding or editing a database connection.
+///
+/// When `prefill` is `Some`, all fields are pre-populated from the existing
+/// connection record and its DSN is parsed into individual Host/Port/Database/User
+/// fields. The form id is `"database.connection"`.
+///
+/// The spec carries a reshape hook watching `"kind"`: selecting `Postgres` shows
+/// Host/Port/Database/User/Password fields; selecting `SQLite` replaces them with
+/// a single Path field. Surviving field values are preserved across the reshape.
+/// The Info section's DSN row is recomputed on every reshape from the current
+/// editable-field values.
+pub(crate) fn db_connection_form_spec(
+    prefill: Option<&sid_store::DbConnection>,
+) -> sid_widgets::form::FormSpec {
+    use sid_core::adapters::db_client::DbKind;
+    use sid_widgets::form::FormSpec;
+
+    // Parse a postgres DSN (postgres://user@host:port/database) into parts.
+    // Returns (host, port, database, user). Tolerates missing components.
+    fn parse_pg_dsn(dsn: &str) -> (String, String, String, String) {
+        // strip scheme
+        let rest = dsn
+            .strip_prefix("postgres://")
+            .or_else(|| dsn.strip_prefix("postgresql://"))
+            .unwrap_or(dsn);
+        // split user@hostpart/database
+        let (user_host, db) = rest.split_once('/').unwrap_or((rest, ""));
+        let (user, host_port) = user_host.split_once('@').unwrap_or(("", user_host));
+        let (host, port) = host_port.split_once(':').unwrap_or((host_port, "5432"));
+        (
+            host.to_string(),
+            port.to_string(),
+            db.to_string(),
+            user.to_string(),
+        )
+    }
+
+    // Build the DSN Info row body from current field values.
+    fn build_dsn(values: &sid_widgets::form::FormValues) -> String {
+        let kind = values.get("kind").map(String::as_str).unwrap_or("Postgres");
+        match kind {
+            "SQLite" => values.get("path").cloned().unwrap_or_default(),
+            _ => {
+                let user = values.get("user").map(String::as_str).unwrap_or("");
+                let host = values
+                    .get("host")
+                    .map(String::as_str)
+                    .unwrap_or("localhost");
+                let port = values.get("port").map(String::as_str).unwrap_or("5432");
+                let db = values.get("database").map(String::as_str).unwrap_or("");
+                if user.is_empty() {
+                    format!("postgres://{host}:{port}/{db}")
+                } else {
+                    format!("postgres://{user}@{host}:{port}/{db}")
+                }
+            }
+        }
+    }
+
+    // Sections builder; invoked initially and by the reshape hook.
+    fn make_sections(
+        values: &sid_widgets::form::FormValues,
+    ) -> Vec<sid_widgets::form::FormSection> {
+        use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
+        use sid_widgets::modal::Field;
+
+        let kind = values.get("kind").map(String::as_str).unwrap_or("Postgres");
+        let name_val = values.get("name").cloned().unwrap_or_default();
+        let kind_idx = if kind == "SQLite" { 1 } else { 0 };
+
+        let mut editable_fields = vec![
+            FormField::new(
+                "name",
+                Field::Text {
+                    label: "Name".into(),
+                    value: name_val,
+                    placeholder: Some("Local Postgres".into()),
+                },
+            )
+            .with_validate(vec![Validate::NonEmpty]),
+            FormField::new(
+                "kind",
+                Field::Choice {
+                    label: "Kind".into(),
+                    options: vec!["Postgres".into(), "SQLite".into()],
+                    selected: kind_idx,
+                },
+            ),
+        ];
+
+        if kind == "SQLite" {
+            let path_val = values.get("path").cloned().unwrap_or_default();
+            editable_fields.push(
+                FormField::new(
+                    "path",
+                    Field::Picker {
+                        label: "Path".into(),
+                        value: path_val,
+                        hint: String::new(),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+            );
+        } else {
+            let host_val = values
+                .get("host")
+                .cloned()
+                .unwrap_or_else(|| "localhost".to_string());
+            let port_val = values
+                .get("port")
+                .cloned()
+                .unwrap_or_else(|| "5432".to_string());
+            let db_val = values.get("database").cloned().unwrap_or_default();
+            let user_val = values.get("user").cloned().unwrap_or_default();
+            let pw_val = values.get("password").cloned().unwrap_or_default();
+
+            editable_fields.push(
+                FormField::new(
+                    "host",
+                    Field::Text {
+                        label: "Host".into(),
+                        value: host_val,
+                        placeholder: Some("localhost".into()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+            );
+            editable_fields.push(
+                FormField::new(
+                    "port",
+                    Field::Text {
+                        label: "Port".into(),
+                        value: port_val,
+                        placeholder: Some("5432".into()),
+                    },
+                )
+                .with_validate(vec![Validate::Port]),
+            );
+            editable_fields.push(
+                FormField::new(
+                    "database",
+                    Field::Text {
+                        label: "Database".into(),
+                        value: db_val,
+                        placeholder: Some("mydb".into()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+            );
+            editable_fields.push(FormField::new(
+                "user",
+                Field::Text {
+                    label: "User".into(),
+                    value: user_val,
+                    placeholder: Some("postgres".into()),
+                },
+            ));
+            editable_fields.push(FormField::new(
+                "password",
+                Field::Password {
+                    label: "Password".into(),
+                    value: pw_val,
+                },
+            ));
+        }
+
+        let dsn_body = build_dsn(values);
+        let info_section = FormSection {
+            title: "Connection string".into(),
+            kind: SectionKind::Info,
+            fields: vec![FormField::new(
+                "dsn",
+                Field::Display {
+                    label: "DSN".into(),
+                    body: dsn_body,
+                },
+            )],
+        };
+
+        vec![
+            FormSection {
+                title: "Connection".into(),
+                kind: SectionKind::Editable,
+                fields: editable_fields,
+            },
+            info_section,
+        ]
+    }
+
+    // Seed initial values from prefill.
+    let mut seed = sid_widgets::form::FormValues::new();
+
+    if let Some(conn) = prefill {
+        seed.insert("name".into(), conn.name.clone());
+        match conn.kind {
+            DbKind::Postgres => {
+                seed.insert("kind".into(), "Postgres".into());
+                let (host, port, db, user) = parse_pg_dsn(&conn.dsn);
+                seed.insert("host".into(), host);
+                seed.insert("port".into(), port);
+                seed.insert("database".into(), db);
+                seed.insert("user".into(), user);
+                // password is never pre-filled (it lives in the secrets table)
+            }
+            DbKind::Sqlite => {
+                seed.insert("kind".into(), "SQLite".into());
+                seed.insert("path".into(), conn.dsn.clone());
+            }
+        }
+        // Store the existing id so submit_db_connection_form can detect edit vs create.
+        seed.insert("_id".into(), conn.id.clone());
+    }
+
+    let initial_sections = make_sections(&seed);
+
+    FormSpec::new(
+        "database.connection",
+        "Database connection",
+        initial_sections,
+    )
+    .with_reshape(vec!["kind".into()], make_sections)
+}
+
+/// Handle a `"database.connection"` form submit. If `values` contains `"_id"`,
+/// updates the existing record (preserving `created_at`); otherwise generates a
+/// new id from the name. Persists to the store and refreshes the widget.
+///
+/// Password handling is identical to `submit_database_new`: Postgres password
+/// is written to the secrets table via `secrets.put`; the DSN stored in the
+/// record never includes the password.
+pub(crate) fn submit_db_connection_form(
+    sid_app: &mut SidApp,
+    values: sid_widgets::form::FormValues,
+) -> Result<()> {
+    use sid_core::adapters::db_client::DbKind;
+    use sid_core::adapters::secrets::SecretId;
+    use sid_store::{DbConnection, now_epoch};
+
+    let name = values.get("name").cloned().unwrap_or_default();
+    let kind_str = values.get("kind").cloned().unwrap_or_default();
+    let password = values.get("password").cloned().unwrap_or_default();
+    let existing_id = values.get("_id").cloned();
+
+    if name.is_empty() {
+        return Err(anyhow::anyhow!("connection name is required"));
+    }
+
+    let kind = match kind_str.as_str() {
+        "SQLite" => DbKind::Sqlite,
+        _ => DbKind::Postgres,
+    };
+
+    let dsn = match kind {
+        DbKind::Sqlite => values.get("path").cloned().unwrap_or_default(),
+        DbKind::Postgres => {
+            let host = values
+                .get("host")
+                .cloned()
+                .unwrap_or_else(|| "localhost".to_string());
+            let port = values
+                .get("port")
+                .cloned()
+                .unwrap_or_else(|| "5432".to_string());
+            let db = values.get("database").cloned().unwrap_or_default();
+            let user = values.get("user").cloned().unwrap_or_default();
+            if user.is_empty() {
+                format!("postgres://{host}:{port}/{db}")
+            } else {
+                format!("postgres://{user}@{host}:{port}/{db}")
+            }
+        }
+    };
+
+    if dsn.trim().is_empty() {
+        return Err(anyhow::anyhow!("connection path/host is required"));
+    }
+
+    // Derive a stable id: reuse existing id when editing, slug from name when creating.
+    let id = existing_id.unwrap_or_else(|| {
+        name.to_lowercase()
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string()
+    });
+
+    let secret_ref = if kind == DbKind::Postgres && !password.is_empty() {
+        let sid_key = SecretId::new(format!("db.connection.{id}.password"));
+        sid_app
+            .secrets
+            .put(&sid_key, password.as_bytes())
+            .map_err(|e| anyhow::anyhow!("write db password: {e}"))?;
+        Some(sid_key)
+    } else {
+        None
+    };
+
+    // Preserve created_at when updating.
+    let created_at = sid_app
+        .store
+        .get_db_connection(&id)
+        .ok()
+        .flatten()
+        .map(|c| c.created_at)
+        .unwrap_or_else(now_epoch);
+
+    let conn = DbConnection {
+        id: id.clone(),
+        kind,
+        name: name.clone(),
+        dsn,
+        secret_ref,
+        created_at,
+    };
+    sid_app
+        .store
+        .upsert_db_connection(&conn)
+        .map_err(|e| anyhow::anyhow!("upsert db connection: {e}"))?;
+    refresh_database_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("connection '{name}' saved")));
+    Ok(())
+}
+
+/// Spawn an off-thread connection test for `conn_id` via the configured
+/// `DbClient` factory (Postgres or SQLite). Returns `JobOutcome::Success`
+/// with a round-trip latency message, or `JobOutcome::Failure` with the
+/// driver error text. The result surfaces as a toast via `drain_job_outcomes`.
+fn spawn_test_connection(sid_app: &mut SidApp, conn_id: String) {
+    use sid_core::adapters::db_client::OpenParams;
+    // Retrieve connection record.
+    let record = match sid_app.store.get_db_connection(&conn_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            sid_app
+                .toasts
+                .push(Toast::error(format!("connection '{conn_id}' not found")));
+            return;
+        }
+        Err(e) => {
+            sid_app
+                .toasts
+                .push(Toast::error(format!("read connection: {e}")));
+            return;
+        }
+    };
+
+    // Retrieve password from secrets store if a secret_ref is present.
+    let password = record.secret_ref.as_ref().and_then(|sid| {
+        sid_app
+            .secrets
+            .get(sid)
+            .ok()
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    });
+
+    let factory: Arc<dyn sid_core::adapters::db_client::DbClient> = match record.kind {
+        sid_core::adapters::db_client::DbKind::Postgres => Arc::clone(&sid_app.postgres),
+        sid_core::adapters::db_client::DbKind::Sqlite => Arc::clone(&sid_app.sqlite),
+    };
+
+    let label = format!("test-connection:{conn_id}");
+    let params = OpenParams {
+        kind: record.kind,
+        dsn: record.dsn.clone(),
+        password,
+    };
+
+    sid_app
+        .toasts
+        .push(Toast::info(format!("testing connection '{conn_id}'...")));
+
+    sid_app.jobs.spawn(async move {
+        let start = std::time::Instant::now();
+        match factory.open(params).await {
+            Ok(_client) => {
+                let elapsed_ms = start.elapsed().as_millis();
+                JobOutcome::Success {
+                    label,
+                    message: format!("connected in {elapsed_ms}ms"),
+                }
+            }
+            Err(e) => JobOutcome::Failure {
+                label,
+                message: e.to_string(),
+            },
+        }
+    });
 }
 
 /// Handle a `system.pin_config` submit: validate the path, default the label
@@ -5153,21 +5600,23 @@ fn refresh_ssh_widget(sid_app: &mut SidApp) {
 
 /// Reload the DatabaseWidget's connection list from
 /// `store.list_db_connections()`. Other state (active client, results,
-/// history) is left intact.
+/// history) is left intact. Threads the current `show_add_new_row` setting
+/// so the cursor's synthetic-row flag stays consistent.
 fn refresh_database_widget(sid_app: &mut SidApp) {
     let conns = match sid_app.store.list_db_connections() {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("list_db_connections after modal submit failed: {e}");
+            tracing::warn!("list_db_connections after form/modal submit failed: {e}");
             return;
         }
     };
+    let show_add_new = load_show_add_new_row(&*sid_app.store);
     for t in sid_app.app.tabs_mut().tabs_mut() {
         if t.id.as_str() == "database" {
             if let Some(w) = t.layout.iter_widgets_mut().next() {
                 let any_ref = w as &mut dyn std::any::Any;
                 if let Some(ww) = any_ref.downcast_mut::<DatabaseWidget>() {
-                    ww.state_mut().set_connections(conns);
+                    ww.state_mut().set_connections(conns, show_add_new);
                 }
             }
             break;
@@ -7321,14 +7770,17 @@ mod tests {
 
     // ─── Phase 5 — Database tab modals ──────────────────────────────────────
 
-    /// `N` on the Database tab opens the `database.new` modal.
+    /// `N` on the Database tab no longer opens the `database.new` modal —
+    /// UX-v2: N is now consumed by the widget and emits DbCommand::OpenConnectionForm.
+    /// `database_modal_for_key` should return `None` for `N`.
     #[test]
-    fn database_new_modal_for_key_opens_on_database() {
+    fn n_key_on_database_tab_does_not_open_old_modal() {
         let sid_app = build_test_sid_app(Some("database"));
-        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
-            .expect("N on database opens add-connection modal");
-        assert_eq!(modal.id.0, "database.new");
-        assert_eq!(modal.fields.len(), 5);
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'));
+        assert!(
+            modal.is_none(),
+            "N must not open any modal on the database tab — it routes to the side-pane form"
+        );
     }
 
     /// `N` on a different tab does not produce the database modal.
@@ -7343,14 +7795,15 @@ mod tests {
     /// Submitting `database.new` writes a record to the store and refreshes
     /// the widget. With a non-empty Postgres password, the secret is also
     /// persisted via the SecretStore.
+    /// Note: tests submit_database_new directly — the "database.new" modal path was
+    /// retired by UX-v2; connections now use the form substrate ("database.connection").
     #[test]
     fn database_new_submit_persists_and_refreshes_postgres_with_password() {
         use sid_core::adapters::secrets::SecretId;
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("database"));
         assert!(sid_app.store.list_db_connections().unwrap().is_empty());
 
-        let id = ModalId("database.new".to_string());
         let values = vec![
             ("id".to_string(), FieldValue::Text("local-pg".into())),
             ("name".to_string(), FieldValue::Text("Local PG".into())),
@@ -7361,7 +7814,7 @@ mod tests {
             ),
             ("password".to_string(), FieldValue::Password("pw".into())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        submit_database_new(&mut sid_app, &values).unwrap();
         let conns = sid_app.store.list_db_connections().unwrap();
         assert_eq!(conns.len(), 1);
         assert_eq!(conns[0].id, "local-pg");
@@ -7393,12 +7846,13 @@ mod tests {
 
     /// SQLite connections ignore the password field even if supplied — no
     /// secret is written.
+    /// Note: tests submit_database_new directly — the "database.new" modal path was
+    /// retired by UX-v2; connections now use the form substrate ("database.connection").
     #[test]
     fn database_new_submit_sqlite_ignores_password() {
         use sid_core::adapters::secrets::SecretId;
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("database"));
-        let id = ModalId("database.new".to_string());
         let values = vec![
             ("id".to_string(), FieldValue::Text("scratch".into())),
             ("name".to_string(), FieldValue::Text("Scratch".into())),
@@ -7409,7 +7863,7 @@ mod tests {
                 FieldValue::Password("ignored".into()),
             ),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        submit_database_new(&mut sid_app, &values).unwrap();
         let secret = SecretId::new("db.connection.scratch.password");
         assert!(sid_app.secrets.get(&secret).unwrap().is_none());
         let conn = sid_app.store.get_db_connection("scratch").unwrap().unwrap();
@@ -7477,8 +7931,291 @@ mod tests {
 
     // ─── Phase 5 — System tab modals ────────────────────────────────────────
 
-    /// On the System tab with PinnedConfigs focused, `N` opens the
-    /// `system.pin_config` modal.
+    // ─── Database UX-v2 form path ────────────────────────────────────────────
+
+    fn database_widget_ref(app: &SidApp) -> &DatabaseWidget {
+        app.app
+            .tabs()
+            .tabs()
+            .iter()
+            .find(|t| t.id.as_str() == "database")
+            .and_then(|t| t.layout.iter_widgets().next())
+            .and_then(|w| w.as_any().downcast_ref::<DatabaseWidget>())
+            .expect("database widget not found")
+    }
+
+    #[test]
+    fn db_form_spec_postgres_sections_reshape_on_kind_change() {
+        use sid_widgets::form::SectionKind;
+        let spec = db_connection_form_spec(None);
+        // default kind is Postgres
+        let pg_keys: Vec<&str> = spec
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Editable)
+            .flat_map(|s| s.fields.iter().map(|f| f.key.as_str()))
+            .collect();
+        assert!(pg_keys.contains(&"name"), "missing name in pg spec");
+        assert!(pg_keys.contains(&"host"), "missing host in pg spec");
+        assert!(pg_keys.contains(&"port"), "missing port in pg spec");
+        assert!(pg_keys.contains(&"database"), "missing database in pg spec");
+        assert!(pg_keys.contains(&"user"), "missing user in pg spec");
+        assert!(pg_keys.contains(&"password"), "missing password in pg spec");
+        // Info section should have dsn key
+        let info_keys: Vec<&str> = spec
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Info)
+            .flat_map(|s| s.fields.iter().map(|f| f.key.as_str()))
+            .collect();
+        assert!(info_keys.contains(&"dsn"), "missing dsn info row");
+    }
+
+    #[test]
+    fn db_form_spec_reshapes_to_sqlite_on_kind_change() {
+        use sid_widgets::form::SectionKind;
+        use sid_widgets::modal::Field;
+        let mut spec = db_connection_form_spec(None);
+        // change kind to SQLite
+        let kind_section = spec
+            .sections
+            .iter_mut()
+            .find(|s| s.kind == SectionKind::Editable)
+            .expect("editable section");
+        let kind_field = kind_section
+            .fields
+            .iter_mut()
+            .find(|f| f.key == "kind")
+            .expect("kind field");
+        if let Field::Choice {
+            selected, options, ..
+        } = &mut kind_field.field
+        {
+            *selected = options.iter().position(|o| o == "SQLite").unwrap_or(0);
+        }
+        spec.run_reshape();
+        let editable_keys: Vec<&str> = spec
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Editable)
+            .flat_map(|s| s.fields.iter().map(|f| f.key.as_str()))
+            .collect();
+        assert!(
+            editable_keys.contains(&"path"),
+            "missing path in sqlite spec"
+        );
+        assert!(
+            !editable_keys.contains(&"host"),
+            "host should be absent in sqlite spec"
+        );
+        assert!(
+            !editable_keys.contains(&"password"),
+            "password should be absent in sqlite spec"
+        );
+    }
+
+    #[test]
+    fn db_form_spec_prefill_populates_values() {
+        use sid_core::adapters::db_client::DbKind;
+        use sid_store::{DbConnection, now_epoch};
+        let conn = DbConnection {
+            id: "local-pg".to_string(),
+            kind: DbKind::Postgres,
+            name: "Local Postgres".to_string(),
+            dsn: "postgres://dbuser@localhost:5432/mydb".to_string(),
+            secret_ref: None,
+            created_at: now_epoch(),
+        };
+        let spec = db_connection_form_spec(Some(&conn));
+        let values = spec.values();
+        assert_eq!(
+            values.get("name").map(String::as_str),
+            Some("Local Postgres")
+        );
+        assert_eq!(values.get("kind").map(String::as_str), Some("Postgres"));
+        // DSN fields parsed out
+        assert_eq!(values.get("host").map(String::as_str), Some("localhost"));
+        assert_eq!(values.get("port").map(String::as_str), Some("5432"));
+        assert_eq!(values.get("database").map(String::as_str), Some("mydb"));
+        assert_eq!(values.get("user").map(String::as_str), Some("dbuser"));
+    }
+
+    #[test]
+    fn db_form_spec_dsn_info_row_reflects_postgres_fields() {
+        use sid_widgets::form::SectionKind;
+        use sid_widgets::modal::Field;
+        let mut spec = db_connection_form_spec(None);
+        // set host + port + database + user
+        for section in spec
+            .sections
+            .iter_mut()
+            .filter(|s| s.kind == SectionKind::Editable)
+        {
+            for field in &mut section.fields {
+                match field.key.as_str() {
+                    "host" => {
+                        if let Field::Text { value, .. } = &mut field.field {
+                            *value = "db.example.com".into();
+                        }
+                    }
+                    "port" => {
+                        if let Field::Text { value, .. } = &mut field.field {
+                            *value = "5432".into();
+                        }
+                    }
+                    "database" => {
+                        if let Field::Text { value, .. } = &mut field.field {
+                            *value = "app".into();
+                        }
+                    }
+                    "user" => {
+                        if let Field::Text { value, .. } = &mut field.field {
+                            *value = "alice".into();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        spec.run_reshape();
+        let dsn_value = spec
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Info)
+            .flat_map(|s| s.fields.iter())
+            .find(|f| f.key == "dsn")
+            .and_then(|f| {
+                if let Field::Display { body, .. } = &f.field {
+                    Some(body.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("");
+        assert!(
+            dsn_value.contains("db.example.com"),
+            "dsn should contain host"
+        );
+        assert!(
+            dsn_value.contains("app"),
+            "dsn should contain database name"
+        );
+        assert!(dsn_value.contains("alice"), "dsn should contain user");
+    }
+
+    #[test]
+    fn submit_db_connection_form_persists_new_connection() {
+        use sid_widgets::form::FormValues;
+        let mut app = build_test_sid_app(Some("database"));
+        let mut values = FormValues::new();
+        values.insert("name".into(), "Dev Postgres".into());
+        values.insert("kind".into(), "Postgres".into());
+        values.insert("host".into(), "localhost".into());
+        values.insert("port".into(), "5432".into());
+        values.insert("database".into(), "devdb".into());
+        values.insert("user".into(), "dev".into());
+        // no _id → create path
+        let result = submit_db_connection_form(&mut app, values);
+        assert!(result.is_ok(), "submit should succeed: {:?}", result);
+        let conns = app.store.list_db_connections().unwrap();
+        assert!(
+            conns.iter().any(|c| c.name == "Dev Postgres"),
+            "connection should be persisted"
+        );
+    }
+
+    #[test]
+    fn submit_db_connection_form_updates_existing_connection() {
+        use sid_core::adapters::db_client::DbKind;
+        use sid_store::{DbConnection, now_epoch};
+        use sid_widgets::form::FormValues;
+        let mut app = build_test_sid_app(Some("database"));
+        // pre-seed a connection in the store
+        let existing = DbConnection {
+            id: "existing-pg".to_string(),
+            kind: DbKind::Postgres,
+            name: "Old Name".to_string(),
+            dsn: "postgres://localhost:5432/olddb".to_string(),
+            secret_ref: None,
+            created_at: now_epoch(),
+        };
+        app.store.upsert_db_connection(&existing).unwrap();
+
+        let mut values = FormValues::new();
+        values.insert("_id".into(), "existing-pg".into());
+        values.insert("name".into(), "New Name".into());
+        values.insert("kind".into(), "Postgres".into());
+        values.insert("host".into(), "localhost".into());
+        values.insert("port".into(), "5432".into());
+        values.insert("database".into(), "newdb".into());
+        values.insert("user".into(), String::new());
+        let result = submit_db_connection_form(&mut app, values);
+        assert!(result.is_ok());
+        let conns = app.store.list_db_connections().unwrap();
+        assert!(
+            conns
+                .iter()
+                .any(|c| c.id == "existing-pg" && c.name == "New Name"),
+            "existing connection should be updated"
+        );
+    }
+
+    #[test]
+    fn database_widget_respects_show_add_new_row_setting() {
+        use sid_store::TypedSettings;
+        let mut app = build_test_sid_app(Some("database"));
+        // Default (unset) → add_new = true (BuildAppData::default has show_add_new_row=true)
+        {
+            let w = database_widget_ref(&app);
+            assert!(
+                w.state().cursor.add_new,
+                "cursor should have add_new=true by default"
+            );
+        }
+        // Turn it off in the store
+        app.store
+            .put_bool(sid_store::settings_keys::SHOW_ADD_NEW_ROW, false)
+            .unwrap();
+        // Trigger a refresh (as if a connection was saved)
+        refresh_database_widget(&mut app);
+        {
+            let w = database_widget_ref(&app);
+            assert!(
+                !w.state().cursor.add_new,
+                "cursor should have add_new=false after setting stored false"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_form_submit_database_connection_saves_and_closes_form() {
+        use sid_widgets::form::FormValues;
+        let mut app = build_test_sid_app(Some("database"));
+        // Open a form so it's visible
+        let spec = db_connection_form_spec(None);
+        open_form(&mut app, spec);
+        assert!(app.form.is_some(), "form should be open");
+
+        let mut values = FormValues::new();
+        values.insert("name".into(), "TestConn".into());
+        values.insert("kind".into(), "Postgres".into());
+        values.insert("host".into(), "localhost".into());
+        values.insert("port".into(), "5432".into());
+        values.insert("database".into(), "testdb".into());
+        values.insert("user".into(), "admin".into());
+
+        dispatch_form_submit(&mut app, "database.connection", values);
+
+        // Form should be closed
+        assert!(app.form.is_none(), "form should be closed after submit");
+        // Connection should be persisted
+        let conns = app.store.list_db_connections().unwrap();
+        assert!(
+            conns.iter().any(|c| c.name == "TestConn"),
+            "connection should be in store"
+        );
+    }
+
     #[test]
     fn system_pin_modal_for_key_opens_on_system() {
         let sid_app = build_test_sid_app(Some("system"));
@@ -8079,13 +8816,14 @@ mod tests {
         );
     }
 
-    /// `dispatch_modal_submit` on `database.new` with valid fields pushes a
-    /// success toast whose message contains the new connection id.
+    /// `submit_database_new` with valid fields returns the new connection id.
+    /// Note: the "database.new" modal dispatch arm was retired by UX-v2; the toast
+    /// is now pushed by the form-substrate path ("database.connection"). This test
+    /// calls submit_database_new directly to verify the core persistence contract.
     #[test]
     fn dispatch_database_new_pushes_success_toast() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("database"));
-        let id = ModalId("database.new".to_string());
         let values = vec![
             ("id".into(), FieldValue::Text("prod-pg".into())),
             ("name".into(), FieldValue::Text("Prod".into())),
@@ -8093,11 +8831,18 @@ mod tests {
             ("dsn".into(), FieldValue::Text(":memory:".into())),
             ("password".into(), FieldValue::Password(String::new())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
-        let messages: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        let conn_id = submit_database_new(&mut sid_app, &values).unwrap();
+        assert_eq!(
+            conn_id, "prod-pg",
+            "submit_database_new must return the connection id"
+        );
         assert!(
-            messages.iter().any(|m| m.contains("prod-pg")),
-            "expected toast mentioning 'prod-pg'; got: {messages:?}"
+            sid_app
+                .store
+                .get_db_connection("prod-pg")
+                .unwrap()
+                .is_some(),
+            "connection must be persisted"
         );
     }
 

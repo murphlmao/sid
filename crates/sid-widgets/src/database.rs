@@ -1221,7 +1221,8 @@ impl Widget for DatabaseWidget {
                         } else {
                             self.state.selected_connection().cloned()
                         };
-                        self.state.push_command(DbCommand::OpenConnectionForm { prefill });
+                        self.state
+                            .push_command(DbCommand::OpenConnectionForm { prefill });
                         return EventOutcome::Consumed;
                     }
                     // N — convenience alias for "new", always opens add form.
@@ -1244,9 +1245,7 @@ impl Widget for DatabaseWidget {
                         let conn_id = self
                             .state
                             .active_conn_id()
-                            .or_else(|| {
-                                self.state.selected_connection().map(|c| c.id.as_str())
-                            })
+                            .or_else(|| self.state.selected_connection().map(|c| c.id.as_str()))
                             .map(|s| s.to_string());
                         if let Some(id) = conn_id {
                             self.state
@@ -1497,20 +1496,15 @@ mod tests {
     #[test]
     fn snapshot_connection_list_two_items_cursor_on_add_new() {
         // cursor at pos 0 → +add new is highlighted
-        let w = DatabaseWidget::new_with_add_new(
-            vec![stub_conn("pg"), stub_conn("staging")],
-            true,
-        );
+        let w = DatabaseWidget::new_with_add_new(vec![stub_conn("pg"), stub_conn("staging")], true);
         let s = render_to_string(&w, 80, 24);
         insta::assert_snapshot!("connection_list_add_new_selected", s);
     }
 
     #[test]
     fn snapshot_connection_list_two_items_cursor_on_first_item() {
-        let mut w = DatabaseWidget::new_with_add_new(
-            vec![stub_conn("pg"), stub_conn("staging")],
-            true,
-        );
+        let mut w =
+            DatabaseWidget::new_with_add_new(vec![stub_conn("pg"), stub_conn("staging")], true);
         w.state.select_next(); // moves to Item(0)
         let s = render_to_string(&w, 80, 24);
         insta::assert_snapshot!("connection_list_first_item_selected", s);
