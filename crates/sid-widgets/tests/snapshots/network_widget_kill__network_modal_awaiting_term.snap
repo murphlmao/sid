@@ -3,7 +3,7 @@ source: crates/sid-widgets/tests/network_widget_kill.rs
 expression: "render_to_string(&w, 80, 24)"
 ---
 ┌ Interfaces ────────┐┌ Listening ports ───────────────────────────────────────┐
-│  * lo              ││PORT    PID     PROTO  COMMAND        ADDR              │
+│   * lo             ││PORT    PID     PROTO  COMMAND        ADDR              │
 │                    ││22      1234    tcp    sshd           0.0.0.0           │
 │                    ││                                                        │
 │                    ││                                                        │

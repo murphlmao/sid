@@ -24,11 +24,22 @@ pub enum Validate {
     Port,
     /// Value must parse as u64.
     Unsigned,
+    /// Value must not exceed `n` characters (Unicode scalar values) after trimming.
+    MaxLen(usize),
 }
 
 impl Validate {
     /// Check `value`; `None` means valid, `Some(msg)` is the error rendered
     /// under the field box.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::form::Validate;
+    /// assert!(Validate::MaxLen(5).check("hello").is_none());
+    /// assert!(Validate::MaxLen(4).check("hello").is_some());
+    /// assert!(Validate::MaxLen(5).check("  hi  ").is_none()); // trimmed = 2 chars
+    /// ```
     pub fn check(self, value: &str) -> Option<String> {
         match self {
             Validate::NonEmpty => {
@@ -47,6 +58,13 @@ impl Validate {
                     None
                 } else {
                     Some("must be a whole number".to_string())
+                }
+            }
+            Validate::MaxLen(n) => {
+                if value.trim().chars().count() > n {
+                    Some(format!("max {n} characters"))
+                } else {
+                    None
                 }
             }
         }

@@ -69,6 +69,20 @@ pub mod settings_keys {
     /// assert_eq!(settings_keys::SHOW_ADD_NEW_ROW, "show_add_new_row");
     /// ```
     pub const SHOW_ADD_NEW_ROW: &str = "show_add_new_row";
+
+    /// Common prefix for per-interface setting keys: `network.iface.<name>.<suffix>`.
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::NETWORK_IFACE_PINNED_PREFIX, "network.iface.");
+    /// assert_eq!(settings_keys::NETWORK_IFACE_PINNED_SUFFIX, "pinned");
+    /// assert_eq!(settings_keys::NETWORK_IFACE_ALIAS_SUFFIX, "alias");
+    /// ```
+    pub const NETWORK_IFACE_PINNED_PREFIX: &str = "network.iface.";
+    /// Suffix appended after `<name>.` for the pin-to-top flag.
+    pub const NETWORK_IFACE_PINNED_SUFFIX: &str = "pinned";
+    /// Suffix appended after `<name>.` for the display alias string.
+    pub const NETWORK_IFACE_ALIAS_SUFFIX: &str = "alias";
 }
 
 /// String-typed setting helpers. Default impls call [`Store::get_setting`] /
