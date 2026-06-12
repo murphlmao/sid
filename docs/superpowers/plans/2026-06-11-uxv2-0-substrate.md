@@ -1357,16 +1357,16 @@ git commit -m "feat(sid-core): TabManager::push_background — open detail tab w
 - Modify: `crates/sid-core/src/event.rs` (chord helper fns next to `KeyChord`)
 - Modify: the terminal setup/teardown in the `sid` binary (find it: `rg -n "EnableMouseCapture|enable_raw_mode" crates/sid/src` — flags go in the same `execute!` calls)
 
-- [ ] **Step 1: Chord helpers in `sid-core/src/event.rs`**
+- [x] **Step 1: Chord helpers in `sid-core/src/event.rs`**
 
 ```rust
 /// Intent of a chord at the tab-strip level (list focus only — pane-focused
 /// widgets consume Tab themselves and these are never consulted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StripNav {
-    /// `Tab` — next tab.
+    /// `Tab` / `Ctrl+Tab` — next tab.
     Next,
-    /// `Shift+Tab` / `BackTab` / `Ctrl+Tab` — previous tab.
+    /// `Shift+Tab` / `BackTab` / `Ctrl+Shift+Tab` — previous tab.
     Prev,
     /// Not a strip-navigation chord.
     None,
@@ -1433,7 +1433,7 @@ impl KeyChord {
 (If `KeyModifiers::NONE` doesn't exist in the vendored crossterm version, use
 `KeyModifiers::empty()` in the doc tests.)
 
-- [ ] **Step 2: Unit tests for chord classification edge cases (event.rs test mod)**
+- [x] **Step 2: Unit tests for chord classification edge cases (event.rs test mod)**
 
 ```rust
 #[test]
@@ -1459,7 +1459,7 @@ fn unrelated_keys_are_none_and_not_background_open() {
 Run: `cargo test -p sid-core event::` and `cargo test -p sid-core --doc event`
 Expected: PASS.
 
-- [ ] **Step 3: Enable kitty protocol in the binary's terminal setup**
+- [x] **Step 3: Enable kitty protocol in the binary's terminal setup**
 
 In the terminal init (alongside the existing raw-mode/mouse-capture `execute!`):
 
@@ -1482,11 +1482,11 @@ disables raw mode / leaves the alternate screen — including any panic-hook tea
 binary installs; grep `disable_raw_mode` for every call site and pair each one).
 
 Manual check (no automated test for terminal I/O): run `cargo run` inside a kitty-protocol
-terminal, press `Ctrl+Tab`, confirm the strip cycles backward; in a legacy terminal confirm
+terminal, press `Ctrl+Tab`, confirm the strip cycles forward (`Ctrl+Shift+Tab` backward); in a legacy terminal confirm
 `Shift+Tab` does, and that startup/exit leave the terminal sane (no stuck flags after exit,
 including after a forced panic).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid-core/src/event.rs crates/sid/src
@@ -1566,8 +1566,8 @@ the executor writes by copying an existing delete-confirm modal — exact field 
 there; the behavior contract is in the comment above.)
 
 Tab-strip semantics in the same routing section: where the loop currently handles tab
-cycling keys, replace the raw key match with `chord.strip_nav()` so `Tab`→`tabs.next()`,
-`Shift+Tab`/`Ctrl+Tab`/`BackTab`→`tabs.prev()` — gated on no form/modal being active for
+cycling keys, replace the raw key match with `chord.strip_nav()` so `Tab`/`Ctrl+Tab`→`tabs.next()`,
+`Shift+Tab`/`Ctrl+Shift+Tab`/`BackTab`→`tabs.prev()` — gated on no form/modal being active for
 the active tab (when a form is active, the interception above already consumed the key, so
 no extra gating code is needed — verify by test).
 
@@ -1647,7 +1647,7 @@ fn submit_unknown_form_id_toasts_and_closes() {
 
 #[test]
 fn strip_nav_cycles_tabs_when_no_form_active() {
-    // Tab -> active_index+1; BackTab -> back; Ctrl+Tab -> back.
+    // Tab -> active_index+1; BackTab -> back; Ctrl+Shift+Tab -> back; Ctrl+Tab -> forward.
 }
 ```
 

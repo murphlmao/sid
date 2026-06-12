@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -594,6 +597,14 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Enable the kitty keyboard protocol so Ctrl+Tab / Ctrl+Enter reach the
+    // app in supporting terminals (kitty, wezterm, ghostty, foot).  Terminals
+    // that do not support the protocol silently ignore the escape sequence, so
+    // this is harmless on legacy terminals.
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -611,7 +622,12 @@ async fn main() -> Result<()> {
     // next process invocation (the Drop won't run, but the next process's
     // EnableMouseCapture supersedes any stale state).
     disable_raw_mode()?;
-    let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
     terminal.show_cursor()?;
 
     // Mark session ended.
