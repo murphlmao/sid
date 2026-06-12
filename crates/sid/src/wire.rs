@@ -1701,29 +1701,39 @@ where
         // Sweep expired toasts so they fade out on the next render.
         sid_app.toasts.drain_expired();
 
-        // Advance starfield phase on each frame before drawing.
-        if let Some(fx) = sid_app.fx_state.as_mut() {
-            let area = terminal
-                .size()
-                .map(|s| Rect {
-                    x: 0,
-                    y: 0,
-                    width: s.width,
-                    height: s.height,
-                })
-                .unwrap_or(Rect {
-                    x: 0,
-                    y: 0,
-                    width: 80,
-                    height: 24,
-                });
-            fx.tick(area, &sid_app.animation);
-        }
         terminal.draw(|f| draw(f, sid_app))?;
         let ev = match rx.recv().await {
             Some(e) => e,
             None => break,
         };
+
+        // Advance starfield phase on timer ticks only — not on key/mouse events.
+        // This ensures the visual twinkle rate matches `animation.fps` (the pump
+        // interval is set from fps in main.rs) rather than keyboard activity.
+        // Per spec (docs/superpowers/specs/2026-05-22-sid-ux-iteration.md:364):
+        // "the tokio event pump wakes on either a key event OR a 1/FPS tick".
+        if ev == sid_core::event::Event::Tick {
+            if let Some(fx) = sid_app.fx_state.as_mut() {
+                let area = terminal
+                    .size()
+                    .map(|s| Rect {
+                        x: 0,
+                        y: 0,
+                        width: s.width,
+                        height: s.height,
+                    })
+                    .unwrap_or(Rect {
+                        x: 0,
+                        y: 0,
+                        width: 80,
+                        height: 24,
+                    });
+                // Skip ticking while a modal or form is open (spec line 366).
+                if sid_app.modal_stack.is_empty() && sid_app.form.is_none() {
+                    fx.tick(area, &sid_app.animation);
+                }
+            }
+        }
 
         // Translate mouse events into synthetic key events (scroll → j/k)
         // or direct tab switches (click on the tab strip), and route in-body
@@ -9352,5 +9362,68 @@ mod tests {
             assert!(s.contains("x"));
             assert!(s.contains("y"));
         }
+    }
+
+    // ----- Animation tick-gate regression tests ----------------------------
+
+    /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`
+    /// and must NOT advance it on key presses or mouse events.
+    ///
+    /// Before the fix this test fails because `fx.tick()` fires once per loop
+    /// iteration regardless of event kind, so two key-press events advance
+    /// `tick_count` by 2 instead of 0.
+    #[tokio::test]
+    async fn animation_only_ticks_on_tick_event() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Replace the default None fx_state with a seeded one so tick_count is
+        // observable. (build_test_sid_app sets fx_state = None; override it.)
+        sid_app.fx_state = Some(sid_fx::FxState::with_seed(42));
+        sid_app.animation = sid_core::animation::AnimationConfig::default();
+
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(16);
+
+        // Send two key-press events then a Tick, then close the channel so the
+        // loop exits after draining them.
+        tx.send(sid_core::event::Event::Key(
+            sid_core::event::KeyChord::new(
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ))
+        .await
+        .unwrap();
+        tx.send(sid_core::event::Event::Key(
+            sid_core::event::KeyChord::new(
+                crossterm::event::KeyCode::Char('k'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ))
+        .await
+        .unwrap();
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx); // close channel → loop exits after Tick
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        let tick_count = sid_app
+            .fx_state
+            .as_ref()
+            .expect("fx_state must remain Some")
+            .tick_count;
+
+        // BEFORE the fix: tick_count == 3 (once per loop iteration).
+        // AFTER the fix:  tick_count == 1 (only on the Tick event).
+        assert_eq!(
+            tick_count, 1,
+            "tick_count should be 1 (only the Tick event should advance it), got {tick_count}"
+        );
     }
 }
