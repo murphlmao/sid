@@ -126,6 +126,81 @@ pub fn scan_workspace_root(
     Ok(out)
 }
 
+/// One adoptable repository found directly under an umbrella root.
+///
+/// Unlike [`DiscoveredWorkspace`], this carries only the data the adopt-existing
+/// wizard needs (display name + absolute path) and is produced by a one-level
+/// scan that *does* resolve symlinks — gen4-style umbrellas register satellites
+/// as symlinks, which [`scan_workspace_root`] deliberately skips.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use sid_core::workspace_discovery::AdoptableRepo;
+///
+/// let r = AdoptableRepo { name: "api".into(), path: PathBuf::from("/stack/api") };
+/// assert_eq!(r.name, "api");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptableRepo {
+    /// Directory basename (the satellite's display name).
+    pub name: String,
+    /// Absolute path to the repo (symlink resolved to a real dir).
+    pub path: PathBuf,
+}
+
+/// Find git repos exactly one level under `umbrella`, following symlinks.
+///
+/// Returns repos sorted by name for deterministic rendering. The umbrella root
+/// itself is never included. A directory counts as a repo if it contains a
+/// `.git` entry (directory or file — worktrees use a `.git` file). Best-effort:
+/// an unreadable `umbrella` yields an empty vec rather than an error, because
+/// the caller (a wizard pre-scan) treats "nothing found" and "couldn't read"
+/// identically.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use sid_core::workspace_discovery::scan_adoptable_repos;
+///
+/// let repos = scan_adoptable_repos(Path::new("/home/user/vcs/gen4-stack"));
+/// for r in &repos {
+///     println!("{} -> {}", r.name, r.path.display());
+/// }
+/// ```
+pub fn scan_adoptable_repos(umbrella: &Path) -> Vec<AdoptableRepo> {
+    let mut out: Vec<AdoptableRepo> = Vec::new();
+    let Ok(read) = umbrella.read_dir() else {
+        return out;
+    };
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        // Resolve symlinks: metadata() follows links; symlink targets that are
+        // real dirs become candidates.
+        let path = entry.path();
+        let is_dir = std::fs::metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+        if path.join(".git").exists() {
+            // Canonicalize so a symlinked satellite stores its real path (the
+            // primary key for a Workspace record). Fall back to the link path
+            // if canonicalization fails (e.g. permission).
+            let real = std::fs::canonicalize(&path).unwrap_or(path);
+            out.push(AdoptableRepo { name, path: real });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Returns `true` if `path` shows signs of being an umbrella workspace
 /// (a directory that groups multiple git repos).
 fn is_umbrella_signal(path: &Path) -> bool {
@@ -207,4 +282,55 @@ pub fn merge_discoveries_into(
         count += 1;
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_repo(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+    }
+
+    #[test]
+    fn scan_adoptable_finds_direct_and_symlinked_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        make_repo(&root.join("api"));
+        make_repo(&root.join("web"));
+        // a symlinked satellite living outside the umbrella, linked in
+        let external = tmp.path().join("external-lib");
+        make_repo(&external);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&external, root.join("lib")).unwrap();
+        // a non-repo dir must be ignored
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+
+        let found = scan_adoptable_repos(root);
+        let names: Vec<&str> = found.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"api"));
+        assert!(names.contains(&"web"));
+        #[cfg(unix)]
+        assert!(names.contains(&"lib"));
+        assert!(!names.contains(&"docs"));
+        // sorted by name for deterministic rendering
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn scan_adoptable_skips_the_umbrella_root_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_repo(tmp.path()); // root is itself a repo
+        make_repo(&tmp.path().join("sub"));
+        let found = scan_adoptable_repos(tmp.path());
+        let names: Vec<&str> = found.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["sub"]);
+    }
+
+    #[test]
+    fn scan_adoptable_on_missing_dir_is_empty() {
+        assert!(scan_adoptable_repos(std::path::Path::new("/nonexistent-xyz")).is_empty());
+    }
 }

@@ -32,7 +32,7 @@ The adopt-existing wizard and the detail-tab satellite list both need "given an 
 **Files:**
 - Modify: `crates/sid-core/src/workspace_discovery.rs` (add after `scan_workspace_root`, which ends at line 127; `SKIP_DIRS` is at line 38, `is_umbrella_signal` at line 131)
 
-- [ ] **Step 1: Write the failing test first**
+- [x] **Step 1: Write the failing test first**
 
 Append to the existing `#[cfg(test)] mod tests` block at the bottom of `workspace_discovery.rs` (there is no test mod yet in this file — add one):
 
@@ -89,12 +89,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run it (expect failure — symbol missing)**
+- [x] **Step 2: Run it (expect failure — symbol missing)**
 
 Run: `cargo test -p sid-core workspace_discovery::tests::scan_adoptable`
 Expected: compile error — `scan_adoptable_repos` not found.
 
-- [ ] **Step 3: Implement the helper**
+- [x] **Step 3: Implement the helper**
 
 Insert after `scan_workspace_root` (after line 127), before `is_umbrella_signal`:
 
@@ -173,12 +173,12 @@ pub fn scan_adoptable_repos(umbrella: &Path) -> Vec<AdoptableRepo> {
 }
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-core workspace_discovery::tests::scan_adoptable && cargo test -p sid-core --doc workspace_discovery`
 Expected: 3 unit tests + doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-core/src/workspace_discovery.rs
