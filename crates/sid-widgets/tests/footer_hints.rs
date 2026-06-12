@@ -91,7 +91,7 @@ fn network_footer_hints() {
     assert_hint(&hints, "/", "filter");
     assert_hint(&hints, "s", "sort");
     assert_hint(&hints, "K", "kill");
-    assert_hint(&hints, "Enter", "detail");
+    assert_hint(&hints, "⏎", "detail");
     assert_hint(&hints, "Tab", "pane");
     assert_hint(&hints, "R", "refresh");
     assert_eq!(

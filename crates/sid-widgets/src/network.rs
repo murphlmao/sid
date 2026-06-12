@@ -541,7 +541,9 @@ impl NetworkWidget {
             } else {
                 ' '
             };
-            let label = format!("{marker} {glyph} {}", ifc.name);
+            let pin = if self.ifs.is_pinned(&ifc.name) { '★' } else { ' ' };
+            let display = self.ifs.display_label(&ifc.name);
+            let label = format!("{marker} {pin}{glyph} {display}");
             rows.push(Line::from(label));
         }
         let focused = self.focus == Focus::Interfaces;
