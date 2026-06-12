@@ -1269,12 +1269,15 @@ impl Widget for SshWidget {
         self
     }
     fn footer_hint(&self) -> Vec<FooterHint> {
+        // First 3 entries appear in the slim rendered footer (N / ⏎ / →).
+        // E and G are beyond the slim cap so they live only in the ? overlay
+        // (plan decision 13: footer is 3 primary verbs + ?: help).
         vec![
             FooterHint::new("N", "add host"),
-            FooterHint::new("⏎", "connect / inspect"),
+            FooterHint::new("⏎", "connect"),
+            FooterHint::new("→", "inspect"),
             FooterHint::new("E", "edit"),
             FooterHint::new("G", "gen key"),
-            FooterHint::new("?", "help"),
         ]
     }
     fn render(&self, _target: &mut dyn RenderTarget) {

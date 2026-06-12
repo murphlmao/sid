@@ -1857,6 +1857,22 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         // Mirror of the modal interception block: a modal wins if both are
         // somehow open (guarded by `modal_stack.is_empty()` above). Branches
         // 1-5 register `dispatch_form_submit` arms.
+        //
+        // SSH inspector background-open: when the active form is an
+        // `ssh.inspect:<alias>` pane and the user presses Ctrl+Enter / O,
+        // route to the background-open logic instead of handing the chord to
+        // the FormPane (the inspector stays open; the new tab appears behind).
+        let is_ssh_inspector = sid_app
+            .form
+            .as_ref()
+            .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+            .unwrap_or(false);
+        if is_ssh_inspector && chord.is_background_open() {
+            // Delegate to the existing background-open arm inside
+            // dispatch_ssh_form_key; it reads sid_app.form internally.
+            dispatch_ssh_form_key(sid_app, chord);
+            return true;
+        }
         let outcome = {
             let form = sid_app.form.as_mut().expect("form is_some");
             form.handle_key(chord)
@@ -2680,102 +2696,6 @@ pub fn dispatch_ssh_form_key(sid_app: &mut SidApp, chord: sid_core::event::KeyCh
         }
         _ => false,
     }
-}
-
-/// Build the "Add Host" modal — kept for potential future use; the FormPane
-/// path (`ssh_add_form_spec`) is now the primary add flow.
-#[allow(dead_code)]
-fn ssh_new_modal() -> sid_widgets::ModalSpec {
-    use sid_widgets::{Field, ModalSpec};
-    let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
-    ModalSpec::new(
-        "ssh.new",
-        "Add Host",
-        vec![
-            Field::Text {
-                label: "alias".into(),
-                value: String::new(),
-                placeholder: Some("e.g. my-prod".into()),
-            },
-            Field::Text {
-                label: "host".into(),
-                value: String::new(),
-                placeholder: Some("e.g. host.example.com".into()),
-            },
-            Field::Text {
-                label: "user".into(),
-                value: default_user,
-                placeholder: None,
-            },
-            Field::Text {
-                label: "port".into(),
-                value: "22".into(),
-                placeholder: None,
-            },
-            Field::Picker {
-                label: "identity_file".into(),
-                value: String::new(),
-                hint: "optional".into(),
-            },
-            Field::Choice {
-                label: "auth".into(),
-                options: vec!["Key".into(), "Password".into(), "Agent".into()],
-                selected: 0,
-            },
-        ],
-    )
-    .with_help("Tab moves between fields · Enter saves · Esc cancels")
-}
-
-/// Build the "Edit Host" modal pre-filled with the host's current values.
-/// Kept for potential future use; the FormPane path (`ssh_edit_form_spec`)
-/// is now the primary edit flow.
-#[allow(dead_code)]
-fn ssh_edit_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
-    use sid_store::SshAuthKind;
-    use sid_widgets::{Field, ModalSpec};
-    let auth_idx = match host.auth_kind {
-        SshAuthKind::Key => 0,
-        SshAuthKind::Password => 1,
-        SshAuthKind::Agent => 2,
-    };
-    ModalSpec::new(
-        format!("ssh.edit:{}", host.alias),
-        format!("Edit Host: {}", host.alias),
-        vec![
-            Field::Text {
-                label: "alias".into(),
-                value: host.alias.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "host".into(),
-                value: host.host.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "user".into(),
-                value: host.user.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "port".into(),
-                value: host.port.to_string(),
-                placeholder: None,
-            },
-            Field::Picker {
-                label: "identity_file".into(),
-                value: host.identity_file.clone().unwrap_or_default(),
-                hint: "optional".into(),
-            },
-            Field::Choice {
-                label: "auth".into(),
-                options: vec!["Key".into(), "Password".into(), "Agent".into()],
-                selected: auth_idx,
-            },
-        ],
-    )
-    .with_help("Tab moves between fields · Enter saves · Esc cancels")
 }
 
 /// Build the gen-key wizard step 1 modal — algorithm choice. Step 2 is
@@ -4075,15 +3995,13 @@ fn dispatch_modal_submit(
                 .push(Toast::success(format!("workspace '{name}' removed")));
         }
     } else if key == "ssh.new" {
-        let alias = submit_ssh_new(sid_app, values)?;
-        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
-        sid_app
-            .toasts
-            .push(Toast::success(format!("host '{alias}' saved")));
+        // "ssh.new" modal path retired by UX-v2 — hosts are now added via the
+        // side-pane FormPane ("ssh.new" in dispatch_form_submit).
     } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
         submit_ssh_remove(sid_app, alias, values)?;
-    } else if let Some(alias) = key.strip_prefix("ssh.edit:") {
-        submit_ssh_edit(sid_app, alias, values)?;
+    } else if let Some(_alias) = key.strip_prefix("ssh.edit:") {
+        // "ssh.edit:<alias>" modal path retired by UX-v2 — hosts are now edited
+        // via the side-pane FormPane ("ssh.edit:<alias>" in dispatch_form_submit).
     } else if let Some(alias) = key.strip_prefix("ssh.sftp_persist:") {
         submit_ssh_sftp_persist(sid_app, alias, values)?;
     } else if let Some(alias) = key.strip_prefix("ssh.setup_remote.identity:") {
@@ -4281,11 +4199,12 @@ fn open_discard_confirm_modal(sid_app: &mut SidApp) {
     );
 }
 
-/// Slim the per-tab footer hint list: keep at most the first 4 entries and
+/// Slim the per-tab footer hint list: keep at most the first 3 entries and
 /// always append `? help` so the overlay is discoverable. The full hint list
-/// is available via the overlay itself.
+/// (including any entries beyond position 3) is available via the overlay
+/// itself (plan decision 13: footer is 3 primary verbs + ?: help).
 fn slim_footer_hints(mut hints: Vec<sid_core::FooterHint>) -> Vec<sid_core::FooterHint> {
-    hints.truncate(4);
+    hints.truncate(3);
     hints.push(sid_core::FooterHint::new("?", "help"));
     hints
 }
@@ -4329,6 +4248,10 @@ fn submit_session_resume(
 /// Handle a successful submit of the `ssh.new` modal: validate inputs,
 /// upsert the host into the store, refresh the SSH widget. Returns the alias
 /// of the newly-added host so the caller can populate a context-rich toast.
+///
+/// The `ssh.new` modal dispatch arm was retired by UX-v2; this function is
+/// retained for direct test coverage of the core persistence contract.
+#[allow(dead_code)]
 fn submit_ssh_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
@@ -4371,8 +4294,10 @@ fn submit_ssh_new(
 /// most permissive default that works on standard setups without
 /// further user configuration.
 ///
-/// This variant matches the *capitalized* option strings used by the old
-/// `ssh_new_modal` / `ssh_edit_modal` choice lists ("Key", "Password").
+/// This variant matches the *capitalized* option strings used by the modal
+/// paths ("Key", "Password") — the now-retired `ssh.new` / `ssh.edit` modals
+/// and their successor `submit_ssh_new` / `submit_ssh_edit` helpers.
+#[allow(dead_code)]
 fn parse_auth_choice(choice: Option<&str>) -> sid_store::SshAuthKind {
     use sid_store::SshAuthKind;
     match choice {
@@ -4568,6 +4493,12 @@ fn submit_ssh_remove(
 /// Handle a successful submit of `ssh.edit:<alias>`: validate, update the
 /// host record (preserves `last_sftp_path` and `command_history`), and
 /// refresh the widget.
+///
+/// The `ssh.edit:<alias>` modal dispatch arm was retired by UX-v2; hosts are
+/// now edited via the side-pane FormPane (`submit_ssh_edit_from_form`).
+/// This function is retained for direct test coverage of the core update
+/// contract.
+#[allow(dead_code)]
 fn submit_ssh_edit(
     sid_app: &mut SidApp,
     alias_in_id: &str,
@@ -6782,6 +6713,14 @@ mod tests {
 
     // --- Task 5: background-open ---
 
+    /// End-to-end test: drives `route_key_event` (not `dispatch_ssh_form_key`
+    /// directly) to verify background-open is reachable from the inspector in
+    /// production. Previously the test called dispatch_ssh_form_key directly
+    /// which bypassed the `form.is_none()` gate in route_key_event — a false
+    /// positive. This test opens the inspector via `→` through route_key_event,
+    /// then fires Ctrl+Enter through route_key_event to confirm the new tab
+    /// is pushed in the background (active index unchanged) and the inspector
+    /// form remains open.
     #[test]
     fn background_open_from_inspector_pushes_tab_and_toasts() {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -6800,26 +6739,86 @@ mod tests {
             auth_kind: SshAuthKind::Agent,
         };
         let mut app = build_app_with_ssh_hosts(vec![host.clone()]);
-        // Open inspector.
-        open_form(
-            &mut app,
-            sid_widgets::ssh::SshInspector::from_host(&host).to_form_spec(),
-        );
-        let tab_count_before = app.app.tabs().tabs().len();
-        let chord = KeyChord {
-            code: KeyCode::Char('O'),
-            mods: KeyModifiers::SHIFT,
+
+        // Open the inspector via → through route_key_event (the production path).
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
         };
-        let opened = dispatch_ssh_form_key(&mut app, chord);
-        assert!(opened, "Shift+O must trigger background-open");
+        let consumed = route_key_event(&mut app, right_chord);
+        assert!(consumed, "→ must open inspector form");
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "form must be an ssh.inspect form after →"
+        );
+
+        let active_idx_before = app.app.tabs().active_index();
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        // Fire Ctrl+Enter through route_key_event — must reach the
+        // background-open arm despite form.is_some().
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+        let consumed = route_key_event(&mut app, bg_chord);
+        assert!(consumed, "Ctrl+Enter must be consumed");
+
+        // New tab pushed.
         assert_eq!(
             app.app.tabs().tabs().len(),
             tab_count_before + 1,
-            "one new tab must be pushed"
+            "one new tab must be pushed in the background"
         );
+        // Active index unchanged — background push does not change focus.
+        assert_eq!(
+            app.app.tabs().active_index(),
+            active_idx_before,
+            "background-open must not change the active tab"
+        );
+        // Toast must mention the alias.
         assert!(
             app.toasts.iter().any(|t| t.message.contains("bg-host")),
             "toast must mention the alias"
+        );
+        // Inspector form remains open (plan Task 5: "without closing the inspector").
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "inspector form must remain open after background-open"
+        );
+    }
+
+    /// Background-open on a NON-ssh form (e.g. database.connection) must NOT
+    /// push a new tab — the intercept is scoped to ssh.inspect: form ids only.
+    #[test]
+    fn background_open_does_not_fire_on_non_ssh_inspector_form() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        // Build an app with any non-ssh form open.  Use a bare FormSpec with a
+        // database-flavoured id so the intercept guard rejects it.
+        let mut app = build_test_sid_app(Some("ssh"));
+        let fake_spec = sid_widgets::form::FormSpec::new("database.connection", "fake", vec![]);
+        open_form(&mut app, fake_spec);
+        assert!(app.form.is_some(), "form must be open for this test");
+
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+        route_key_event(&mut app, bg_chord);
+
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before,
+            "background-open must NOT push a tab for a non-ssh-inspector form"
         );
     }
 
@@ -6862,15 +6861,18 @@ mod tests {
         assert_ne!(id, "ssh.new", "workspaces N must not produce ssh.new");
     }
 
-    /// Submitting an `ssh.new` modal upserts the host into the store AND the
-    /// SSH widget sees the new host on the next render.
+    /// `submit_ssh_new` upserts the host into the store AND the SSH widget sees
+    /// the new host on the next render.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; hosts are
+    /// now added via the side-pane FormPane ("ssh.new" in dispatch_form_submit).
+    /// This test calls submit_ssh_new directly to verify the core persistence
+    /// contract shared by both paths.
     #[test]
     fn ssh_new_submit_persists_and_refreshes() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         assert!(sid_app.store.list_ssh_hosts().unwrap().is_empty());
 
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("my-prod".into())),
             ("host".to_string(), FieldValue::Text("10.0.0.1".into())),
@@ -6882,7 +6884,8 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+        let alias = submit_ssh_new(&mut sid_app, &values).expect("submit ok");
+        assert_eq!(alias, "my-prod");
 
         let hosts = sid_app.store.list_ssh_hosts().unwrap();
         assert_eq!(hosts.len(), 1);
@@ -6912,11 +6915,14 @@ mod tests {
         assert!(widget_aliases.contains(&"my-prod".to_string()));
     }
 
-    /// The `auth` Choice value persists through `ssh.new` for every variant.
+    /// The `auth` Choice value persists through `submit_ssh_new` for every variant.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; the form path
+    /// uses lowercase auth choices ("key", "password") via submit_ssh_new_from_form.
+    /// This test exercises submit_ssh_new's uppercase-matching parse_auth_choice.
     #[test]
     fn ssh_new_submit_persists_each_auth_kind() {
         use sid_store::SshAuthKind;
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
 
         let cases = [
             ("Key", SshAuthKind::Key),
@@ -6927,7 +6933,6 @@ mod tests {
         ];
         for (label, expected) in cases {
             let mut sid_app = build_test_sid_app(Some("ssh"));
-            let id = ModalId("ssh.new".to_string());
             let values = vec![
                 ("alias".to_string(), FieldValue::Text(format!("h-{label}"))),
                 ("host".to_string(), FieldValue::Text("h".into())),
@@ -6939,7 +6944,7 @@ mod tests {
                 ),
                 ("auth".to_string(), FieldValue::Choice(label.into())),
             ];
-            dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+            submit_ssh_new(&mut sid_app, &values).expect("submit ok");
             let hosts = sid_app.store.list_ssh_hosts().unwrap();
             assert_eq!(
                 hosts[0].auth_kind, expected,
@@ -6948,12 +6953,13 @@ mod tests {
         }
     }
 
-    /// `ssh.new` requires alias, host, user. Empty alias → Err.
+    /// `submit_ssh_new` requires alias, host, user. Empty alias → Err.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; this tests
+    /// the shared validation in submit_ssh_new directly.
     #[test]
     fn ssh_new_submit_rejects_missing_required_fields() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text(String::new())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -6965,16 +6971,17 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_new(&mut sid_app, &values).unwrap_err();
         assert!(err.to_string().contains("alias"));
     }
 
-    /// `ssh.new` rejects a port that is not a u16.
+    /// `submit_ssh_new` rejects a port that is not a u16.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; this tests
+    /// the shared port validation in submit_ssh_new directly.
     #[test]
     fn ssh_new_submit_rejects_non_u16_port() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("a".into())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -6986,7 +6993,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_new(&mut sid_app, &values).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("port"));
     }
 
@@ -7338,13 +7345,16 @@ mod tests {
         assert!(!id.starts_with("ssh.edit"));
     }
 
-    /// Submitting `ssh.edit:<alias>` updates the host record fields.
+    /// `submit_ssh_edit` updates the host record fields.
+    /// Note: the "ssh.edit:<alias>" modal dispatch arm was retired by UX-v2;
+    /// hosts are now edited via the side-pane FormPane ("ssh.edit:<alias>" in
+    /// dispatch_form_submit). This test calls submit_ssh_edit directly to
+    /// verify the core update contract.
     #[test]
     fn ssh_edit_submit_updates_host() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         upsert_host_for(&mut sid_app, "alpha");
-        let id = ModalId("ssh.edit:alpha".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("alpha".into())),
             ("host".to_string(), FieldValue::Text("10.99.99.99".into())),
@@ -7356,7 +7366,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        submit_ssh_edit(&mut sid_app, "alpha", &values).unwrap();
         let h = sid_app.store.get_ssh_host("alpha").unwrap().unwrap();
         assert_eq!(h.host, "10.99.99.99");
         assert_eq!(h.user, "admin");
@@ -7364,13 +7374,14 @@ mod tests {
         assert_eq!(h.identity_file.as_deref(), Some("/tmp/id_test"));
     }
 
-    /// Editing with an empty alias is rejected.
+    /// `submit_ssh_edit` rejects an empty alias.
+    /// Note: the "ssh.edit:<alias>" modal dispatch arm was retired by UX-v2;
+    /// this tests the shared validation in submit_ssh_edit directly.
     #[test]
     fn ssh_edit_submit_rejects_empty_alias() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         upsert_host_for(&mut sid_app, "alpha");
-        let id = ModalId("ssh.edit:alpha".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text(String::new())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -7382,7 +7393,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_edit(&mut sid_app, "alpha", &values).unwrap_err();
         assert!(err.to_string().contains("alias"));
     }
 
@@ -7565,8 +7576,11 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
-        // New footer: N / ⏎ / E / G / ?  (S, K, X removed from slim footer per plan).
-        for ch in ["N", "E", "G", "?"] {
+        // The overlay shows the FULL footer_hint list — all hints including
+        // E and G which are beyond the slim rendered footer cap.
+        // Rendered footer: N / ⏎ / → / ? (plan decision 13: 3 primary verbs + ?: help).
+        // Overlay (here): N / ⏎ / → / E / G (the long tail the slim footer drops).
+        for ch in ["N", "→", "E", "G"] {
             assert!(
                 tab_body.contains(ch),
                 "expected tab body to mention {ch}; got: {tab_body}"
@@ -7684,27 +7698,26 @@ mod tests {
         );
     }
 
-    /// A widget with 6 hints produces a slimmed footer list of 4 + `? help`.
+    /// A widget with 6 hints produces a slimmed footer list of 3 + `? help`.
     #[test]
     fn footer_caps_hints_and_appends_help() {
         use sid_core::FooterHint;
-        // 6 hints — same as DatabaseWidget
         let six_hints: Vec<FooterHint> = (0..6)
             .map(|i| FooterHint::new(format!("K{i}"), format!("action{i}")))
             .collect();
         let slimmed = slim_footer_hints(six_hints);
         assert_eq!(
             slimmed.len(),
-            5,
-            "4 capped + 1 '? help' = 5; got {}",
+            4,
+            "3 capped + 1 '? help' = 4; got {}",
             slimmed.len()
         );
         // Last entry must be the `?` hint.
         let last = slimmed.last().unwrap();
         assert_eq!(last.chord, "?");
         assert_eq!(last.label, "help");
-        // First 4 are the originals.
-        for (i, h) in slimmed.iter().take(4).enumerate() {
+        // First 3 are the originals.
+        for (i, h) in slimmed.iter().take(3).enumerate() {
             assert_eq!(h.chord, format!("K{i}"));
         }
     }

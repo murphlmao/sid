@@ -50,15 +50,18 @@ fn workspaces_footer_hints() {
 fn ssh_footer_hints() {
     let w = SshWidget::new();
     let hints = w.footer_hint();
+    // First 3 entries are the slim rendered footer: N / ⏎ / →.
+    // E and G are beyond the slim cap — they only appear in the ? overlay
+    // (plan decision 13: footer is 3 primary verbs + ?: help).
     assert_hint(&hints, "N", "add host");
-    assert_hint(&hints, "⏎", "connect / inspect");
+    assert_hint(&hints, "⏎", "connect");
+    assert_hint(&hints, "→", "inspect");
     assert_hint(&hints, "E", "edit");
     assert_hint(&hints, "G", "gen key");
-    assert_hint(&hints, "?", "help");
     assert_eq!(
         hints.len(),
         5,
-        "SshWidget should expose exactly 5 footer hints"
+        "SshWidget should expose exactly 5 footer hints (N / ⏎ / → / E / G)"
     );
 }
 
