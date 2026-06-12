@@ -422,6 +422,37 @@ impl NetworkWidget {
             .set_data_with_default_route(snap.interfaces, snap.default_route_iface.as_deref());
     }
 
+    /// Like [`Self::apply_snapshot`] but also re-applies the user's alias and
+    /// pin prefs so they survive probe-tick refreshes.
+    ///
+    /// Wire.rs calls this variant on every `SysSnapshot` instead of
+    /// `apply_snapshot`, building the alias map and pinned set from the store.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::sys_probe::SysSnapshot;
+    /// use sid_widgets::NetworkWidget;
+    /// let mut w = NetworkWidget::new();
+    /// w.apply_snapshot_with_prefs(SysSnapshot::empty(), Default::default(), Default::default());
+    /// assert!(w.interfaces().rows().is_empty());
+    /// ```
+    pub fn apply_snapshot_with_prefs(
+        &mut self,
+        snap: sid_core::sys_probe::SysSnapshot,
+        aliases: std::collections::HashMap<String, String>,
+        pinned: std::collections::HashSet<String>,
+    ) {
+        let default_route = snap.default_route_iface.clone();
+        let pinned_slice: Vec<&str> = pinned.iter().map(|s| s.as_str()).collect();
+        self.ports.set_data(snap.listening_ports);
+        self.procs.set_data(snap.processes);
+        self.ifs
+            .set_data_with_prefs(snap.interfaces, default_route.as_deref(), &pinned_slice);
+        self.ifs.set_aliases(aliases);
+        self.ifs.set_pinned_names(pinned);
+    }
+
     /// Cycle focus forward (Tab).
     pub fn focus_next(&mut self) {
         self.focus = match self.focus {
@@ -593,7 +624,11 @@ impl NetworkWidget {
             } else {
                 ' '
             };
-            let pin = if self.ifs.is_pinned(&ifc.name) { '★' } else { ' ' };
+            let pin = if self.ifs.is_pinned(&ifc.name) {
+                '★'
+            } else {
+                ' '
+            };
             let display = self.ifs.display_label(&ifc.name);
             let label = format!("{marker} {pin}{glyph} {display}");
             rows.push(Line::from(label));
@@ -1123,7 +1158,10 @@ mod tests {
             default_route_iface: None,
             captured_at_unix_secs: 0,
         });
-        let chord = KeyChord { code: KeyCode::Enter, mods: KeyModifiers::NONE };
+        let chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        };
         let ev = Event::Key(chord);
         let (tx, _rx) = mpsc::channel();
         let mut ctx = sid_core::context::WidgetCtx::new(tx);
@@ -1156,10 +1194,16 @@ mod tests {
         });
         let (tx, _rx) = mpsc::channel();
         let mut ctx = sid_core::context::WidgetCtx::new(tx);
-        let enter = Event::Key(KeyChord { code: KeyCode::Enter, mods: KeyModifiers::NONE });
+        let enter = Event::Key(KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        });
         w.handle_event(&enter, &mut ctx);
         assert!(w.is_detail_pane_open());
-        let esc = Event::Key(KeyChord { code: KeyCode::Esc, mods: KeyModifiers::NONE });
+        let esc = Event::Key(KeyChord {
+            code: KeyCode::Esc,
+            mods: KeyModifiers::NONE,
+        });
         w.handle_event(&esc, &mut ctx);
         assert!(!w.is_detail_pane_open());
     }
@@ -1189,9 +1233,53 @@ mod tests {
         });
         let (tx, _rx) = mpsc::channel();
         let mut ctx = sid_core::context::WidgetCtx::new(tx);
-        let ev = Event::Key(KeyChord { code: KeyCode::Right, mods: KeyModifiers::NONE });
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        });
         w.handle_event(&ev, &mut ctx);
         assert!(w.is_detail_pane_open());
+    }
+
+    #[test]
+    fn apply_snapshot_with_prefs_preserves_aliases_across_refresh() {
+        use sid_core::adapters::sys::NetInterface;
+        use std::collections::{HashMap, HashSet};
+
+        let mut w = NetworkWidget::new();
+        let iface = NetInterface {
+            name: "eth0".into(),
+            addrs: vec![],
+            rx_bytes: 0,
+            tx_bytes: 0,
+            is_up: true,
+        };
+        let mut aliases = HashMap::new();
+        aliases.insert("eth0".to_string(), "work-lan".to_string());
+        w.apply_snapshot_with_prefs(
+            sid_core::sys_probe::SysSnapshot {
+                processes: vec![],
+                listening_ports: vec![],
+                interfaces: vec![iface.clone()],
+                default_route_iface: None,
+                captured_at_unix_secs: 0,
+            },
+            aliases.clone(),
+            HashSet::new(),
+        );
+        // After a second snapshot refresh, aliases must still be present.
+        w.apply_snapshot_with_prefs(
+            sid_core::sys_probe::SysSnapshot {
+                processes: vec![],
+                listening_ports: vec![],
+                interfaces: vec![iface],
+                default_route_iface: None,
+                captured_at_unix_secs: 0,
+            },
+            aliases,
+            HashSet::new(),
+        );
+        assert_eq!(w.ifs.display_label("eth0"), "work-lan (eth0)");
     }
 
     #[test]
@@ -1213,7 +1301,8 @@ mod tests {
             default_route_iface: None,
             captured_at_unix_secs: 0,
         });
-        w.ifs.set_aliases(HashMap::from([("eth0".into(), "work-lan".into())]));
+        w.ifs
+            .set_aliases(HashMap::from([("eth0".into(), "work-lan".into())]));
         let s = crate::network::render_to_string(&w, 80, 24);
         assert!(s.contains("work-lan"), "alias not rendered; output:\n{s}");
         assert!(s.contains("eth0"), "raw name not rendered; output:\n{s}");

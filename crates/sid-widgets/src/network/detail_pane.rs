@@ -54,7 +54,11 @@ pub fn build_form_spec(
     is_default_route: bool,
 ) -> FormSpec {
     let status_label = if iface.is_up { "up" } else { "down" };
-    let default_badge = if is_default_route { " (default route)" } else { "" };
+    let default_badge = if is_default_route {
+        " (default route)"
+    } else {
+        ""
+    };
     let status_str = format!("{status_label}{default_badge}");
 
     let addrs_str = if iface.addrs.is_empty() {
@@ -258,7 +262,10 @@ mod tests {
         let spec = build_form_spec(&sample_iface(), &NetInterfacePrefs::default(), false);
         let status_field = &spec.sections[0].fields[0];
         if let Field::Display { body, .. } = &status_field.field {
-            assert!(!body.contains("default route"), "unexpected badge in: {body}");
+            assert!(
+                !body.contains("default route"),
+                "unexpected badge in: {body}"
+            );
         }
     }
 
@@ -268,7 +275,10 @@ mod tests {
         iface.is_up = false;
         let spec = build_form_spec(&iface, &NetInterfacePrefs::default(), false);
         if let Field::Display { body, .. } = &spec.sections[0].fields[0].field {
-            assert!(body.starts_with("down"), "expected 'down' prefix, got: {body}");
+            assert!(
+                body.starts_with("down"),
+                "expected 'down' prefix, got: {body}"
+            );
         }
     }
 
@@ -284,7 +294,10 @@ mod tests {
 
     #[test]
     fn build_form_spec_prefs_roundtrip() {
-        let prefs = NetInterfacePrefs { pinned: true, alias: "home-net".into() };
+        let prefs = NetInterfacePrefs {
+            pinned: true,
+            alias: "home-net".into(),
+        };
         let spec = build_form_spec(&sample_iface(), &prefs, false);
         // Toggle field should carry the pinned value.
         if let Field::Toggle { value, .. } = &spec.sections[1].fields[0].field {

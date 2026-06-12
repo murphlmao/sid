@@ -3468,12 +3468,34 @@ pub fn drain_sys_snapshots(sid_app: &mut SidApp) {
 /// downcast, and call the widget's existing `apply_snapshot`. Silently no-ops
 /// when the Network tab isn't installed (e.g., a custom `TabManager` in tests).
 pub fn refresh_network_widget(sid_app: &mut SidApp, snap: SysSnapshot) {
+    // Build the prefs maps from the store so aliases / pinned names survive
+    // each probe-tick refresh.
+    let mut aliases = std::collections::HashMap::new();
+    let mut pinned = std::collections::HashSet::new();
+    use sid_store::{Store, TypedSettings};
+    if let Ok(keys) = sid_app.store.list_setting_keys() {
+        for key in &keys {
+            if let Some(rest) = key.strip_prefix("network.iface.") {
+                if let Some(name) = rest.strip_suffix(".alias") {
+                    if let Ok(Some(v)) = sid_app.store.get_string(key) {
+                        aliases.insert(name.to_string(), v);
+                    }
+                }
+                if let Some(name) = rest.strip_suffix(".pinned") {
+                    if let Ok(Some(true)) = sid_app.store.get_bool(key) {
+                        pinned.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     for t in sid_app.app.tabs_mut().tabs_mut() {
         if t.id.as_str() == "network" {
             if let Some(w) = t.layout.iter_widgets_mut().next() {
                 let any_ref = w as &mut dyn std::any::Any;
                 if let Some(n) = any_ref.downcast_mut::<NetworkWidget>() {
-                    n.apply_snapshot(snap);
+                    n.apply_snapshot_with_prefs(snap, aliases, pinned);
                 }
             }
             return;
