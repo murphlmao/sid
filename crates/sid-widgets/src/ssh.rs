@@ -23,7 +23,7 @@ use sid_store::{SshAuthKind, SshHost, SshHostSource};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
 
-use crate::form::{FormField, FormId, FormSection, FormSpec, SectionKind, Validate};
+use crate::form::{FormField, FormSection, FormSpec, SectionKind, Validate};
 use crate::list_cursor::{CursorTarget, ListCursor};
 use crate::modal::Field;
 

@@ -2682,8 +2682,9 @@ pub fn dispatch_ssh_form_key(sid_app: &mut SidApp, chord: sid_core::event::KeyCh
     }
 }
 
-/// Build the "Add Host" modal — extracted from [`ssh_modal_for_key`] so the
-/// edit modal can share field shapes.
+/// Build the "Add Host" modal — kept for potential future use; the FormPane
+/// path (`ssh_add_form_spec`) is now the primary add flow.
+#[allow(dead_code)]
 fn ssh_new_modal() -> sid_widgets::ModalSpec {
     use sid_widgets::{Field, ModalSpec};
     let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
@@ -2727,6 +2728,9 @@ fn ssh_new_modal() -> sid_widgets::ModalSpec {
 }
 
 /// Build the "Edit Host" modal pre-filled with the host's current values.
+/// Kept for potential future use; the FormPane path (`ssh_edit_form_spec`)
+/// is now the primary edit flow.
+#[allow(dead_code)]
 fn ssh_edit_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
     use sid_store::SshAuthKind;
     use sid_widgets::{Field, ModalSpec};
