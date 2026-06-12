@@ -150,6 +150,72 @@ pub struct RepoDetail {
     pub diff: Vec<DiffEntry>,
 }
 
+/// The fixed set of git operations the detail drill-in offers, in render order.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspace_detail_state::DetailOp;
+/// assert_eq!(DetailOp::Branches.label(), "Branches");
+/// assert_eq!(DetailOp::ALL.len(), 5);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DetailOp {
+    /// Commits ahead of upstream (the "outgoing" list).
+    Outgoing,
+    /// Full commit log (paginated by the binary).
+    Log,
+    /// Branch list.
+    Branches,
+    /// Stash entries (read-only list in v1).
+    Stash,
+    /// Linked worktrees (read-only list in v1).
+    Worktrees,
+}
+
+impl DetailOp {
+    /// Every op, in the order the ops menu renders them.
+    pub const ALL: [DetailOp; 5] = [
+        DetailOp::Outgoing,
+        DetailOp::Log,
+        DetailOp::Branches,
+        DetailOp::Stash,
+        DetailOp::Worktrees,
+    ];
+
+    /// Human-readable menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailOp::Outgoing => "Outgoing",
+            DetailOp::Log => "Log",
+            DetailOp::Branches => "Branches",
+            DetailOp::Stash => "Stash",
+            DetailOp::Worktrees => "Worktrees",
+        }
+    }
+}
+
+/// One level of the right-pane drill-in stack (held by `SplitView<DetailView>`).
+///
+/// Stack shapes the detail tab pushes:
+/// - `[Op(op)]` — the op's primary list (commits for Outgoing/Log, branches, …).
+/// - `[Op(Outgoing|Log), Commits, Diff(idx)]` — drilled into a commit's diff.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::workspace_detail_state::{DetailOp, DetailView};
+/// let v = DetailView::Op(DetailOp::Outgoing);
+/// assert!(matches!(v, DetailView::Op(_)));
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DetailView {
+    /// An op's top-level list.
+    Op(DetailOp),
+    /// A scrollable diff for the commit at this index into `RepoDetail::commits`.
+    Diff(usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +248,21 @@ mod tests {
     fn default_repogit_is_not_loading() {
         // Default (derive) leaves loading=false; only `loading()` sets it true.
         assert!(!RepoGit::default().is_loading());
+    }
+
+    #[test]
+    fn detail_op_cycles_and_labels() {
+        assert_eq!(DetailOp::ALL.len(), 5);
+        assert_eq!(DetailOp::Outgoing.label(), "Outgoing");
+        assert_eq!(DetailOp::Worktrees.label(), "Worktrees");
+        // ALL is the stable render order
+        assert_eq!(DetailOp::ALL[0], DetailOp::Outgoing);
+        assert_eq!(DetailOp::ALL[2], DetailOp::Branches);
+    }
+
+    #[test]
+    fn detail_view_from_op_wraps_the_op() {
+        let v = DetailView::Op(DetailOp::Log);
+        assert!(matches!(v, DetailView::Op(DetailOp::Log)));
     }
 }

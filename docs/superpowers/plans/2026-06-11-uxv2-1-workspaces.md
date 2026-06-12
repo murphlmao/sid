@@ -426,7 +426,7 @@ The right pane's `SplitView<DetailView>` stack drills: ops menu → one of {Outg
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail_state.rs` (append to the module + test mod)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Append to the `#[cfg(test)] mod tests` block:
 
@@ -448,12 +448,12 @@ Append to the `#[cfg(test)] mod tests` block:
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state::tests::detail`
 Expected: error — `DetailOp` / `DetailView` not found.
 
-- [ ] **Step 3: Implement (append to the module, above the test mod)**
+- [x] **Step 3: Implement (append to the module, above the test mod)**
 
 ```rust
 /// The fixed set of git operations the detail drill-in offers, in render order.
@@ -523,12 +523,12 @@ pub enum DetailView {
 }
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state && cargo test -p sid-widgets --doc workspace_detail_state`
 Expected: all unit + doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail_state.rs
