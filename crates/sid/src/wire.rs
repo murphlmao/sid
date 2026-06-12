@@ -381,21 +381,7 @@ pub fn build_secret_store(
 
     if want_keyring {
         let ks = sid_secrets::KeyringStore::new();
-        let probe_key = sid_core::adapters::secrets::SecretId::new("sid.__keyring_probe");
-        let probe_ok = sid_core::adapters::secrets::SecretStore::put(&ks, &probe_key, b"probe")
-            .and_then(|_| sid_core::adapters::secrets::SecretStore::get(&ks, &probe_key))
-            .and_then(|v| {
-                if v.as_deref() == Some(b"probe") {
-                    sid_core::adapters::secrets::SecretStore::delete(&ks, &probe_key)
-                } else {
-                    Err(sid_core::adapters::secrets::SecretError::Storage(
-                        "keyring probe read-back mismatch".into(),
-                    ))
-                }
-            })
-            .is_ok();
-
-        if probe_ok {
+        if probe_keyring(&ks) {
             tracing::info!("OS keyring available — using KeyringStore");
             return (Arc::new(ks), true);
         } else {
@@ -404,6 +390,31 @@ pub fn build_secret_store(
     }
 
     (Arc::new(sid_secrets::PlainStore::new(plain_arc)), false)
+}
+
+/// Write/read/delete a sentinel key to confirm the keyring backend is live.
+///
+/// Returns `true` only when the put succeeds, the read-back matches, and the
+/// delete succeeds.  On a read-back mismatch the sentinel is deleted
+/// best-effort before returning `false`, so the OS keyring is never left with
+/// a stale `sid.__keyring_probe` entry.
+fn probe_keyring(store: &dyn sid_core::adapters::secrets::SecretStore) -> bool {
+    let probe_key = sid_core::adapters::secrets::SecretId::new("sid.__keyring_probe");
+    let result = store
+        .put(&probe_key, b"probe")
+        .and_then(|_| store.get(&probe_key))
+        .and_then(|v| {
+            if v.as_deref() == Some(b"probe") {
+                store.delete(&probe_key)
+            } else {
+                // Read-back mismatch — clean up the sentinel before failing.
+                let _ = store.delete(&probe_key);
+                Err(sid_core::adapters::secrets::SecretError::Storage(
+                    "keyring probe read-back mismatch".into(),
+                ))
+            }
+        });
+    result.is_ok()
 }
 
 /// Resolve the terminal spawner. Logs and falls back to
@@ -5370,6 +5381,86 @@ mod tests {
         let app = build_app(Some("does-not-exist"), vec![]);
         // switch_to returns false but doesn't panic; active stays at 0.
         assert_eq!(app.tabs().active_index(), 0);
+    }
+
+    // ---- probe_keyring ----
+
+    /// A fake SecretStore that records calls and optionally injects wrong bytes
+    /// on `get` to simulate a read-back mismatch.
+    struct ProbeStore {
+        /// If true, `get` returns bytes different from what was put.
+        corrupt_readback: bool,
+        deleted: std::sync::Mutex<Vec<String>>,
+        stored: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    }
+
+    impl ProbeStore {
+        fn new_mismatch() -> Self {
+            Self {
+                corrupt_readback: true,
+                deleted: Default::default(),
+                stored: Default::default(),
+            }
+        }
+        fn deleted_keys(&self) -> Vec<String> {
+            self.deleted.lock().unwrap().clone()
+        }
+    }
+
+    impl sid_core::adapters::secrets::SecretStore for ProbeStore {
+        fn put(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+            value: &[u8],
+        ) -> Result<(), sid_core::adapters::secrets::SecretError> {
+            self.stored
+                .lock()
+                .unwrap()
+                .insert(id.as_str().to_string(), value.to_vec());
+            Ok(())
+        }
+
+        fn get(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+        ) -> Result<Option<Vec<u8>>, sid_core::adapters::secrets::SecretError> {
+            if self.corrupt_readback {
+                return Ok(Some(b"WRONG".to_vec()));
+            }
+            Ok(self.stored.lock().unwrap().get(id.as_str()).cloned())
+        }
+
+        fn delete(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+        ) -> Result<(), sid_core::adapters::secrets::SecretError> {
+            self.deleted.lock().unwrap().push(id.as_str().to_string());
+            self.stored.lock().unwrap().remove(id.as_str());
+            Ok(())
+        }
+
+        fn list_ids(
+            &self,
+        ) -> Result<
+            Vec<sid_core::adapters::secrets::SecretId>,
+            sid_core::adapters::secrets::SecretError,
+        > {
+            Ok(vec![])
+        }
+    }
+
+    /// On a read-back mismatch `probe_keyring` returns false AND deletes the
+    /// sentinel so the OS keyring is not left with a stale probe entry.
+    #[test]
+    fn probe_keyring_mismatch_cleans_up_sentinel() {
+        let store = ProbeStore::new_mismatch();
+        let ok = probe_keyring(&store);
+        assert!(!ok, "probe must return false on mismatch");
+        let deleted = store.deleted_keys();
+        assert!(
+            deleted.contains(&"sid.__keyring_probe".to_string()),
+            "probe key must be deleted even on mismatch; deleted={deleted:?}"
+        );
     }
 
     // ---- pretty_label ----

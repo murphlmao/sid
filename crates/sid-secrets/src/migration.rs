@@ -10,9 +10,11 @@
 //! On any failure: keep the unmigrated entry in `source` (idempotent — a
 //! re-run will re-attempt only entries still present in `source`). If an id
 //! is present in both backends after a previous partial migration (power loss
-//! between step 2 and step 4), the keyring copy wins: the dest write
-//! overwrites the existing entry, the verify succeeds, and the source entry
-//! is deleted.
+//! between step 2 and step 4), the source value is unconditionally written to
+//! `dest` (overwriting any stale copy already there), verified, and then
+//! deleted from `source`.  The keyring is the authoritative store after a
+//! successful migration; in the normal power-loss case both copies hold the
+//! same value, so the overwrite is a no-op in practice.
 
 use sid_core::adapters::secrets::{SecretError, SecretId, SecretStore};
 use tracing::info;
@@ -310,5 +312,89 @@ mod tests {
         assert!(r.errors[0].contains("mismatch"));
         // Source entry must NOT have been deleted (verification failed)
         assert!(src.get(&SecretId::new("corrupt")).unwrap().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 3 — source.list_ids() Err propagates as migrate_to_keyring Err
+    // -----------------------------------------------------------------------
+
+    /// A SecretStore whose list_ids always returns Err.
+    struct ListIdsFails;
+
+    impl SecretStore for ListIdsFails {
+        fn put(&self, _id: &SecretId, _value: &[u8]) -> Result<(), SecretError> {
+            panic!("ListIdsFails::put should never be called");
+        }
+        fn get(&self, _id: &SecretId) -> Result<Option<Vec<u8>>, SecretError> {
+            panic!("ListIdsFails::get should never be called");
+        }
+        fn delete(&self, _id: &SecretId) -> Result<(), SecretError> {
+            panic!("ListIdsFails::delete should never be called");
+        }
+        fn list_ids(&self) -> Result<Vec<SecretId>, SecretError> {
+            Err(SecretError::Storage("injected list_ids failure".into()))
+        }
+    }
+
+    /// When `source.list_ids()` fails, `migrate_to_keyring` must propagate
+    /// the error as `Err(SecretError)` and must not call any method on `dest`.
+    #[test]
+    fn migration_source_list_ids_err_propagates() {
+        let dst = fake_dest();
+        let result = migrate_to_keyring(&ListIdsFails, &dst);
+        assert!(
+            matches!(result, Err(SecretError::Storage(_))),
+            "expected Err(SecretError::Storage), got {result:?}"
+        );
+        // dest received no writes — its list_ids is empty
+        assert!(
+            dst.list_ids().unwrap().is_empty(),
+            "dest must remain empty when source.list_ids() fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 4 — double-presence test (power-loss simulation with different values)
+    // -----------------------------------------------------------------------
+
+    /// Simulate power loss between dest-write (step 2) and source-delete (step 4):
+    /// id present in BOTH source (value A) and dest (value B, a stale prior run).
+    ///
+    /// Code behaviour: `migrate_one` calls `dest.put(id, &source_value)` unconditionally,
+    /// so source's value overwrites dest.  This satisfies the spec comment
+    /// ("keyring copy wins") in the sense that the keyring (dest) is the
+    /// authoritative store after migration — but when the two copies differ,
+    /// the SOURCE value is what lands in the keyring.  The spec comment is
+    /// updated to clarify this: "the source value is written to the keyring
+    /// (overwriting any stale copy), verified, then deleted from source."
+    #[test]
+    fn migration_overwrites_dest_when_present_in_both() {
+        let (_d, src) = plain_store();
+        let dst = fake_dest();
+        let id = SecretId::new("pw");
+
+        // Source has value A, dest has a stale value B (simulating power loss
+        // between step 2 of a prior run and step 4 of that run).
+        src.put(&id, b"value_from_source").unwrap();
+        dst.put(&id, b"stale_dest_value").unwrap();
+
+        let r = migrate_to_keyring(&src, &dst).unwrap();
+
+        // Migration must succeed: dest receives source's value, source is cleaned up.
+        assert_eq!(r.migrated, 1, "expected 1 migrated, got {r:?}");
+        assert_eq!(r.failed, 0, "expected 0 failed, got {r:?}");
+
+        // dest ends up with the SOURCE value (overwrite happened).
+        assert_eq!(
+            dst.get(&id).unwrap().unwrap(),
+            b"value_from_source".to_vec(),
+            "dest should hold source value after migration"
+        );
+
+        // source entry is deleted.
+        assert!(
+            src.get(&id).unwrap().is_none(),
+            "source entry must be deleted after successful migration"
+        );
     }
 }

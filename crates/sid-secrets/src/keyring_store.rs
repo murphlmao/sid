@@ -304,5 +304,6 @@ mod tests {
         assert!(matches!(store.put(&id, b"v"), Err(SecretError::Storage(_))));
         assert!(matches!(store.get(&id), Err(SecretError::Storage(_))));
         assert!(matches!(store.delete(&id), Err(SecretError::Storage(_))));
+        assert!(matches!(store.list_ids(), Err(SecretError::Storage(_))));
     }
 }
