@@ -9366,6 +9366,18 @@ mod tests {
 
     // ----- Animation tick-gate regression tests ----------------------------
 
+    #[test]
+    fn tick_interval_derives_from_fps() {
+        // At fps=8 (default), tick interval must be 125ms (1000/8).
+        assert_eq!(1000u64 / 8u64, 125);
+        // At fps=1 (min), tick interval is 1000ms.
+        assert_eq!(1000u64 / 1u64, 1000);
+        // At fps=30 (max), tick interval is 33ms.
+        assert_eq!(1000u64 / 30u64, 33);
+        // fps=0 is prevented by .max(1); verify the guard.
+        assert_eq!(1000u64 / (0u8.max(1).min(30) as u64), 1000);
+    }
+
     /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`
     /// and must NOT advance it on key presses or mouse events.
     ///

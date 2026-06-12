@@ -552,6 +552,9 @@ async fn main() -> Result<()> {
 
     // Background animation: load persisted AnimationConfig if any, else default.
     let animation = wire::load_animation_config(&*store);
+    // Save fps before `animation` is moved into `sid_app`; used to compute
+    // the pump tick interval below.
+    let animation_fps = animation.fps;
     let fx_state = if animation.enabled {
         Some(sid_fx::FxState::new())
     } else {
@@ -612,7 +615,11 @@ async fn main() -> Result<()> {
 
     // Event source.
     let (tx, mut rx) = runtime::make_channel();
-    let pump = runtime::spawn_event_pump(tx, Duration::from_millis(250));
+    // Derive the pump tick interval from the animation FPS so `SidEvent::Tick`
+    // fires at the configured rate. `fps.max(1)` prevents division by zero;
+    // `min(30)` clamps the max to a sane value (matching AnimationConfig range).
+    let tick_ms = 1000u64 / (animation_fps.max(1).min(30) as u64);
+    let pump = runtime::spawn_event_pump(tx, Duration::from_millis(tick_ms));
 
     // Run.
     let run_result = wire::run_event_loop(&mut terminal, &mut sid_app, &mut rx).await;
