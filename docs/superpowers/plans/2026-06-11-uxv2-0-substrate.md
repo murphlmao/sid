@@ -628,7 +628,7 @@ git commit -m "feat(sid-widgets): FormSpec — keyed sections, declarative valid
 **Files:**
 - Create: `crates/sid-widgets/src/form/pane.rs` (replace the Task-3 placeholder; uncomment its `pub use` in `form/mod.rs`)
 
-- [ ] **Step 1: Write the pane state machine**
+- [x] **Step 1: Write the pane state machine**
 
 Editing primitives (`type_char`, `backspace`, choice cycling) already exist on `ModalSpec` —
 copy their per-`Field` match logic into private helpers here rather than calling `ModalSpec`
@@ -847,7 +847,7 @@ impl FormPane {
 }
 ```
 
-- [ ] **Step 2: Tests (`#[cfg(test)] mod tests` in `pane.rs`)**
+- [x] **Step 2: Tests (`#[cfg(test)] mod tests` in `pane.rs`)**
 
 ```rust
 #[cfg(test)]
@@ -956,12 +956,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run the tests**
+- [x] **Step 3: Run the tests**
 
 Run: `cargo test -p sid-widgets form::pane`
 Expected: 7 tests pass.
 
-- [ ] **Step 4: Property test — no chord sequence strands focus or panics**
+- [x] **Step 4: Property test — no chord sequence strands focus or panics**
 
 Append to the test mod (proptest is already a workspace dev-dependency):
 
@@ -1002,7 +1002,7 @@ Append to the test mod (proptest is already a workspace dev-dependency):
 Run: `cargo test -p sid-widgets form::pane`
 Expected: PASS (including the property).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/

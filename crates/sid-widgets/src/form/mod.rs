@@ -12,6 +12,6 @@ mod pane;
 mod render;
 mod spec;
 
-// pub use pane::{FormEvent, FormPane, PaneFocusState};
+pub use pane::{FormEvent, FormPane, PaneFocusState};
 // pub use render::render_form_pane;
 pub use spec::{FormField, FormId, FormSection, FormSpec, FormValues, SectionKind, Validate};
