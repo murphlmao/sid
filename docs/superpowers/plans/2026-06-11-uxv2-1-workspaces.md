@@ -1730,6 +1730,8 @@ git add crates/sid/src/wire.rs
 git commit -m "feat(sid): wire detail tab — satellite scan + per-row off-thread git loads + background-open"
 ```
 
+**Deferred (recorded by review):** Wiring `apply_detail` (per-op git data: outgoing commit list, log, branches, stash, worktrees) and per-op ops-menu selection are explicit follow-ups. The render/state paths are tested but dead at runtime — nothing calls `apply_detail` in production; Outgoing/Log render "(no commits)" at runtime. These will be wired once the `GitProvider` trait grows `commit_log`, `diff`, `ahead_behind`, and related methods as separate tasks.
+
 ---
 
 ### Task 8: Create-new registration wizard (substrate FormSpec) with feature checklist

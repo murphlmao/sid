@@ -196,6 +196,15 @@ impl WorkspaceDetailWidget {
         self.pane_list = ListCursor::new(len, false, 0);
     }
 
+    /// Total number of patch lines across all diff entries; used to clamp scroll.
+    fn total_patch_lines(&self) -> usize {
+        self.detail
+            .diff
+            .iter()
+            .map(|e| e.patch.lines().count())
+            .sum()
+    }
+
     /// Number of items in the currently-shown pane list.
     fn active_pane_len(&self) -> usize {
         match self.split.top() {
@@ -279,7 +288,15 @@ impl WorkspaceDetailWidget {
     /// Pop one drill-in level; when the stack empties, focus returns to the list.
     pub fn pop_view(&mut self) {
         self.split.pop();
-        self.pane_list = ListCursor::new(self.active_pane_len(), false, 0);
+        let preserved_pos = self.pane_list.pos;
+        let len = self.active_pane_len();
+        // Clamp the preserved position to the new list length, like apply_satellites does.
+        let clamped = if len == 0 {
+            0
+        } else {
+            preserved_pos.min(len - 1)
+        };
+        self.pane_list = ListCursor::new(len, false, clamped);
         self.diff_scroll = 0;
     }
 
@@ -295,7 +312,8 @@ impl WorkspaceDetailWidget {
 
     /// Scroll the diff view down one line.
     pub fn diff_scroll_down(&mut self) {
-        self.diff_scroll = self.diff_scroll.saturating_add(1);
+        let max = self.total_patch_lines().saturating_sub(1);
+        self.diff_scroll = self.diff_scroll.saturating_add(1).min(max);
     }
 
     /// Scroll the diff view up one line.
@@ -311,6 +329,28 @@ impl WorkspaceDetailWidget {
     /// Pane cursor (for the renderer to highlight the selected list row).
     pub fn pane_cursor(&self) -> &ListCursor {
         &self.pane_list
+    }
+
+    /// Compute the Paragraph scroll offset to keep the selected row inside
+    /// the visible window. `inner_height` is the number of visible rows
+    /// (block inner height = area height − 2 for the border).
+    fn list_scroll_offset(&self, inner_height: u16) -> u16 {
+        let sel = match self.list.target() {
+            CursorTarget::Item(i) => i,
+            _ => return 0,
+        };
+        let h = inner_height as usize;
+        if sel < h { 0 } else { (sel - h + 1) as u16 }
+    }
+
+    /// Scroll offset to keep the pane cursor in view.
+    fn pane_scroll_offset(&self, inner_height: u16) -> u16 {
+        let sel = match self.pane_list.target() {
+            CursorTarget::Item(i) => i,
+            _ => return 0,
+        };
+        let h = inner_height as usize;
+        if sel < h { 0 } else { (sel - h + 1) as u16 }
     }
 
     /// Draw the detail tab: umbrella header row, then a 40/60 list/pane split.
@@ -390,7 +430,8 @@ impl WorkspaceDetailWidget {
                 Line::from(Span::styled(label, style))
             })
             .collect();
-        frame.render_widget(Paragraph::new(lines).block(block), area);
+        let scroll = self.list_scroll_offset(area.height.saturating_sub(2));
+        frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
     }
 
     fn render_pane(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -433,7 +474,11 @@ impl WorkspaceDetailWidget {
             ))],
             Some(DetailView::Diff(idx)) => self.render_diff_lines(*idx, theme),
         };
-        frame.render_widget(Paragraph::new(body).block(block), area);
+        let pane_scroll = self.pane_scroll_offset(area.height.saturating_sub(2));
+        frame.render_widget(
+            Paragraph::new(body).block(block).scroll((pane_scroll, 0)),
+            area,
+        );
     }
 
     fn render_commit_lines(&self, theme: &Theme) -> Vec<Line<'_>> {
@@ -572,16 +617,18 @@ impl Widget for WorkspaceDetailWidget {
                     EventOutcome::Consumed
                 }
                 (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-                    self.pane_next();
                     if matches!(self.split.top(), Some(DetailView::Diff(_))) {
                         self.diff_scroll_down();
+                    } else {
+                        self.pane_next();
                     }
                     EventOutcome::Consumed
                 }
                 (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-                    self.pane_prev();
                     if matches!(self.split.top(), Some(DetailView::Diff(_))) {
                         self.diff_scroll_up();
+                    } else {
+                        self.pane_prev();
                     }
                     EventOutcome::Consumed
                 }
@@ -595,6 +642,7 @@ impl Widget for WorkspaceDetailWidget {
                     }
                     EventOutcome::Consumed
                 }
+                (KeyCode::Tab, _) => EventOutcome::Consumed,
                 _ => EventOutcome::Bubble,
             },
         }

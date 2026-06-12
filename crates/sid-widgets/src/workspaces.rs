@@ -1996,10 +1996,12 @@ impl Widget for WorkspacesWidget {
             // Background-open: Ctrl+Enter (kitty) / Shift+O (universal). Opens
             // the selected node as a background tab without switching focus.
             if chord.is_background_open() {
-                if let Some(ws) = self.state.selected_workspace().cloned() {
-                    ctx.emit_action("workspaces.open_detail_background");
-                    self.pending_open_detail = Some(ws);
-                    self.pending_open_background = true;
+                if !self.add_new_selected() {
+                    if let Some(ws) = self.state.selected_workspace().cloned() {
+                        ctx.emit_action("workspaces.open_detail_background");
+                        self.pending_open_detail = Some(ws);
+                        self.pending_open_background = true;
+                    }
                 }
                 return EventOutcome::Consumed;
             }
@@ -2028,13 +2030,16 @@ impl Widget for WorkspacesWidget {
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
-                        // Expand umbrella (or no-op on leaf).
-                        self.state.toggle_expand_selected();
+                        // Expand umbrella (or no-op on leaf). Consumed no-op on add-new row.
+                        if !self.add_new_selected() {
+                            self.state.toggle_expand_selected();
+                        }
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
-                        // Collapse only when currently expanded.
-                        if let Some(ws) = self.state.selected_workspace()
+                        // Collapse only when currently expanded. Consumed no-op on add-new row.
+                        if !self.add_new_selected()
+                            && let Some(ws) = self.state.selected_workspace()
                             && ws.kind == WorkspaceKind::Umbrella
                             && self.state.is_expanded(&ws.path)
                         {
@@ -2441,5 +2446,59 @@ mod tests {
         });
         let _ = w.handle_event(&up, &mut ctx);
         assert!(w.add_new_selected());
+    }
+
+    #[test]
+    fn bg_open_on_add_new_is_consumed_noop() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_core::widget::{EventOutcome, Widget};
+
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(true);
+        // with show_add_new_row=true, at_add_new is set → add_new_selected() is true
+        assert!(w.add_new_selected());
+
+        let (_rx, mut ctx) = test_ctx();
+        // Simulate background-open (Shift+O)
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::SHIFT,
+        });
+        let outcome = w.handle_event(&ev, &mut ctx);
+        assert_eq!(outcome, EventOutcome::Consumed);
+        // No pending open should be set
+        assert!(
+            w.take_pending_open_detail().is_none(),
+            "bg-open on add-new must be a no-op"
+        );
+    }
+
+    #[test]
+    fn right_on_add_new_does_not_mutate_expansion_state() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_core::widget::{EventOutcome, Widget};
+
+        let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
+        w.set_show_add_new_row(true);
+        assert!(w.add_new_selected());
+
+        // Record expansion state before
+        let expanded_before = w.state().is_expanded(std::path::Path::new("/stack"));
+
+        let (_rx, mut ctx) = test_ctx();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        });
+        let outcome = w.handle_event(&ev, &mut ctx);
+        assert_eq!(outcome, EventOutcome::Consumed);
+        // Expansion state must be unchanged
+        let expanded_after = w.state().is_expanded(std::path::Path::new("/stack"));
+        assert_eq!(
+            expanded_before, expanded_after,
+            "→ on add-new must not mutate expansion state"
+        );
     }
 }
