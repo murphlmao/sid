@@ -597,10 +597,6 @@ pub struct SshWidget {
     /// Set when the cursor is on the add-new row and the user presses `Enter`.
     /// Drained by the wire layer, which opens the add-host `FormPane`.
     pub pending_add_new: bool,
-    /// Alias the user wants to open in a background tab (set when
-    /// `Ctrl+Enter` / `O` is pressed while the inspector is open).
-    /// Drained by the wire layer via `take_pending_background_open`.
-    pub pending_background_open: Option<String>,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -635,7 +631,6 @@ impl SshWidget {
             pty_pane: None,
             pending_connect: None,
             pending_add_new: false,
-            pending_background_open: None,
             _ssh_factory: None,
             _pty_provider: None,
         }
@@ -829,19 +824,6 @@ impl SshWidget {
         let v = self.pending_add_new;
         self.pending_add_new = false;
         v
-    }
-
-    /// Drain the pending background-open alias. Returns the alias and resets.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sid_widgets::SshWidget;
-    /// let mut w = SshWidget::new();
-    /// assert!(w.take_pending_background_open().is_none());
-    /// ```
-    pub fn take_pending_background_open(&mut self) -> Option<String> {
-        self.pending_background_open.take()
     }
 
     /// Resize the embedded PTY pane to match the inner dimensions of `area`
@@ -1269,15 +1251,22 @@ impl Widget for SshWidget {
         self
     }
     fn footer_hint(&self) -> Vec<FooterHint> {
-        // First 3 entries appear in the slim rendered footer (N / ⏎ / →).
-        // E and G are beyond the slim cap so they live only in the ? overlay
-        // (plan decision 13: footer is 3 primary verbs + ?: help).
+        // The first 3 entries are the "primary" verbs shown in the slim
+        // rendered footer (wire's slim_footer_hints truncates to 3 + ?: help).
+        // Everything after index 2 (E, G, S, K, X, F, D) is long-tail and
+        // surfaces only in the ? help overlay (plan decision 13 + round-2 fix:
+        // footer_hint returns the FULL ordered list so the overlay is complete).
         vec![
             FooterHint::new("N", "add host"),
             FooterHint::new("⏎", "connect"),
             FooterHint::new("→", "inspect"),
             FooterHint::new("E", "edit"),
             FooterHint::new("G", "gen key"),
+            FooterHint::new("S", "setup remote"),
+            FooterHint::new("K", "key manager"),
+            FooterHint::new("X", "export key"),
+            FooterHint::new("F", "SFTP persist"),
+            FooterHint::new("D", "delete host"),
         ]
     }
     fn render(&self, _target: &mut dyn RenderTarget) {
@@ -1771,8 +1760,12 @@ impl SshInspector {
         };
         // Only Manual hosts have an editable identity_file; SSH-Config entries
         // are fully read-only (the config file itself stores that).
-        let editable_section = if self.source == SshHostSource::Manual {
-            Some(FormSection {
+        //
+        // Form-id convention (used by wire.rs submit and background-open arms):
+        //   "ssh.inspect:<alias>"    — Manual host, editable Preferences section
+        //   "ssh.inspect-ro:<alias>" — SshConfig host, info-only (no write path)
+        let (form_id, editable_section) = if self.source == SshHostSource::Manual {
+            let prefs = FormSection {
                 title: "Preferences".to_string(),
                 kind: SectionKind::Editable,
                 fields: vec![FormField::new(
@@ -1783,19 +1776,28 @@ impl SshInspector {
                         placeholder: Some("~/.ssh/id_ed25519".to_string()),
                     },
                 )],
-            })
+            };
+            (format!("ssh.inspect:{}", self.alias), Some(prefs))
         } else {
-            None
+            // SshConfig: read-only note so the user knows why ⏎ closes, not saves.
+            let note = FormSection {
+                title: "Note".to_string(),
+                kind: SectionKind::Info,
+                fields: vec![FormField::new(
+                    "_ro_note",
+                    Field::Display {
+                        label: "Managed by".to_string(),
+                        body: "~/.ssh/config — read-only here".to_string(),
+                    },
+                )],
+            };
+            (format!("ssh.inspect-ro:{}", self.alias), Some(note))
         };
         let mut sections = vec![info_section];
-        if let Some(prefs) = editable_section {
-            sections.push(prefs);
+        if let Some(extra) = editable_section {
+            sections.push(extra);
         }
-        FormSpec::new(
-            format!("ssh.inspect:{}", self.alias),
-            format!("SSH · {}", self.alias),
-            sections,
-        )
+        FormSpec::new(form_id, format!("SSH · {}", self.alias), sections)
     }
 }
 
@@ -1847,15 +1849,6 @@ mod tests {
         w.pending_add_new = true;
         assert!(w.take_pending_add_new());
         assert!(!w.take_pending_add_new());
-    }
-
-    #[test]
-    fn take_pending_background_open_drains_option() {
-        let mut w = SshWidget::new();
-        assert!(w.take_pending_background_open().is_none());
-        w.pending_background_open = Some("prod".into());
-        assert_eq!(w.take_pending_background_open().as_deref(), Some("prod"));
-        assert!(w.take_pending_background_open().is_none());
     }
 
     // --- Task 3: FormSpec builders ---
@@ -1976,7 +1969,8 @@ mod tests {
         let spec = SshInspector::from_host(&h).to_form_spec();
         // SSH-Config hosts: only Info sections (no editable prefs).
         assert!(spec.sections.iter().all(|s| s.kind == SectionKind::Info));
-        assert_eq!(spec.id.0, "ssh.inspect:cfg");
+        // Read-only inspector uses the "ssh.inspect-ro:" prefix.
+        assert_eq!(spec.id.0, "ssh.inspect-ro:cfg");
     }
 
     #[test]

@@ -155,7 +155,32 @@ impl FormPane {
         }
     }
 
-    fn focused_field_is_text(&self) -> bool {
+    /// Returns `true` when the currently focused form field accepts free-form
+    /// text input (Text, Password, Picker).  Used by the wire layer to gate
+    /// intercepts that would otherwise swallow printable characters typed into
+    /// an editable field.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::form::{FormPane, FormSpec, FormSection, FormField, SectionKind};
+    /// use sid_widgets::Field;
+    ///
+    /// let spec = FormSpec::new(
+    ///     "test",
+    ///     "Test",
+    ///     vec![FormSection {
+    ///         title: "s".into(),
+    ///         kind: SectionKind::Editable,
+    ///         fields: vec![FormField::new("x", Field::Text {
+    ///             label: "x".into(), value: String::new(), placeholder: None,
+    ///         })],
+    ///     }],
+    /// );
+    /// let pane = FormPane::new(spec);
+    /// assert!(pane.focused_field_is_text());
+    /// ```
+    pub fn focused_field_is_text(&self) -> bool {
         self.focused_slot().is_some_and(|(si, fi)| {
             matches!(
                 self.spec.sections[si].fields[fi].field,

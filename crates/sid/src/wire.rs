@@ -1862,12 +1862,30 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         // `ssh.inspect:<alias>` pane and the user presses Ctrl+Enter / O,
         // route to the background-open logic instead of handing the chord to
         // the FormPane (the inspector stays open; the new tab appears behind).
+        //
+        // Guard: Ctrl+Enter always intercepts (no conflict with text input).
+        // Bare Shift+O only intercepts when the focused form field is NOT a
+        // free-text input — typing 'O' into identity_file must insert the
+        // char, not spawn a background tab.
         let is_ssh_inspector = sid_app
             .form
             .as_ref()
-            .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+            .map(|f| {
+                f.spec.id.0.starts_with("ssh.inspect:")
+                    || f.spec.id.0.starts_with("ssh.inspect-ro:")
+            })
             .unwrap_or(false);
-        if is_ssh_inspector && chord.is_background_open() {
+        let is_ctrl_enter = chord.code == crossterm::event::KeyCode::Enter
+            && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
+        let focused_is_text = sid_app
+            .form
+            .as_ref()
+            .map(|f| f.focused_field_is_text())
+            .unwrap_or(false);
+        // Ctrl+Enter always intercepts; bare 'O' only when not in a text field.
+        let should_background_open =
+            is_ssh_inspector && (is_ctrl_enter || (chord.is_background_open() && !focused_is_text));
+        if should_background_open {
             // Delegate to the existing background-open arm inside
             // dispatch_ssh_form_key; it reads sid_app.form internally.
             dispatch_ssh_form_key(sid_app, chord);
@@ -2668,15 +2686,53 @@ pub fn dispatch_ssh_form_key(sid_app: &mut SidApp, chord: sid_core::event::KeyCh
                 return false;
             };
             let id = form.spec.id.0.clone();
-            let Some(alias) = id.strip_prefix("ssh.inspect:") else {
+            // Accept both editable (ssh.inspect:<alias>) and read-only
+            // (ssh.inspect-ro:<alias>) inspector form ids.
+            let alias = if let Some(a) = id.strip_prefix("ssh.inspect-ro:") {
+                a.to_string()
+            } else if let Some(a) = id.strip_prefix("ssh.inspect:") {
+                a.to_string()
+            } else {
                 return false;
             };
-            let alias = alias.to_string();
+            // Use a unique tab id so active_ssh_widget_mut / refresh_ssh_widget
+            // (which match on exact "ssh") keep targeting the parent tab only,
+            // and so re-opening the same alias focuses rather than stacking.
+            let detail_tab_id_str = format!("ssh:{alias}");
+            let detail_tab_id = TabId::new(&detail_tab_id_str);
+            // Dedup: if a session tab for this alias is already open, focus it
+            // (mirror of maybe_open_pending_workspace_detail).
+            if sid_app
+                .app
+                .tabs()
+                .tabs()
+                .iter()
+                .any(|t| t.id == detail_tab_id)
+            {
+                let _ = sid_app.app.tabs_mut().switch_to(&detail_tab_id);
+                sid_app.toasts.push(Toast::info(format!(
+                    "SSH · {alias} already open — switched"
+                )));
+                return true;
+            }
             let parent_idx = sid_app.app.tabs().active_index();
+            let mut bg_widget = sid_widgets::SshWidget::new();
+            // Hydrate the host list from the store FIRST: the connect drain
+            // resolves the alias against this widget's visible_hosts, and the
+            // user sees the real list behind the connecting overlay.
+            match sid_app.store.list_ssh_hosts() {
+                Ok(hosts) => bg_widget.state_mut().set_store_hosts(hosts),
+                Err(e) => tracing::warn!("background-open: list_ssh_hosts failed: {e}"),
+            }
+            // Then mark pending connect and begin the connection so the detail
+            // tab connects through the normal drain pipeline (same mechanism
+            // as pressing Enter — just without switching focus).
+            bg_widget.set_pending_connect(Some(alias.clone()));
+            bg_widget.connection_mut().begin_connecting(alias.clone());
             let new_tab = Tab {
-                id: TabId::new("ssh"),
+                id: detail_tab_id,
                 title: format!("SSH · {alias}"),
-                layout: Layout::Single(Box::new(sid_widgets::SshWidget::new())),
+                layout: Layout::Single(Box::new(bg_widget)),
                 hotkey: None,
                 kind: TabKind::Detail { parent_idx },
             };
@@ -3453,7 +3509,9 @@ pub fn drain_pending_ssh_connect(sid_app: &mut SidApp) {
     // the borrow on `sid_app.app` before spawning the connect task (which
     // captures `sid_app.ssh_client_factory` + `ssh_outcome_tx`).
     let (alias, host, rows, cols) = {
-        let Some(ssh) = active_ssh_widget_mut(sid_app) else {
+        // Any SSH widget — parent tab or background `ssh:<alias>` detail tab —
+        // may carry the intent; route to whichever one set it.
+        let Some(ssh) = find_ssh_widget_mut(sid_app, |w| w.peek_pending_connect().is_some()) else {
             return;
         };
         let Some(alias) = ssh.take_pending_connect() else {
@@ -3520,11 +3578,31 @@ pub fn drain_ssh_outcomes(sid_app: &mut SidApp) {
                 byte_rx,
                 shutdown_tx,
             } => {
-                // Tear down any previous reader (best-effort).
+                // Tear down any previous reader (best-effort). sid runs at
+                // most ONE live SSH session; a new connect supersedes the old.
                 if let Some(prev) = sid_app.ssh_shutdown_tx.take() {
                     let _ = prev.send(());
                 }
-                let attached = if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                // The superseded session's widget (possibly in another tab)
+                // still says Connected; flip it to Disconnected so exactly one
+                // widget reads as live. Its pane stays attached for post-mortem
+                // viewing, matching remote-close semantics.
+                for_each_ssh_widget_mut(sid_app, |w| {
+                    if w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connected {
+                        w.connection_mut().mark_disconnected();
+                    }
+                });
+                // Attach to the widget that asked for this alias (a background
+                // detail tab's widget for background-opens); fall back to the
+                // parent "ssh" tab for outcomes nobody is waiting on.
+                let attached = if let Some(ssh) = find_ssh_widget_mut(sid_app, |w| {
+                    w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connecting
+                        && w.connection().alias() == Some(alias.as_str())
+                }) {
+                    ssh.set_pty_pane(pty);
+                    ssh.connection_mut().mark_connected();
+                    true
+                } else if let Some(ssh) = active_ssh_widget_mut(sid_app) {
                     ssh.set_pty_pane(pty);
                     ssh.connection_mut().mark_connected();
                     true
@@ -3548,7 +3626,14 @@ pub fn drain_ssh_outcomes(sid_app: &mut SidApp) {
                 }
             }
             SshConnectOutcome::Failed { alias, error } => {
-                if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                // Route the failure to the widget that was connecting to this
+                // alias; fall back to the parent tab for orphan outcomes.
+                if let Some(ssh) = find_ssh_widget_mut(sid_app, |w| {
+                    w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connecting
+                        && w.connection().alias() == Some(alias.as_str())
+                }) {
+                    ssh.connection_mut().mark_failed(error.clone());
+                } else if let Some(ssh) = active_ssh_widget_mut(sid_app) {
                     ssh.connection_mut().mark_failed(error.clone());
                 }
                 sid_app
@@ -3586,7 +3671,24 @@ pub fn drain_ssh_bytes(sid_app: &mut SidApp) {
     if chunks.is_empty() && !disconnected {
         return;
     }
-    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+    // Feed the widget owning the live session (Connected + pane attached) —
+    // which may be a background detail tab's widget, not the parent tab's.
+    // Fall back to the parent tab to preserve single-tab behaviour in edge
+    // states (e.g. bytes arriving for an already-superseded widget).
+    // Existence is checked first, then re-borrowed: NLL extends a borrow
+    // returned from an if-let arm across the whole expression, so the
+    // fallback can't share one binding with the primary lookup.
+    let live_pred = |w: &SshWidget| {
+        w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connected
+            && w.pty_pane().is_some()
+    };
+    let has_live = find_ssh_widget_mut(sid_app, live_pred).is_some();
+    let target = if has_live {
+        find_ssh_widget_mut(sid_app, live_pred)
+    } else {
+        active_ssh_widget_mut(sid_app)
+    };
+    if let Some(ssh) = target {
         if let Some(pane) = ssh.pty_pane_mut() {
             for chunk in &chunks {
                 pane.feed(chunk);
@@ -3618,15 +3720,19 @@ pub fn drain_ssh_bytes(sid_app: &mut SidApp) {
 /// scheduled follow-up (see TODO).
 pub fn sync_ssh_pty_size(sid_app: &mut SidApp, full_area: Rect) {
     let body = active_ssh_body_rect(full_area);
-    // Guard: only act on the active tab being SSH.
-    let is_active_ssh = sid_app.app.tabs().active().id.as_str() == "ssh";
+    // Guard: only act when the active tab is an SSH tab — the parent ("ssh")
+    // or a background-opened session tab ("ssh:<alias>").
+    let is_active_ssh = {
+        let id = sid_app.app.tabs().active().id.as_str();
+        id == "ssh" || id.starts_with("ssh:")
+    };
     if !is_active_ssh {
         return;
     }
     if sid_app.ssh_last_pty_area == Some(body) {
         return;
     }
-    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+    if let Some(ssh) = active_tab_ssh_widget_mut(sid_app) {
         if ssh.pty_pane().is_some() {
             ssh.pty_pane_resize_to_area(body);
             sid_app.ssh_last_pty_area = Some(body);
@@ -3657,7 +3763,12 @@ fn active_ssh_body_rect(full: Rect) -> Rect {
     sid_widgets::ssh::body_rect_for(inner)
 }
 
-/// Mutably borrow the active SSH widget, if the SSH tab exists.
+/// Mutably borrow the parent SSH tab's widget (tab id exactly `"ssh"`).
+///
+/// Host CRUD (add/edit/delete refresh) targets this widget only; session
+/// routing must NOT assume it — background-opened `ssh:<alias>` detail tabs
+/// hold their own `SshWidget`s. Use [`find_ssh_widget_mut`] for anything
+/// connection-related.
 fn active_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
     for t in sid_app.app.tabs_mut().tabs_mut() {
         if t.id.as_str() == "ssh" {
@@ -3668,6 +3779,50 @@ fn active_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
         }
     }
     None
+}
+
+/// Find the first [`SshWidget`] in ANY tab (the parent `"ssh"` tab or an
+/// `"ssh:<alias>"` background detail tab) satisfying `pred`.
+///
+/// The connect plumbing uses this to route intents and outcomes to the
+/// widget that owns them: a pending-connect set on a background tab's widget
+/// must be drained from THAT widget, and its Connected/Failed outcome must
+/// land back on it — not on whichever tab happens to be the parent.
+fn find_ssh_widget_mut(
+    sid_app: &mut SidApp,
+    pred: impl Fn(&SshWidget) -> bool,
+) -> Option<&mut SshWidget> {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if let Some(w) = t.layout.iter_widgets_mut().next() {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(ww) = any_ref.downcast_mut::<SshWidget>() {
+                if pred(ww) {
+                    return Some(ww);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Run `f` on every [`SshWidget`] across all tabs (parent + detail tabs).
+fn for_each_ssh_widget_mut(sid_app: &mut SidApp, mut f: impl FnMut(&mut SshWidget)) {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if let Some(w) = t.layout.iter_widgets_mut().next() {
+            if let Some(ww) = (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>() {
+                f(ww);
+            }
+        }
+    }
+}
+
+/// The ACTIVE tab's [`SshWidget`], whatever its tab id (`"ssh"` or
+/// `"ssh:<alias>"`). Used by per-frame work that must touch only the widget
+/// the user is looking at (e.g. PTY resize).
+fn active_tab_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
+    let t = sid_app.app.tabs_mut().active_mut();
+    let w = t.layout.iter_widgets_mut().next()?;
+    (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>()
 }
 
 /// Spawn the async connect task. Each task is independent and owns the
@@ -4166,6 +4321,13 @@ fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::for
                     .toasts
                     .push(Toast::error(format!("ssh inspect save failed: {e}")));
             }
+        }
+        id if id.starts_with("ssh.inspect-ro:") => {
+            // Read-only inspector (SSH-Config host): ⏎ closes the pane cleanly
+            // without attempting to write anything.  No toast needed — there is
+            // nothing ambiguous about closing an info-only panel.
+            let _ = id; // alias not needed
+            let _ = &values;
         }
         _ => {
             let _ = &values;
@@ -6791,6 +6953,237 @@ mod tests {
                 .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
                 .unwrap_or(false),
             "inspector form must remain open after background-open"
+        );
+        // Fix 3: pushed tab id must be "ssh:<alias>", not the bare "ssh" id.
+        let pushed_tab = app.app.tabs().tabs().last().unwrap();
+        assert_eq!(
+            pushed_tab.id.as_str(),
+            "ssh:bg-host",
+            "pushed tab must have unique id 'ssh:<alias>'"
+        );
+        // Fix 3: pending connect must be seeded so the detail tab connects.
+        let bg_ssh = pushed_tab
+            .layout
+            .iter_widgets()
+            .next()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<sid_widgets::SshWidget>()
+            .expect("background tab must hold an SshWidget");
+        assert_eq!(
+            bg_ssh.peek_pending_connect(),
+            Some("bg-host"),
+            "pending_connect must be seeded with the alias"
+        );
+        use sid_widgets::ssh::ConnectionPhase;
+        assert_eq!(
+            bg_ssh.connection().phase(),
+            ConnectionPhase::Connecting,
+            "connection must be in Connecting phase"
+        );
+    }
+
+    /// Fix 3: re-invoking background-open for the same alias focuses the
+    /// existing tab instead of stacking a second one (dedup).
+    #[test]
+    fn background_open_deduplicates_existing_tab() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "dedup-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host.clone()]);
+
+        // Open the inspector via →.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+
+        // First background-open — pushes one new tab.
+        route_key_event(&mut app, bg_chord);
+        let count_after_first = app.app.tabs().tabs().len();
+
+        // Second background-open — must NOT push another tab.
+        route_key_event(&mut app, bg_chord);
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            count_after_first,
+            "second background-open of same alias must not stack a duplicate tab"
+        );
+        // The dedup toast must mention the alias.
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("dedup-host") && t.message.contains("already open")),
+            "dedup must produce a toast mentioning the alias and 'already open'"
+        );
+    }
+
+    /// Fix 1: typing 'O' into an editable text field (identity_file) in the
+    /// ssh inspector must insert the character — NOT spawn a background tab.
+    #[test]
+    fn background_open_o_key_does_not_fire_when_text_field_focused() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "text-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+
+        // Open the inspector via →.  Manual host → has editable Prefs section
+        // with a Text identity_file field which is focused by default.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "inspector must be open"
+        );
+
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        // Advance focus to the identity_file Text field (Tab through the form).
+        // The first slot in an editable form is typically a text field, so
+        // focused_field_is_text() should return true right after open.
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.focused_field_is_text())
+                .unwrap_or(false),
+            "first focusable slot after open must be a text field"
+        );
+
+        // Press 'O' — is_background_open() returns true for Char('O'), but the
+        // guard must block it because focused_is_text == true.
+        let o_chord = KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, o_chord);
+
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before,
+            "'O' in a text field must NOT push a background tab"
+        );
+    }
+
+    /// Fix 1: 'O' on a non-text field (e.g. after tabbing past text fields to
+    /// the Save button) DOES background-open.
+    #[test]
+    fn background_open_o_key_fires_when_non_text_focused() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "non-text-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+
+        // Open inspector.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+
+        // Shift focus away from text fields by Tab-pressing until
+        // focused_field_is_text() returns false (or we exhaust the form).
+        let tab_key = KeyChord {
+            code: KeyCode::Tab,
+            mods: KeyModifiers::NONE,
+        };
+        for _ in 0..20 {
+            if app
+                .form
+                .as_ref()
+                .map(|f| !f.focused_field_is_text())
+                .unwrap_or(true)
+            {
+                break;
+            }
+            // Let the form consume Tab directly (not via route_key_event).
+            if let Some(f) = app.form.as_mut() {
+                f.handle_key(tab_key);
+            }
+        }
+
+        // If after 20 Tabs we still haven't found a non-text slot, the inspector
+        // may only have text fields (acceptable) — skip the background-open
+        // assertion, but verify no crash occurred.
+        if app
+            .form
+            .as_ref()
+            .map(|f| f.focused_field_is_text())
+            .unwrap_or(true)
+        {
+            // All slots text — Ctrl+Enter still works regardless.
+            let bg_chord = KeyChord {
+                code: KeyCode::Enter,
+                mods: KeyModifiers::CONTROL,
+            };
+            let tab_count_before = app.app.tabs().tabs().len();
+            route_key_event(&mut app, bg_chord);
+            assert_eq!(
+                app.app.tabs().tabs().len(),
+                tab_count_before + 1,
+                "Ctrl+Enter must always background-open regardless of field type"
+            );
+            return;
+        }
+
+        // We have a non-text field focused — 'O' must background-open.
+        let tab_count_before = app.app.tabs().tabs().len();
+        let o_chord = KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, o_chord);
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before + 1,
+            "'O' on a non-text field must push a background tab"
         );
     }
 
@@ -9833,6 +10226,208 @@ mod tests {
             let prev = sid_app.ssh_last_pty_area;
             sync_ssh_pty_size(&mut sid_app, Rect::new(0, 0, 120, 40));
             assert_eq!(sid_app.ssh_last_pty_area, prev);
+        }
+
+        /// End-to-end through PRODUCTION routing: background-open from the
+        /// inspector pushes an `ssh:<alias>` detail tab whose own widget
+        /// carries the connect intent; the drain pipeline resolves the alias
+        /// against the detail widget's hydrated host list, the Connected
+        /// outcome attaches the PtyPane to the DETAIL widget (not the parent
+        /// "ssh" tab), and bytes flow into the detail pane.
+        #[tokio::test(flavor = "current_thread")]
+        async fn background_open_tab_connects_end_to_end() {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            use sid_core::event::KeyChord;
+            use sid_widgets::ssh::ConnectionPhase;
+
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+            let make: MockMaker = Box::new(|| Box::new(MockClient::ok(vec![b"hello\n".to_vec()])));
+            sid_app.ssh_client_factory = factory_for(Arc::new(Mutex::new(make)));
+
+            // Open the inspector on "acme", then background-open it.
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Right,
+                    mods: KeyModifiers::NONE,
+                },
+            );
+            assert!(
+                sid_app
+                    .form
+                    .as_ref()
+                    .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                    .unwrap_or(false),
+                "inspector must be open before background-open"
+            );
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Enter,
+                    mods: KeyModifiers::CONTROL,
+                },
+            );
+
+            // The detail tab's widget is hydrated with the host list, so the
+            // connect drain can resolve the alias from THAT widget.
+            let detail_id = TabId::new("ssh:acme");
+            {
+                let detail = detail_widget_mut(&mut sid_app, &detail_id);
+                assert!(
+                    !detail.state().visible_hosts().is_empty(),
+                    "detail widget must be hydrated with the store's host list"
+                );
+                assert_eq!(detail.connection().phase(), ConnectionPhase::Connecting);
+            }
+
+            drain_pending_ssh_connect(&mut sid_app);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+            }
+            drain_ssh_outcomes(&mut sid_app);
+
+            // Outcome landed on the DETAIL widget...
+            {
+                let detail = detail_widget_mut(&mut sid_app, &detail_id);
+                assert_eq!(detail.connection().phase(), ConnectionPhase::Connected);
+                assert!(
+                    detail.pty_pane().is_some(),
+                    "pane must attach to detail tab"
+                );
+            }
+            // ...and NOT on the parent "ssh" tab.
+            let parent = active_ssh_widget_mut(&mut sid_app).expect("parent ssh widget");
+            assert_eq!(
+                parent.connection().phase(),
+                ConnectionPhase::Idle,
+                "parent tab must stay untouched by a background connect"
+            );
+            assert!(parent.pty_pane().is_none(), "parent must not get the pane");
+
+            // Bytes flow into the detail pane.
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            drain_ssh_bytes(&mut sid_app);
+            let detail = detail_widget_mut(&mut sid_app, &detail_id);
+            let lines = detail.pty_pane().unwrap().lines();
+            assert!(
+                lines[0].trim_end().starts_with("hello"),
+                "detail pane must receive session bytes; got {:?}",
+                lines[0]
+            );
+
+            if let Some(s) = sid_app.ssh_shutdown_tx.take() {
+                let _ = s.send(());
+            }
+        }
+
+        /// A new Connected outcome supersedes the previous live session: the
+        /// previously-Connected widget (the parent tab here) is flipped to
+        /// Disconnected — its reader was torn down — and exactly one widget
+        /// (the background detail tab) reads as live afterwards.
+        #[tokio::test(flavor = "current_thread")]
+        async fn connected_outcome_supersedes_previous_session_widget() {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            use sid_core::event::KeyChord;
+            use sid_pty::Vt100Screen;
+            use sid_widgets::ssh::ConnectionPhase;
+
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+
+            // Background-open "acme" while the parent is idle: detail tab is
+            // now Connecting("acme").
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Right,
+                    mods: KeyModifiers::NONE,
+                },
+            );
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Enter,
+                    mods: KeyModifiers::CONTROL,
+                },
+            );
+
+            // Forge a Connected outcome for an alias nobody is waiting on —
+            // the fallback attaches it to the parent "ssh" tab (legacy
+            // single-tab behaviour). Parent is now the live session.
+            let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (sd1, _sr1) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "legacy".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx: rx1,
+                    shutdown_tx: sd1,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            assert_eq!(
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Connected
+            );
+
+            // Now the detail tab's connect completes: it must take over as the
+            // single live session, and the parent must flip to Disconnected.
+            let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (sd2, _sr2) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "acme".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx: rx2,
+                    shutdown_tx: sd2,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+
+            let detail_id = TabId::new("ssh:acme");
+            assert_eq!(
+                detail_widget_mut(&mut sid_app, &detail_id)
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Connected,
+                "detail tab must be the live session"
+            );
+            assert_eq!(
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Disconnected,
+                "superseded parent session must read Disconnected"
+            );
+            drop(tx1);
+            drop(tx2);
+        }
+
+        /// Borrow the SshWidget inside the tab with `id`, panicking with a
+        /// clear message if the tab or widget is missing (test helper).
+        fn detail_widget_mut<'a>(sid_app: &'a mut SidApp, id: &TabId) -> &'a mut SshWidget {
+            for t in sid_app.app.tabs_mut().tabs_mut() {
+                if t.id == *id {
+                    let w = t
+                        .layout
+                        .iter_widgets_mut()
+                        .next()
+                        .expect("detail tab must hold a widget");
+                    return (w as &mut dyn std::any::Any)
+                        .downcast_mut::<SshWidget>()
+                        .expect("detail tab widget must be an SshWidget");
+                }
+            }
+            panic!("tab {id:?} not found");
         }
 
         /// The production factory closure produces a fresh client per call.

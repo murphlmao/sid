@@ -50,18 +50,30 @@ fn workspaces_footer_hints() {
 fn ssh_footer_hints() {
     let w = SshWidget::new();
     let hints = w.footer_hint();
-    // First 3 entries are the slim rendered footer: N / ⏎ / →.
-    // E and G are beyond the slim cap — they only appear in the ? overlay
-    // (plan decision 13: footer is 3 primary verbs + ?: help).
+    // footer_hint returns the FULL ordered list (round-2 fix: long-tail moved
+    // here so the ? overlay shows all verbs).  The first 3 are primary verbs
+    // that slim_footer_hints renders directly; everything from index 3 onward
+    // surfaces only in the ? overlay.
+    //
+    // Primary (slim footer: N / ⏎ / →):
+    assert_eq!(hints[0].chord, "N", "first primary verb must be N");
+    assert_eq!(hints[1].chord, "⏎", "second primary verb must be ⏎");
+    assert_eq!(hints[2].chord, "→", "third primary verb must be →");
+    // Full set:
     assert_hint(&hints, "N", "add host");
     assert_hint(&hints, "⏎", "connect");
     assert_hint(&hints, "→", "inspect");
     assert_hint(&hints, "E", "edit");
     assert_hint(&hints, "G", "gen key");
+    assert_hint(&hints, "S", "setup remote");
+    assert_hint(&hints, "K", "key manager");
+    assert_hint(&hints, "X", "export key");
+    assert_hint(&hints, "F", "SFTP persist");
+    assert_hint(&hints, "D", "delete host");
     assert_eq!(
         hints.len(),
-        5,
-        "SshWidget should expose exactly 5 footer hints (N / ⏎ / → / E / G)"
+        10,
+        "SshWidget should expose 10 footer hints (3 primary + 7 long-tail overlay verbs)"
     );
 }
 
