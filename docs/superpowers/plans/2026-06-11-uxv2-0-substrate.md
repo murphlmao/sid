@@ -244,7 +244,7 @@ git commit -m "feat(sid-store,sid): show_add_new_row behavior toggle key + loade
 - Create: `crates/sid-widgets/src/form/spec.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod form;` and re-export `pub use form::{FormEvent, FormField, FormPane, FormSection, FormSpec, FormValues, PaneFocusState, SectionKind, Validate, render_form_pane};` — the pane/render names land in Tasks 4–5; add them to this re-export in those tasks)
 
-- [ ] **Step 1: Write `form/mod.rs`**
+- [x] **Step 1: Write `form/mod.rs`**
 
 ```rust
 //! Side-pane form substrate (UX-v2).
@@ -270,7 +270,7 @@ pub use spec::{FormField, FormId, FormSection, FormSpec, FormValues, SectionKind
 empty files with just `//! placeholder, filled by Tasks 4-5` and comment the two `pub use`
 lines out — uncomment in their tasks.)
 
-- [ ] **Step 2: Write `form/spec.rs`**
+- [x] **Step 2: Write `form/spec.rs`**
 
 Reuses the existing `crate::modal::Field` enum for field payloads (Text, Password, Toggle,
 Choice, Picker, Display) — do not duplicate it.
@@ -493,7 +493,7 @@ fn restore_value(field: &mut Field, prev: &str) {
 }
 ```
 
-- [ ] **Step 3: Tests (sibling `#[cfg(test)] mod tests` in `spec.rs`)**
+- [x] **Step 3: Tests (sibling `#[cfg(test)] mod tests` in `spec.rs`)**
 
 ```rust
 #[cfg(test)]
@@ -609,12 +609,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p sid-widgets form::spec`
 Expected: 5 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/ crates/sid-widgets/src/lib.rs
