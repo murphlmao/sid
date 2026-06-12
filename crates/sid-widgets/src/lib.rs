@@ -18,6 +18,7 @@ pub mod ssh;
 pub mod stub;
 pub mod system;
 pub mod workspace_detail;
+pub mod workspace_detail_state;
 pub mod workspaces;
 
 pub use database::DatabaseWidget;
@@ -27,4 +28,5 @@ pub use settings::{SettingsCategory, SettingsWidget};
 pub use ssh::SshWidget;
 pub use system::SystemWidget;
 pub use workspace_detail::{CiStatus, RepoSummary, WorkspaceDetailWidget};
+pub use workspace_detail_state::{RepoDetail, RepoGit, SatelliteRow};
 pub use workspaces::WorkspacesWidget;

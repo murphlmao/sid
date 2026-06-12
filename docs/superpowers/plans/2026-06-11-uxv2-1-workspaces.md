@@ -195,7 +195,7 @@ The detail tab's left list is the umbrella row plus its satellites; each row car
 - Create: `crates/sid-widgets/src/workspace_detail_state.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod workspace_detail_state;` after `pub mod workspace_detail;` at line 17, and a re-export line — see Step 4)
 
-- [ ] **Step 1: Write the type + failing tests**
+- [x] **Step 1: Write the type + failing tests**
 
 ```rust
 //! Pure state for the Workspaces *detail* tab (UX-v2 rework).
@@ -386,12 +386,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run (expect failure — module not declared)**
+- [x] **Step 2: Run (expect failure — module not declared)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state`
 Expected: error — module not found.
 
-- [ ] **Step 3: Wire the module**
+- [x] **Step 3: Wire the module**
 
 In `crates/sid-widgets/src/lib.rs`, after line 17 (`pub mod workspace_detail;`):
 
@@ -405,12 +405,12 @@ And after the existing `pub use workspace_detail::{CiStatus, RepoSummary, Worksp
 pub use workspace_detail_state::{RepoDetail, RepoGit, SatelliteRow};
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state && cargo test -p sid-widgets --doc workspace_detail_state`
 Expected: 3 unit tests + 5 doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail_state.rs crates/sid-widgets/src/lib.rs
