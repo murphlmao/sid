@@ -1111,7 +1111,7 @@ git commit -m "feat(sid-widgets): form pane renderer — framed fields, info row
 - Create: `crates/sid-widgets/src/split_view.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod split_view;`)
 
-- [ ] **Step 1: Write the helper**
+- [x] **Step 1: Write the helper**
 
 This is the focus model for widgets with *internal* right panes (workspace detail's ops →
 commits → diff stack). Generic over the widget's own view enum.
@@ -1202,7 +1202,7 @@ impl<V> SplitView<V> {
 }
 ```
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 ```rust
 #[cfg(test)]
@@ -1263,7 +1263,7 @@ mod tests {
 Run: `cargo test -p sid-widgets split_view`
 Expected: 4 tests pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/split_view.rs crates/sid-widgets/src/lib.rs
