@@ -1439,6 +1439,187 @@ pub fn render_to_string_with_resize(widget: &mut SshWidget, width: u16, height: 
 }
 
 // ---------------------------------------------------------------------------
+// FormSpec builders — Add / Edit SSH host (FormPane path)
+// ---------------------------------------------------------------------------
+
+/// Build the [`FormSpec`] for the "Add SSH Host" side-pane form.
+///
+/// Field keys match those consumed by the wire-layer submit handler keyed on
+/// `"ssh.new"`: `alias`, `host`, `port`, `user`, `identity_file`, `auth`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::ssh::ssh_add_form_spec;
+/// let spec = ssh_add_form_spec();
+/// assert_eq!(spec.id.0, "ssh.new");
+/// assert!(spec.sections[0].fields.iter().any(|f| f.key == "alias"));
+/// ```
+pub fn ssh_add_form_spec() -> FormSpec {
+    FormSpec::new(
+        "ssh.new",
+        "Add SSH Host",
+        vec![FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Text {
+                        label: "Alias".to_string(),
+                        value: String::new(),
+                        placeholder: Some("prod".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "host",
+                    Field::Text {
+                        label: "Host / IP".to_string(),
+                        value: String::new(),
+                        placeholder: Some("10.0.0.1".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "port",
+                    Field::Text {
+                        label: "Port".to_string(),
+                        value: "22".to_string(),
+                        placeholder: Some("22".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::Port]),
+                FormField::new(
+                    "user",
+                    Field::Text {
+                        label: "User".to_string(),
+                        value: String::new(),
+                        placeholder: Some("alice".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: String::new(),
+                        placeholder: Some("~/.ssh/id_ed25519 (optional)".to_string()),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Choice {
+                        label: "Auth".to_string(),
+                        options: vec![
+                            "agent".to_string(),
+                            "key".to_string(),
+                            "password".to_string(),
+                        ],
+                        selected: 0,
+                    },
+                ),
+            ],
+        }],
+    )
+}
+
+/// Build the [`FormSpec`] for the "Edit SSH Host" side-pane form, pre-populated
+/// from an existing host record.
+///
+/// Field keys match those consumed by the wire-layer submit handler keyed on
+/// `"ssh.edit:<alias>"`: `alias`, `host`, `port`, `user`, `identity_file`, `auth`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+/// use sid_widgets::ssh::ssh_edit_form_spec;
+/// let h = SshHost {
+///     alias: "dev".into(), host: "10.0.0.1".into(), port: 2222,
+///     user: "alice".into(), identity_file: None,
+///     source: SshHostSource::Manual, last_connected: 0,
+///     command_history: vec![], last_sftp_path: None,
+///     auth_kind: SshAuthKind::Key,
+/// };
+/// let spec = ssh_edit_form_spec(&h);
+/// assert_eq!(spec.id.0, "ssh.edit:dev");
+/// ```
+pub fn ssh_edit_form_spec(host: &SshHost) -> FormSpec {
+    let auth_idx: usize = match host.auth_kind {
+        SshAuthKind::Agent => 0,
+        SshAuthKind::Key => 1,
+        SshAuthKind::Password => 2,
+    };
+    FormSpec::new(
+        format!("ssh.edit:{}", host.alias),
+        format!("Edit SSH Host — {}", host.alias),
+        vec![FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Text {
+                        label: "Alias".to_string(),
+                        value: host.alias.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "host",
+                    Field::Text {
+                        label: "Host / IP".to_string(),
+                        value: host.host.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "port",
+                    Field::Text {
+                        label: "Port".to_string(),
+                        value: host.port.to_string(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::Port]),
+                FormField::new(
+                    "user",
+                    Field::Text {
+                        label: "User".to_string(),
+                        value: host.user.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: host.identity_file.clone().unwrap_or_default(),
+                        placeholder: Some("~/.ssh/id_ed25519 (optional)".to_string()),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Choice {
+                        label: "Auth".to_string(),
+                        options: vec![
+                            "agent".to_string(),
+                            "key".to_string(),
+                            "password".to_string(),
+                        ],
+                        selected: auth_idx,
+                    },
+                ),
+            ],
+        }],
+    )
+}
+
+// ---------------------------------------------------------------------------
 // SshInspector — Info + Editable FormSpec builder for the right-pane inspector
 // ---------------------------------------------------------------------------
 
@@ -1672,6 +1853,75 @@ mod tests {
         w.pending_background_open = Some("prod".into());
         assert_eq!(w.take_pending_background_open().as_deref(), Some("prod"));
         assert!(w.take_pending_background_open().is_none());
+    }
+
+    // --- Task 3: FormSpec builders ---
+
+    #[test]
+    fn add_form_spec_has_required_keys_and_validators() {
+        let spec = ssh_add_form_spec();
+        assert_eq!(spec.id.0, "ssh.new");
+        let keys: Vec<_> = spec.sections[0]
+            .fields
+            .iter()
+            .map(|f| f.key.as_str())
+            .collect();
+        assert!(keys.contains(&"alias"));
+        assert!(keys.contains(&"host"));
+        assert!(keys.contains(&"port"));
+        assert!(keys.contains(&"user"));
+        assert!(keys.contains(&"identity_file"));
+        assert!(keys.contains(&"auth"));
+        let alias_field = spec.sections[0]
+            .fields
+            .iter()
+            .find(|f| f.key == "alias")
+            .unwrap();
+        assert!(alias_field.validate.contains(&Validate::NonEmpty));
+        let port_field = spec.sections[0]
+            .fields
+            .iter()
+            .find(|f| f.key == "port")
+            .unwrap();
+        assert!(port_field.validate.contains(&Validate::Port));
+    }
+
+    #[test]
+    fn edit_form_spec_pre_populates_from_host() {
+        let h = SshHost {
+            alias: "staging".into(),
+            host: "192.168.1.1".into(),
+            port: 2222,
+            user: "bob".into(),
+            identity_file: Some("~/.ssh/stg_key".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Key,
+        };
+        let spec = ssh_edit_form_spec(&h);
+        assert_eq!(spec.id.0, "ssh.edit:staging");
+        let fields = &spec.sections[0].fields;
+        let alias_f = fields.iter().find(|f| f.key == "alias").unwrap();
+        if let Field::Text { value, .. } = &alias_f.field {
+            assert_eq!(value, "staging");
+        } else {
+            panic!("expected Text field for alias");
+        }
+        let port_f = fields.iter().find(|f| f.key == "port").unwrap();
+        if let Field::Text { value, .. } = &port_f.field {
+            assert_eq!(value, "2222");
+        } else {
+            panic!("expected Text field for port");
+        }
+        // auth pre-selected as Key (index 1)
+        let auth_f = fields.iter().find(|f| f.key == "auth").unwrap();
+        if let Field::Choice { selected, .. } = &auth_f.field {
+            assert_eq!(*selected, 1);
+        } else {
+            panic!("expected Choice field for auth");
+        }
     }
 
     // --- Task 2: SshInspector ---
