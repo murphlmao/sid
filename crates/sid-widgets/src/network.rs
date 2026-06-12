@@ -17,6 +17,7 @@
 //!  - [`NetworkWidget::render_into_frame`] is a ratatui-aware draw used by
 //!    insta snapshot tests and by the future direct-render plumbing.
 
+pub mod detail_pane;
 pub mod filter_input;
 pub mod interfaces_sidebar;
 pub mod kill_modal;
