@@ -67,18 +67,19 @@ fn ssh_footer_hints() {
 
 #[test]
 fn database_footer_hints() {
+    // Default focus is Connections — UX-v2 context-aware hints.
     let w = DatabaseWidget::new(vec![]);
     let hints = w.footer_hint();
+    assert_hint(&hints, "Enter", "add/edit");
     assert_hint(&hints, "N", "new");
-    assert_hint(&hints, "E", "edit");
     assert_hint(&hints, "D", "delete");
-    assert_hint(&hints, "T", "test");
-    assert_hint(&hints, "Tab", "pane");
-    assert_hint(&hints, "Ctrl+R", "run");
+    assert_hint(&hints, "Ctrl+T", "test");
+    // "→ pane" removed: dead SplitView verb — the database side pane is opened
+    // via Enter/N (DbCommand::OpenConnectionForm) and has no widget-level arrow focus.
     assert_eq!(
         hints.len(),
-        6,
-        "DatabaseWidget should expose exactly 6 footer hints"
+        4,
+        "DatabaseWidget (Connections focus) should expose exactly 4 footer hints"
     );
 }
 

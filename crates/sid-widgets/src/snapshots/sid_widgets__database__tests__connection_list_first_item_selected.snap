@@ -1,0 +1,28 @@
+---
+source: crates/sid-widgets/src/database.rs
+expression: s
+---
+┌ Connections ─────────┐┌ SQL ─────────────────────────────────────────────────┐
+│  + add new           ││                                                      │
+│> o pg (postgres)     ││                                                      │
+│  o staging (postgres)││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      │└──────────────────────────────────────────────────────┘
+│                      │┌ Results · no results yet ────────────────────────────┐
+│                      ││(no query has run yet — Ctrl+R to execute)            │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      ││                                                      │
+│                      │└──────────────────────────────────────────────────────┘
+└──────────────────────┘Tab cycles right pane · Ctrl+R run query · Ctrl+E export

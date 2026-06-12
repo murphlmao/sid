@@ -26,6 +26,7 @@ use sid_store::{DbConnection, QueryRecord};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
 
+use crate::list_cursor::{CursorTarget, ListCursor};
 use crate::stub::ComingSoonBody;
 
 /// Which right-pane sub-view is currently focused.
@@ -143,6 +144,18 @@ pub enum DbCommand {
     ExportCsv {
         /// Filesystem destination.
         path: PathBuf,
+    },
+    /// Open the add/edit connection form. `prefill` is `Some` when editing an
+    /// existing connection, `None` when creating a new one.
+    OpenConnectionForm {
+        /// Existing connection to edit, or `None` to create a new connection.
+        prefill: Option<sid_store::DbConnection>,
+    },
+    /// Test the named connection through `DbClient::open` off-thread via the
+    /// job queue. Result surfaces as a toast.
+    TestConnection {
+        /// Id of the connection to test.
+        conn_id: String,
     },
 }
 
@@ -381,7 +394,8 @@ impl HistoryState {
 /// Pure-state portion of [`DatabaseWidget`]. Testable without ratatui.
 pub struct DatabaseState {
     connections: Vec<DbConnection>,
-    selected_idx: usize,
+    /// Cursor over the connections list including the optional +add new row.
+    pub cursor: ListCursor,
     active_client: Option<Arc<dyn DbClient>>,
     active_conn_id: Option<String>,
     right_pane: RightPane,
@@ -396,11 +410,25 @@ pub struct DatabaseState {
 
 impl DatabaseState {
     /// Construct a new state with the given connection list. First connection
-    /// is selected by default.
+    /// is selected by default. The `+add new` row is shown by default.
     pub fn new(connections: Vec<DbConnection>) -> Self {
+        Self::new_with_add_new(connections, true)
+    }
+
+    /// Create state. `add_new` mirrors the `show_add_new_row` setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::database::DatabaseState;
+    /// let state = DatabaseState::new_with_add_new(vec![], true);
+    /// assert!(state.cursor.add_new);
+    /// ```
+    pub fn new_with_add_new(connections: Vec<DbConnection>, add_new: bool) -> Self {
+        let len = connections.len();
         Self {
+            cursor: ListCursor::new(len, add_new, 0),
             connections,
-            selected_idx: 0,
             active_client: None,
             active_conn_id: None,
             right_pane: RightPane::Editor,
@@ -416,23 +444,26 @@ impl DatabaseState {
         &self.connections
     }
 
-    /// Index of the currently-selected connection in [`Self::connections`].
-    /// Returns `0` when the list is empty (no row will be drawn anyway).
-    pub fn selected_index(&self) -> usize {
-        self.selected_idx
-    }
-
-    /// Currently-selected connection (`None` if list is empty).
+    /// Currently-selected connection (`None` if cursor is on +add new or list is empty).
     pub fn selected_connection(&self) -> Option<&DbConnection> {
-        self.connections.get(self.selected_idx)
+        match self.cursor.target() {
+            CursorTarget::Item(i) => self.connections.get(i),
+            CursorTarget::AddNew | CursorTarget::Nothing => None,
+        }
     }
 
-    /// Replace the connection list (e.g., after a CLI add/remove).
-    pub fn set_connections(&mut self, c: Vec<DbConnection>) {
+    /// True when the cursor sits on the synthetic +add new row.
+    pub fn is_add_new_selected(&self) -> bool {
+        matches!(self.cursor.target(), CursorTarget::AddNew)
+    }
+
+    /// Replace the connection list (e.g., after a CLI add/remove), preserving
+    /// cursor position where valid.
+    pub fn set_connections(&mut self, c: Vec<DbConnection>, add_new: bool) {
+        let new_len = c.len();
         self.connections = c;
-        if self.selected_idx >= self.connections.len() {
-            self.selected_idx = 0;
-        }
+        let old_pos = self.cursor.pos;
+        self.cursor = ListCursor::new(new_len, add_new, old_pos);
     }
 
     /// Which right-pane sub-view is focused.
@@ -502,22 +533,22 @@ impl DatabaseState {
         self.history.set_records(records);
     }
 
-    /// Advance the connection-list selection.
+    /// Advance the connection-list selection (wraps from last item back to top).
     pub fn select_next(&mut self) {
-        let n = self.connections.len();
-        if n == 0 {
+        let total = self.cursor.total();
+        if total == 0 {
             return;
         }
-        self.selected_idx = (self.selected_idx + 1) % n;
+        self.cursor.pos = (self.cursor.pos + 1) % total;
     }
 
-    /// Reverse the connection-list selection.
+    /// Reverse the connection-list selection (wraps from top back to last item).
     pub fn select_prev(&mut self) {
-        let n = self.connections.len();
-        if n == 0 {
+        let total = self.cursor.total();
+        if total == 0 {
             return;
         }
-        self.selected_idx = (self.selected_idx + n - 1) % n;
+        self.cursor.pos = (self.cursor.pos + total - 1) % total;
     }
 
     /// Drain pending commands the renderer should hand to the App.
@@ -550,8 +581,22 @@ impl DatabaseWidget {
     /// assert_eq!(sid_core::widget::Widget::id(&w).as_str(), "database.root");
     /// ```
     pub fn new(connections: Vec<DbConnection>) -> Self {
+        Self::new_with_add_new(connections, true)
+    }
+
+    /// Construct a new widget with the given connection list and explicit
+    /// `add_new` flag governing whether the `+add new` synthetic row appears.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::database::DatabaseWidget;
+    /// let w = DatabaseWidget::new_with_add_new(vec![], true);
+    /// assert!(w.state().cursor.add_new);
+    /// ```
+    pub fn new_with_add_new(connections: Vec<DbConnection>, add_new: bool) -> Self {
         Self {
-            state: DatabaseState::new(connections),
+            state: DatabaseState::new_with_add_new(connections, add_new),
             id: WidgetId::new("database.root"),
             body: ComingSoonBody::new(
                 "Database",
@@ -753,48 +798,56 @@ impl DatabaseWidget {
             .title(" Connections ")
             .title_style(title_style);
 
-        if self.state.connections.is_empty() {
-            let msg = "(no connections — `sid db add` to register)";
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    msg,
-                    Style::default().fg(theme.muted.into()),
-                )))
-                .block(block),
-                rect,
-            );
-            return;
+        let active = self.state.active_conn_id.as_deref();
+        let mut lines: Vec<Line<'_>> = Vec::new();
+
+        // +add new synthetic row
+        if self.state.cursor.add_new {
+            let add_new_selected = matches!(self.state.cursor.target(), CursorTarget::AddNew);
+            let style = if add_new_selected {
+                Style::default()
+                    .fg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.accent_success.into())
+            };
+            let marker = if add_new_selected { '>' } else { ' ' };
+            lines.push(Line::from(Span::styled(
+                format!("{marker} + add new"),
+                style,
+            )));
         }
 
-        let active = self.state.active_conn_id.as_deref();
-        let selected = self.state.selected_idx;
-        let lines: Vec<Line<'_>> = self
-            .state
-            .connections
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let dot = if Some(c.id.as_str()) == active {
-                    '*'
-                } else {
-                    'o'
-                };
-                let marker = if i == selected { '>' } else { ' ' };
-                let kind = match c.kind {
-                    DbKind::Postgres => "postgres",
-                    DbKind::Sqlite => "sqlite",
-                };
-                let text = format!("{marker} {dot} {} ({kind})", c.name);
-                let style = if i == selected {
-                    Style::default()
-                        .fg(theme.background.into())
-                        .bg(theme.accent_primary.into())
-                } else {
-                    Style::default().fg(theme.foreground.into())
-                };
-                Line::from(Span::styled(text, style))
-            })
-            .collect();
+        if self.state.connections.is_empty() && !self.state.cursor.add_new {
+            let msg = "(no connections — `sid db add` to register)";
+            lines.push(Line::from(Span::styled(
+                msg,
+                Style::default().fg(theme.muted.into()),
+            )));
+        }
+
+        for (i, c) in self.state.connections.iter().enumerate() {
+            let selected = matches!(self.state.cursor.target(), CursorTarget::Item(j) if j == i);
+            let dot = if Some(c.id.as_str()) == active {
+                '*'
+            } else {
+                'o'
+            };
+            let marker = if selected { '>' } else { ' ' };
+            let kind = match c.kind {
+                DbKind::Postgres => "postgres",
+                DbKind::Sqlite => "sqlite",
+            };
+            let text = format!("{marker} {dot} {} ({kind})", c.name);
+            let style = if selected {
+                Style::default()
+                    .fg(theme.background.into())
+                    .bg(theme.accent_primary.into())
+            } else {
+                Style::default().fg(theme.foreground.into())
+            };
+            lines.push(Line::from(Span::styled(text, style)));
+        }
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
 
@@ -1055,14 +1108,30 @@ impl Widget for DatabaseWidget {
     }
 
     fn footer_hint(&self) -> Vec<FooterHint> {
-        vec![
-            FooterHint::new("N", "new"),
-            FooterHint::new("E", "edit"),
-            FooterHint::new("D", "delete"),
-            FooterHint::new("T", "test"),
-            FooterHint::new("Tab", "pane"),
-            FooterHint::new("Ctrl+R", "run"),
-        ]
+        match self.focused_pane {
+            DbFocus::Connections => vec![
+                FooterHint::new("Enter", "add/edit"),
+                FooterHint::new("N", "new"),
+                FooterHint::new("D", "delete"),
+                FooterHint::new("Ctrl+T", "test"),
+            ],
+            DbFocus::Editor => vec![
+                FooterHint::new("Ctrl+R", "run"),
+                FooterHint::new("Ctrl+D", "disconnect"),
+                FooterHint::new("Tab", "results"),
+            ],
+            DbFocus::Results => vec![
+                FooterHint::new("j/k", "row"),
+                FooterHint::new("h/l", "col"),
+                FooterHint::new("c", "copy"),
+                FooterHint::new("Tab", "history"),
+            ],
+            DbFocus::History => vec![
+                FooterHint::new("j/k", "select"),
+                FooterHint::new("Enter", "load"),
+                FooterHint::new("Tab", "editor"),
+            ],
+        }
     }
 
     fn render(&self, target: &mut dyn RenderTarget) {
@@ -1127,12 +1196,43 @@ impl Widget for DatabaseWidget {
                         self.state.select_prev();
                         return EventOutcome::Consumed;
                     }
+                    // Enter: open add form (on +add new) or edit form (on existing connection).
                     (KeyCode::Enter, KeyModifiers::NONE) => {
-                        if let Some(c) = self.state.selected_connection() {
-                            let cmd = DbCommand::Connect {
-                                conn_id: c.id.clone(),
-                            };
-                            self.state.push_command(cmd);
+                        let prefill = if self.state.is_add_new_selected() {
+                            None
+                        } else {
+                            self.state.selected_connection().cloned()
+                        };
+                        self.state
+                            .push_command(DbCommand::OpenConnectionForm { prefill });
+                        return EventOutcome::Consumed;
+                    }
+                    // N — convenience alias for "new", always opens add form.
+                    (KeyCode::Char('N') | KeyCode::Char('n'), KeyModifiers::NONE) => {
+                        self.state
+                            .push_command(DbCommand::OpenConnectionForm { prefill: None });
+                        return EventOutcome::Consumed;
+                    }
+                    // D / Delete — remove selected connection (keep existing delete modal flow).
+                    (
+                        KeyCode::Delete | KeyCode::Char('D') | KeyCode::Char('d'),
+                        KeyModifiers::NONE,
+                    ) => {
+                        // wire.rs still handles this via database_modal_for_key on Delete/D;
+                        // bubble so the existing modal path fires.
+                        return EventOutcome::Bubble;
+                    }
+                    // Ctrl+T — test the highlighted connection; fall back to active.
+                    (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
+                        let conn_id = self
+                            .state
+                            .selected_connection()
+                            .map(|c| c.id.as_str())
+                            .or_else(|| self.state.active_conn_id())
+                            .map(|s| s.to_string());
+                        if let Some(id) = conn_id {
+                            self.state
+                                .push_command(DbCommand::TestConnection { conn_id: id });
                         }
                         return EventOutcome::Consumed;
                     }
@@ -1187,14 +1287,261 @@ fn char_byte_offset(s: &str, char_col: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
+    use sid_core::context::WidgetCtx;
+    use sid_core::event::Event;
     use sid_core::widget::Widget;
 
     use super::*;
+
+    // Helper — minimal DbConnection for tests.
+    fn stub_conn(id: &str) -> sid_store::DbConnection {
+        use sid_store::now_epoch;
+        sid_store::DbConnection {
+            id: id.to_string(),
+            kind: DbKind::Postgres,
+            name: id.to_string(),
+            dsn: format!("postgres://localhost/{id}"),
+            secret_ref: None,
+            created_at: now_epoch(),
+        }
+    }
+
+    // Helper — minimal WidgetCtx for tests.
+    fn stub_ctx() -> WidgetCtx {
+        let (tx, _rx) = mpsc::channel();
+        WidgetCtx::new(tx)
+    }
 
     #[test]
     fn id_and_title_correct() {
         let w = DatabaseWidget::default();
         assert_eq!(w.id().as_str(), "database.root");
         assert_eq!(w.title(), "Database");
+    }
+
+    // ── Task 1: ListCursor integration ──────────────────────────────────────
+
+    #[test]
+    fn cursor_add_new_row_at_top_when_enabled() {
+        let conns = vec![stub_conn("a"), stub_conn("b")];
+        let mut state = DatabaseState::new_with_add_new(conns, true);
+        // initial position is 0 — the synthetic +add new row
+        assert!(matches!(
+            state.cursor.target(),
+            crate::list_cursor::CursorTarget::AddNew
+        ));
+        state.select_next();
+        assert!(matches!(
+            state.cursor.target(),
+            crate::list_cursor::CursorTarget::Item(0)
+        ));
+        state.select_prev();
+        assert!(matches!(
+            state.cursor.target(),
+            crate::list_cursor::CursorTarget::AddNew
+        ));
+    }
+
+    #[test]
+    fn cursor_wraps_to_add_new_from_last_item() {
+        let conns = vec![stub_conn("a"), stub_conn("b")];
+        let mut state = DatabaseState::new_with_add_new(conns, true);
+        // drive to last item
+        state.select_next(); // Item(0)
+        state.select_next(); // Item(1)
+        state.select_next(); // wraps back to AddNew
+        assert!(matches!(
+            state.cursor.target(),
+            crate::list_cursor::CursorTarget::AddNew
+        ));
+    }
+
+    #[test]
+    fn cursor_no_add_new_row_when_disabled() {
+        let conns = vec![stub_conn("a")];
+        let state = DatabaseState::new_with_add_new(conns, false);
+        assert!(matches!(
+            state.cursor.target(),
+            crate::list_cursor::CursorTarget::Item(0)
+        ));
+    }
+
+    // ── Task 2: DbCommand::OpenConnectionForm + TestConnection ──────────────
+
+    #[test]
+    fn enter_on_connection_emits_open_form_with_prefill() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, false);
+        // cursor is on Item(0) since add_new=false
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::OpenConnectionForm { prefill: Some(_) })),
+            "expected OpenConnectionForm with prefill, got: {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn enter_on_add_new_row_emits_open_form_no_prefill() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, true);
+        // cursor starts at AddNew
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::NONE,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::OpenConnectionForm { prefill: None })),
+            "expected OpenConnectionForm with no prefill, got: {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn n_key_emits_open_form_no_prefill() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let mut w = DatabaseWidget::default();
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('N'),
+            mods: KeyModifiers::NONE,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::OpenConnectionForm { prefill: None })),
+            "expected OpenConnectionForm, got: {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn ctrl_t_emits_test_connection() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, false);
+        // set active conn id so Ctrl+T picks it up
+        w.state.set_active_conn_id_for_tests("pg".to_string());
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('t'),
+            mods: KeyModifiers::CONTROL,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::TestConnection { conn_id } if conn_id == "pg")),
+            "expected TestConnection, got: {:?}",
+            cmds
+        );
+    }
+
+    // ── Snapshot tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_connection_list_empty_with_add_new() {
+        let w = DatabaseWidget::new_with_add_new(vec![], true);
+        let s = render_to_string(&w, 80, 24);
+        insta::assert_snapshot!("connection_list_empty_add_new", s);
+    }
+
+    #[test]
+    fn snapshot_connection_list_two_items_cursor_on_add_new() {
+        // cursor at pos 0 → +add new is highlighted
+        let w = DatabaseWidget::new_with_add_new(vec![stub_conn("pg"), stub_conn("staging")], true);
+        let s = render_to_string(&w, 80, 24);
+        insta::assert_snapshot!("connection_list_add_new_selected", s);
+    }
+
+    #[test]
+    fn snapshot_connection_list_two_items_cursor_on_first_item() {
+        let mut w =
+            DatabaseWidget::new_with_add_new(vec![stub_conn("pg"), stub_conn("staging")], true);
+        w.state.select_next(); // moves to Item(0)
+        let s = render_to_string(&w, 80, 24);
+        insta::assert_snapshot!("connection_list_first_item_selected", s);
+    }
+
+    #[test]
+    fn snapshot_connection_list_no_add_new_row() {
+        let w = DatabaseWidget::new_with_add_new(vec![stub_conn("pg")], false);
+        let s = render_to_string(&w, 80, 24);
+        insta::assert_snapshot!("connection_list_no_add_new", s);
+    }
+
+    /// Fix 3: Ctrl+T prefers the highlighted (selected) connection over the
+    /// active one when both exist.
+    #[test]
+    fn ctrl_t_prefers_selected_over_active() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg"), stub_conn("staging")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, false);
+        // pg is active, staging is highlighted (cursor on Item(1))
+        w.state.set_active_conn_id_for_tests("pg".to_string());
+        w.state.select_next(); // Item(0) → Item(1) = staging
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('t'),
+            mods: KeyModifiers::CONTROL,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter().any(
+                |c| matches!(c, DbCommand::TestConnection { conn_id } if conn_id == "staging")
+            ),
+            "Ctrl+T should test highlighted conn 'staging', not active 'pg'; got: {:?}",
+            cmds
+        );
+    }
+
+    /// Fix 3: Ctrl+T falls back to active when cursor is on +add new.
+    #[test]
+    fn ctrl_t_falls_back_to_active_on_add_new_row() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, true);
+        // Cursor starts on +add new (default with add_new=true); pg is active.
+        w.state.set_active_conn_id_for_tests("pg".to_string());
+        assert!(
+            w.state.is_add_new_selected(),
+            "cursor should be on +add new"
+        );
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('t'),
+            mods: KeyModifiers::CONTROL,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::TestConnection { conn_id } if conn_id == "pg")),
+            "Ctrl+T should fall back to active 'pg' when on +add new; got: {:?}",
+            cmds
+        );
     }
 }
