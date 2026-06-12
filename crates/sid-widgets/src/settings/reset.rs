@@ -22,6 +22,22 @@ use sid_core::SidError;
 use sid_store::{Store, settings_keys};
 use sid_ui::Theme;
 
+/// Outcome of a key event routed to [`ResetView`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::reset::ResetOutcome;
+/// assert!(matches!(ResetOutcome::None, ResetOutcome::None));
+/// ```
+#[derive(Clone, Debug)]
+pub enum ResetOutcome {
+    /// Event consumed; no persistent change.
+    None,
+    /// User confirmed the reset. Wire layer calls `confirm(store)`.
+    Confirmed,
+}
+
 /// Setting keys cleared by [`ResetView::confirm`].
 pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::THEME_NAME,
@@ -116,6 +132,48 @@ impl ResetView {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    /// Route a key event through the confirm modal state machine.
+    ///
+    /// - Idle: `Enter` → open_confirm.
+    /// - Confirming: `y` → Confirmed (closes modal); `n` / Esc → cancel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_widgets::settings::reset::{ResetOutcome, ResetView};
+    ///
+    /// let mut v = ResetView::new();
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    /// // Not confirming → y is a no-op.
+    /// assert!(matches!(v.handle_event(&ev), ResetOutcome::None));
+    /// ```
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> ResetOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::Event;
+        let Event::Key(k) = ev else {
+            return ResetOutcome::None;
+        };
+        if self.is_confirming() {
+            match (k.code, k.mods) {
+                (KeyCode::Char('y'), KeyModifiers::NONE) => {
+                    self.confirm_open = false;
+                    return ResetOutcome::Confirmed;
+                }
+                (KeyCode::Char('n') | KeyCode::Esc, _) => {
+                    self.cancel();
+                }
+                _ => {}
+            }
+            return ResetOutcome::None;
+        }
+        if k.code == KeyCode::Enter && k.mods == KeyModifiers::NONE {
+            self.open_confirm();
+        }
+        ResetOutcome::None
+    }
+
     /// Execute the reset if the confirm modal is open. Returns the number of
     /// keys that were actually cleared. If the modal is closed, returns
     /// `Ok(0)` without touching the store.
@@ -196,6 +254,40 @@ mod tests {
         for k in FACTORY_KEYS {
             assert!(store.get_setting(k).unwrap().is_none(), "{k} still present");
         }
+        assert!(!v.is_confirming());
+    }
+
+    #[test]
+    fn handle_event_enter_when_idle_opens_confirm() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = ResetView::new();
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = v.handle_event(&ev);
+        assert!(v.is_confirming());
+    }
+
+    #[test]
+    fn handle_event_y_when_confirming_returns_confirmed() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = ResetView::new();
+        v.open_confirm();
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(matches!(out, ResetOutcome::Confirmed));
+        assert!(!v.is_confirming());
+    }
+
+    #[test]
+    fn handle_event_n_when_confirming_cancels() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = ResetView::new();
+        v.open_confirm();
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(matches!(out, ResetOutcome::None));
         assert!(!v.is_confirming());
     }
 
