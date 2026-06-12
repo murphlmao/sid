@@ -194,6 +194,11 @@ pub enum PendingSettingsOutcome {
         /// New value as held by the view.
         value: crate::settings::behavior_toggles::ToggleValue,
     },
+    /// Emitted by [`crate::settings::animation::AnimationView`] when the user
+    /// presses `S` and the flush succeeds. The binary drains this variant and
+    /// replaces `SidApp.animation` in place, then toggles `SidApp.fx_state`
+    /// to match `config.enabled`.
+    AnimationChanged(sid_core::animation::AnimationConfig),
 }
 
 pub struct SettingsWidget {
@@ -266,6 +271,14 @@ impl SettingsWidget {
     /// `Store::put_*`.
     pub fn take_pending_outcomes(&mut self) -> Vec<PendingSettingsOutcome> {
         std::mem::take(&mut self.pending_outcomes)
+    }
+
+    /// Inject an outcome directly into the pending queue. Used by integration
+    /// tests in sibling crates to bypass the full UI event sequence when
+    /// verifying the wire-layer drain logic. Not called in production paths.
+    #[doc(hidden)]
+    pub fn push_pending_outcome(&mut self, outcome: PendingSettingsOutcome) {
+        self.pending_outcomes.push(outcome);
     }
 
     /// Stable string label for the focused pane.

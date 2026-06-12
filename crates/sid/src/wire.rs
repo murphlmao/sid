@@ -1947,24 +1947,41 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
     }
 
     for outcome in outcomes {
-        let PendingSettingsOutcome::BehaviorToggled { key, value } = outcome;
-        let put_result = match &value {
-            ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
-            ToggleValue::Choice { options, selected } => {
-                let picked = options.get(*selected).cloned().unwrap_or_default();
-                sid_app.store.put_string(key, &picked)
+        match outcome {
+            PendingSettingsOutcome::BehaviorToggled { key, value } => {
+                let put_result = match &value {
+                    ToggleValue::Bool(b) => sid_app.store.put_bool(key, *b),
+                    ToggleValue::Choice { options, selected } => {
+                        let picked = options.get(*selected).cloned().unwrap_or_default();
+                        sid_app.store.put_string(key, &picked)
+                    }
+                    ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
+                    ToggleValue::String(s) => sid_app.store.put_string(key, s),
+                };
+                match put_result {
+                    Ok(()) => {
+                        sid_app.toasts.push(Toast::success(format!("Saved {key}")));
+                    }
+                    Err(e) => {
+                        sid_app
+                            .toasts
+                            .push(Toast::error(format!("Save failed for {key}: {e}")));
+                    }
+                }
             }
-            ToggleValue::U64 { value, .. } => sid_app.store.put_u64(key, *value),
-            ToggleValue::String(s) => sid_app.store.put_string(key, s),
-        };
-        match put_result {
-            Ok(()) => {
-                sid_app.toasts.push(Toast::success(format!("Saved {key}")));
-            }
-            Err(e) => {
+            PendingSettingsOutcome::AnimationChanged(new_cfg) => {
+                // Toggle fx_state to match the new enabled flag before
+                // replacing animation so the comparison is against the
+                // *old* value.
+                if new_cfg.enabled && sid_app.fx_state.is_none() {
+                    sid_app.fx_state = Some(sid_fx::FxState::new());
+                } else if !new_cfg.enabled && sid_app.fx_state.is_some() {
+                    sid_app.fx_state = None;
+                }
+                sid_app.animation = new_cfg;
                 sid_app
                     .toasts
-                    .push(Toast::error(format!("Save failed for {key}: {e}")));
+                    .push(Toast::success("Animation settings applied".to_string()));
             }
         }
     }
@@ -9366,16 +9383,87 @@ mod tests {
 
     // ----- Animation tick-gate regression tests ----------------------------
 
+    /// After the user presses S in AnimationView (simulated here by injecting an
+    /// AnimationChanged outcome directly), `SidApp.animation` must reflect the
+    /// new config on the next event loop iteration.
+    ///
+    /// Before the fix: `apply_pending_settings_outcomes` ignores `AnimationChanged`
+    /// so `SidApp.animation` stays at the startup value forever.
+    #[tokio::test]
+    async fn animation_config_propagates_after_settings_save() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("settings"));
+        // Confirm default animation is enabled.
+        assert!(
+            sid_app.animation.enabled,
+            "precondition: animation enabled at startup"
+        );
+
+        // Build a new config with animation disabled.
+        let new_cfg = sid_core::animation::AnimationConfig {
+            enabled: false,
+            ..sid_core::animation::AnimationConfig::default()
+        };
+
+        // Inject the outcome directly into the settings widget's pending queue,
+        // bypassing the UI — this isolates the wire-layer drain logic.
+        {
+            use sid_core::layout::Layout;
+            let tabs = sid_app.app.tabs_mut().tabs_mut();
+            let settings_tab = tabs
+                .iter_mut()
+                .find(|t| t.id.as_str() == "settings")
+                .expect("settings tab must be present in test app");
+            let Layout::Single(w) = &mut settings_tab.layout else {
+                panic!("settings tab must have Single layout");
+            };
+            let settings_widget = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::SettingsWidget>()
+                .expect("must downcast to SettingsWidget");
+            settings_widget.push_pending_outcome(
+                sid_widgets::settings::PendingSettingsOutcome::AnimationChanged(
+                    new_cfg.clone(),
+                ),
+            );
+        }
+
+        // Send one Tick so the loop runs once and drains the outcome.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(4);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        // After the fix: SidApp.animation reflects the new config.
+        assert!(
+            !sid_app.animation.enabled,
+            "SidApp.animation.enabled must be false after AnimationChanged drain"
+        );
+        // fx_state must be toggled to None because enabled=false.
+        assert!(
+            sid_app.fx_state.is_none(),
+            "fx_state must be None when animation.enabled == false"
+        );
+    }
+
     #[test]
     fn tick_interval_derives_from_fps() {
         // At fps=8 (default), tick interval must be 125ms (1000/8).
-        assert_eq!(1000u64 / 8u64, 125);
+        assert_eq!(1000u64 / 8, 125);
         // At fps=1 (min), tick interval is 1000ms.
-        assert_eq!(1000u64 / 1u64, 1000);
+        assert_eq!(1000u64, 1000);
         // At fps=30 (max), tick interval is 33ms.
-        assert_eq!(1000u64 / 30u64, 33);
-        // fps=0 is prevented by .max(1); verify the guard.
-        assert_eq!(1000u64 / (0u8.max(1).min(30) as u64), 1000);
+        assert_eq!(1000u64 / 30, 33);
+        // fps=0 is prevented by clamp(1,30); verify the guard clamps to 1.
+        assert_eq!(0u8.clamp(1, 30), 1);
     }
 
     /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`
