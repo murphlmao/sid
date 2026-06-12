@@ -515,6 +515,7 @@ async fn main() -> Result<()> {
             pinned_configs,
             quick_actions,
             settings_categories,
+            show_add_new_row: wire::load_show_add_new_row(&*store),
         },
     );
 

@@ -19,9 +19,13 @@ use sid_core::adapters::ssh::{SftpEntry, SshClient};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
-use sid_store::{SshHost, SshHostSource};
+use sid_store::{SshAuthKind, SshHost, SshHostSource};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
+
+use crate::form::{FormField, FormId, FormSection, FormSpec, SectionKind, Validate};
+use crate::list_cursor::{CursorTarget, ListCursor};
+use crate::modal::Field;
 
 // ---------------------------------------------------------------------------
 // SSH config entry (lite copy — widget crate never names sid-ssh)
@@ -61,25 +65,32 @@ pub struct SshState {
     store_hosts: Vec<SshHost>,
     config_entries: Vec<SshConfigEntryLite>,
     merged: Vec<SshHost>,
-    selected_idx: usize,
+    /// Cursor tracking selection + optional synthetic add-new row.
+    pub cursor: ListCursor,
 }
 
 impl SshState {
     /// Construct from the store's manual hosts plus ssh-config entries.
     ///
+    /// `show_add_new` controls whether a synthetic "+ add new" row is prepended.
+    ///
     /// # Examples
     ///
     /// ```
     /// use sid_widgets::ssh::SshState;
-    /// let s = SshState::new(vec![], vec![]);
+    /// let s = SshState::new(vec![], vec![], false);
     /// assert!(s.selected_alias().is_none());
     /// ```
-    pub fn new(store_hosts: Vec<SshHost>, config_entries: Vec<SshConfigEntryLite>) -> Self {
+    pub fn new(
+        store_hosts: Vec<SshHost>,
+        config_entries: Vec<SshConfigEntryLite>,
+        show_add_new: bool,
+    ) -> Self {
         let mut s = Self {
             store_hosts,
             config_entries,
             merged: Vec::new(),
-            selected_idx: 0,
+            cursor: ListCursor::new(0, show_add_new, 0),
         };
         s.recompute_merged();
         s
@@ -108,37 +119,40 @@ impl SshState {
             by_alias.insert(h.alias.clone(), h.clone());
         }
         self.merged = by_alias.into_values().collect();
-        if self.merged.is_empty() {
-            self.selected_idx = 0;
-        } else if self.selected_idx >= self.merged.len() {
-            self.selected_idx = self.merged.len() - 1;
-        }
+        // Re-clamp: rebuild cursor with same add_new flag, same pos (clamps automatically).
+        let add_new = self.cursor.add_new;
+        let pos = self.cursor.pos;
+        self.cursor = ListCursor::new(self.merged.len(), add_new, pos);
     }
 
     pub fn visible_hosts(&self) -> &[SshHost] {
         &self.merged
     }
 
+    /// Returns the alias of the currently-selected item, or `None` when cursor
+    /// is on the add-new row or there are no hosts.
     pub fn selected_alias(&self) -> Option<&str> {
-        self.merged.get(self.selected_idx).map(|h| h.alias.as_str())
+        match self.cursor.target() {
+            CursorTarget::Item(i) => self.merged.get(i).map(|h| h.alias.as_str()),
+            _ => None,
+        }
     }
 
+    /// Returns the currently-selected host, or `None` when cursor is on the
+    /// add-new row or there are no hosts.
     pub fn selected_host(&self) -> Option<&SshHost> {
-        self.merged.get(self.selected_idx)
+        match self.cursor.target() {
+            CursorTarget::Item(i) => self.merged.get(i),
+            _ => None,
+        }
     }
 
     pub fn select_next(&mut self) {
-        if self.merged.is_empty() {
-            return;
-        }
-        self.selected_idx = (self.selected_idx + 1) % self.merged.len();
+        self.cursor.down();
     }
 
     pub fn select_prev(&mut self) {
-        if self.merged.is_empty() {
-            return;
-        }
-        self.selected_idx = (self.selected_idx + self.merged.len() - 1) % self.merged.len();
+        self.cursor.up();
     }
 
     pub fn set_store_hosts(&mut self, hosts: Vec<SshHost>) {
@@ -149,6 +163,16 @@ impl SshState {
     pub fn set_config_entries(&mut self, entries: Vec<SshConfigEntryLite>) {
         self.config_entries = entries;
         self.recompute_merged();
+    }
+
+    /// Current cursor state (add-new flag + position).
+    pub fn cursor(&self) -> ListCursor {
+        self.cursor
+    }
+
+    /// Toggle the synthetic add-new row on/off, preserving cursor position.
+    pub fn set_add_new(&mut self, v: bool) {
+        self.cursor = ListCursor::new(self.merged.len(), v, self.cursor.pos);
     }
 }
 
@@ -570,6 +594,13 @@ pub struct SshWidget {
     // widget marks intent (alias), the binary acts on it. See
     // `take_pending_connect`.
     pending_connect: Option<String>,
+    /// Set when the cursor is on the add-new row and the user presses `Enter`.
+    /// Drained by the wire layer, which opens the add-host `FormPane`.
+    pub pending_add_new: bool,
+    /// Alias the user wants to open in a background tab (set when
+    /// `Ctrl+Enter` / `O` is pressed while the inspector is open).
+    /// Drained by the wire layer via `take_pending_background_open`.
+    pub pending_background_open: Option<String>,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -578,7 +609,7 @@ pub struct SshWidget {
 impl SshWidget {
     /// Zero-arg constructor (kept for `wire::build_app` compatibility).
     pub fn new() -> Self {
-        Self::with_state(SshState::new(Vec::new(), Vec::new()))
+        Self::with_state(SshState::new(Vec::new(), Vec::new(), false))
     }
 
     /// Construct with an explicit state value.
@@ -603,6 +634,8 @@ impl SshWidget {
             focused_pane: SshFocus::default(),
             pty_pane: None,
             pending_connect: None,
+            pending_add_new: false,
+            pending_background_open: None,
             _ssh_factory: None,
             _pty_provider: None,
         }
@@ -777,6 +810,40 @@ impl SshWidget {
     pub fn set_pending_connect(&mut self, alias: Option<String>) {
         self.pending_connect = alias;
     }
+
+    /// Drain the pending add-new intent. Returns `true` once when the user
+    /// pressed `Enter` on the synthetic add-new row; the wire layer then opens
+    /// the add-host `FormPane`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let mut w = SshWidget::new();
+    /// assert!(!w.take_pending_add_new());
+    /// w.pending_add_new = true;
+    /// assert!(w.take_pending_add_new());
+    /// assert!(!w.take_pending_add_new());
+    /// ```
+    pub fn take_pending_add_new(&mut self) -> bool {
+        let v = self.pending_add_new;
+        self.pending_add_new = false;
+        v
+    }
+
+    /// Drain the pending background-open alias. Returns the alias and resets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let mut w = SshWidget::new();
+    /// assert!(w.take_pending_background_open().is_none());
+    /// ```
+    pub fn take_pending_background_open(&mut self) -> Option<String> {
+        self.pending_background_open.take()
+    }
+
     /// Resize the embedded PTY pane to match the inner dimensions of `area`
     /// (the right-hand body rect, **before** the border subtraction).
     ///
@@ -851,17 +918,35 @@ impl SshWidget {
     }
 
     fn render_host_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let cursor = self.state.cursor();
         let hosts = self.state.visible_hosts();
-        let selected = self.state.selected_alias();
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(hosts.len().max(1));
-        if hosts.is_empty() {
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(hosts.len() + 1);
+
+        // Prepend synthetic add-new row when enabled.
+        if cursor.add_new {
+            let is_add_selected = cursor.target() == CursorTarget::AddNew;
+            let marker = if is_add_selected { '>' } else { ' ' };
+            let style = if is_add_selected {
+                Style::default()
+                    .fg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.accent_primary.into())
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{marker} + add new"),
+                style,
+            )));
+        }
+
+        if hosts.is_empty() && !cursor.add_new {
             lines.push(Line::from(Span::styled(
                 "  (no hosts configured)",
                 Style::default().fg(theme.muted.into()),
             )));
         } else {
-            for h in hosts {
-                let is_selected = selected == Some(h.alias.as_str());
+            for (i, h) in hosts.iter().enumerate() {
+                let is_selected = cursor.target() == CursorTarget::Item(i);
                 let dot = if is_selected { '●' } else { '○' };
                 let marker = if is_selected { '>' } else { ' ' };
                 let suffix = if h.source == SshHostSource::SshConfig {
@@ -1185,11 +1270,10 @@ impl Widget for SshWidget {
     }
     fn footer_hint(&self) -> Vec<FooterHint> {
         vec![
-            FooterHint::new("N", "new host"),
+            FooterHint::new("N", "add host"),
+            FooterHint::new("⏎", "connect / inspect"),
+            FooterHint::new("E", "edit"),
             FooterHint::new("G", "gen key"),
-            FooterHint::new("S", "setup remote"),
-            FooterHint::new("K", "keys"),
-            FooterHint::new("X", "debug"),
             FooterHint::new("?", "help"),
         ]
     }
@@ -1235,6 +1319,10 @@ impl Widget for SshWidget {
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if let CursorTarget::AddNew = self.state.cursor.target() {
+                            self.pending_add_new = true;
+                            return EventOutcome::Consumed;
+                        }
                         if let Some(alias) = self.state.selected_alias() {
                             let alias = alias.to_string();
                             self.connection.begin_connecting(alias.clone());
@@ -1348,4 +1436,86 @@ pub fn render_to_string_with_resize(widget: &mut SshWidget, width: u16, height: 
     let outer = Rect::new(0, 0, width, height);
     widget.pty_pane_resize_to_area(body_rect_for(outer));
     render_to_string(widget, width, height)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use sid_store::{SshAuthKind, SshHost, SshHostSource};
+
+    use super::*;
+    use crate::list_cursor::CursorTarget;
+
+    fn make_host(alias: &str) -> SshHost {
+        SshHost {
+            alias: alias.into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            user: "user".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        }
+    }
+
+    // --- Task 1: SshState + ListCursor ---
+
+    #[test]
+    fn ssh_state_selected_alias_follows_cursor() {
+        let h = make_host("dev");
+        let mut s = SshState::new(vec![h], vec![], false);
+        assert_eq!(s.selected_alias(), Some("dev"));
+        s.set_add_new(true);
+        assert_eq!(s.cursor.target(), CursorTarget::AddNew);
+        // Cursor on add-new row → no alias.
+        assert_eq!(s.selected_alias(), None);
+        // Move down once to the actual item.
+        s.select_next();
+        assert_eq!(s.selected_alias(), Some("dev"));
+    }
+
+    #[test]
+    fn take_pending_add_new_drains_flag() {
+        let mut w = SshWidget::new();
+        assert!(!w.take_pending_add_new());
+        w.pending_add_new = true;
+        assert!(w.take_pending_add_new());
+        assert!(!w.take_pending_add_new());
+    }
+
+    #[test]
+    fn take_pending_background_open_drains_option() {
+        let mut w = SshWidget::new();
+        assert!(w.take_pending_background_open().is_none());
+        w.pending_background_open = Some("prod".into());
+        assert_eq!(w.take_pending_background_open().as_deref(), Some("prod"));
+        assert!(w.take_pending_background_open().is_none());
+    }
+
+    // --- Task 1: Snapshot — host list with add-new row ---
+
+    #[test]
+    fn snapshot_host_list_with_add_new() {
+        let h = SshHost {
+            alias: "staging".into(),
+            host: "1.2.3.4".into(),
+            port: 22,
+            user: "pi".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let state = SshState::new(vec![h], vec![], true);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
 }

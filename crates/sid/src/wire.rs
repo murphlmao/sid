@@ -569,7 +569,6 @@ pub fn load_animation_config(store: &dyn Store) -> AnimationConfig {
 /// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
 /// assert_eq!(load_show_add_new_row(&store), true);
 /// ```
-#[allow(dead_code)]
 pub fn load_show_add_new_row(store: &dyn Store) -> bool {
     match store.get_setting(sid_store::settings_keys::SHOW_ADD_NEW_ROW) {
         Ok(Some(val)) => val.0 != b"false",
@@ -681,6 +680,9 @@ pub struct BuildAppData {
     pub pinned_configs: Vec<sid_store::PinnedConfig>,
     pub quick_actions: Vec<sid_store::QuickAction>,
     pub settings_categories: Vec<sid_widgets::SettingsCategory>,
+    /// Whether to show the synthetic "+ add new" row in the SSH host list.
+    /// Loaded from the store at startup via `load_show_add_new_row`.
+    pub show_add_new_row: bool,
 }
 
 impl BuildAppData {
@@ -704,7 +706,11 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
     let git_factory = Arc::new(Git2ProviderFactory::new());
 
     // Build the SSH widget with pre-loaded state.
-    let ssh_state = sid_widgets::ssh::SshState::new(data.ssh_hosts, data.ssh_config_entries);
+    let ssh_state = sid_widgets::ssh::SshState::new(
+        data.ssh_hosts,
+        data.ssh_config_entries,
+        data.show_add_new_row,
+    );
     let mut ssh_widget = SshWidget::with_state(ssh_state);
     if let Some(ref alias) = data.start_ssh_alias {
         let aliases: Vec<_> = ssh_widget

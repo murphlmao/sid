@@ -50,16 +50,15 @@ fn workspaces_footer_hints() {
 fn ssh_footer_hints() {
     let w = SshWidget::new();
     let hints = w.footer_hint();
-    assert_hint(&hints, "N", "new host");
+    assert_hint(&hints, "N", "add host");
+    assert_hint(&hints, "⏎", "connect / inspect");
+    assert_hint(&hints, "E", "edit");
     assert_hint(&hints, "G", "gen key");
-    assert_hint(&hints, "S", "setup remote");
-    assert_hint(&hints, "K", "keys");
-    assert_hint(&hints, "X", "debug");
     assert_hint(&hints, "?", "help");
     assert_eq!(
         hints.len(),
-        6,
-        "SshWidget should expose exactly 6 footer hints"
+        5,
+        "SshWidget should expose exactly 5 footer hints"
     );
 }
 
