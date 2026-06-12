@@ -1956,6 +1956,11 @@ fn maybe_open_workspaces_form_for_key(
             open_form(sid_app, workspaces_new_form());
             true
         }
+        KeyCode::Char('D') | KeyCode::Char('d') => {
+            let dir = workspaces_adopt_dir(sid_app);
+            open_form(sid_app, workspaces_adopt_form(&dir));
+            true
+        }
         _ => false,
     }
 }
@@ -4320,6 +4325,90 @@ fn workspaces_new_sections(
     sections
 }
 
+/// Resolve the directory to scan for the adopt-existing wizard. Prefers the
+/// currently-selected workspace path, falls back to the first default discovery
+/// root (`~/vcs`), then the current working directory.
+fn workspaces_adopt_dir(sid_app: &SidApp) -> PathBuf {
+    if let Some(p) = workspaces_selected_path(sid_app) {
+        return p;
+    }
+    if let Some(root) = default_discovery_roots().into_iter().next() {
+        return root;
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Build the adopt-existing-umbrella form for `dir`: a name field plus one
+/// pre-checked Toggle per repo found one level under `dir`. The repo path is
+/// encoded in the toggle key (`repo:<abs-path>`) so the submit handler can
+/// register each checked satellite without a second scan.
+pub fn workspaces_adopt_form(dir: &std::path::Path) -> sid_widgets::form::FormSpec {
+    use sid_core::workspace_discovery::scan_adoptable_repos;
+    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
+    use sid_widgets::modal::Field;
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("umbrella")
+        .to_string();
+    let mut header = vec![
+        FormField::new(
+            "dir",
+            Field::Display {
+                label: "directory".into(),
+                body: dir.display().to_string(),
+            },
+        ),
+        FormField::new(
+            "name",
+            Field::Text {
+                label: "umbrella name".into(),
+                value: name,
+                placeholder: None,
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+    ];
+    let repos = scan_adoptable_repos(dir);
+    let toggles: Vec<FormField> = repos
+        .iter()
+        .map(|r| {
+            FormField::new(
+                format!("repo:{}", r.path.display()),
+                Field::Toggle {
+                    label: r.name.clone(),
+                    value: true,
+                },
+            )
+        })
+        .collect();
+    let mut sections = vec![FormSection {
+        title: "Umbrella".into(),
+        kind: SectionKind::Editable,
+        fields: std::mem::take(&mut header),
+    }];
+    if toggles.is_empty() {
+        sections.push(FormSection {
+            title: "Satellites".into(),
+            kind: SectionKind::Info,
+            fields: vec![FormField::new(
+                "none",
+                Field::Display {
+                    label: "found".into(),
+                    body: "no git repos found under this directory".into(),
+                },
+            )],
+        });
+    } else {
+        sections.push(FormSection {
+            title: "Satellites".into(),
+            kind: SectionKind::Editable,
+            fields: toggles,
+        });
+    }
+    sid_widgets::form::FormSpec::new("workspaces.adopt", "Adopt Existing Umbrella", sections)
+}
+
 /// Route a submitted form's values by form id, then close the form.
 ///
 /// Branches 1-5 register their own arms here keyed on the form id; the
@@ -4367,6 +4456,76 @@ fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::for
                         .toasts
                         .push(Toast::error(format!("bad path '{path_str}': {e}")));
                 }
+            }
+        }
+        "workspaces.adopt" => {
+            let dir_str = values.get("dir").cloned().unwrap_or_default();
+            let name = values.get("name").cloned().unwrap_or_default();
+            let umbrella_path = match std::fs::canonicalize(&dir_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("bad directory '{dir_str}': {e}")));
+                    sid_app.form = None;
+                    sid_app.form_origin_tab = None;
+                    return;
+                }
+            };
+            // Register the umbrella.
+            let umbrella = sid_store::Workspace {
+                path: umbrella_path.clone(),
+                name: name.clone(),
+                kind: sid_core::workspace_metadata::WorkspaceKind::Umbrella,
+                manifest_hash: 0,
+                last_seen: sid_store::now_epoch(),
+                parent: None,
+            };
+            let mut errors = 0usize;
+            let mut added = 0usize;
+            if sid_app.store.upsert_workspace(&umbrella).is_err() {
+                errors += 1;
+            } else {
+                added += 1;
+            }
+            // Register each checked satellite (key = "repo:<path>", value "true").
+            for (key, val) in values.iter() {
+                let Some(path_str) = key.strip_prefix("repo:") else {
+                    continue;
+                };
+                if val != "true" {
+                    continue;
+                }
+                let sat_path = std::path::PathBuf::from(path_str);
+                let sat_name = sat_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("repo")
+                    .to_string();
+                let sat = sid_store::Workspace {
+                    path: sat_path,
+                    name: sat_name,
+                    kind: sid_core::workspace_metadata::WorkspaceKind::Repo,
+                    manifest_hash: 0,
+                    last_seen: sid_store::now_epoch(),
+                    parent: Some(umbrella_path.clone()),
+                };
+                if sid_app.store.upsert_workspace(&sat).is_err() {
+                    errors += 1;
+                } else {
+                    added += 1;
+                }
+            }
+            refresh_workspaces_widget(sid_app);
+            if errors == 0 {
+                sid_app.toasts.push(Toast::success(format!(
+                    "adopted '{name}' + {} satellites",
+                    added.saturating_sub(1)
+                )));
+            } else {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("adopted with {errors} error(s)")));
             }
         }
         _ => {
@@ -6212,6 +6371,56 @@ mod tests {
         let ws = sid_app.store.list_workspaces().unwrap();
         assert_eq!(ws.len(), 1);
         assert_eq!(ws[0].name, "neo");
+    }
+
+    #[test]
+    fn adopt_form_lists_scanned_repos_as_prechecked_toggles() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("api").join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("web").join(".git")).unwrap();
+        let spec = workspaces_adopt_form(tmp.path());
+        let toggles: Vec<&str> = spec
+            .sections
+            .iter()
+            .flat_map(|s| &s.fields)
+            .filter(|f| f.key.starts_with("repo:"))
+            .map(|f| f.key.as_str())
+            .collect();
+        assert_eq!(toggles.len(), 2);
+        // every found repo is pre-checked (value true)
+        for f in spec
+            .sections
+            .iter()
+            .flat_map(|s| &s.fields)
+            .filter(|f| f.key.starts_with("repo:"))
+        {
+            assert_eq!(f.value_string(), "true");
+        }
+    }
+
+    #[test]
+    fn dispatch_workspaces_adopt_registers_umbrella_and_checked_satellites() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let tmp = tempfile::tempdir().unwrap();
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(api.join(".git")).unwrap();
+        let api_real = std::fs::canonicalize(&api).unwrap();
+
+        let mut values = sid_widgets::form::FormValues::new();
+        values.insert("dir".into(), tmp.path().display().to_string());
+        values.insert("name".into(), "gen4".into());
+        values.insert(format!("repo:{}", api_real.display()), "true".into());
+        dispatch_form_submit(&mut sid_app, "workspaces.adopt", values);
+
+        let ws = sid_app.store.list_workspaces().unwrap();
+        // umbrella + 1 satellite
+        assert_eq!(ws.len(), 2);
+        let _umbrella = ws.iter().find(|w| w.name == "gen4").unwrap();
+        let sat = ws.iter().find(|w| w.parent.is_some()).unwrap();
+        assert_eq!(
+            sat.parent.as_ref().unwrap(),
+            &std::fs::canonicalize(tmp.path()).unwrap()
+        );
     }
 
     // ---- load_active_theme / load_active_keybinds ----

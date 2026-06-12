@@ -1894,7 +1894,7 @@ Add the "adopt existing umbrella" flow: scan a chosen directory with `scan_adopt
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — add `workspaces_adopt_form(dir)` builder + a `workspaces.adopt` dispatch arm; open from a new `D`/`d` ("adopt directory") key on the workspaces tab
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
     #[test]
@@ -1940,12 +1940,12 @@ Add the "adopt existing umbrella" flow: scan a chosen directory with `scan_adopt
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid adopt_form_lists adopt_registers`
 Expected: `workspaces_adopt_form` missing; `workspaces.adopt` arm absent.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 /// Build the adopt-existing-umbrella form for `dir`: a name field plus one
@@ -2059,12 +2059,12 @@ Open from `D`/`d` on the workspaces tab. In the same router branch you added the
 
 Note for the executor: `dispatch_form_submit`'s wildcard tail (substrate) sets `sid_app.form = None; sid_app.form_origin_tab = None;` after the match. The `workspaces.adopt` early-return-on-bad-dir branch above sets those itself before returning; do not double-clear. Verify the substrate's exact post-match cleanup and match it (the `return` inside the match arm skips the tail, so the explicit clear is required there).
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid adopt_form_lists adopt_registers`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
