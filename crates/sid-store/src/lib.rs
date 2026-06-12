@@ -62,6 +62,13 @@ pub mod settings_keys {
     pub const DEFAULT_TAB: &str = "default_tab";
     /// Settings widget — last-focused sub-category (string id).
     pub const SETTINGS_FOCUSED_CATEGORY: &str = "settings_focused_category";
+    /// Whether list panels render the synthetic "+ add new" first row.
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::SHOW_ADD_NEW_ROW, "show_add_new_row");
+    /// ```
+    pub const SHOW_ADD_NEW_ROW: &str = "show_add_new_row";
 }
 
 /// String-typed setting helpers. Default impls call [`Store::get_setting`] /

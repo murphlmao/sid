@@ -541,6 +541,31 @@ pub fn load_animation_config(store: &dyn Store) -> AnimationConfig {
     AnimationConfig::default()
 }
 
+/// Load the `show_add_new_row` setting, which controls whether new rows are
+/// shown in list-based widgets. Defaults to `true` if unset.
+///
+/// The setting is stored as `b"true"` or `b"false"`; any value other than
+/// `b"false"` is treated as `true`.
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::load_show_add_new_row;
+/// use sid_store::{OpenStore, RedbStore};
+/// use tempfile::tempdir;
+///
+/// let dir = tempdir().unwrap();
+/// let store = RedbStore::open(&dir.path().join("sid.redb")).unwrap();
+/// assert_eq!(load_show_add_new_row(&store), true);
+/// ```
+#[allow(dead_code)]
+pub fn load_show_add_new_row(store: &dyn Store) -> bool {
+    match store.get_setting(sid_store::settings_keys::SHOW_ADD_NEW_ROW) {
+        Ok(Some(val)) => val.0 != b"false",
+        _ => true,
+    }
+}
+
 /// Build an [`App`] with the six Plan-1 tabs pre-wired.
 ///
 /// Injects the real [`Git2ProviderFactory`] into the [`WorkspacesWidget`] and
@@ -5650,6 +5675,45 @@ mod tests {
         // Should not panic; returns cosmos default (and seeds 'cosmos').
         let map = load_active_keybinds(&store);
         assert!(map.iter().count() > 0);
+    }
+
+    // ---- load_show_add_new_row ----
+
+    #[test]
+    fn show_add_new_row_defaults_true_when_unset() {
+        let (_d, store) = fresh_store();
+        assert!(load_show_add_new_row(&store));
+    }
+
+    #[test]
+    fn load_show_add_new_row_honours_true_setting() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_string(sid_store::settings_keys::SHOW_ADD_NEW_ROW, "true")
+            .unwrap();
+        assert!(load_show_add_new_row(&store));
+    }
+
+    #[test]
+    fn show_add_new_row_respects_stored_false() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        store
+            .put_string(sid_store::settings_keys::SHOW_ADD_NEW_ROW, "false")
+            .unwrap();
+        assert!(!load_show_add_new_row(&store));
+    }
+
+    #[test]
+    fn load_show_add_new_row_non_false_values_are_true() {
+        use sid_store::TypedSettings;
+        let (_d, store) = fresh_store();
+        // Any non-"false" value should be treated as true.
+        store
+            .put_string(sid_store::settings_keys::SHOW_ADD_NEW_ROW, "garbage")
+            .unwrap();
+        assert!(load_show_add_new_row(&store));
     }
 
     // ─── Plan 6 — palette hydration ──────────────────────────────────────────

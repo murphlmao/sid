@@ -174,7 +174,7 @@ git commit -m "feat(sid-widgets): ListCursor — selection math with synthetic a
 - Modify: `crates/sid-store/src/lib.rs` (the `pub mod settings_keys` block — add one constant beside `AUTO_RESTORE_SESSION`)
 - Modify: `crates/sid/src/wire.rs` (add loader fn near `load_animation_config`, ~line 534)
 
-- [ ] **Step 1: Add the constant with doc + doc test (match the existing constants' style exactly)**
+- [x] **Step 1: Add the constant with doc + doc test (match the existing constants' style exactly)**
 
 ```rust
 /// Whether list panels render the synthetic "+ add new" first row.
@@ -186,7 +186,7 @@ git commit -m "feat(sid-widgets): ListCursor — selection math with synthetic a
 pub const SHOW_ADD_NEW_ROW: &str = "show_add_new_row";
 ```
 
-- [ ] **Step 2: Add the loader in `wire.rs` (default ON when unset or unreadable)**
+- [x] **Step 2: Add the loader in `wire.rs` (default ON when unset or unreadable)**
 
 ```rust
 /// Read the `show_add_new_row` behavior toggle. Defaults to `true` when the
@@ -206,7 +206,7 @@ bool toggles in this codebase persist `b"true"`/`b"false"` via `put_bool` — ch
 `put_bool` actually writes. If `put_bool` stores something else (e.g. a single byte 0/1),
 compare against that instead; the doc-tested contract is only "unset/malformed → true".
 
-- [ ] **Step 3: Tests (in `wire.rs` test mod, next to the existing `load_animation_config` tests if present, else new `#[cfg(test)]` fns)**
+- [x] **Step 3: Tests (in `wire.rs` test mod, next to the existing `load_animation_config` tests if present, else new `#[cfg(test)]` fns)**
 
 ```rust
 #[test]
@@ -228,7 +228,7 @@ fn show_add_new_row_respects_stored_false() {
 Run: `cargo test -p sid show_add_new_row` and `cargo test -p sid-store --doc settings_keys`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid-store/src/lib.rs crates/sid/src/wire.rs
