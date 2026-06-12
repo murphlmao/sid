@@ -34,9 +34,30 @@ use sid_core::SidError;
 use sid_core::animation::{AnimationConfig, GlyphSet, SETTING_ANIMATION_KEY};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
-use sid_core::widget::EventOutcome;
 use sid_store::{SettingValue, Store};
 use sid_ui::Theme;
+
+/// Outcome returned by [`AnimationView::handle_event`].
+///
+/// The parent [`crate::SettingsWidget`] inspects this to push a
+/// [`crate::settings::PendingSettingsOutcome::AnimationChanged`] into its
+/// pending queue when the user successfully saves the animation config.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::animation::AnimationViewOutcome;
+/// let o = AnimationViewOutcome::None;
+/// assert!(matches!(o, AnimationViewOutcome::None));
+/// ```
+#[derive(Debug, Clone)]
+pub enum AnimationViewOutcome {
+    /// The event was handled but no config was saved.
+    None,
+    /// The user pressed `S` and the config was persisted successfully.
+    /// The inner value is the new config for the wire layer to apply.
+    Saved(AnimationConfig),
+}
 
 /// Number of editable rows in the Animation sub-view.
 const FIELD_COUNT: usize = 6;
@@ -282,16 +303,17 @@ impl AnimationView {
     /// the existing mutator methods and, on `S` (uppercase) or `Ctrl+S`,
     /// persists the working config via [`Self::flush_via_embedded_store`].
     ///
-    /// Returns:
-    /// - [`EventOutcome::Consumed`] for any handled key (including failed
-    ///   saves — the error is logged via `eprintln!` so the event isn't
-    ///   silently re-dispatched).
-    /// - [`EventOutcome::Bubble`] for events the view doesn't recognise.
+    /// Returns an [`AnimationViewOutcome`]:
+    /// - [`AnimationViewOutcome::Saved`] on a successful `S`-key flush — the
+    ///   parent [`crate::SettingsWidget`] pushes this into its pending-outcomes
+    ///   queue so the wire layer can apply it live.
+    /// - [`AnimationViewOutcome::None`] for any other handled key, including
+    ///   failed saves (the error is logged via `eprintln!`).
     ///
-    /// `_ctx` is accepted for symmetry with the
-    /// [`sid_core::widget::Widget::handle_event`] signature so the composer
-    /// can forward without reshaping arguments; the view does not use it
-    /// today.
+    /// Non-key events and unrecognised keys return
+    /// [`AnimationViewOutcome::None`] (they are not forwarded further — the
+    /// caller checks via the outer `EventOutcome` returned by
+    /// [`crate::SettingsWidget::handle_event`]).
     ///
     /// # Examples
     ///
@@ -302,9 +324,8 @@ impl AnimationView {
     /// use sid_core::animation::AnimationConfig;
     /// use sid_core::context::WidgetCtx;
     /// use sid_core::event::{Event, KeyChord};
-    /// use sid_core::widget::EventOutcome;
     /// use sid_store::{OpenStore, RedbStore, Store};
-    /// use sid_widgets::settings::animation::AnimationView;
+    /// use sid_widgets::settings::animation::{AnimationView, AnimationViewOutcome};
     /// use tempfile::tempdir;
     ///
     /// let d = tempdir().unwrap();
@@ -314,45 +335,47 @@ impl AnimationView {
     /// let (tx, _rx) = mpsc::channel();
     /// let mut ctx = WidgetCtx::new(tx);
     /// let ev = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::NONE));
-    /// assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+    /// assert!(matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None));
     /// ```
-    pub fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> EventOutcome {
+    pub fn handle_event(
+        &mut self,
+        ev: &Event,
+        _ctx: &mut WidgetCtx,
+    ) -> AnimationViewOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         let Event::Key(k) = ev else {
-            return EventOutcome::Bubble;
+            return AnimationViewOutcome::None;
         };
         match (k.code, k.mods) {
             // Uppercase `S` (any non-Ctrl modifiers) or `Ctrl+S` — persist
             // via the embedded store.
             (KeyCode::Char('S'), m) if !m.contains(KeyModifiers::CONTROL) => {
-                self.try_save();
-                EventOutcome::Consumed
+                self.try_save()
             }
             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.try_save();
-                EventOutcome::Consumed
+                self.try_save()
             }
             (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
                 self.focus_next();
-                EventOutcome::Consumed
+                AnimationViewOutcome::None
             }
             (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
                 self.focus_prev();
-                EventOutcome::Consumed
+                AnimationViewOutcome::None
             }
             (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
                 self.adjust_focused(1);
-                EventOutcome::Consumed
+                AnimationViewOutcome::None
             }
             (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
                 self.adjust_focused(-1);
-                EventOutcome::Consumed
+                AnimationViewOutcome::None
             }
             (KeyCode::Char(' ') | KeyCode::Enter, _) => {
                 self.adjust_focused(0);
-                EventOutcome::Consumed
+                AnimationViewOutcome::None
             }
-            _ => EventOutcome::Bubble,
+            _ => AnimationViewOutcome::None,
         }
     }
 
@@ -361,20 +384,26 @@ impl AnimationView {
     /// consumed and there's nowhere good to surface a `Result` from
     /// [`Self::handle_event`].
     ///
+    /// Returns [`AnimationViewOutcome::Saved`] with the persisted config on
+    /// success so the parent widget can push it into its pending-outcomes
+    /// queue for live application by the wire layer.
+    ///
     /// `sid-widgets` does not depend on `tracing`, so we route via stderr.
     /// The TUI captures stderr through its parent tracing layer when
     /// running under the production binary.
-    fn try_save(&mut self) {
+    fn try_save(&mut self) -> AnimationViewOutcome {
         match self.flush_via_embedded_store() {
-            Ok(true) => {}
+            Ok(true) => AnimationViewOutcome::Saved(self.cfg.clone()),
             Ok(false) => {
                 eprintln!(
                     "AnimationView: S pressed but no store bound; \
                      use AnimationView::with_store(...) to enable saving"
                 );
+                AnimationViewOutcome::None
             }
             Err(e) => {
                 eprintln!("AnimationView: flush_dirty failed: {e}");
+                AnimationViewOutcome::None
             }
         }
     }
@@ -641,7 +670,10 @@ mod tests {
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('S'), KeyModifiers::NONE));
         let out = v.handle_event(&ev, &mut ctx);
-        assert_eq!(out, EventOutcome::Consumed);
+        assert!(
+            matches!(out, AnimationViewOutcome::Saved(_)),
+            "S with store should return Saved, got {:?}", out
+        );
         assert!(!v.is_dirty(), "S press should clear the dirty flag");
         let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
         assert!(got.is_some(), "S press should have written the setting key");
@@ -662,7 +694,10 @@ mod tests {
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         let out = v.handle_event(&ev, &mut ctx);
-        assert_eq!(out, EventOutcome::Consumed);
+        assert!(
+            matches!(out, AnimationViewOutcome::Saved(_)),
+            "Ctrl+S with store should return Saved, got {:?}", out
+        );
         let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap();
         assert!(got.is_some(), "Ctrl+S press should have written the key");
     }
@@ -677,7 +712,9 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+        assert!(
+            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
+        );
         assert_eq!(v.focused_field(), AnimationField::Density);
     }
 
@@ -693,12 +730,14 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Consumed);
+        assert!(
+            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
+        );
         assert_eq!(v.focused_field(), AnimationField::Enabled);
     }
 
     #[test]
-    fn handle_event_unknown_key_bubbles() {
+    fn handle_event_unknown_key_does_not_save() {
         use std::sync::mpsc;
 
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -707,6 +746,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);
         let ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(v.handle_event(&ev, &mut ctx), EventOutcome::Bubble);
+        assert!(
+            matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None)
+        );
     }
 }

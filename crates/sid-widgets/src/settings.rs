@@ -719,11 +719,26 @@ impl Widget for SettingsWidget {
                                 // The AnimationView owns its own event
                                 // routing (j/k, h/l, arrows, Space/Enter,
                                 // and `S` to flush via its embedded store).
+                                use crate::settings::animation::AnimationViewOutcome;
                                 match v.handle_event(ev, ctx) {
-                                    EventOutcome::Consumed => {
+                                    AnimationViewOutcome::Saved(cfg) => {
+                                        // Two-channel signal matching the
+                                        // BehaviorTogglesView pattern:
+                                        // 1) action bus for any listener /
+                                        //    telemetry.
+                                        // 2) pending_outcomes for the wire
+                                        //    layer to drain and apply live.
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.animation_changed",
+                                            serde_json::to_string(&cfg)
+                                                .unwrap_or_default(),
+                                        );
+                                        self.pending_outcomes.push(
+                                            PendingSettingsOutcome::AnimationChanged(cfg),
+                                        );
                                         return EventOutcome::Consumed;
                                     }
-                                    EventOutcome::Bubble => {}
+                                    AnimationViewOutcome::None => {}
                                 }
                             }
                             SettingsCategory::Behavior(v) => {
