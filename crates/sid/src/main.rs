@@ -19,6 +19,7 @@ use sid_store::{OpenStore, RedbStore, Store, Workspace, now_epoch};
 use tracing_subscriber::EnvFilter;
 
 mod runtime;
+mod settings_undo;
 mod toast;
 mod wire;
 
@@ -579,6 +580,7 @@ async fn main() -> Result<()> {
         form_origin_tab: None,
         pending_submits: Vec::new(),
         toasts: toast::ToastQueue::new(4),
+        undo_ring: std::collections::VecDeque::new(),
         jobs,
         ssh_client_factory: wire::build_ssh_client_factory_fn(),
         ssh_outcome_tx,

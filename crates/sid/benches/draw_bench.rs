@@ -44,6 +44,7 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         form_origin_tab: None,
         pending_submits: Vec::new(),
         toasts: ToastQueue::new(4),
+        undo_ring: std::collections::VecDeque::new(),
         jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
         ssh_client_factory: build_ssh_client_factory_fn(),
         ssh_outcome_tx,
