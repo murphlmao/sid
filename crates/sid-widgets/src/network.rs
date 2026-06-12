@@ -44,6 +44,7 @@ use crate::network::interfaces_sidebar::InterfacesSidebarState;
 use crate::network::kill_modal::KillConfirmModalState;
 use crate::network::ports_table::{PortsSortBy, PortsTableState, SortDir};
 use crate::network::processes_table::{ProcessesSortBy, ProcessesTableState};
+use crate::split_view::{SplitFocus, SplitView};
 
 // Re-export the KillOutcome type so the binary's JobQueue wiring (Task 24)
 // can feed completion results back into the widget without naming
@@ -112,6 +113,24 @@ pub enum Focus {
 /// Strict pane-focus model alias matching the other widgets'
 /// `<Widget>Focus` convention. See [`Focus`].
 pub type NetFocus = Focus;
+
+/// Right-pane detail view variants for the Interfaces sidebar.
+///
+/// Currently only one variant; future extensions (per-interface traffic
+/// graph, OS config) would add more here.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::network::DetailView;
+/// let v = DetailView::Prefs;
+/// assert_eq!(v, DetailView::Prefs);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailView {
+    /// The interface detail / prefs form is open.
+    Prefs,
+}
 
 /// Persisted UI preferences. Captures sort + focus so a sid restart restores
 /// the user's view layout. The actual data comes from the next probe tick.
@@ -192,10 +211,15 @@ pub struct NetworkWidget {
     id: WidgetId,
     ports: PortsTableState,
     procs: ProcessesTableState,
-    ifs: InterfacesSidebarState,
+    /// Interface sidebar state. `pub(crate)` so tests in this module can set
+    /// aliases / pinned names directly.
+    pub(crate) ifs: InterfacesSidebarState,
     filter: FilterInputState,
     kill_modal: KillConfirmModalState,
     focus: Focus,
+    /// Tracks whether the interface detail pane is open (Pane focus) or the
+    /// list is shown alone (List focus).
+    split: SplitView<DetailView>,
     /// Toasts queued by kill-job completions, waiting to be drained by the
     /// host's render code. Populated by [`Self::on_kill_outcome`]; consumed
     /// by [`Self::take_toast`].
@@ -214,6 +238,7 @@ impl NetworkWidget {
             filter: FilterInputState::new(),
             kill_modal: KillConfirmModalState::new(),
             focus: Focus::default(),
+            split: SplitView::default(),
             pending_toasts: std::collections::VecDeque::new(),
         }
     }
@@ -307,6 +332,32 @@ impl NetworkWidget {
     /// True when focus is on the ports pane.
     pub fn is_focused_on_ports(&self) -> bool {
         self.focus == Focus::Ports
+    }
+
+    /// Whether the interface detail pane is currently open.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::NetworkWidget;
+    /// let w = NetworkWidget::new();
+    /// assert!(!w.is_detail_pane_open());
+    /// ```
+    pub fn is_detail_pane_open(&self) -> bool {
+        self.split.focus() == SplitFocus::Pane
+    }
+
+    /// Open the detail pane for the currently-selected interface.
+    /// No-op when the interface list is empty.
+    pub fn open_detail_pane(&mut self) {
+        if self.ifs.selected_row().is_some() {
+            self.split.push(DetailView::Prefs);
+        }
+    }
+
+    /// Close the detail pane and return focus to the sidebar list.
+    pub fn close_detail_pane(&mut self) {
+        self.split.pop();
     }
 
     /// Replace the data displayed in all three panes from a fresh
@@ -702,14 +753,23 @@ impl Widget for NetworkWidget {
     }
 
     fn footer_hint(&self) -> Vec<FooterHint> {
-        vec![
-            FooterHint::new("/", "filter"),
-            FooterHint::new("s", "sort"),
-            FooterHint::new("K", "kill"),
-            FooterHint::new("Enter", "detail"),
-            FooterHint::new("Tab", "pane"),
-            FooterHint::new("R", "refresh"),
-        ]
+        if self.focus == Focus::Interfaces && self.is_detail_pane_open() {
+            vec![
+                FooterHint::new("Tab", "fields"),
+                FooterHint::new("⏎", "save"),
+                FooterHint::new("⎋", "cancel"),
+                FooterHint::new("?", "help"),
+            ]
+        } else {
+            vec![
+                FooterHint::new("/", "filter"),
+                FooterHint::new("s", "sort"),
+                FooterHint::new("K", "kill"),
+                FooterHint::new("⏎", "detail"),
+                FooterHint::new("Tab", "pane"),
+                FooterHint::new("R", "refresh"),
+            ]
+        }
     }
 
     fn render(&self, _target: &mut dyn RenderTarget) {
@@ -812,16 +872,24 @@ impl Widget for NetworkWidget {
                 }
                 EventOutcome::Consumed
             }
-            KeyCode::Enter
+            // → or Enter on Interfaces: enter the detail pane. Wire layer
+            // opens the FormPane when it sees `network.open_detail_pane`.
+            // No-op when the interface list is empty.
+            KeyCode::Enter | KeyCode::Right
                 if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
             {
-                ctx.emit_action("network.interface_detail");
+                self.split.push(DetailView::Prefs);
+                ctx.emit_action("network.open_detail_pane");
                 EventOutcome::Consumed
             }
-            KeyCode::Char('E')
-                if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
+
+            // ← or Esc on Interfaces while the detail pane is open: close pane.
+            // Esc when pane is closed bubbles up so wire.rs can handle tab-level Esc.
+            KeyCode::Left | KeyCode::Esc
+                if self.focus == Focus::Interfaces && self.split.focus() == SplitFocus::Pane =>
             {
-                ctx.emit_action("network.interface_edit_stub");
+                self.split.pop();
+                ctx.emit_action("network.close_detail_pane");
                 EventOutcome::Consumed
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -940,7 +1008,7 @@ pub fn render_to_string(widget: &NetworkWidget, width: u16, height: u16) -> Stri
 mod tests {
     use sid_core::widget::Widget;
 
-    use super::NetworkWidget;
+    use super::{Focus, NetworkWidget};
 
     #[test]
     fn id_and_title_correct() {
@@ -974,5 +1042,124 @@ mod tests {
         let initial = w.focus();
         w.load_state(&[]);
         assert_eq!(w.focus(), initial);
+    }
+
+    #[test]
+    fn enter_on_interfaces_emits_open_detail_request() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use std::sync::mpsc;
+
+        let mut w = NetworkWidget::new();
+        while w.focus() != Focus::Interfaces {
+            w.focus_next();
+        }
+        w.apply_snapshot(sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![sid_core::adapters::sys::NetInterface {
+                name: "eth0".into(),
+                addrs: vec![],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        });
+        let chord = KeyChord { code: KeyCode::Enter, mods: KeyModifiers::NONE };
+        let ev = Event::Key(chord);
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = sid_core::context::WidgetCtx::new(tx);
+        w.handle_event(&ev, &mut ctx);
+        assert!(w.is_detail_pane_open());
+    }
+
+    #[test]
+    fn esc_from_detail_returns_to_list() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use std::sync::mpsc;
+
+        let mut w = NetworkWidget::new();
+        while w.focus() != Focus::Interfaces {
+            w.focus_next();
+        }
+        w.apply_snapshot(sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![sid_core::adapters::sys::NetInterface {
+                name: "eth0".into(),
+                addrs: vec![],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        });
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = sid_core::context::WidgetCtx::new(tx);
+        let enter = Event::Key(KeyChord { code: KeyCode::Enter, mods: KeyModifiers::NONE });
+        w.handle_event(&enter, &mut ctx);
+        assert!(w.is_detail_pane_open());
+        let esc = Event::Key(KeyChord { code: KeyCode::Esc, mods: KeyModifiers::NONE });
+        w.handle_event(&esc, &mut ctx);
+        assert!(!w.is_detail_pane_open());
+    }
+
+    #[test]
+    fn right_arrow_on_interfaces_enters_pane() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use std::sync::mpsc;
+
+        let mut w = NetworkWidget::new();
+        while w.focus() != Focus::Interfaces {
+            w.focus_next();
+        }
+        w.apply_snapshot(sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![sid_core::adapters::sys::NetInterface {
+                name: "eth0".into(),
+                addrs: vec![],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        });
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = sid_core::context::WidgetCtx::new(tx);
+        let ev = Event::Key(KeyChord { code: KeyCode::Right, mods: KeyModifiers::NONE });
+        w.handle_event(&ev, &mut ctx);
+        assert!(w.is_detail_pane_open());
+    }
+
+    #[test]
+    fn render_to_string_shows_alias_label() {
+        use sid_core::adapters::sys::NetInterface;
+        use std::collections::HashMap;
+
+        let mut w = NetworkWidget::new();
+        w.apply_snapshot(sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![NetInterface {
+                name: "eth0".into(),
+                addrs: vec![],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        });
+        w.ifs.set_aliases(HashMap::from([("eth0".into(), "work-lan".into())]));
+        let s = crate::network::render_to_string(&w, 80, 24);
+        assert!(s.contains("work-lan"), "alias not rendered; output:\n{s}");
+        assert!(s.contains("eth0"), "raw name not rendered; output:\n{s}");
     }
 }
