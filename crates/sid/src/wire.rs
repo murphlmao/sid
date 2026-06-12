@@ -355,6 +355,86 @@ pub fn build_systemctl_client() -> Arc<dyn SystemctlClient> {
     }
 }
 
+/// Build the active [`SecretStore`] implementation.
+///
+/// Reads [`sid_store::settings_keys::USE_OS_KEYRING`] from `store`. When
+/// `true`, constructs a [`sid_secrets::KeyringStore`] and probes the keyring
+/// daemon with a round-trip write/read/delete of a sentinel key. On probe
+/// failure, falls back to [`sid_secrets::PlainStore`] and logs a warning.
+///
+/// Returns `(store, used_keyring)` — the bool lets `main.rs` push a fallback
+/// toast when the keyring was requested but unavailable.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use sid_store::{OpenStore, RedbStore, Store};
+/// use tempfile::tempdir;
+/// use sid::wire::build_secret_store;
+///
+/// let dir = tempdir().unwrap();
+/// let redb = Arc::new(RedbStore::open(&dir.path().join("s.redb")).unwrap());
+/// // Setting absent → PlainStore returned, used_keyring = false.
+/// let (secrets, used_keyring) = build_secret_store(&*redb, Arc::clone(&redb) as Arc<dyn Store>);
+/// assert!(!used_keyring);
+/// let id = sid_core::adapters::secrets::SecretId::new("smoke.test");
+/// use sid_core::adapters::secrets::SecretStore;
+/// secrets.put(&id, b"val").unwrap();
+/// assert_eq!(secrets.get(&id).unwrap().unwrap(), b"val".to_vec());
+/// ```
+pub fn build_secret_store(
+    store: &RedbStore,
+    plain_arc: Arc<dyn Store>,
+) -> (Arc<dyn sid_core::adapters::secrets::SecretStore>, bool) {
+    use sid_store::TypedSettings;
+    let want_keyring = store
+        .get_bool(sid_store::settings_keys::USE_OS_KEYRING)
+        .unwrap_or(None)
+        .unwrap_or(false);
+
+    if want_keyring {
+        let ks = sid_secrets::KeyringStore::new();
+        if probe_keyring(&ks) {
+            tracing::info!("OS keyring available — using KeyringStore");
+            return (Arc::new(ks), true);
+        } else {
+            tracing::warn!("OS keyring requested but probe failed — falling back to PlainStore");
+        }
+    }
+
+    (Arc::new(sid_secrets::PlainStore::new(plain_arc)), false)
+}
+
+/// Write/read/delete a sentinel key to confirm the keyring backend is live.
+///
+/// Returns `true` only when the put succeeds, the read-back matches, and the
+/// final delete succeeds.
+///
+/// Once the put succeeds the sentinel exists in the keyring, so EVERY exit path
+/// after that point — read error, read-back mismatch, or success — flows
+/// through a single best-effort `delete`. This guarantees the OS keyring is
+/// never left with a stale `sid.__keyring_probe` entry, including the
+/// put-Ok-then-get-Err path that an earlier version leaked.
+fn probe_keyring(store: &dyn sid_core::adapters::secrets::SecretStore) -> bool {
+    let probe_key = sid_core::adapters::secrets::SecretId::new("sid.__keyring_probe");
+
+    // If the initial put fails, nothing was stored — no cleanup needed.
+    if store.put(&probe_key, b"probe").is_err() {
+        return false;
+    }
+
+    // The sentinel now exists. Determine success, then ALWAYS clean up exactly
+    // once, regardless of which branch we took.
+    let read_ok = matches!(store.get(&probe_key), Ok(Some(ref v)) if v.as_slice() == b"probe");
+
+    // Single cleanup point. The delete result is the final word on liveness:
+    // a backend that cannot delete its own sentinel is not usable.
+    let delete_ok = store.delete(&probe_key).is_ok();
+
+    read_ok && delete_ok
+}
+
 /// Resolve the terminal spawner. Logs and falls back to
 /// [`NoopTerminalSpawner`] if `kitty` is missing.
 pub fn build_terminal_spawner() -> Arc<dyn TerminalSpawner> {
@@ -6848,6 +6928,135 @@ mod tests {
         let app = build_app(Some("does-not-exist"), vec![]);
         // switch_to returns false but doesn't panic; active stays at 0.
         assert_eq!(app.tabs().active_index(), 0);
+    }
+
+    // ---- probe_keyring ----
+
+    /// How a [`ProbeStore`] should misbehave on `get`, to drive each failure
+    /// branch of `probe_keyring` through its single cleanup point.
+    #[derive(Clone, Copy, PartialEq)]
+    enum ProbeMode {
+        /// `get` returns the bytes that were put — the happy path.
+        Honest,
+        /// `get` returns wrong bytes — read-back mismatch.
+        CorruptReadback,
+        /// `get` returns `Err` — the put-Ok-then-get-Err leak path.
+        GetErrors,
+    }
+
+    /// A fake SecretStore that records calls and can inject a read-back
+    /// mismatch or a `get` error, so the probe cleanup is exercised on every
+    /// post-put exit path.
+    struct ProbeStore {
+        mode: ProbeMode,
+        deleted: std::sync::Mutex<Vec<String>>,
+        stored: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    }
+
+    impl ProbeStore {
+        fn new(mode: ProbeMode) -> Self {
+            Self {
+                mode,
+                deleted: Default::default(),
+                stored: Default::default(),
+            }
+        }
+        fn new_mismatch() -> Self {
+            Self::new(ProbeMode::CorruptReadback)
+        }
+        fn deleted_keys(&self) -> Vec<String> {
+            self.deleted.lock().unwrap().clone()
+        }
+    }
+
+    impl sid_core::adapters::secrets::SecretStore for ProbeStore {
+        fn put(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+            value: &[u8],
+        ) -> Result<(), sid_core::adapters::secrets::SecretError> {
+            self.stored
+                .lock()
+                .unwrap()
+                .insert(id.as_str().to_string(), value.to_vec());
+            Ok(())
+        }
+
+        fn get(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+        ) -> Result<Option<Vec<u8>>, sid_core::adapters::secrets::SecretError> {
+            match self.mode {
+                ProbeMode::CorruptReadback => Ok(Some(b"WRONG".to_vec())),
+                ProbeMode::GetErrors => Err(sid_core::adapters::secrets::SecretError::Storage(
+                    "injected get failure".into(),
+                )),
+                ProbeMode::Honest => Ok(self.stored.lock().unwrap().get(id.as_str()).cloned()),
+            }
+        }
+
+        fn delete(
+            &self,
+            id: &sid_core::adapters::secrets::SecretId,
+        ) -> Result<(), sid_core::adapters::secrets::SecretError> {
+            self.deleted.lock().unwrap().push(id.as_str().to_string());
+            self.stored.lock().unwrap().remove(id.as_str());
+            Ok(())
+        }
+
+        fn list_ids(
+            &self,
+        ) -> Result<
+            Vec<sid_core::adapters::secrets::SecretId>,
+            sid_core::adapters::secrets::SecretError,
+        > {
+            Ok(vec![])
+        }
+    }
+
+    const PROBE_KEY: &str = "sid.__keyring_probe";
+
+    /// On a read-back mismatch `probe_keyring` returns false AND deletes the
+    /// sentinel so the OS keyring is not left with a stale probe entry.
+    #[test]
+    fn probe_keyring_mismatch_cleans_up_sentinel() {
+        let store = ProbeStore::new_mismatch();
+        let ok = probe_keyring(&store);
+        assert!(!ok, "probe must return false on mismatch");
+        let deleted = store.deleted_keys();
+        assert!(
+            deleted.contains(&PROBE_KEY.to_string()),
+            "probe key must be deleted even on mismatch; deleted={deleted:?}"
+        );
+    }
+
+    /// Regression for Fix M5: when the put succeeds but the read-back `get`
+    /// returns `Err`, the sentinel was previously leaked. The single cleanup
+    /// point must delete it and the probe must report failure.
+    #[test]
+    fn probe_keyring_get_error_cleans_up_sentinel() {
+        let store = ProbeStore::new(ProbeMode::GetErrors);
+        let ok = probe_keyring(&store);
+        assert!(!ok, "probe must return false when read-back errors");
+        let deleted = store.deleted_keys();
+        assert!(
+            deleted.contains(&PROBE_KEY.to_string()),
+            "probe key must be deleted on the get-Err path (no leak); deleted={deleted:?}"
+        );
+    }
+
+    /// The happy path: put succeeds, read-back matches, delete succeeds → probe
+    /// returns true and still cleans up the sentinel (no stale entry left).
+    #[test]
+    fn probe_keyring_happy_path_returns_true_and_cleans_up() {
+        let store = ProbeStore::new(ProbeMode::Honest);
+        let ok = probe_keyring(&store);
+        assert!(ok, "probe must succeed on the honest path");
+        let deleted = store.deleted_keys();
+        assert!(
+            deleted.contains(&PROBE_KEY.to_string()),
+            "probe key must always be deleted, even on success; deleted={deleted:?}"
+        );
     }
 
     // ---- pretty_label ----

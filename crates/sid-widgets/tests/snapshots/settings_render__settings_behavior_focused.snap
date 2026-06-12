@@ -1,5 +1,6 @@
 ---
 source: crates/sid-widgets/tests/settings_render.rs
+assertion_line: 99
 expression: s
 ---
 ┌ Categories ──────┐┌ Behavior ────────────────────────────────────────────────┐
@@ -8,7 +9,7 @@ expression: s
 │                  ││  State persist debounce (ms)          250                │
 │                  ││  Session heartbeat interval (s)       5                  │
 │                  ││  Default tab on launch                workspaces         │
-│                  ││                                                          │
+│                  ││  Use OS keyring for secrets (requires restart) off       │
 │                  ││                                                          │
 │                  ││                                                          │
 │                  ││                                                          │

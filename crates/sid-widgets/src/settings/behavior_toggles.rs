@@ -14,7 +14,7 @@
 //! use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
 //!
 //! let v = BehaviorTogglesView::defaults();
-//! assert_eq!(v.toggles().len(), 5);
+//! assert_eq!(v.toggles().len(), 6);
 //! assert_eq!(v.focused_index(), 0);
 //! ```
 
@@ -116,7 +116,7 @@ impl BehaviorTogglesView {
     /// ```
     /// use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
     /// let v = BehaviorTogglesView::defaults();
-    /// assert_eq!(v.toggles().len(), 5);
+    /// assert_eq!(v.toggles().len(), 6);
     /// ```
     pub fn defaults() -> Self {
         use sid_store::settings_keys::*;
@@ -169,6 +169,11 @@ impl BehaviorTogglesView {
                         ],
                         selected: 0,
                     },
+                },
+                Toggle {
+                    key: USE_OS_KEYRING,
+                    label: "Use OS keyring for secrets (requires restart)",
+                    value: ToggleValue::Bool(false),
                 },
             ],
             focused: 0,
@@ -481,9 +486,16 @@ mod tests {
     }
 
     #[test]
-    fn defaults_has_five_toggles() {
+    fn defaults_has_six_toggles() {
         let v = BehaviorTogglesView::defaults();
-        assert_eq!(v.toggles().len(), 5);
+        assert_eq!(v.toggles().len(), 6);
+    }
+
+    #[test]
+    fn behavior_toggles_includes_use_os_keyring() {
+        use sid_store::settings_keys::USE_OS_KEYRING;
+        let v = BehaviorTogglesView::defaults();
+        assert!(v.toggles().iter().any(|t| t.key == USE_OS_KEYRING));
     }
 
     #[test]

@@ -15,6 +15,11 @@ use sid_core::SidError;
 use sid_core::adapters::secrets::{SecretError, SecretId, SecretStore};
 use sid_store::Store;
 
+pub mod keyring_store;
+pub mod migration;
+
+pub use keyring_store::KeyringStore;
+
 /// File-backed [`SecretStore`] using the `secrets` table of a `sid-store`
 /// [`Store`].
 ///
@@ -91,6 +96,46 @@ impl SecretStore for PlainStore {
     fn list_ids(&self) -> Result<Vec<SecretId>, SecretError> {
         let ids = self.inner.list_secret_ids().map_err(sid_to_secret_err)?;
         Ok(ids.into_iter().map(SecretId::new).collect())
+    }
+}
+
+/// Test-only fake keyring backend. Never compiled outside `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use super::keyring_store::KeyringBackend;
+
+    /// In-memory fake that satisfies [`KeyringBackend`] without touching the
+    /// OS keyring daemon. All operations are guarded by a `Mutex` so tests
+    /// can construct `KeyringStore<FakeKeyring>` and verify `Send + Sync`.
+    #[derive(Default)]
+    pub struct FakeKeyring {
+        inner: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl KeyringBackend for FakeKeyring {
+        fn set(&self, key: &str, secret: &[u8]) -> Result<(), String> {
+            self.inner
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), secret.to_vec());
+            Ok(())
+        }
+
+        fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.inner.lock().unwrap().get(key).cloned())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), String> {
+            self.inner.lock().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>, String> {
+            Ok(self.inner.lock().unwrap().keys().cloned().collect())
+        }
     }
 }
 

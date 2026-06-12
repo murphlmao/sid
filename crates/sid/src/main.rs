@@ -547,9 +547,83 @@ async fn main() -> Result<()> {
     let spawner = wire::build_terminal_spawner();
     let postgres = sid_db_clients::PostgresClient::factory();
     let sqlite = sid_db_clients::SqliteClient::factory();
-    let secrets: Arc<dyn sid_core::adapters::secrets::SecretStore> = Arc::new(
-        sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>),
-    );
+    let (secrets, keyring_active) =
+        wire::build_secret_store(&store, Arc::clone(&store) as Arc<dyn Store>);
+
+    // Migrate secrets from the redb PlainStore into the OS keyring.
+    //
+    // Fix I2: this runs on EVERY keyring-active startup, not just once.
+    // `migrate_to_keyring` is idempotent and cheap — it lists the source
+    // store and is a no-op when empty — so a fallback session or a
+    // toggle-off period that wrote secrets to the plain store gets swept up
+    // on the next keyring-active startup instead of being stranded forever.
+    //
+    // `KEYRING_MIGRATION_DONE` is demoted to first-run toast suppression:
+    // once a clean migration has happened we stay quiet about subsequent
+    // no-op sweeps, but we still always run the sweep. Failures and conflicts
+    // always toast regardless of the flag, so they can never be silenced.
+    let mut migration_toast: Option<crate::toast::Toast> = None;
+    if keyring_active {
+        use sid_secrets::migration::migrate_to_keyring;
+        use sid_store::TypedSettings;
+
+        let first_run_done = store
+            .get_bool(sid_store::settings_keys::KEYRING_MIGRATION_DONE)
+            .unwrap_or(None)
+            .unwrap_or(false);
+
+        let plain_src = sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>);
+        match migrate_to_keyring(&plain_src, &*secrets) {
+            Ok(result) if result.failed == 0 => {
+                tracing::info!(
+                    migrated = result.migrated,
+                    conflicts = result.conflicts,
+                    "keyring migration sweep complete"
+                );
+                // Mark first-run complete so future no-op sweeps stay quiet.
+                if !first_run_done {
+                    let _ = store.put_bool(sid_store::settings_keys::KEYRING_MIGRATION_DONE, true);
+                }
+                // Fix M10: only toast a success when something actually moved.
+                // Fix I4: when a divergence was resolved source-wins, say so.
+                if result.migrated > 0 {
+                    let msg = if result.conflicts > 0 {
+                        format!(
+                            "Migrated {} secret(s) to OS keyring \
+                             ({} diverged — keyring overwritten from local store)",
+                            result.migrated, result.conflicts,
+                        )
+                    } else {
+                        format!("Migrated {} secret(s) to OS keyring", result.migrated)
+                    };
+                    migration_toast = Some(crate::toast::Toast::success(msg));
+                }
+            }
+            Ok(result) => {
+                // Partial failure: always toast, regardless of the flag.
+                migration_toast = Some(crate::toast::Toast::error(format!(
+                    "Keyring migration: {}/{} failed — will retry",
+                    result.failed,
+                    result.migrated + result.failed,
+                )));
+                tracing::warn!(
+                    migrated = result.migrated,
+                    failed = result.failed,
+                    conflicts = result.conflicts,
+                    errors = ?result.errors,
+                    "keyring migration partially failed; will retry next startup"
+                );
+            }
+            // Fix I3: total migration failure (source list_ids errored) was
+            // previously invisible — only traced. Surface it to the user.
+            Err(e) => {
+                migration_toast = Some(crate::toast::Toast::error(
+                    "Keyring migration failed to start — secrets left in local store; will retry",
+                ));
+                tracing::error!("keyring migration failed (source list_ids): {e}");
+            }
+        }
+    }
 
     // Background animation: load persisted AnimationConfig if any, else default.
     let animation = wire::load_animation_config(&*store);
@@ -593,6 +667,25 @@ async fn main() -> Result<()> {
     // Hydrate the Workspaces overview "+ add new" row from the persisted
     // `show_add_new_row` behavior toggle (default on).
     wire::hydrate_workspaces_add_new_row(&mut sid_app);
+
+    // Push migration result toast (set before sid_app existed).
+    if let Some(t) = migration_toast {
+        sid_app.toasts.push(t);
+    }
+
+    // Push a toast if the user requested OS keyring but it was unavailable.
+    {
+        use sid_store::TypedSettings;
+        let wanted = store
+            .get_bool(sid_store::settings_keys::USE_OS_KEYRING)
+            .unwrap_or(None)
+            .unwrap_or(false);
+        if wanted && !keyring_active {
+            sid_app.toasts.push(crate::toast::Toast::error(
+                "OS keyring unavailable — secrets stored as plaintext",
+            ));
+        }
+    }
 
     // Offer the user a resume-or-start-fresh modal if the previous session
     // was recent enough and had a recorded active tab. No-op when there's no

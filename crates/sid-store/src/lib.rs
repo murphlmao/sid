@@ -83,6 +83,31 @@ pub mod settings_keys {
     pub const NETWORK_IFACE_PINNED_SUFFIX: &str = "pinned";
     /// Suffix appended after `<name>.` for the display alias string.
     pub const NETWORK_IFACE_ALIAS_SUFFIX: &str = "alias";
+    /// Whether to use the OS keyring (libsecret / Keychain) instead of the
+    /// plaintext redb secrets table. Value is `"true"` or `"false"`. Defaults
+    /// to `false` (plain store).
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::USE_OS_KEYRING, "use_os_keyring");
+    /// ```
+    pub const USE_OS_KEYRING: &str = "use_os_keyring";
+    /// First-run toast-suppression flag for the redb→keyring secret
+    /// migration. Set to `"true"` by `main.rs` after the first zero-failure
+    /// `migrate_to_keyring` run.
+    ///
+    /// This is **not** a "skip migration" gate: `main.rs` runs the (idempotent,
+    /// cheap-when-empty) migration sweep on *every* keyring-active startup so
+    /// secrets written to the plain store during a fallback or toggle-off
+    /// session are never stranded. The flag only suppresses the
+    /// "Migrated N secret(s)" toast on subsequent no-op sweeps — failures and
+    /// divergence conflicts always toast regardless of this flag.
+    ///
+    /// ```
+    /// use sid_store::settings_keys;
+    /// assert_eq!(settings_keys::KEYRING_MIGRATION_DONE, "keyring_migration_done");
+    /// ```
+    pub const KEYRING_MIGRATION_DONE: &str = "keyring_migration_done";
 }
 
 /// String-typed setting helpers. Default impls call [`Store::get_setting`] /

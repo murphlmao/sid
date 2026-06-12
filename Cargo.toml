@@ -99,6 +99,16 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # Paths
 directories = "5"
 
+# Keyring / OS secret service.
+# CRITICAL: the `features` below are what select a REAL platform keystore.
+# keyring v3 ships NO backend by default — with no features it resolves to
+# `pub use mock as default`, a process-local in-memory store. That would make
+# set→get via a fresh `Entry` always read `None`, fail the startup probe, and
+# silently fall every user back to the plaintext store forever (data-loss risk).
+# `sync-secret-service` = Linux Secret Service (libdbus, sync); `apple-native`
+# = macOS Keychain. These are sid's supported platforms. Do NOT drop them.
+keyring = { version = "3", features = ["sync-secret-service", "apple-native"] }
+
 # System / subprocess utilities
 which = "7"
 shell-words = "1.1"
