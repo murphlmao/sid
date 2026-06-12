@@ -1,0 +1,20 @@
+---
+source: crates/sid-widgets/src/ssh.rs
+expression: s
+---
+┌ Hosts ───────────────────────┐┌ Status ──────────────────────────────────────┐
+│  + add new                   ││● Disconnected                                │
+│  ○ alpha                     │└──────────────────────────────────────────────┘
+│> ● beta                      │┌ beta ────────────────────────────────────────┐
+│                              ││Select a host with j/k, Enter to connect.     │
+│                              ││Tab toggles SFTP panel.                       │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              ││                                              │
+│                              │└──────────────────────────────────────────────┘
+└──────────────────────────────┘ (no recent commands)

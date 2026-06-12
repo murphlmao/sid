@@ -1999,6 +1999,48 @@ mod tests {
         );
     }
 
+    // --- Task 6: Additional snapshots for cursor positions ---
+
+    #[test]
+    fn snapshot_host_list_cursor_on_add_new_row() {
+        let h1 = make_host("alpha");
+        let h2 = make_host("beta");
+        // add_new=true, cursor starts at pos=0 → AddNew row is selected
+        let state = SshState::new(vec![h1, h2], vec![], true);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
+    #[test]
+    fn snapshot_host_list_cursor_on_second_item() {
+        let h1 = make_host("alpha");
+        let h2 = make_host("beta");
+        // add_new=true: pos 0 = AddNew, pos 1 = Item(0)=alpha, pos 2 = Item(1)=beta
+        let mut state = SshState::new(vec![h1, h2], vec![], true);
+        state.cursor.down(); // pos 0 → 1 (alpha)
+        state.cursor.down(); // pos 1 → 2 (beta)
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
+    #[test]
+    fn snapshot_host_list_ssh_config_entry() {
+        use crate::ssh::SshConfigEntryLite;
+        let cfg = SshConfigEntryLite {
+            alias: "github.com".into(),
+            host: "github.com".into(),
+            port: 22,
+            user: "git".into(),
+            identity_file: None,
+        };
+        let state = SshState::new(vec![], vec![cfg], false);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
     // --- Task 1: Snapshot — host list with add-new row ---
 
     #[test]
