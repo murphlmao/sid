@@ -1759,18 +1759,18 @@ git commit -m "feat(sid): ? help overlay — keybind cheatsheet from footer hint
 
 ### Task 11: Branch wrap-up
 
-- [ ] **Step 1: Targeted regression sweep of touched crates only**
+- [x] **Step 1: Targeted regression sweep of touched crates only**
 
 Run: `cargo test -p sid-widgets -p sid-core -p sid-store -p sid`
 Expected: all green. Fix anything red before proceeding (most likely suspects: doc tests
 with stale constructor signatures, snapshot churn from the new lib.rs exports).
 
-- [ ] **Step 2: Clippy on touched crates**
+- [x] **Step 2: Clippy on touched crates**
 
 Run: `cargo clippy -p sid-widgets -p sid-core -p sid-store -p sid --all-targets -- -D warnings`
 Expected: clean.
 
-- [ ] **Step 3: Tick this plan's checkboxes, then merge to main**
+- [x] **Step 3: Tick this plan's checkboxes, then merge to main**
 
 ```bash
 git add docs/superpowers/plans/2026-06-11-uxv2-0-substrate.md
