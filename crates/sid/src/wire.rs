@@ -1915,11 +1915,48 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         }
         let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
         true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && maybe_open_workspaces_form_for_key(sid_app, chord)
+    {
+        // Workspaces-tab side-pane forms: `N` → create-new wizard,
+        // `D` → adopt-existing wizard. Intercepted ahead of the modal opener so
+        // the legacy `N`/`A`/`R` modals stay available for the other keys.
+        true
     } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
         sid_app.modal_stack.push(modal);
         true
     } else {
         false
+    }
+}
+
+/// If the active tab is Workspaces and `chord` is a form-opener key, open the
+/// corresponding side-pane form and return `true`. `N`/`n` opens the create-new
+/// wizard; `D`/`d` opens the adopt-existing wizard (Task 9). Returns `false`
+/// (so the caller falls through to the modal opener) for any other key or tab.
+fn maybe_open_workspaces_form_for_key(
+    sid_app: &mut SidApp,
+    chord: sid_core::event::KeyChord,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if sid_app.app.tabs().active().id.as_str() != "workspaces" {
+        return false;
+    }
+    // Plain (unmodified) letter keys only — leave Ctrl/Alt chords to others.
+    if chord
+        .mods
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return false;
+    }
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => {
+            open_form(sid_app, workspaces_new_form());
+            true
+        }
+        _ => false,
     }
 }
 
@@ -4206,6 +4243,83 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::form::FormSpec) {
     sid_app.form = Some(sid_widgets::form::FormPane::new(spec));
 }
 
+/// Build the create-new-workspace side-pane form. Reshape on `kind`: Umbrella
+/// shows the satellite-scan + feature toggles; Repo hides them.
+pub fn workspaces_new_form() -> sid_widgets::form::FormSpec {
+    sid_widgets::form::FormSpec::new(
+        "workspaces.create",
+        "New Workspace",
+        workspaces_new_sections(&sid_widgets::form::FormValues::new()),
+    )
+    .with_reshape(vec!["kind".into()], workspaces_new_sections)
+}
+
+/// Section builder for [`workspaces_new_form`]. Reshape-driven: the `kind`
+/// value selects whether the umbrella-only "Features" section is present.
+fn workspaces_new_sections(
+    values: &sid_widgets::form::FormValues,
+) -> Vec<sid_widgets::form::FormSection> {
+    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
+    use sid_widgets::modal::Field;
+    let kind = values.get("kind").map(String::as_str).unwrap_or("Umbrella");
+    let mut fields = vec![
+        FormField::new(
+            "name",
+            Field::Text {
+                label: "name".into(),
+                value: String::new(),
+                placeholder: Some("e.g. gen4-stack".into()),
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+        FormField::new(
+            "path",
+            Field::Picker {
+                label: "path".into(),
+                value: String::new(),
+                hint: "absolute path".into(),
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+        FormField::new(
+            "kind",
+            Field::Choice {
+                label: "kind".into(),
+                options: vec!["Umbrella".into(), "Repo".into()],
+                selected: if kind == "Repo" { 1 } else { 0 },
+            },
+        ),
+    ];
+    let mut sections = vec![FormSection {
+        title: "Workspace".into(),
+        kind: SectionKind::Editable,
+        fields: std::mem::take(&mut fields),
+    }];
+    if kind == "Umbrella" {
+        sections.push(FormSection {
+            title: "Features".into(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "scan_satellites",
+                    Field::Toggle {
+                        label: "scan satellites now".into(),
+                        value: true,
+                    },
+                ),
+                FormField::new(
+                    "register_claude_md",
+                    Field::Toggle {
+                        label: "read CLAUDE.md actions".into(),
+                        value: true,
+                    },
+                ),
+            ],
+        });
+    }
+    sections
+}
+
 /// Route a submitted form's values by form id, then close the form.
 ///
 /// Branches 1-5 register their own arms here keyed on the form id; the
@@ -4216,8 +4330,45 @@ fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::for
     // Substrate ships only the wildcard; branches 1-5 insert their own
     // `"<form.id>" => { ... }` arms above it (which is why this stays a `match`
     // even while it has a single arm).
-    #[allow(clippy::match_single_binding)]
     match id {
+        "workspaces.create" => {
+            let name = values.get("name").cloned().unwrap_or_default();
+            let path_str = values.get("path").cloned().unwrap_or_default();
+            let kind = match values.get("kind").map(String::as_str) {
+                Some("Repo") => sid_core::workspace_metadata::WorkspaceKind::Repo,
+                _ => sid_core::workspace_metadata::WorkspaceKind::Umbrella,
+            };
+            match std::fs::canonicalize(&path_str) {
+                Ok(path) => {
+                    let ws = sid_store::Workspace {
+                        path,
+                        name: name.clone(),
+                        kind,
+                        manifest_hash: 0,
+                        last_seen: sid_store::now_epoch(),
+                        parent: None,
+                    };
+                    match sid_app.store.upsert_workspace(&ws) {
+                        Ok(()) => {
+                            refresh_workspaces_widget(sid_app);
+                            sid_app
+                                .toasts
+                                .push(Toast::success(format!("workspace '{name}' added")));
+                        }
+                        Err(e) => {
+                            sid_app
+                                .toasts
+                                .push(Toast::error(format!("add workspace: {e}")));
+                        }
+                    }
+                }
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("bad path '{path_str}': {e}")));
+                }
+            }
+        }
         _ => {
             let _ = &values;
             sid_app
@@ -6013,6 +6164,54 @@ mod tests {
         assert!(rows[0].is_umbrella);
         assert_eq!(rows[0].name, "gen4");
         assert!(rows.iter().any(|r| r.name == "api" && !r.is_umbrella));
+    }
+
+    #[test]
+    fn workspaces_new_form_reshapes_on_kind() {
+        use sid_widgets::modal::Field;
+        let mut spec = workspaces_new_form();
+        // default kind Umbrella exposes the umbrella feature toggles
+        let v = spec.values();
+        assert_eq!(v["kind"], "Umbrella");
+        assert!(
+            spec.sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .any(|f| f.key == "scan_satellites")
+        );
+        // flip to Repo, reshape drops umbrella-only toggles
+        for s in &mut spec.sections {
+            for f in &mut s.fields {
+                if f.key == "kind"
+                    && let Field::Choice { selected, .. } = &mut f.field
+                {
+                    *selected = 1; // Repo
+                }
+            }
+        }
+        spec.run_reshape();
+        assert_eq!(spec.values()["kind"], "Repo");
+        assert!(
+            !spec
+                .sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .any(|f| f.key == "scan_satellites")
+        );
+    }
+
+    #[test]
+    fn dispatch_workspaces_create_persists_workspace() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut values = sid_widgets::form::FormValues::new();
+        values.insert("name".into(), "neo".into());
+        values.insert("path".into(), tmp.path().display().to_string());
+        values.insert("kind".into(), "Repo".into());
+        dispatch_form_submit(&mut sid_app, "workspaces.create", values);
+        let ws = sid_app.store.list_workspaces().unwrap();
+        assert_eq!(ws.len(), 1);
+        assert_eq!(ws[0].name, "neo");
     }
 
     // ---- load_active_theme / load_active_keybinds ----

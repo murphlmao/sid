@@ -1739,7 +1739,7 @@ Add the "create new workspace" wizard as a substrate side-pane form (`FormSpec`/
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — add `workspaces_new_form()` builder + a `dispatch_form_submit` arm for `workspaces.create`; open the form from the `N` key handler (replace the `workspaces.new` modal opener at line 2271 with `open_form`)
 
-- [ ] **Step 1: Failing test — the form spec shape + reshape**
+- [x] **Step 1: Failing test — the form spec shape + reshape**
 
 Add to wire.rs test mod:
 
@@ -1781,12 +1781,12 @@ Add to wire.rs test mod:
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid workspaces_new_form_reshapes dispatch_workspaces_create_persists`
 Expected: `workspaces_new_form` missing; `workspaces.create` arm absent.
 
-- [ ] **Step 3: Implement the form builder + reshape + dispatch arm**
+- [x] **Step 3: Implement the form builder + reshape + dispatch arm**
 
 ```rust
 /// Build the create-new-workspace side-pane form. Reshape on `kind`: Umbrella
@@ -1873,12 +1873,12 @@ Add the `dispatch_form_submit` arm. The substrate ships `dispatch_form_submit` w
 
 Open the form from `N`. The current opener is the modal `workspaces_modal_for_key` (line 2263). The cleanest additive change: in the global key router where `workspaces_modal_for_key` is consulted, intercept `N`/`n` on the workspaces tab to call `open_form(sid_app, workspaces_new_form())` instead. Read how the router dispatches modal openers (grep `workspaces_modal_for_key` call site) and add the `N` → `open_form` branch ahead of it; leave the `A`/`R` modal arms intact for Task 9/keep. Confirm `now_epoch` is re-exported from `sid_store` (it is — `crates/sid-store/src/lib.rs:256`).
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid workspaces_new_form_reshapes dispatch_workspaces_create_persists`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
