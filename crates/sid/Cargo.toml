@@ -59,6 +59,7 @@ sid-db-clients.workspace = true
 sid-pty.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "test-util"] }
+insta.workspace = true
 
 [[bench]]
 name = "draw_bench"

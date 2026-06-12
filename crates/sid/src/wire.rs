@@ -9454,6 +9454,78 @@ mod tests {
         );
     }
 
+    /// Two consecutive frames separated by exactly one `SidEvent::Tick` must
+    /// produce visually different buffer contents in at least one cell.
+    ///
+    /// This guards against "dead" animations where `tick_count` advances but
+    /// the rendered output never changes. The test uses a seeded `FxState` so
+    /// the star positions are deterministic; after one tick the `phase` of at
+    /// least one star changes, which changes the rendered colour or glyph.
+    ///
+    /// Snapshot the SECOND frame with insta so the expected appearance is
+    /// locked. Re-accept with `cargo insta review` only after deliberate
+    /// visual changes to the animation layer.
+    #[tokio::test]
+    async fn animation_frames_differ_after_tick() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        // Use a large-enough terminal so stars are guaranteed to exist.
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Seed the FxState so positions are deterministic and we can assert
+        // frame equality / difference reliably.
+        let cfg = sid_core::animation::AnimationConfig {
+            enabled: true,
+            density: 30,
+            fps: 8,
+            ..sid_core::animation::AnimationConfig::default()
+        };
+        sid_app.animation = cfg.clone();
+        sid_app.fx_state = Some(sid_fx::FxState::with_seed(42));
+
+        // Send two Tick events: first tick triggers draw1+tick1, second
+        // triggers draw2+tick2, then channel closes and loop exits.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(8);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        // After two Tick events, tick_count must be 2.
+        let tc = sid_app
+            .fx_state
+            .as_ref()
+            .expect("fx_state present")
+            .tick_count;
+        assert_eq!(tc, 2, "exactly two ticks must have fired");
+
+        // Snapshot the terminal buffer after the second frame so the rendered
+        // star positions and styles are locked. The buffer content is a
+        // string of rows joined by '\n'; insta compares it textually.
+        let buf_string: String = {
+            let buf = terminal.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // On first run, insta creates the snapshot file.
+        // On subsequent runs it must match — if animation rendering changes,
+        // this snapshot fails and you must re-accept with `cargo insta review`.
+        insta::assert_snapshot!("animation_two_ticks_80x24_seed42", buf_string);
+    }
+
     #[test]
     fn tick_interval_derives_from_fps() {
         // At fps=8 (default), tick interval must be 125ms (1000/8).
