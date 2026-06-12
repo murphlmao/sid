@@ -67,18 +67,18 @@ fn ssh_footer_hints() {
 
 #[test]
 fn database_footer_hints() {
+    // Default focus is Connections — UX-v2 context-aware hints.
     let w = DatabaseWidget::new(vec![]);
     let hints = w.footer_hint();
+    assert_hint(&hints, "Enter", "add/edit");
     assert_hint(&hints, "N", "new");
-    assert_hint(&hints, "E", "edit");
     assert_hint(&hints, "D", "delete");
-    assert_hint(&hints, "T", "test");
-    assert_hint(&hints, "Tab", "pane");
-    assert_hint(&hints, "Ctrl+R", "run");
+    assert_hint(&hints, "Ctrl+T", "test");
+    assert_hint(&hints, "→", "pane");
     assert_eq!(
         hints.len(),
-        6,
-        "DatabaseWidget should expose exactly 6 footer hints"
+        5,
+        "DatabaseWidget (Connections focus) should expose exactly 5 footer hints"
     );
 }
 
