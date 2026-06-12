@@ -3798,6 +3798,7 @@ dependencies = [
  "csv",
  "directories",
  "futures",
+ "insta",
  "ratatui",
  "serde_json",
  "shell-words",

@@ -616,9 +616,8 @@ async fn main() -> Result<()> {
     // Event source.
     let (tx, mut rx) = runtime::make_channel();
     // Derive the pump tick interval from the animation FPS so `SidEvent::Tick`
-    // fires at the configured rate. `fps.max(1)` prevents division by zero;
-    // `min(30)` clamps the max to a sane value (matching AnimationConfig range).
-    let tick_ms = 1000u64 / (animation_fps.max(1).min(30) as u64);
+    // fires at the configured rate (clamped to AnimationConfig's 1..=30 range).
+    let tick_ms = wire::fps_to_tick_ms(animation_fps);
     let pump = runtime::spawn_event_pump(tx, Duration::from_millis(tick_ms));
 
     // Run.

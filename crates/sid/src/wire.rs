@@ -1591,6 +1591,23 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
     Ok(total)
 }
 
+/// Derive the event-pump tick interval (milliseconds) from an animation FPS.
+///
+/// Clamps `fps` to `1..=30` — the valid [`sid_core::animation::AnimationConfig`]
+/// range — so a corrupt or zero value can never divide by zero or spin the
+/// pump faster than 30 Hz.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(sid::wire::fps_to_tick_ms(8), 125);
+/// assert_eq!(sid::wire::fps_to_tick_ms(0), 1000); // clamped up to 1 fps
+/// assert_eq!(sid::wire::fps_to_tick_ms(255), 33); // clamped down to 30 fps
+/// ```
+pub fn fps_to_tick_ms(fps: u8) -> u64 {
+    1000 / u64::from(fps.clamp(1, 30))
+}
+
 /// Run the main render + event loop until the app requests to quit.
 ///
 /// Draws each frame, waits for the next event, dispatches it through the
@@ -9452,6 +9469,33 @@ mod tests {
         );
     }
 
+    /// Render the test terminal's buffer as text, one row per line.
+    ///
+    /// With `styled` the cell style is appended to each glyph so colour-only
+    /// animation changes are visible to comparisons; the plain form matches
+    /// the readable insta snapshot format.
+    fn test_buffer_text(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        styled: bool,
+    ) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| {
+                        let cell = &buf[(x, y)];
+                        if styled {
+                            format!("{}{:?}", cell.symbol(), cell.style())
+                        } else {
+                            cell.symbol().to_string()
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Two consecutive frames separated by exactly one `SidEvent::Tick` must
     /// produce visually different buffer contents in at least one cell.
     ///
@@ -9460,9 +9504,9 @@ mod tests {
     /// the star positions are deterministic; after one tick the `phase` of at
     /// least one star changes, which changes the rendered colour or glyph.
     ///
-    /// Snapshot the SECOND frame with insta so the expected appearance is
-    /// locked. Re-accept with `cargo insta review` only after deliberate
-    /// visual changes to the animation layer.
+    /// The frame comparison includes cell styles (a colour-only twinkle must
+    /// count as a change); the insta snapshot of the second frame stays
+    /// symbols-only so the golden file remains readable.
     #[tokio::test]
     async fn animation_frames_differ_after_tick() {
         use ratatui::backend::TestBackend;
@@ -9484,16 +9528,25 @@ mod tests {
         sid_app.animation = cfg.clone();
         sid_app.fx_state = Some(sid_fx::FxState::with_seed(42));
 
-        // Send two Tick events: first tick triggers draw1+tick1, second
-        // triggers draw2+tick2, then channel closes and loop exits.
+        // First run: one Tick, then the channel closes. The loop draws once
+        // more after processing the tick, so on exit the terminal holds the
+        // post-tick-1 frame.
         let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(8);
         tx.send(sid_core::event::Event::Tick).await.unwrap();
-        tx.send(sid_core::event::Event::Tick).await.unwrap();
         drop(tx);
-
         run_event_loop(&mut terminal, &mut sid_app, &mut rx)
             .await
             .unwrap();
+        let frame_after_tick1 = test_buffer_text(&terminal, true);
+
+        // Second run against the SAME terminal and app: one more Tick.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(8);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+        let frame_after_tick2 = test_buffer_text(&terminal, true);
 
         // After two Tick events, tick_count must be 2.
         let tc = sid_app
@@ -9503,37 +9556,32 @@ mod tests {
             .tick_count;
         assert_eq!(tc, 2, "exactly two ticks must have fired");
 
-        // Snapshot the terminal buffer after the second frame so the rendered
-        // star positions and styles are locked. The buffer content is a
-        // string of rows joined by '\n'; insta compares it textually.
-        let buf_string: String = {
-            let buf = terminal.backend().buffer();
-            (0..buf.area.height)
-                .map(|y| {
-                    (0..buf.area.width)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        // The animation must be visibly alive: one tick apart, the two
+        // frames must differ in at least one cell (symbol or style).
+        assert_ne!(
+            frame_after_tick1, frame_after_tick2,
+            "consecutive animation frames must be visually different"
+        );
 
-        // On first run, insta creates the snapshot file.
-        // On subsequent runs it must match — if animation rendering changes,
-        // this snapshot fails and you must re-accept with `cargo insta review`.
-        insta::assert_snapshot!("animation_two_ticks_80x24_seed42", buf_string);
+        // Snapshot the second frame (symbols only) so the rendered star
+        // positions are locked. Re-accept with `cargo insta review` only
+        // after deliberate visual changes to the animation layer.
+        insta::assert_snapshot!(
+            "animation_two_ticks_80x24_seed42",
+            test_buffer_text(&terminal, false)
+        );
     }
 
     #[test]
-    fn tick_interval_derives_from_fps() {
-        // At fps=8 (default), tick interval must be 125ms (1000/8).
-        assert_eq!(1000u64 / 8, 125);
-        // At fps=1 (min), tick interval is 1000ms.
-        assert_eq!(1000u64, 1000);
-        // At fps=30 (max), tick interval is 33ms.
-        assert_eq!(1000u64 / 30, 33);
-        // fps=0 is prevented by clamp(1,30); verify the guard clamps to 1.
-        assert_eq!(0u8.clamp(1, 30), 1);
+    fn fps_to_tick_ms_derives_and_clamps() {
+        // Default fps=8 → 125ms; min fps=1 → 1000ms; max fps=30 → 33ms.
+        assert_eq!(fps_to_tick_ms(8), 125);
+        assert_eq!(fps_to_tick_ms(1), 1000);
+        assert_eq!(fps_to_tick_ms(30), 33);
+        // Out-of-range values clamp instead of dividing by zero (fps=0) or
+        // over-spinning the pump (fps=255).
+        assert_eq!(fps_to_tick_ms(0), 1000);
+        assert_eq!(fps_to_tick_ms(255), 33);
     }
 
     /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`

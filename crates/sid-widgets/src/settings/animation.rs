@@ -39,9 +39,8 @@ use sid_ui::Theme;
 
 /// Outcome returned by [`AnimationView::handle_event`].
 ///
-/// The parent [`crate::SettingsWidget`] inspects this to push a
-/// [`crate::settings::PendingSettingsOutcome::AnimationChanged`] into its
-/// pending queue when the user successfully saves the animation config.
+/// The parent [`crate::SettingsWidget`] inspects this to decide whether to
+/// return [`sid_core::event::EventOutcome::Consumed`] to its own caller.
 ///
 /// # Examples
 ///
@@ -52,10 +51,17 @@ use sid_ui::Theme;
 /// ```
 #[derive(Debug, Clone)]
 pub enum AnimationViewOutcome {
-    /// The event was handled but no config was saved.
+    /// The event was not recognised by this view — the parent should let it
+    /// bubble further.
     None,
-    /// The user pressed `S` and the config was persisted successfully.
-    /// The inner value is the new config for the wire layer to apply.
+    /// The event was handled (e.g. focus moved, value adjusted) but nothing
+    /// was persisted. The parent should return
+    /// [`sid_core::event::EventOutcome::Consumed`] without touching the
+    /// pending-outcomes queue.
+    Consumed,
+    /// The user pressed `S`/`Ctrl+S` and the config was persisted
+    /// successfully. The inner value is the new config for the wire layer
+    /// to apply live.
     Saved(AnimationConfig),
 }
 
@@ -307,13 +313,13 @@ impl AnimationView {
     /// - [`AnimationViewOutcome::Saved`] on a successful `S`-key flush — the
     ///   parent [`crate::SettingsWidget`] pushes this into its pending-outcomes
     ///   queue so the wire layer can apply it live.
-    /// - [`AnimationViewOutcome::None`] for any other handled key, including
-    ///   failed saves (the error is logged via `eprintln!`).
-    ///
-    /// Non-key events and unrecognised keys return
-    /// [`AnimationViewOutcome::None`] (they are not forwarded further — the
-    /// caller checks via the outer `EventOutcome` returned by
-    /// [`crate::SettingsWidget::handle_event`]).
+    /// - [`AnimationViewOutcome::Consumed`] for any recognised navigation or
+    ///   adjustment key (j/k, h/l, arrows, Space, Enter). The parent should
+    ///   return [`sid_core::event::EventOutcome::Consumed`] so the key does not
+    ///   bubble further.
+    /// - [`AnimationViewOutcome::None`] for unrecognised keys and non-key events
+    ///   — the parent lets the event bubble.  Failed saves also log via
+    ///   `eprintln!` and return `None`.
     ///
     /// # Examples
     ///
@@ -334,7 +340,11 @@ impl AnimationView {
     /// let mut v = AnimationView::with_store(AnimationConfig::default(), store);
     /// let (tx, _rx) = mpsc::channel();
     /// let mut ctx = WidgetCtx::new(tx);
+    /// // Navigation key — consumed by the view, no save.
     /// let ev = Event::Key(KeyChord::new(KeyCode::Down, KeyModifiers::NONE));
+    /// assert!(matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::Consumed));
+    /// // Unrecognised key — bubbles.
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::NONE));
     /// assert!(matches!(v.handle_event(&ev, &mut ctx), AnimationViewOutcome::None));
     /// ```
     pub fn handle_event(&mut self, ev: &Event, _ctx: &mut WidgetCtx) -> AnimationViewOutcome {
@@ -349,23 +359,23 @@ impl AnimationView {
             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => self.try_save(),
             (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
                 self.focus_next();
-                AnimationViewOutcome::None
+                AnimationViewOutcome::Consumed
             }
             (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
                 self.focus_prev();
-                AnimationViewOutcome::None
+                AnimationViewOutcome::Consumed
             }
             (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
                 self.adjust_focused(1);
-                AnimationViewOutcome::None
+                AnimationViewOutcome::Consumed
             }
             (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
                 self.adjust_focused(-1);
-                AnimationViewOutcome::None
+                AnimationViewOutcome::Consumed
             }
             (KeyCode::Char(' ') | KeyCode::Enter, _) => {
                 self.adjust_focused(0);
-                AnimationViewOutcome::None
+                AnimationViewOutcome::Consumed
             }
             _ => AnimationViewOutcome::None,
         }
@@ -708,7 +718,7 @@ mod tests {
         let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert!(matches!(
             v.handle_event(&ev, &mut ctx),
-            AnimationViewOutcome::None
+            AnimationViewOutcome::Consumed
         ));
         assert_eq!(v.focused_field(), AnimationField::Density);
     }
@@ -727,7 +737,7 @@ mod tests {
         let ev = Event::Key(KeyChord::new(KeyCode::Char('k'), KeyModifiers::NONE));
         assert!(matches!(
             v.handle_event(&ev, &mut ctx),
-            AnimationViewOutcome::None
+            AnimationViewOutcome::Consumed
         ));
         assert_eq!(v.focused_field(), AnimationField::Enabled);
     }

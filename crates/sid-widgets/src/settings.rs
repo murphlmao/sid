@@ -736,6 +736,12 @@ impl Widget for SettingsWidget {
                                             .push(PendingSettingsOutcome::AnimationChanged(cfg));
                                         return EventOutcome::Consumed;
                                     }
+                                    // Navigation / adjustment key handled by
+                                    // the sub-view — stop the event here so it
+                                    // doesn't bubble out of SettingsWidget.
+                                    AnimationViewOutcome::Consumed => {
+                                        return EventOutcome::Consumed;
+                                    }
                                     AnimationViewOutcome::None => {}
                                 }
                             }
