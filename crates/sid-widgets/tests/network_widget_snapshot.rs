@@ -5,6 +5,8 @@
 //! `TestBackend`. The text body is then snapshotted via insta so future
 //! changes to the layout surface as a visible diff.
 
+use std::collections::HashSet;
+
 use sid_core::adapters::sys::{
     ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState,
 };
@@ -78,6 +80,45 @@ fn snapshot_empty_state() {
     let w = NetworkWidget::new();
     let s = render_to_string(&w, 80, 24);
     insta::assert_snapshot!("network_empty_state", s);
+}
+
+/// M2 — pinned interface: ★ glyph appears on the pinned row, unpinned rows
+/// show a plain space.  Verifies correct row-alignment between pinned and
+/// unpinned interfaces.
+#[test]
+fn snapshot_pinned_interface() {
+    use std::collections::HashMap;
+    let mut w = NetworkWidget::new();
+    let snap = SysSnapshot {
+        processes: vec![],
+        listening_ports: vec![],
+        interfaces: vec![
+            NetInterface {
+                name: "eth0".into(),
+                addrs: vec!["192.168.1.10".into()],
+                rx_bytes: 1_500_000,
+                tx_bytes: 300_000,
+                is_up: true,
+            },
+            NetInterface {
+                name: "wlan0".into(),
+                addrs: vec!["10.0.0.5".into()],
+                rx_bytes: 512,
+                tx_bytes: 128,
+                is_up: true,
+            },
+        ],
+        captured_at_unix_secs: 1_700_001_000,
+        default_route_iface: None,
+    };
+    // Pin eth0 only — wlan0 is unpinned.
+    let mut pinned = HashSet::new();
+    pinned.insert("eth0".to_string());
+    w.apply_snapshot_with_prefs(snap, HashMap::new(), pinned);
+    let s = render_to_string(&w, 80, 24);
+    // eth0 must show ★; wlan0 must not.
+    assert!(s.contains('★'), "pinned interface must render ★ glyph");
+    insta::assert_snapshot!("network_pinned_interface", s);
 }
 
 #[test]

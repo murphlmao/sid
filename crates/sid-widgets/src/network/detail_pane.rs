@@ -180,20 +180,11 @@ pub fn prefs_from_values(values: &FormValues) -> Option<NetInterfacePrefs> {
     Some(NetInterfacePrefs { pinned, alias })
 }
 
-/// Format a byte count as a short human string (KB / MB / GB).
+/// Format a byte count — delegates to the shared [`super::format_bytes`].
+///
+/// Single source of truth: the compact `K/M/G` style from the parent module.
 fn format_bytes(b: u64) -> String {
-    const KB: u64 = 1_024;
-    const MB: u64 = KB * 1_024;
-    const GB: u64 = MB * 1_024;
-    if b >= GB {
-        format!("{:.1} GB", b as f64 / GB as f64)
-    } else if b >= MB {
-        format!("{:.1} MB", b as f64 / MB as f64)
-    } else if b >= KB {
-        format!("{:.1} KB", b as f64 / KB as f64)
-    } else {
-        format!("{b} B")
-    }
+    super::format_bytes(b)
 }
 
 /// Build the settings key for the pinned flag of a given interface.
@@ -352,11 +343,13 @@ mod tests {
 
     #[test]
     fn format_bytes_boundaries() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
-        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        // Compact style: no space between number and suffix (single source of
+        // truth lives in the parent `network` module).
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(1023), "1023B");
+        assert_eq!(format_bytes(1024), "1.0K");
+        assert_eq!(format_bytes(1024 * 1024), "1.0M");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0G");
     }
 
     #[test]

@@ -384,6 +384,12 @@ impl NetworkWidget {
         self.split.focus() == SplitFocus::Pane
     }
 
+    /// Current depth of the split-view stack (0 = closed, 1 = pane open).
+    /// Exposed for tests that verify the open guard prevents stack growth.
+    pub fn split_depth(&self) -> usize {
+        self.split.depth()
+    }
+
     /// Open the detail pane for the currently-selected interface.
     /// No-op when the interface list is empty.
     pub fn open_detail_pane(&mut self) {
@@ -919,13 +925,21 @@ impl Widget for NetworkWidget {
             }
         }
 
-        // Tab / Shift+Tab cycle the focused pane FIRST.
+        // Tab / Shift+Tab: consumed by the widget only when the split view is
+        // in List mode.  When a detail pane is open (SplitFocus::Pane) Tab must
+        // bubble so the wire-level form can use it for field cycling.
         match chord.code {
             KeyCode::Tab => {
+                if self.split.focus() == SplitFocus::Pane {
+                    return EventOutcome::Bubble;
+                }
                 self.focus_next();
                 return EventOutcome::Consumed;
             }
             KeyCode::BackTab => {
+                if self.split.focus() == SplitFocus::Pane {
+                    return EventOutcome::Bubble;
+                }
                 self.focus_prev();
                 return EventOutcome::Consumed;
             }
@@ -963,9 +977,12 @@ impl Widget for NetworkWidget {
             }
             // → or Enter on Interfaces: enter the detail pane. Wire layer
             // opens the FormPane when it sees `PendingNetAction::OpenDetailPane`.
-            // No-op when the interface list is empty.
+            // Guard: no-op when pane already open (prevents unbounded stack growth)
+            // or when the interface list is empty.
             KeyCode::Enter | KeyCode::Right
-                if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
+                if self.focus == Focus::Interfaces
+                    && self.ifs.selected_row().is_some()
+                    && self.split.focus() != SplitFocus::Pane =>
             {
                 self.split.push(DetailView::Prefs);
                 self.pending_net_action = Some(PendingNetAction::OpenDetailPane);
@@ -1041,8 +1058,20 @@ impl NetworkWidget {
     }
 }
 
-/// Format a byte count as a short human string (KB / MB / GB).
-fn format_bytes(b: u64) -> String {
+/// Format a byte count as a short human string (K / M / G suffix, no space).
+///
+/// This is the single canonical implementation for the entire `network` module
+/// (shared with `detail_pane`).  Compact format keeps table columns tight.
+///
+/// # Examples
+///
+/// ```no_run
+/// // pub(crate) — tested via the unit test block below.
+/// // format_bytes(0)        → "0B"
+/// // format_bytes(1_024)    → "1.0K"
+/// // format_bytes(1_048_576) → "1.0M"
+/// ```
+pub(crate) fn format_bytes(b: u64) -> String {
     const KB: u64 = 1_024;
     const MB: u64 = KB * 1_024;
     const GB: u64 = MB * 1_024;
