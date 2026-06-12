@@ -23,6 +23,40 @@ use sid_core::keybind::{KeyBinding, KeybindMap};
 use sid_core::keybind_capture::{CaptureInput, CaptureState};
 use sid_ui::Theme;
 
+/// Outcome returned by [`KeybindEditorView::handle_event`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::action::ActionId;
+/// use sid_core::event::KeyChord;
+/// use crossterm::event::{KeyCode, KeyModifiers};
+/// use sid_widgets::settings::keybind_editor::KeybindEditorOutcome;
+///
+/// let chord = KeyChord::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+/// let o = KeybindEditorOutcome::Applied {
+///     action: ActionId::new("app.quit"),
+///     chord,
+///     profile_name: "cosmos".into(),
+///     map_snapshot: sid_core::keybind::KeybindMap::new(),
+/// };
+/// assert!(matches!(o, KeybindEditorOutcome::Applied { .. }));
+/// ```
+#[derive(Clone, Debug)]
+pub enum KeybindEditorOutcome {
+    /// Event consumed; no persistent change.
+    None,
+    /// A new binding was accepted. Wire layer should call
+    /// `sid_store::keybind_load::save_keybind_profile` with `profile_name`
+    /// and the current map snapshot.
+    Applied {
+        action: sid_core::action::ActionId,
+        chord: sid_core::event::KeyChord,
+        profile_name: String,
+        map_snapshot: sid_core::keybind::KeybindMap,
+    },
+}
+
 /// Action ids that warrant a "are you sure?" warning when rebound. Centralised
 /// so the test and the rendering code agree.
 const DANGEROUS_ACTIONS: &[&str] = &["app.quit"];
@@ -443,6 +477,106 @@ impl KeybindEditorView {
         }
     }
 
+    /// Route a key event through the editor state machine. Returns
+    /// [`KeybindEditorOutcome::Applied`] once a chord is committed and the
+    /// in-memory map is updated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_core::action::ActionRegistry;
+    /// use sid_core::keybind::KeybindMap;
+    /// use sid_widgets::settings::keybind_editor::{KeybindEditorOutcome, KeybindEditorView};
+    ///
+    /// let view = KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new());
+    /// // Empty registry — Enter is a no-op.
+    /// ```
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> KeybindEditorOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::Event;
+        let Event::Key(k) = ev else {
+            return KeybindEditorOutcome::None;
+        };
+        match &self.capture {
+            CaptureState::Idle => match (k.code, k.mods) {
+                (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                    self.next();
+                }
+                (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                    self.prev();
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    self.enter_capture();
+                }
+                _ => return KeybindEditorOutcome::None,
+            },
+            CaptureState::Waiting { .. } | CaptureState::ConfirmOverwrite { .. } => {
+                let in_waiting = matches!(self.capture, CaptureState::Waiting { .. });
+                match k.code {
+                    KeyCode::Esc => {
+                        self.cancel_capture();
+                    }
+                    _ => {
+                        let chord = sid_core::event::KeyChord::new(k.code, k.mods);
+                        if in_waiting {
+                            let pre_focused = self.focused;
+                            self.on_chord_captured(chord);
+                            if matches!(self.capture, CaptureState::Idle) {
+                                // on_chord_captured resolved without conflict.
+                                if let Some(action) = self.actions.get(pre_focused).cloned() {
+                                    let current_chord = self
+                                        .map
+                                        .iter()
+                                        .find(|(_, a)| *a == &action)
+                                        .map(|(c, _)| *c);
+                                    if let Some(c) = current_chord {
+                                        return KeybindEditorOutcome::Applied {
+                                            action,
+                                            chord: c,
+                                            profile_name: "cosmos".into(),
+                                            map_snapshot: self.map.clone(),
+                                        };
+                                    }
+                                }
+                            }
+                        } else {
+                            // ConfirmOverwrite: treat any key as "yes" except 'n'/Esc.
+                            match k.code {
+                                KeyCode::Char('n') => {
+                                    self.confirm_overwrite_no();
+                                }
+                                _ => {
+                                    let pre_focused = self.focused;
+                                    self.confirm_overwrite_yes();
+                                    if matches!(self.capture, CaptureState::Idle) {
+                                        if let Some(action) = self.actions.get(pre_focused).cloned()
+                                        {
+                                            let current_chord = self
+                                                .map
+                                                .iter()
+                                                .find(|(_, a)| *a == &action)
+                                                .map(|(c, _)| *c);
+                                            if let Some(c) = current_chord {
+                                                return KeybindEditorOutcome::Applied {
+                                                    action,
+                                                    chord: c,
+                                                    profile_name: "cosmos".into(),
+                                                    map_snapshot: self.map.clone(),
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            CaptureState::Apply { .. } | CaptureState::Captured { .. } => {}
+        }
+        KeybindEditorOutcome::None
+    }
+
     fn apply_if_ready(&mut self) {
         if let CaptureState::Apply { for_action, chord } = self.capture.clone() {
             self.map.bind(KeyBinding {
@@ -755,5 +889,51 @@ mod tests {
         let view = KeybindEditorView::new(&small_registry(), KeybindMap::new());
         let s = render_with_focus(&view, false);
         insta::assert_snapshot!("keybind_editor_render_unfocused", s);
+    }
+
+    #[test]
+    fn handle_event_enter_starts_capture() {
+        use sid_core::action::Action;
+        use sid_core::event::{Event, KeyChord};
+        use sid_core::keybind_capture::CaptureState;
+        let mut reg = ActionRegistry::new();
+        reg.register(Action::new("a", "A"));
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let _ = v.handle_event(&ev);
+        assert!(
+            matches!(v.capture_state(), CaptureState::Waiting { .. }),
+            "Enter starts capture"
+        );
+    }
+
+    #[test]
+    fn handle_event_esc_in_capture_cancels() {
+        use sid_core::action::Action;
+        use sid_core::event::{Event, KeyChord};
+        use sid_core::keybind_capture::CaptureState;
+        let mut reg = ActionRegistry::new();
+        reg.register(Action::new("a", "A"));
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        v.enter_capture();
+        let ev = Event::Key(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE));
+        let _ = v.handle_event(&ev);
+        assert_eq!(v.capture_state(), &CaptureState::Idle);
+    }
+
+    #[test]
+    fn handle_event_chord_in_capture_produces_applied() {
+        use sid_core::action::Action;
+        use sid_core::event::{Event, KeyChord};
+        let mut reg = ActionRegistry::new();
+        reg.register(Action::new("a", "A"));
+        let mut v = KeybindEditorView::new(&reg, KeybindMap::new());
+        v.enter_capture();
+        let chord_ev = Event::Key(KeyChord::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        let out = v.handle_event(&chord_ev);
+        assert!(
+            matches!(out, KeybindEditorOutcome::Applied { .. }),
+            "capturing a chord emits Applied"
+        );
     }
 }
