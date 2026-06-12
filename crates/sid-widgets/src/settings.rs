@@ -194,6 +194,29 @@ pub enum PendingSettingsOutcome {
         /// New value as held by the view.
         value: crate::settings::behavior_toggles::ToggleValue,
     },
+    /// User added or removed a workspace root; wire should persist via
+    /// `Store::put_setting(WORKSPACE_ROOTS, …)`.
+    WorkspaceRootsChanged(Vec<std::path::PathBuf>),
+    /// User added/edited a quick action; wire should call `upsert_quick_action`.
+    QuickActionUpserted(sid_store::QuickAction),
+    /// User deleted a quick action; wire should call `remove_quick_action`.
+    QuickActionRemoved(String),
+    /// User successfully rebound a key; wire should call
+    /// `keybind_load::save_keybind_profile`.
+    KeybindApplied {
+        profile_name: String,
+        map_snapshot: sid_core::keybind::KeybindMap,
+    },
+    /// DB path override written to `sid.toml`; wire emits a "restart required" toast.
+    DbPathOverrideWritten(crate::settings::db_path::RestartNotice),
+    /// Factory reset confirmed; wire calls `ResetView::confirm(&store)`.
+    FactoryResetConfirmed,
+    /// User applied a theme from the theme picker. Wire should call
+    /// `put_string(THEME_NAME, name)`.
+    ThemeApplied {
+        /// Name of the selected theme.
+        name: String,
+    },
 }
 
 pub struct SettingsWidget {
@@ -700,7 +723,18 @@ impl Widget for SettingsWidget {
                         match cat {
                             SettingsCategory::Theme(v) => match v.handle_event(ev) {
                                 ThemePickerOutcome::None => {}
-                                _ => return EventOutcome::Consumed,
+                                ThemePickerOutcome::PreviewChanged => {
+                                    return EventOutcome::Consumed;
+                                }
+                                ThemePickerOutcome::Applied { name } => {
+                                    ctx.emit_action_with_payload(
+                                        "settings.outcome.theme_applied",
+                                        &name,
+                                    );
+                                    self.pending_outcomes
+                                        .push(PendingSettingsOutcome::ThemeApplied { name });
+                                    return EventOutcome::Consumed;
+                                }
                             },
                             SettingsCategory::Animation(v) => {
                                 // The AnimationView owns its own event
@@ -737,14 +771,104 @@ impl Widget for SettingsWidget {
                                     }
                                 }
                             }
-                            SettingsCategory::Keybinds(_)
-                            | SettingsCategory::WorkspaceRoots(_)
-                            | SettingsCategory::QuickActions(_)
-                            | SettingsCategory::DbPath(_)
-                            | SettingsCategory::Reset(_) => {
-                                // Per-category event routing for these is a
-                                // follow-up — each will grow its own Outcome
-                                // enum in the same pattern as Behavior + Theme.
+                            SettingsCategory::WorkspaceRoots(v) => {
+                                use crate::settings::workspace_roots::WorkspaceRootsOutcome;
+                                match v.handle_event(ev) {
+                                    WorkspaceRootsOutcome::None => {}
+                                    WorkspaceRootsOutcome::RootsChanged(roots) => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.workspace_roots",
+                                            roots
+                                                .iter()
+                                                .map(|p| p.display().to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(":"),
+                                        );
+                                        self.pending_outcomes.push(
+                                            PendingSettingsOutcome::WorkspaceRootsChanged(roots),
+                                        );
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
+                            }
+                            SettingsCategory::QuickActions(v) => {
+                                use crate::settings::quick_actions::QuickActionsOutcome;
+                                match v.handle_event(ev) {
+                                    QuickActionsOutcome::None => {}
+                                    QuickActionsOutcome::Upserted(qa) => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.quick_action_upserted",
+                                            &qa.id,
+                                        );
+                                        self.pending_outcomes
+                                            .push(PendingSettingsOutcome::QuickActionUpserted(qa));
+                                        return EventOutcome::Consumed;
+                                    }
+                                    QuickActionsOutcome::Removed(id) => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.quick_action_removed",
+                                            &id,
+                                        );
+                                        self.pending_outcomes
+                                            .push(PendingSettingsOutcome::QuickActionRemoved(id));
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
+                            }
+                            SettingsCategory::Keybinds(v) => {
+                                use crate::settings::keybind_editor::KeybindEditorOutcome;
+                                match v.handle_event(ev) {
+                                    KeybindEditorOutcome::None => {}
+                                    KeybindEditorOutcome::Applied {
+                                        action,
+                                        chord,
+                                        profile_name,
+                                        map_snapshot,
+                                    } => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.keybind_applied",
+                                            format!("{}={:?}", action.as_str(), chord),
+                                        );
+                                        self.pending_outcomes.push(
+                                            PendingSettingsOutcome::KeybindApplied {
+                                                profile_name,
+                                                map_snapshot,
+                                            },
+                                        );
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
+                            }
+                            SettingsCategory::DbPath(v) => {
+                                use crate::settings::db_path::DbPathOutcome;
+                                match v.handle_event(ev) {
+                                    DbPathOutcome::None => {}
+                                    DbPathOutcome::Written(notice) => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.db_path_written",
+                                            notice.sid_toml_path.display().to_string(),
+                                        );
+                                        self.pending_outcomes.push(
+                                            PendingSettingsOutcome::DbPathOverrideWritten(notice),
+                                        );
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
+                            }
+                            SettingsCategory::Reset(v) => {
+                                use crate::settings::reset::ResetOutcome;
+                                match v.handle_event(ev) {
+                                    ResetOutcome::None => {}
+                                    ResetOutcome::Confirmed => {
+                                        ctx.emit_action_with_payload(
+                                            "settings.outcome.factory_reset",
+                                            "",
+                                        );
+                                        self.pending_outcomes
+                                            .push(PendingSettingsOutcome::FactoryResetConfirmed);
+                                        return EventOutcome::Consumed;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1071,5 +1195,35 @@ mod tests {
         assert_eq!(outcome, EventOutcome::Bubble);
         assert_eq!(w.focused_pane(), pane_before);
         assert_eq!(w.focused_category_index(), cat_before);
+    }
+
+    #[test]
+    fn theme_applied_pushes_pending_outcome() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_ui::theme_registry::ThemeRegistry;
+        let r = ThemeRegistry::with_builtins();
+        let mut w = SettingsWidget::with_categories(vec![SettingsCategory::Theme(
+            crate::settings::theme_picker::ThemePickerView::new(&r, "cosmos"),
+        )]);
+        // Tab to SubView so Theme category receives keys.
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        w.handle_event(
+            &Event::Key(KeyChord::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &mut ctx,
+        );
+        // Enter applies the focused theme.
+        w.handle_event(
+            &Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut ctx,
+        );
+        let outcomes = w.take_pending_outcomes();
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| matches!(o, PendingSettingsOutcome::ThemeApplied { .. })),
+            "ThemeApplied outcome expected"
+        );
     }
 }

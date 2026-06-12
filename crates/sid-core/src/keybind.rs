@@ -53,7 +53,7 @@ pub struct KeyBinding {
 /// map.bind(KeyBinding { chord, action: ActionId::new("app.quit") });
 /// assert_eq!(map.lookup(&chord).map(|a| a.as_str()), Some("app.quit"));
 /// ```
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct KeybindMap {
     by_chord: BTreeMap<ChordKey, (KeyChord, ActionId)>,
 }

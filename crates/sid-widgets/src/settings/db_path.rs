@@ -42,6 +42,22 @@ pub struct RestartNotice {
     pub sid_toml_path: PathBuf,
 }
 
+/// Outcome of a key event routed to [`DbPathView`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::db_path::DbPathOutcome;
+/// assert!(matches!(DbPathOutcome::None, DbPathOutcome::None));
+/// ```
+#[derive(Clone, Debug)]
+pub enum DbPathOutcome {
+    /// Event consumed; no persistent change.
+    None,
+    /// DB path override successfully written to `sid.toml`.
+    Written(RestartNotice),
+}
+
 /// DB path override view state.
 pub struct DbPathView {
     active_path: PathBuf,
@@ -182,6 +198,64 @@ impl DbPathView {
             Line::from(err).style(Style::default().fg(theme.accent_error.into())),
         ];
         frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// Route a key event to the editor state machine.
+    ///
+    /// - Outside edit mode: `Enter` → begin_edit.
+    /// - Inside edit mode: `Esc` → cancel; `Backspace` → pop char;
+    ///   printable → push char; `Enter` → commit.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_widgets::settings::db_path::{DbPathOutcome, DbPathView};
+    /// use tempfile::tempdir;
+    /// use std::path::PathBuf;
+    ///
+    /// let d = tempdir().unwrap();
+    /// let mut v = DbPathView::open(PathBuf::from("/x.redb"), d.path().join("sid.toml")).unwrap();
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    /// assert!(matches!(v.handle_event(&ev), DbPathOutcome::None));
+    /// ```
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> DbPathOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::Event;
+        let Event::Key(k) = ev else {
+            return DbPathOutcome::None;
+        };
+        if self.is_editing() {
+            match k.code {
+                KeyCode::Esc => {
+                    self.cancel_edit();
+                }
+                KeyCode::Backspace => {
+                    self.backspace();
+                }
+                KeyCode::Char(c)
+                    if k.mods == KeyModifiers::NONE || k.mods == KeyModifiers::SHIFT =>
+                {
+                    self.type_char(c);
+                }
+                KeyCode::Enter => {
+                    if let Ok(notice) = self.commit_edit() {
+                        return DbPathOutcome::Written(notice);
+                    }
+                    // Err: last_error already set
+                }
+                _ => {}
+            }
+            return DbPathOutcome::None;
+        }
+        match k.code {
+            KeyCode::Enter => {
+                self.begin_edit();
+            }
+            _ => return DbPathOutcome::None,
+        }
+        DbPathOutcome::None
     }
 
     /// Commit the current input: write `sid.toml` and return a
@@ -359,6 +433,44 @@ mod tests {
         let (_d, active, toml) = paths();
         let mut v = DbPathView::open(active, toml).unwrap();
         assert!(v.commit_edit().is_err());
+    }
+
+    #[test]
+    fn handle_event_enter_begins_edit_when_idle() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let (_d, active, toml) = paths();
+        let mut v = DbPathView::open(active, toml).unwrap();
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(v.is_editing());
+        assert!(matches!(out, DbPathOutcome::None));
+    }
+
+    #[test]
+    fn handle_event_enter_in_edit_mode_commits_and_emits_outcome() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let (_d, active, toml) = paths();
+        let mut v = DbPathView::open(active, toml).unwrap();
+        v.begin_edit();
+        // Empty commit → clears override.
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(matches!(out, DbPathOutcome::Written(_)));
+        assert!(!v.is_editing());
+    }
+
+    #[test]
+    fn handle_event_esc_cancels_edit() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let (_d, active, toml) = paths();
+        let mut v = DbPathView::open(active, toml).unwrap();
+        v.begin_edit();
+        let ev = Event::Key(KeyChord::new(KeyCode::Esc, KeyModifiers::NONE));
+        let _ = v.handle_event(&ev);
+        assert!(!v.is_editing());
     }
 
     // -------------------------------------------------------------------------

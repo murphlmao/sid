@@ -3897,6 +3897,7 @@ dependencies = [
  "csv",
  "directories",
  "futures",
+ "proptest",
  "ratatui",
  "serde_json",
  "shell-words",

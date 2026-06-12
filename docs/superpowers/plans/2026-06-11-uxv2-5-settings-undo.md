@@ -17,7 +17,7 @@
 - Modify: `crates/sid-widgets/src/settings.rs` — add `WorkspaceRoots` variant to `PendingSettingsOutcome`; route in `SettingsWidget::handle_event` (`SettingsCategory::WorkspaceRoots` arm, currently a no-op at line 740–748); add encode helper
 - Modify: `crates/sid/src/wire.rs` — extend `apply_pending_settings_outcomes` match to handle `WorkspaceRootsChanged`
 
-- [ ] **Step 1: Write failing tests for `WorkspaceRootsOutcome`**
+- [x] **Step 1: Write failing tests for `WorkspaceRootsOutcome`**
 
 Add to `crates/sid-widgets/src/settings/workspace_roots.rs` inside `#[cfg(test)] mod tests`:
 
@@ -64,7 +64,7 @@ cargo test -p sid-widgets settings::workspace_roots::tests
 ```
 Expected: compile failure (no `WorkspaceRootsOutcome`, no `handle_event`).
 
-- [ ] **Step 2: Implement `WorkspaceRootsOutcome` and `handle_event`**
+- [x] **Step 2: Implement `WorkspaceRootsOutcome` and `handle_event`**
 
 At the top of `crates/sid-widgets/src/settings/workspace_roots.rs`, after the imports and before `struct WorkspaceRootsView`, insert:
 
@@ -160,7 +160,7 @@ cargo test -p sid-widgets settings::workspace_roots::tests
 ```
 Expected: all 3 new tests pass.
 
-- [ ] **Step 3: Add `WorkspaceRootsChanged` variant to `PendingSettingsOutcome` and route in `SettingsWidget`**
+- [x] **Step 3: Add `WorkspaceRootsChanged` variant to `PendingSettingsOutcome` and route in `SettingsWidget`**
 
 In `crates/sid-widgets/src/settings.rs`, extend the `PendingSettingsOutcome` enum (currently lines 189–197):
 
@@ -224,7 +224,7 @@ cargo test -p sid-widgets settings
 ```
 Expected: all tests pass; no new failures.
 
-- [ ] **Step 4: Wire dispatch in `apply_pending_settings_outcomes`**
+- [x] **Step 4: Wire dispatch in `apply_pending_settings_outcomes`**
 
 In `crates/sid/src/wire.rs`, extend `apply_pending_settings_outcomes` (currently the single `let PendingSettingsOutcome::BehaviorToggled { key, value } = outcome;` destructure). Replace:
 
@@ -318,7 +318,7 @@ cargo test -p sid settings
 ```
 Expected: tests pass; no compile errors.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```
 feat(sid-widgets,sid): WorkspaceRoots live-apply (settings branch 5)
@@ -337,7 +337,7 @@ apply_pending_settings_outcomes dispatches to put_setting(WORKSPACE_ROOTS).
 - Modify: `crates/sid-widgets/src/settings.rs` — add `QuickActionUpserted` / `QuickActionRemoved` variants to `PendingSettingsOutcome`; route in `SettingsCategory::QuickActions` arm
 - Modify: `crates/sid/src/wire.rs` — handle new variants in `apply_pending_settings_outcomes`
 
-- [ ] **Step 1: Write failing tests for `QuickActionsOutcome`**
+- [x] **Step 1: Write failing tests for `QuickActionsOutcome`**
 
 Add to `crates/sid-widgets/src/settings/quick_actions.rs` inside `#[cfg(test)] mod tests`:
 
@@ -400,7 +400,7 @@ cargo test -p sid-widgets settings::quick_actions::tests
 ```
 Expected: compile failure.
 
-- [ ] **Step 2: Implement `QuickActionsOutcome` and `handle_event`**
+- [x] **Step 2: Implement `QuickActionsOutcome` and `handle_event`**
 
 At the top of `crates/sid-widgets/src/settings/quick_actions.rs`, before `struct EditBuffer`, insert:
 
@@ -517,7 +517,7 @@ cargo test -p sid-widgets settings::quick_actions::tests
 ```
 Expected: all new tests pass.
 
-- [ ] **Step 3: Add variants to `PendingSettingsOutcome` and route in `SettingsWidget`**
+- [x] **Step 3: Add variants to `PendingSettingsOutcome` and route in `SettingsWidget`**
 
 In `crates/sid-widgets/src/settings.rs` `PendingSettingsOutcome`, add:
 
@@ -559,7 +559,7 @@ In the `SettingsCategory::QuickActions` no-op arm, replace the no-op with:
                             }
 ```
 
-- [ ] **Step 4: Wire dispatch**
+- [x] **Step 4: Wire dispatch**
 
 In `apply_pending_settings_outcomes` add arms inside the `match outcome` block (replacing the `_ => {}` fallthrough added in Task 1 Step 4):
 
@@ -603,7 +603,7 @@ Run:
 cargo test -p sid settings
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```
 feat(sid-widgets,sid): QuickActions live-apply (settings branch 5)
@@ -618,7 +618,7 @@ feat(sid-widgets,sid): QuickActions live-apply (settings branch 5)
 - Modify: `crates/sid-widgets/src/settings.rs` — add `KeybindApplied` variant to `PendingSettingsOutcome`; route in `SettingsCategory::Keybinds` arm
 - Modify: `crates/sid/src/wire.rs` — handle `KeybindApplied` in `apply_pending_settings_outcomes`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add to `crates/sid-widgets/src/settings/keybind_editor.rs` inside `#[cfg(test)] mod tests`:
 
@@ -682,7 +682,7 @@ cargo test -p sid-widgets settings::keybind_editor::tests
 ```
 Expected: compile failure.
 
-- [ ] **Step 2: Implement `KeybindEditorOutcome` and `handle_event`**
+- [x] **Step 2: Implement `KeybindEditorOutcome` and `handle_event`**
 
 Before `const DANGEROUS_ACTIONS` in `crates/sid-widgets/src/settings/keybind_editor.rs`, insert:
 
@@ -834,7 +834,7 @@ cargo test -p sid-widgets settings::keybind_editor::tests
 ```
 Expected: all new tests pass.
 
-- [ ] **Step 3: Add `KeybindApplied` variant and route in `SettingsWidget`**
+- [x] **Step 3: Add `KeybindApplied` variant and route in `SettingsWidget`**
 
 In `crates/sid-widgets/src/settings.rs` `PendingSettingsOutcome`, add:
 
@@ -876,7 +876,7 @@ Replace the `SettingsCategory::Keybinds(_)` no-op arm with:
                             }
 ```
 
-- [ ] **Step 4: Wire dispatch**
+- [x] **Step 4: Wire dispatch**
 
 In `apply_pending_settings_outcomes`, add before `_ => {}`:
 
@@ -904,7 +904,7 @@ Run:
 cargo test -p sid settings
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```
 feat(sid-widgets,sid): Keybinds live-apply (settings branch 5)
@@ -920,7 +920,7 @@ feat(sid-widgets,sid): Keybinds live-apply (settings branch 5)
 - Modify: `crates/sid-widgets/src/settings.rs` — add `DbPathOverrideWritten` / `FactoryReset` variants; route both arms
 - Modify: `crates/sid/src/wire.rs` — handle both in `apply_pending_settings_outcomes`
 
-- [ ] **Step 1: Write failing tests for `DbPathOutcome`**
+- [x] **Step 1: Write failing tests for `DbPathOutcome`**
 
 Add to `crates/sid-widgets/src/settings/db_path.rs` tests:
 
@@ -1008,7 +1008,7 @@ cargo test -p sid-widgets "settings::db_path::tests|settings::reset::tests"
 ```
 Expected: compile failures.
 
-- [ ] **Step 2: Implement `DbPathOutcome` + `handle_event`**
+- [x] **Step 2: Implement `DbPathOutcome` + `handle_event`**
 
 Before `pub struct RestartNotice` in `crates/sid-widgets/src/settings/db_path.rs`, insert:
 
@@ -1090,7 +1090,7 @@ pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> DbPathOutcome {
 }
 ```
 
-- [ ] **Step 3: Implement `ResetOutcome` + `handle_event`**
+- [x] **Step 3: Implement `ResetOutcome` + `handle_event`**
 
 Before `pub const FACTORY_KEYS` in `crates/sid-widgets/src/settings/reset.rs`, insert:
 
@@ -1164,7 +1164,7 @@ cargo test -p sid-widgets "settings::db_path::tests|settings::reset::tests"
 ```
 Expected: all new tests pass.
 
-- [ ] **Step 4: Add variants to `PendingSettingsOutcome` and route both arms**
+- [x] **Step 4: Add variants to `PendingSettingsOutcome` and route both arms**
 
 In `crates/sid-widgets/src/settings.rs` `PendingSettingsOutcome`, add:
 
@@ -1219,7 +1219,7 @@ Route in the `SettingsCategory::Reset` arm:
 
 Remove the remaining `_ => {}` no-op arm from the `SettingsCategory` match — every category is now handled.
 
-- [ ] **Step 5: Wire dispatch**
+- [x] **Step 5: Wire dispatch**
 
 In `apply_pending_settings_outcomes`, add:
 
@@ -1259,7 +1259,7 @@ Run:
 cargo test -p sid settings && cargo test -p sid-widgets settings
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```
 feat(sid-widgets,sid): DbPath + Reset live-apply (settings branch 5)
@@ -1279,7 +1279,7 @@ The `ThemePickerOutcome::Applied { name }` variant was already returned by `Them
 - Modify: `crates/sid-widgets/src/settings.rs` — add `ThemeApplied` variant to `PendingSettingsOutcome`; update `Theme` arm (line ~701–704 in current file) to push on `Applied`
 - Modify: `crates/sid/src/wire.rs` — handle `ThemeApplied` in `apply_pending_settings_outcomes`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add to `crates/sid-widgets/src/settings.rs` `#[cfg(test)] mod tests`:
 
@@ -1315,7 +1315,7 @@ cargo test -p sid-widgets settings::tests::theme_applied_pushes_pending_outcome
 ```
 Expected: compile failure (no `ThemeApplied` variant).
 
-- [ ] **Step 2: Add `ThemeApplied` variant and route**
+- [x] **Step 2: Add `ThemeApplied` variant and route**
 
 In `PendingSettingsOutcome`, add:
 
@@ -1355,7 +1355,7 @@ cargo test -p sid-widgets settings::tests::theme_applied_pushes_pending_outcome
 ```
 Expected: passes.
 
-- [ ] **Step 3: Wire dispatch**
+- [x] **Step 3: Wire dispatch**
 
 In `apply_pending_settings_outcomes` add (before other non-BehaviorToggled arms):
 
@@ -1384,7 +1384,7 @@ Run:
 cargo test -p sid settings && cargo test -p sid-widgets settings
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```
 feat(sid-widgets,sid): Theme live-apply (settings branch 5)
@@ -1404,7 +1404,7 @@ This is the binding spec contract from `docs/superpowers/specs/2026-05-20-sid-fu
 - Create: `crates/sid/src/settings_undo.rs` — houses `UndoEntry`, TTL constants, and all unit + property tests including the spec-mandated `settings_undo::random_toggle_undo_sequence_preserves_baseline`
 - Modify: `crates/sid/src/lib.rs` or `crates/sid/src/main.rs` (whichever exports `wire`) — add `pub mod settings_undo;`
 
-- [ ] **Step 1: Create `crates/sid/src/settings_undo.rs` with TTL and property tests**
+- [x] **Step 1: Create `crates/sid/src/settings_undo.rs` with TTL and property tests**
 
 ```rust
 //! Per-session settings undo ring.
@@ -1646,7 +1646,7 @@ cargo test -p sid settings_undo
 ```
 Expected: compile failure (module not yet registered).
 
-- [ ] **Step 2: Register `settings_undo` module**
+- [x] **Step 2: Register `settings_undo` module**
 
 In `crates/sid/src/main.rs` (or wherever other wire-layer modules are declared), add:
 
@@ -1666,7 +1666,7 @@ cargo test -p sid settings_undo
 ```
 Expected: all tests pass; property test runs 256 cases.
 
-- [ ] **Step 3: Add `undo_ring` field to `SidApp`**
+- [x] **Step 3: Add `undo_ring` field to `SidApp`**
 
 In `crates/sid/src/wire.rs`, in `pub struct SidApp` (around line 196), add after `pub toasts: ToastQueue,`:
 
@@ -1689,7 +1689,7 @@ cargo build -p sid 2>&1 | head -30
 ```
 Expected: compiles (struct fields default-init warning only; we initialise explicitly).
 
-- [ ] **Step 4: Populate `undo_ring` in `apply_pending_settings_outcomes`**
+- [x] **Step 4: Populate `undo_ring` in `apply_pending_settings_outcomes`**
 
 Replace every `// [undo: Task 6] push prior value` and `// [undo: Task 6]` comment placeholder in `apply_pending_settings_outcomes` with actual ring pushes. Pattern for each variant:
 
@@ -1803,7 +1803,7 @@ Run:
 cargo build -p sid 2>&1 | head -30
 ```
 
-- [ ] **Step 5: Add `u`-chord interceptor in `run_event_loop`**
+- [x] **Step 5: Add `u`-chord interceptor in `run_event_loop`**
 
 In `run_event_loop` (`pub async fn run_event_loop`), in the hot path where chord events are processed (the block that checks `is_global_quit`, pushes modals, etc.), add before the `if !handled { sid_app.app.handle_event(&ev) }` block:
 
@@ -1925,7 +1925,7 @@ cargo test -p sid settings_undo && cargo build -p sid
 ```
 Expected: all pass; binary compiles.
 
-- [ ] **Step 6: Unit tests for `u` chord interceptor (without full event loop)**
+- [x] **Step 6: Unit tests for `u` chord interceptor (without full event loop)**
 
 Add to `crates/sid/src/settings_undo.rs` tests:
 
@@ -1978,7 +1978,7 @@ cargo test -p sid settings_undo
 ```
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```
 feat(sid): settings undo ring + u-chord interceptor (settings branch 5)
@@ -1998,6 +1998,8 @@ settings_undo::random_toggle_undo_sequence_preserves_baseline proptest
 independently-computed model).
 ```
 
+**Follow-up (recorded by review):** undo-for-additions is deliberate future work — pressing `u` after adding a net-new quick action to remove it is not currently supported. Today, additions are simply not undoable and the toast reflects that (no `(u: undo)` suffix when no prior record existed).
+
 ---
 
 ### Task 7: Snapshot tests + final gate
@@ -2009,7 +2011,7 @@ independently-computed model).
 - Modify: `crates/sid-widgets/src/settings/db_path.rs` — add insta snapshot
 - Modify: `crates/sid-widgets/src/settings/reset.rs` — add insta snapshot
 
-- [ ] **Step 1: Add insta snapshot tests for each modified sub-view**
+- [x] **Step 1: Add insta snapshot tests for each modified sub-view**
 
 For each sub-view that was modified add a test in its `#[cfg(test)] mod tests` block that renders into a fixed `TestBackend` and calls `insta::assert_snapshot!`. Pattern (use `render_into_frame` with a `TestBackend::new(60, 12)` buffer):
 
@@ -2041,7 +2043,7 @@ For each sub-view that was modified add a test in its `#[cfg(test)] mod tests` b
 
 Apply identical snapshot tests for `quick_actions`, `keybind_editor`, `db_path`, and `reset`. Each uses its appropriate constructor (`QuickActionsView::new(vec![])`, `KeybindEditorView::new(&ActionRegistry::new(), KeybindMap::new())`, `DbPathView::open(PathBuf::from("/x.redb"), tmp_path)`, `ResetView::new()`).
 
-- [ ] **Step 2: Run snapshot tests and accept**
+- [x] **Step 2: Run snapshot tests and accept**
 
 ```bash
 cargo test -p sid-widgets settings 2>&1 | grep -E "snapshot|FAILED"
@@ -2051,7 +2053,7 @@ Then:
 cargo insta accept -p sid-widgets
 ```
 
-- [ ] **Step 3: Final targeted gate**
+- [x] **Step 3: Final targeted gate**
 
 ```bash
 cargo test -p sid-widgets settings && cargo test -p sid settings_undo && cargo clippy -p sid-widgets -p sid -- -D warnings && cargo fmt --check
@@ -2059,7 +2061,7 @@ cargo test -p sid-widgets settings && cargo test -p sid settings_undo && cargo c
 
 Expected: all green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```
 test(sid-widgets): insta snapshots for all settings sub-views (branch 5)

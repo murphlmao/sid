@@ -5,5 +5,6 @@
 //! pure re-export; it contains no logic of its own.
 
 pub mod runtime;
+pub mod settings_undo;
 pub mod toast;
 pub mod wire;

@@ -19,6 +19,7 @@ use sid_store::{OpenStore, RedbStore, Store, Workspace, now_epoch};
 use tracing_subscriber::EnvFilter;
 
 mod runtime;
+mod settings_undo;
 mod toast;
 mod wire;
 
@@ -450,6 +451,14 @@ async fn main() -> Result<()> {
             .flatten()
             .unwrap_or_else(|| "cosmos".into())
     };
+    let active_keybind_profile = {
+        use sid_store::TypedSettings;
+        store
+            .get_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "cosmos".into())
+    };
     let active_keybinds = wire::load_active_keybinds(&*store);
     let action_registry_for_keybinds = sid_core::action::ActionRegistry::new();
     let workspace_roots_paths: Vec<std::path::PathBuf> = wire::default_discovery_roots();
@@ -471,6 +480,7 @@ async fn main() -> Result<()> {
         sid_widgets::settings::keybind_editor::KeybindEditorView::new(
             &action_registry_for_keybinds,
             active_keybinds,
+            active_keybind_profile,
         ),
     ));
     {
@@ -655,6 +665,7 @@ async fn main() -> Result<()> {
         form_origin_tab: None,
         pending_submits: Vec::new(),
         toasts: toast::ToastQueue::new(4),
+        undo_ring: std::collections::VecDeque::new(),
         jobs,
         ssh_client_factory: wire::build_ssh_client_factory_fn(),
         ssh_outcome_tx,

@@ -26,6 +26,23 @@ use sid_store::settings_keys::WORKSPACE_ROOTS;
 use sid_store::{SettingValue, Store};
 use sid_ui::Theme;
 
+/// Outcome returned by [`WorkspaceRootsView::handle_event`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::settings::workspace_roots::WorkspaceRootsOutcome;
+/// assert!(matches!(WorkspaceRootsOutcome::None, WorkspaceRootsOutcome::None));
+/// ```
+#[derive(Clone, Debug)]
+pub enum WorkspaceRootsOutcome {
+    /// Event was not consumed by this view.
+    None,
+    /// Roots list mutated; wire layer should persist via `Store::put_setting`.
+    /// Carries the new snapshot.
+    RootsChanged(Vec<std::path::PathBuf>),
+}
+
 /// Inline tilde-expansion (`~/foo` -> `$HOME/foo`). Anything else is returned
 /// unchanged.
 fn expand_tilde(s: &str) -> String {
@@ -279,6 +296,71 @@ impl WorkspaceRootsView {
         store.put_setting(WORKSPACE_ROOTS, &SettingValue(json.into_bytes()))
     }
 
+    /// Handle a key event. Returns [`WorkspaceRootsOutcome::RootsChanged`]
+    /// whenever the roots list is mutated. Navigation and character input
+    /// consume the event but return [`WorkspaceRootsOutcome::None`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crossterm::event::{KeyCode, KeyModifiers};
+    /// use sid_core::event::{Event, KeyChord};
+    /// use sid_widgets::settings::workspace_roots::{WorkspaceRootsOutcome, WorkspaceRootsView};
+    ///
+    /// let mut v = WorkspaceRootsView::new(vec![]);
+    /// let ev = Event::Key(KeyChord::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    /// assert!(matches!(v.handle_event(&ev), WorkspaceRootsOutcome::None));
+    /// ```
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event) -> WorkspaceRootsOutcome {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::Event;
+        let Event::Key(k) = ev else {
+            return WorkspaceRootsOutcome::None;
+        };
+        if self.is_adding() {
+            match k.code {
+                KeyCode::Char(c)
+                    if k.mods == KeyModifiers::NONE || k.mods == KeyModifiers::SHIFT =>
+                {
+                    self.type_char(c);
+                }
+                KeyCode::Backspace => {
+                    self.backspace();
+                }
+                KeyCode::Esc => {
+                    self.cancel_add();
+                }
+                KeyCode::Enter => match self.commit_add() {
+                    Ok(_) => return WorkspaceRootsOutcome::RootsChanged(self.roots().to_vec()),
+                    Err(e) => {
+                        // last_error already set by commit_add; don't change list.
+                        let _ = e;
+                    }
+                },
+                _ => {}
+            }
+            return WorkspaceRootsOutcome::None;
+        }
+        match (k.code, k.mods) {
+            (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+                self.next();
+            }
+            (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+                self.prev();
+            }
+            (KeyCode::Char('a') | KeyCode::Char('n'), KeyModifiers::NONE) => {
+                self.begin_add();
+            }
+            (KeyCode::Char('d') | KeyCode::Delete, KeyModifiers::NONE) => {
+                if self.remove_focused().is_some() {
+                    return WorkspaceRootsOutcome::RootsChanged(self.roots().to_vec());
+                }
+            }
+            _ => return WorkspaceRootsOutcome::None,
+        }
+        WorkspaceRootsOutcome::None
+    }
+
     /// Build a view from the persisted setting. Returns the default (`$HOME/vcs`
     /// if it exists, else empty) when the setting is absent.
     pub fn load(store: &dyn Store) -> Result<Self, SidError> {
@@ -521,6 +603,40 @@ mod tests {
         let v2 = WorkspaceRootsView::load(&store).unwrap();
         assert_eq!(v2.roots().len(), 1000);
         assert_eq!(v2.roots()[999], roots[999]);
+    }
+
+    #[test]
+    fn handle_event_add_mode_enter_commits_valid_path() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = WorkspaceRootsView::new(vec![]);
+        v.begin_add();
+        "/tmp".chars().for_each(|c| v.type_char(c));
+        let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(
+            matches!(out, WorkspaceRootsOutcome::RootsChanged(_)),
+            "commit valid path"
+        );
+    }
+
+    #[test]
+    fn handle_event_delete_emits_roots_changed() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = WorkspaceRootsView::new(vec![PathBuf::from("/a")]);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        let out = v.handle_event(&ev);
+        assert!(matches!(out, WorkspaceRootsOutcome::RootsChanged(_)));
+    }
+
+    #[test]
+    fn handle_event_non_destructive_key_returns_none() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = WorkspaceRootsView::new(vec![]);
+        let ev = Event::Key(KeyChord::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(v.handle_event(&ev), WorkspaceRootsOutcome::None));
     }
 
     #[test]
