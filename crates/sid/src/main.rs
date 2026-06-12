@@ -549,6 +549,49 @@ async fn main() -> Result<()> {
     let (secrets, keyring_active) =
         wire::build_secret_store(&store, Arc::clone(&store) as Arc<dyn Store>);
 
+    // One-time migration: move secrets from redb PlainStore to OS keyring.
+    // Runs only when keyring_active == true and the migration flag is not yet set.
+    let mut migration_toast: Option<crate::toast::Toast> = None;
+    if keyring_active {
+        use sid_secrets::migration::migrate_to_keyring;
+        use sid_store::TypedSettings;
+
+        let already_done = store
+            .get_bool(sid_store::settings_keys::KEYRING_MIGRATION_DONE)
+            .unwrap_or(None)
+            .unwrap_or(false);
+
+        if !already_done {
+            let plain_src = sid_secrets::PlainStore::new(Arc::clone(&store) as Arc<dyn Store>);
+            match migrate_to_keyring(&plain_src, &*secrets) {
+                Ok(result) if result.failed == 0 => {
+                    migration_toast = Some(crate::toast::Toast::success(format!(
+                        "Migrated {} secret(s) to OS keyring",
+                        result.migrated,
+                    )));
+                    tracing::info!(migrated = result.migrated, "keyring migration complete");
+                    let _ = store.put_bool(sid_store::settings_keys::KEYRING_MIGRATION_DONE, true);
+                }
+                Ok(result) => {
+                    migration_toast = Some(crate::toast::Toast::error(format!(
+                        "Keyring migration: {}/{} failed — will retry",
+                        result.failed,
+                        result.migrated + result.failed,
+                    )));
+                    tracing::warn!(
+                        migrated = result.migrated,
+                        failed = result.failed,
+                        errors = ?result.errors,
+                        "keyring migration partially failed; will retry next startup"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("keyring migration list_ids failed: {e}");
+                }
+            }
+        }
+    }
+
     // Background animation: load persisted AnimationConfig if any, else default.
     let animation = wire::load_animation_config(&*store);
     let fx_state = if animation.enabled {
@@ -586,6 +629,11 @@ async fn main() -> Result<()> {
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
     };
+
+    // Push migration result toast (set before sid_app existed).
+    if let Some(t) = migration_toast {
+        sid_app.toasts.push(t);
+    }
 
     // Push a toast if the user requested OS keyring but it was unavailable.
     {
