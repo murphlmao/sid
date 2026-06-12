@@ -1439,6 +1439,183 @@ pub fn render_to_string_with_resize(widget: &mut SshWidget, width: u16, height: 
 }
 
 // ---------------------------------------------------------------------------
+// SshInspector — Info + Editable FormSpec builder for the right-pane inspector
+// ---------------------------------------------------------------------------
+
+/// Read-only + prefs view for a selected SSH host.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+/// use sid_widgets::ssh::SshInspector;
+/// let h = SshHost {
+///     alias: "dev".into(), host: "10.0.0.1".into(), port: 22,
+///     user: "alice".into(), identity_file: None,
+///     source: SshHostSource::Manual, last_connected: 0,
+///     command_history: vec![], last_sftp_path: None,
+///     auth_kind: SshAuthKind::Agent,
+/// };
+/// let insp = SshInspector::from_host(&h);
+/// assert_eq!(insp.alias, "dev");
+/// ```
+#[derive(Clone, Debug)]
+pub struct SshInspector {
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub identity_file: Option<String>,
+    pub source: SshHostSource,
+    pub last_connected: u64,
+    pub last_sftp_path: Option<String>,
+    pub auth_kind: SshAuthKind,
+}
+
+impl SshInspector {
+    /// Build an inspector from a host record. Copies all fields.
+    pub fn from_host(h: &SshHost) -> Self {
+        Self {
+            alias: h.alias.clone(),
+            host: h.host.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            identity_file: h.identity_file.clone(),
+            source: h.source,
+            last_connected: h.last_connected,
+            last_sftp_path: h.last_sftp_path.clone(),
+            auth_kind: h.auth_kind,
+        }
+    }
+
+    /// Format `last_connected` epoch seconds as a human-readable string.
+    /// `0` → `"never"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+    /// use sid_widgets::ssh::SshInspector;
+    /// let h = SshHost {
+    ///     alias: "x".into(), host: "h".into(), port: 22, user: "u".into(),
+    ///     identity_file: None, source: SshHostSource::Manual, last_connected: 0,
+    ///     command_history: vec![], last_sftp_path: None, auth_kind: SshAuthKind::Agent,
+    /// };
+    /// assert_eq!(SshInspector::from_host(&h).last_connected_display(), "never");
+    /// ```
+    pub fn last_connected_display(&self) -> String {
+        if self.last_connected == 0 {
+            "never".to_string()
+        } else {
+            format!("{} s ago", self.last_connected)
+        }
+    }
+
+    /// Build a [`FormSpec`] for the inspector side pane.
+    ///
+    /// The `Info` section is always present with connection facts (alias, host,
+    /// port, user, auth, source, last-connected, last-SFTP-path).  The
+    /// `Editable` section (identity_file) is only included for `Manual` hosts;
+    /// SSH-Config entries are fully read-only.
+    ///
+    /// Form id: `"ssh.inspect:<alias>"`.
+    pub fn to_form_spec(&self) -> FormSpec {
+        let info_section = FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Info,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Display {
+                        label: "Alias".to_string(),
+                        body: self.alias.clone(),
+                    },
+                ),
+                FormField::new(
+                    "host",
+                    Field::Display {
+                        label: "Host".to_string(),
+                        body: format!("{}:{}", self.host, self.port),
+                    },
+                ),
+                FormField::new(
+                    "user",
+                    Field::Display {
+                        label: "User".to_string(),
+                        body: self.user.clone(),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Display {
+                        label: "Auth".to_string(),
+                        body: match self.auth_kind {
+                            SshAuthKind::Agent => "agent".to_string(),
+                            SshAuthKind::Key => "key".to_string(),
+                            SshAuthKind::Password => "password".to_string(),
+                        },
+                    },
+                ),
+                FormField::new(
+                    "source",
+                    Field::Display {
+                        label: "Source".to_string(),
+                        body: match self.source {
+                            SshHostSource::Manual => "manual".to_string(),
+                            SshHostSource::SshConfig => "~/.ssh/config".to_string(),
+                        },
+                    },
+                ),
+                FormField::new(
+                    "last_connected",
+                    Field::Display {
+                        label: "Last connected".to_string(),
+                        body: self.last_connected_display(),
+                    },
+                ),
+                FormField::new(
+                    "last_sftp_path",
+                    Field::Display {
+                        label: "Last SFTP path".to_string(),
+                        body: self
+                            .last_sftp_path
+                            .clone()
+                            .unwrap_or_else(|| "(none)".to_string()),
+                    },
+                ),
+            ],
+        };
+        // Only Manual hosts have an editable identity_file; SSH-Config entries
+        // are fully read-only (the config file itself stores that).
+        let editable_section = if self.source == SshHostSource::Manual {
+            Some(FormSection {
+                title: "Preferences".to_string(),
+                kind: SectionKind::Editable,
+                fields: vec![FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: self.identity_file.clone().unwrap_or_default(),
+                        placeholder: Some("~/.ssh/id_ed25519".to_string()),
+                    },
+                )],
+            })
+        } else {
+            None
+        };
+        let mut sections = vec![info_section];
+        if let Some(prefs) = editable_section {
+            sections.push(prefs);
+        }
+        FormSpec::new(
+            format!("ssh.inspect:{}", self.alias),
+            format!("SSH · {}", self.alias),
+            sections,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
@@ -1495,6 +1672,81 @@ mod tests {
         w.pending_background_open = Some("prod".into());
         assert_eq!(w.take_pending_background_open().as_deref(), Some("prod"));
         assert!(w.take_pending_background_open().is_none());
+    }
+
+    // --- Task 2: SshInspector ---
+
+    #[test]
+    fn inspector_from_host_copies_fields() {
+        let h = SshHost {
+            alias: "prod".into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            user: "alice".into(),
+            identity_file: Some("~/.ssh/prod_ed25519".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: Some("/home/alice".into()),
+            auth_kind: SshAuthKind::Key,
+        };
+        let insp = SshInspector::from_host(&h);
+        assert_eq!(insp.alias, "prod");
+        assert_eq!(insp.auth_kind, SshAuthKind::Key);
+        assert_eq!(insp.last_sftp_path.as_deref(), Some("/home/alice"));
+    }
+
+    #[test]
+    fn inspector_last_connected_display_zero_is_never() {
+        let h = make_host("x");
+        assert_eq!(
+            SshInspector::from_host(&h).last_connected_display(),
+            "never"
+        );
+    }
+
+    #[test]
+    fn inspector_form_spec_info_only_for_ssh_config_host() {
+        use crate::form::SectionKind;
+        let h = SshHost {
+            alias: "cfg".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::SshConfig,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let spec = SshInspector::from_host(&h).to_form_spec();
+        // SSH-Config hosts: only Info sections (no editable prefs).
+        assert!(spec.sections.iter().all(|s| s.kind == SectionKind::Info));
+        assert_eq!(spec.id.0, "ssh.inspect:cfg");
+    }
+
+    #[test]
+    fn inspector_form_spec_has_editable_prefs_for_manual_host() {
+        use crate::form::SectionKind;
+        let h = SshHost {
+            alias: "m".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Key,
+        };
+        let spec = SshInspector::from_host(&h).to_form_spec();
+        assert!(
+            spec.sections
+                .iter()
+                .any(|s| s.kind == SectionKind::Editable)
+        );
     }
 
     // --- Task 1: Snapshot — host list with add-new row ---

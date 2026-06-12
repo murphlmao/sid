@@ -24,7 +24,7 @@ pub use database::DatabaseWidget;
 pub use modal::*;
 pub use network::NetworkWidget;
 pub use settings::{SettingsCategory, SettingsWidget};
-pub use ssh::SshWidget;
+pub use ssh::{SshInspector, SshWidget};
 pub use system::SystemWidget;
 pub use workspace_detail::{CiStatus, RepoSummary, WorkspaceDetailWidget};
 pub use workspaces::WorkspacesWidget;
