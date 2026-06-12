@@ -13,7 +13,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use sid_core::adapters::git::GitProvider;
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
@@ -21,7 +21,9 @@ use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId}
 use sid_store::Workspace;
 use sid_ui::Theme;
 
-use crate::workspaces::RightPane;
+use crate::list_cursor::{CursorTarget, ListCursor};
+use crate::split_view::{SplitFocus, SplitView};
+use crate::workspace_detail_state::{DetailOp, DetailView, RepoDetail, RepoGit, SatelliteRow};
 
 /// CI status badge for a sub-repo. v1 always reports `Unknown` — wiring a
 /// real `gh run list` fetcher is tracked in the future-features backlog.
@@ -96,27 +98,36 @@ pub struct RepoSummary {
     pub ci_status: CiStatus,
 }
 
-/// Tab widget for the workspace detail view. Owns a workspace clone, a
-/// list of sub-repo summaries populated by the binary off-thread, a
-/// selection cursor, and a `RightPane` for drill-in.
+/// Tab widget for the Workspaces detail view (UX-v2 rework).
+///
+/// Owns the umbrella workspace, the row list (umbrella + satellites), a list
+/// cursor, the right-pane drill-in `SplitView`, an inner list cursor for the
+/// active pane list, the loaded `RepoDetail`, and a diff scroll offset. Git
+/// data is loaded off-thread by the binary and pushed in via the `apply_*`
+/// setters; this type never names `git2`.
 pub struct WorkspaceDetailWidget {
     id: WidgetId,
     workspace: Workspace,
-    sub_repos: Vec<RepoSummary>,
-    selected: usize,
-    right_pane: RightPane,
-    #[allow(dead_code)] // Used by a follow-up that wires the real per-sub-repo drill-in.
+    rows: Vec<SatelliteRow>,
+    list: ListCursor,
+    split: SplitView<DetailView>,
+    /// Cursor over the active pane list (commits or branches).
+    pane_list: ListCursor,
+    /// Loaded detail for the currently-selected row.
+    detail: RepoDetail,
+    /// Scroll offset within the diff view.
+    diff_scroll: usize,
+    #[allow(dead_code)] // The binary opens providers itself; kept for symmetry.
     git_factory: Option<Arc<dyn GitProvider>>,
-    /// True while the scan job is still running. Renderer shows a
-    /// "scanning…" hint until results land.
+    /// True until the satellite scan lands.
     scanning: bool,
 }
 
 impl WorkspaceDetailWidget {
-    /// Construct with a workspace and the git factory (cloned from the
-    /// overview widget so all detail tabs share the same provider).
-    /// Sub-repos start empty + `scanning = true`; the binary calls
-    /// [`Self::apply_scan_results`] once the off-thread scan completes.
+    /// Construct with the umbrella workspace. The list seeds with the single
+    /// umbrella row (`is_umbrella = true`); satellites arrive via
+    /// [`Self::apply_satellites`]. The right pane starts on the ops menu with
+    /// list focus.
     ///
     /// # Examples
     ///
@@ -127,8 +138,8 @@ impl WorkspaceDetailWidget {
     /// use sid_widgets::workspace_detail::WorkspaceDetailWidget;
     ///
     /// let ws = Workspace {
-    ///     path: PathBuf::from("/vcs/x"),
-    ///     name: "x".into(),
+    ///     path: PathBuf::from("/stack"),
+    ///     name: "gen4-stack".into(),
     ///     kind: WorkspaceKind::Umbrella,
     ///     manifest_hash: 0,
     ///     last_seen: 0,
@@ -136,208 +147,192 @@ impl WorkspaceDetailWidget {
     /// };
     /// let w = WorkspaceDetailWidget::new(ws, None);
     /// assert!(w.is_scanning());
-    /// assert_eq!(w.sub_repos().len(), 0);
+    /// assert_eq!(w.rows().len(), 1);
     /// ```
     pub fn new(workspace: Workspace, git_factory: Option<Arc<dyn GitProvider>>) -> Self {
         let tab_id = format!("workspace_detail:{}", workspace.path.display());
+        let umbrella_row = SatelliteRow {
+            name: workspace.name.clone(),
+            path: workspace.path.clone(),
+            is_umbrella: true,
+            git: RepoGit::loading(),
+        };
         Self {
             id: WidgetId::new(tab_id),
             workspace,
-            sub_repos: Vec::new(),
-            selected: 0,
-            right_pane: RightPane::default(),
+            rows: vec![umbrella_row],
+            list: ListCursor::new(1, false, 0),
+            split: SplitView::default(),
+            pane_list: ListCursor::new(0, false, 0),
+            detail: RepoDetail::default(),
+            diff_scroll: 0,
             git_factory,
             scanning: true,
         }
     }
 
-    /// Apply a completed scan's results. Called by the binary once the
-    /// background scan job returns. Clears the `scanning` flag and
-    /// clamps `selected` if the new result set is smaller.
-    pub fn apply_scan_results(&mut self, results: Vec<RepoSummary>) {
-        self.sub_repos = results;
+    /// Append satellites after the umbrella row and clear the scanning flag.
+    /// Re-clamps the list cursor.
+    pub fn apply_satellites(&mut self, satellites: Vec<SatelliteRow>) {
+        self.rows.truncate(1); // keep the umbrella row only
+        self.rows.extend(satellites);
         self.scanning = false;
-        if self.selected >= self.sub_repos.len() {
-            self.selected = 0;
+        self.list = ListCursor::new(self.rows.len(), false, self.list.pos);
+    }
+
+    /// Replace one row's git snapshot, matched by path. No-op if no row matches.
+    pub fn apply_row_git(&mut self, path: &std::path::Path, git: RepoGit) {
+        if let Some(row) = self.rows.iter_mut().find(|r| r.path == path) {
+            row.git = git;
         }
     }
 
-    /// Whether the off-thread scan is still running.
+    /// Replace the loaded detail for the selected row and reset the pane cursor
+    /// + diff scroll. Sizes the pane cursor to whichever list the active op shows.
+    pub fn apply_detail(&mut self, detail: RepoDetail) {
+        self.detail = detail;
+        self.diff_scroll = 0;
+        let len = self.active_pane_len();
+        self.pane_list = ListCursor::new(len, false, 0);
+    }
+
+    /// Number of items in the currently-shown pane list.
+    fn active_pane_len(&self) -> usize {
+        match self.split.top() {
+            Some(DetailView::Op(DetailOp::Branches)) => self.detail.branches.len(),
+            Some(DetailView::Op(DetailOp::Outgoing | DetailOp::Log)) => self.detail.commits.len(),
+            _ => 0,
+        }
+    }
+
+    /// Whether the satellite scan is still running.
     pub fn is_scanning(&self) -> bool {
         self.scanning
     }
 
-    /// Borrow the loaded sub-repo summaries.
-    pub fn sub_repos(&self) -> &[RepoSummary] {
-        &self.sub_repos
+    /// The row list (umbrella first, then satellites).
+    pub fn rows(&self) -> &[SatelliteRow] {
+        &self.rows
     }
 
-    /// Borrow the workspace this detail tab represents.
+    /// The umbrella workspace this detail tab represents.
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
     }
 
-    /// Current selection cursor.
-    pub fn selected_index(&self) -> usize {
-        self.selected
+    /// The drill-in split state (focus + view stack).
+    pub fn split(&self) -> &SplitView<DetailView> {
+        &self.split
     }
 
-    /// Currently-selected sub-repo, or `None` if the list is empty.
-    pub fn selected_repo(&self) -> Option<&RepoSummary> {
-        self.sub_repos.get(self.selected)
+    /// The currently-selected row, if any.
+    pub fn selected_row(&self) -> Option<&SatelliteRow> {
+        match self.list.target() {
+            CursorTarget::Item(i) => self.rows.get(i),
+            _ => None,
+        }
     }
 
-    /// Advance selection (wraps).
+    /// Index into `detail.commits` the pane cursor points at (Outgoing/Log).
+    pub fn selected_commit_index(&self) -> Option<usize> {
+        match (self.split.top(), self.pane_list.target()) {
+            (Some(DetailView::Op(DetailOp::Outgoing | DetailOp::Log)), CursorTarget::Item(i)) => {
+                Some(i)
+            }
+            _ => None,
+        }
+    }
+
+    /// Diff scroll offset.
+    pub fn diff_scroll(&self) -> usize {
+        self.diff_scroll
+    }
+
+    /// Move the list selection down; re-root the right pane (selecting a row
+    /// resets the drill-in to that row's ops menu, list-focused).
     pub fn select_next(&mut self) {
-        if !self.sub_repos.is_empty() {
-            self.selected = (self.selected + 1) % self.sub_repos.len();
-        }
+        self.list.down();
+        self.split.reset();
     }
 
-    /// Step selection back (wraps).
+    /// Move the list selection up; re-root the right pane.
     pub fn select_prev(&mut self) {
-        if !self.sub_repos.is_empty() {
-            let n = self.sub_repos.len();
-            self.selected = if self.selected == 0 {
-                n - 1
-            } else {
-                self.selected - 1
-            };
+        self.list.up();
+        self.split.reset();
+    }
+
+    /// Push an op view onto the stack (focuses the pane).
+    pub fn enter_op(&mut self, op: DetailOp) {
+        self.split.push(DetailView::Op(op));
+        self.pane_list = ListCursor::new(self.active_pane_len(), false, 0);
+        self.diff_scroll = 0;
+    }
+
+    /// From an Outgoing/Log commit list, drill into the selected commit's diff.
+    pub fn drill_into_commit(&mut self) {
+        if let Some(i) = self.selected_commit_index() {
+            self.split.push(DetailView::Diff(i));
+            self.diff_scroll = 0;
         }
     }
 
-    /// ratatui-aware draw. Top 40%: 6-column table. Bottom: a placeholder
-    /// for the per-sub-repo drill-in pane.
-    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(40), Constraint::Min(0)])
-            .split(area);
-        self.render_table(frame, split[0], theme);
-        self.render_drilldown(frame, split[1], theme);
+    /// Pop one drill-in level; when the stack empties, focus returns to the list.
+    pub fn pop_view(&mut self) {
+        self.split.pop();
+        self.pane_list = ListCursor::new(self.active_pane_len(), false, 0);
+        self.diff_scroll = 0;
     }
 
-    fn render_table(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        let title = format!(" {} ", self.workspace.name);
+    /// Move the active pane list cursor down.
+    pub fn pane_next(&mut self) {
+        self.pane_list.down();
+    }
+
+    /// Move the active pane list cursor up.
+    pub fn pane_prev(&mut self) {
+        self.pane_list.up();
+    }
+
+    /// Scroll the diff view down one line.
+    pub fn diff_scroll_down(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_add(1);
+    }
+
+    /// Scroll the diff view up one line.
+    pub fn diff_scroll_up(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_sub(1);
+    }
+
+    /// Borrow the loaded detail (for the renderer).
+    pub fn detail(&self) -> &RepoDetail {
+        &self.detail
+    }
+
+    /// Pane cursor (for the renderer to highlight the selected list row).
+    pub fn pane_cursor(&self) -> &ListCursor {
+        &self.pane_list
+    }
+
+    /// ratatui-aware draw. Interim placeholder body — Task 5 replaces this with
+    /// the umbrella-header + satellite-list + drill-in-pane renderer. Kept here
+    /// so the crate (and [`render_to_string`]) compiles between Task 4 and 5.
+    pub fn render_into_frame(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent_primary.into()))
-            .title(title);
-
-        if self.scanning && self.sub_repos.is_empty() {
-            let para = Paragraph::new(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("scanning {} for sub-repos…", self.workspace.path.display()),
-                    Style::default().fg(theme.muted.into()),
-                ),
-            ]))
-            .block(block);
-            frame.render_widget(para, area);
-            return;
-        }
-
-        if self.sub_repos.is_empty() {
-            let para = Paragraph::new(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!(
-                        "no sub-repos found under {} — is the path correct?",
-                        self.workspace.path.display()
-                    ),
-                    Style::default().fg(theme.muted.into()),
-                ),
-            ]))
-            .block(block);
-            frame.render_widget(para, area);
-            return;
-        }
-
-        let header = Row::new(["REPO", "BRANCH", "↑/↓", "DIRTY", "AGE", "CI"]).style(
-            Style::default()
-                .fg(theme.muted.into())
-                .add_modifier(Modifier::BOLD),
-        );
-        let body: Vec<Row> = self
-            .sub_repos
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let ahead_behind = match (r.ahead, r.behind) {
-                    (0, 0) => "—".to_string(),
-                    (a, 0) => format!("↑{a}"),
-                    (0, b) => format!("↓{b}"),
-                    (a, b) => format!("↑{a} ↓{b}"),
-                };
-                let dirty = if r.dirty == 0 {
-                    "clean".to_string()
-                } else {
-                    format!("●{}", r.dirty)
-                };
-                let age = format_age(r.last_commit_age_secs);
-                let style = if i == self.selected {
-                    Style::default()
-                        .fg(theme.background.into())
-                        .bg(theme.accent_primary.into())
-                } else {
-                    Style::default().fg(theme.foreground.into())
-                };
-                Row::new(vec![
-                    r.name.clone(),
-                    r.branch.clone(),
-                    ahead_behind,
-                    dirty,
-                    age,
-                    r.ci_status.glyph().to_string(),
-                ])
-                .style(style)
-            })
-            .collect();
-        let table = Table::new(
-            body,
-            [
-                Constraint::Min(12),
-                Constraint::Length(20),
-                Constraint::Length(10),
-                Constraint::Length(8),
-                Constraint::Length(10),
-                Constraint::Length(4),
-            ],
-        )
-        .header(header)
-        .block(block);
-        frame.render_widget(table, area);
-    }
-
-    fn render_drilldown(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        let title = match self.selected_repo() {
-            Some(r) => format!(" {} — {} ", r.name, self.right_pane.label()),
-            None => format!(" {} ", self.right_pane.label()),
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.muted.into()))
-            .title(title);
-        let body = if let Some(r) = self.selected_repo() {
-            vec![
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw("  branch: "),
-                    Span::styled(
-                        r.branch.clone(),
-                        Style::default().fg(theme.accent_primary.into()),
-                    ),
-                ]),
-                Line::from(""),
-                Line::from(vec![Span::styled(
-                    "  (Branches / Status / Log / Diff / Commit / Actions drill-in coming in a follow-up)",
-                    Style::default().fg(theme.muted.into()),
-                )]),
-            ]
+            .title(format!(" {} ", self.workspace.name));
+        let line = if self.scanning {
+            Line::from(Span::styled(
+                "  scanning for satellites…",
+                Style::default().fg(theme.muted.into()),
+            ))
         } else {
-            vec![Line::from(""), Line::from("  (no repo selected)")]
+            Line::from(Span::styled(
+                "  loaded",
+                Style::default().fg(theme.foreground.into()),
+            ))
         };
-        frame.render_widget(Paragraph::new(body).block(block), area);
+        frame.render_widget(Paragraph::new(line).block(block), area);
     }
 }
 
@@ -452,4 +447,142 @@ pub fn render_to_string(widget: &WorkspaceDetailWidget, width: u16, height: u16)
         s.push('\n');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::split_view::SplitFocus;
+    use sid_core::adapters::git::CommitInfo;
+    use sid_core::workspace_metadata::WorkspaceKind;
+    use sid_store::Workspace;
+
+    fn umbrella() -> Workspace {
+        Workspace {
+            path: std::path::PathBuf::from("/stack"),
+            name: "gen4-stack".into(),
+            kind: WorkspaceKind::Umbrella,
+            manifest_hash: 0,
+            last_seen: 0,
+            parent: None,
+        }
+    }
+
+    #[test]
+    fn new_seeds_umbrella_row_and_is_scanning() {
+        let w = WorkspaceDetailWidget::new(umbrella(), None);
+        assert!(w.is_scanning());
+        // exactly the umbrella row until satellites land
+        assert_eq!(w.rows().len(), 1);
+        assert!(w.rows()[0].is_umbrella);
+        assert_eq!(w.rows()[0].name, "gen4-stack");
+    }
+
+    #[test]
+    fn apply_satellites_appends_after_umbrella_row() {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        w.apply_satellites(vec![
+            SatelliteRow {
+                name: "api".into(),
+                path: "/stack/api".into(),
+                is_umbrella: false,
+                git: RepoGit::loading(),
+            },
+            SatelliteRow {
+                name: "web".into(),
+                path: "/stack/web".into(),
+                is_umbrella: false,
+                git: RepoGit::loading(),
+            },
+        ]);
+        assert!(!w.is_scanning());
+        assert_eq!(w.rows().len(), 3);
+        assert!(w.rows()[0].is_umbrella);
+        assert_eq!(w.rows()[1].name, "api");
+    }
+
+    #[test]
+    fn apply_row_git_updates_matching_path_only() {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        w.apply_satellites(vec![SatelliteRow {
+            name: "api".into(),
+            path: "/stack/api".into(),
+            is_umbrella: false,
+            git: RepoGit::loading(),
+        }]);
+        w.apply_row_git(
+            std::path::Path::new("/stack/api"),
+            RepoGit::loaded("main".into(), 2, 1, 0),
+        );
+        let api = w.rows().iter().find(|r| r.name == "api").unwrap();
+        assert!(!api.git.is_loading());
+        assert_eq!(api.git.outgoing, 1);
+        // unknown path is a no-op (no panic)
+        w.apply_row_git(
+            std::path::Path::new("/nope"),
+            RepoGit::loaded("x".into(), 0, 0, 0),
+        );
+    }
+
+    #[test]
+    fn list_navigation_wraps_via_cursor() {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        w.apply_satellites(vec![SatelliteRow {
+            name: "api".into(),
+            path: "/stack/api".into(),
+            is_umbrella: false,
+            git: RepoGit::loading(),
+        }]);
+        assert_eq!(w.selected_row().unwrap().name, "gen4-stack");
+        w.select_next();
+        assert_eq!(w.selected_row().unwrap().name, "api");
+        w.select_next(); // saturates at bottom (ListCursor::down does not wrap)
+        assert_eq!(w.selected_row().unwrap().name, "api");
+        w.select_prev();
+        assert_eq!(w.selected_row().unwrap().name, "gen4-stack");
+    }
+
+    #[test]
+    fn enter_op_drills_into_pane_and_left_pops_back_to_list() {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        // start on the ops menu, focus list
+        assert_eq!(w.split().focus(), SplitFocus::List);
+        w.enter_op(DetailOp::Outgoing); // push Op(Outgoing)
+        assert_eq!(w.split().focus(), SplitFocus::Pane);
+        assert_eq!(w.split().top(), Some(&DetailView::Op(DetailOp::Outgoing)));
+        // drill into a commit's diff
+        w.apply_detail(RepoDetail {
+            commits: vec![CommitInfo {
+                oid: "abc".into(),
+                summary: "s".into(),
+                author_name: "a".into(),
+                author_email: "a@b".into(),
+                timestamp_secs: 0,
+                parents: vec![],
+            }],
+            ..RepoDetail::default()
+        });
+        w.drill_into_commit();
+        assert_eq!(w.split().top(), Some(&DetailView::Diff(0)));
+        w.pop_view(); // back to Op(Outgoing)
+        assert_eq!(w.split().top(), Some(&DetailView::Op(DetailOp::Outgoing)));
+        w.pop_view(); // back to list
+        assert_eq!(w.split().focus(), SplitFocus::List);
+    }
+
+    #[test]
+    fn selecting_a_new_row_resets_the_drill_in() {
+        let mut w = WorkspaceDetailWidget::new(umbrella(), None);
+        w.apply_satellites(vec![SatelliteRow {
+            name: "api".into(),
+            path: "/stack/api".into(),
+            is_umbrella: false,
+            git: RepoGit::loading(),
+        }]);
+        w.enter_op(DetailOp::Branches);
+        assert_eq!(w.split().focus(), SplitFocus::Pane);
+        w.select_next(); // moving the list selection re-roots the right pane
+        assert_eq!(w.split().focus(), SplitFocus::List);
+        assert_eq!(w.split().depth(), 0);
+    }
 }

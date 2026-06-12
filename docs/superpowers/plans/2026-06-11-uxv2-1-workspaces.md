@@ -544,7 +544,7 @@ Replace the v1 `WorkspaceDetailWidget` (sub-repo `RepoSummary` table + placehold
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail.rs` (replace the struct body + inherent impl + `Widget` impl; keep `CiStatus`, `RepoSummary`, `format_age`, `render_to_string`)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Add these to the `#[cfg(test)] mod tests` at the bottom of `workspace_detail.rs` (create the mod if absent — the file currently has none):
 
@@ -669,12 +669,12 @@ mod tests {
 
 Note: inside sid-widgets, reference these items via `crate::...`, not by the crate's own name.
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Expected: compile errors — `rows`, `apply_satellites`, `split`, etc. missing.
 
-- [ ] **Step 3: Replace the struct + inherent impl**
+- [x] **Step 3: Replace the struct + inherent impl**
 
 Replace the struct (lines 99–113) and the inherent `impl WorkspaceDetailWidget` block (lines 115–342) with:
 
@@ -902,12 +902,12 @@ impl WorkspaceDetailWidget {
 
 Note for the executor: the old `apply_scan_results(&mut self, Vec<RepoSummary>)` is gone — the binary now calls `apply_satellites`. Task 7 updates the wire-layer call site. Until then `cargo test -p sid` will not compile; that is expected and fixed in Task 7. Run only the scoped `-p sid-widgets` tests for Tasks 4–6.
 
-- [ ] **Step 4: Re-run (expect pass on sid-widgets only)**
+- [x] **Step 4: Re-run (expect pass on sid-widgets only)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests && cargo test -p sid-widgets --doc workspace_detail`
 Expected: 6 unit tests + the `new` doc test pass. (The `render_to_string` doc test still asserts `s.contains("scanning")`; Task 5's renderer keeps a "scanning…" string, so it stays green — but if it goes red before Task 5 lands, that is acceptable interim state; Task 5 makes it green.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail.rs
