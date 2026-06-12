@@ -99,6 +99,9 @@ nix = { version = "0.29", features = ["signal", "process"] }
 # Paths
 directories = "5"
 
+# Keyring / OS secret service
+keyring = "3"
+
 # System / subprocess utilities
 which = "7"
 shell-words = "1.1"
