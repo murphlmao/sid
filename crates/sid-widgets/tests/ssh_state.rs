@@ -35,30 +35,33 @@ fn cfg(alias: &str) -> SshConfigEntryLite {
 
 #[test]
 fn state_holds_hosts_and_selects_first() {
-    let s = SshState::new(vec![host("a", SshHostSource::Manual)], vec![]);
+    let s = SshState::new(vec![host("a", SshHostSource::Manual)], vec![], false);
     assert_eq!(s.selected_alias().unwrap(), "a");
 }
 
 #[test]
-fn next_and_prev_cycle_selection() {
+fn next_and_prev_move_selection() {
+    // ListCursor saturates (no wrap) — at the last item, down() stays put.
     let mut s = SshState::new(
         vec![
             host("a", SshHostSource::Manual),
             host("b", SshHostSource::Manual),
         ],
         vec![],
+        false,
     );
     s.select_next();
     assert_eq!(s.selected_alias().unwrap(), "b");
+    // at bottom, next saturates (stays on "b")
     s.select_next();
-    assert_eq!(s.selected_alias().unwrap(), "a");
-    s.select_prev();
     assert_eq!(s.selected_alias().unwrap(), "b");
+    s.select_prev();
+    assert_eq!(s.selected_alias().unwrap(), "a");
 }
 
 #[test]
 fn empty_state_has_no_selection() {
-    let s = SshState::new(vec![], vec![]);
+    let s = SshState::new(vec![], vec![], false);
     assert!(s.selected_alias().is_none());
 }
 
@@ -67,6 +70,7 @@ fn merges_ssh_config_entries_with_store_hosts() {
     let s = SshState::new(
         vec![host("manual-only", SshHostSource::Manual)],
         vec![cfg("config-only"), cfg("manual-only")],
+        false,
     );
     let aliases: Vec<_> = s.visible_hosts().iter().map(|h| h.alias.clone()).collect();
     assert!(aliases.contains(&"manual-only".to_string()));
@@ -87,7 +91,7 @@ fn merges_ssh_config_entries_with_store_hosts() {
 
 #[test]
 fn select_next_on_empty_is_noop() {
-    let mut s = SshState::new(vec![], vec![]);
+    let mut s = SshState::new(vec![], vec![], false);
     s.select_next();
     s.select_prev();
     assert!(s.selected_alias().is_none());

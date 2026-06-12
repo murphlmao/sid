@@ -119,7 +119,7 @@ fn ssh_j_only_acts_on_focused_pane() {
             auth_kind: sid_store::SshAuthKind::Agent,
         },
     ];
-    let state = sid_widgets::ssh::SshState::new(hosts, vec![]);
+    let state = sid_widgets::ssh::SshState::new(hosts, vec![], false);
     let mut w = SshWidget::with_state(state);
     let mut c = ctx();
     assert_eq!(w.state().selected_alias(), Some("alpha"));
@@ -223,7 +223,8 @@ fn host_for(alias: &str) -> sid_store::SshHost {
 #[test]
 fn enter_on_host_sets_pending_connect_and_marks_connecting() {
     use sid_widgets::ssh::ConnectionPhase;
-    let state = sid_widgets::ssh::SshState::new(vec![host_for("alpha"), host_for("bravo")], vec![]);
+    let state =
+        sid_widgets::ssh::SshState::new(vec![host_for("alpha"), host_for("bravo")], vec![], false);
     let mut w = SshWidget::with_state(state);
     let mut c = ctx();
     assert_eq!(w.focused_pane(), SshFocus::Hosts);
@@ -256,7 +257,7 @@ fn enter_on_empty_host_list_is_a_noop() {
 
 #[test]
 fn enter_when_detail_focused_does_not_queue_a_connect() {
-    let state = sid_widgets::ssh::SshState::new(vec![host_for("alpha")], vec![]);
+    let state = sid_widgets::ssh::SshState::new(vec![host_for("alpha")], vec![], false);
     let mut w = SshWidget::with_state(state);
     let mut c = ctx();
     w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);

@@ -56,6 +56,7 @@ fn snapshot_three_hosts_default_selection() {
             host("staging-bastion", SshHostSource::Manual),
         ],
         vec![cfg("github.com")],
+        false,
     );
     let w = SshWidget::with_state(state);
     let s = render_to_string(&w, 80, 16);
@@ -70,6 +71,7 @@ fn snapshot_three_hosts_second_selected() {
             host("staging-bastion", SshHostSource::Manual),
         ],
         vec![cfg("github.com")],
+        false,
     );
     let mut w = SshWidget::with_state(state);
     w.state_mut().select_next();
@@ -79,7 +81,11 @@ fn snapshot_three_hosts_second_selected() {
 
 #[test]
 fn snapshot_connecting_state() {
-    let state = SshState::new(vec![host("my-prod-server", SshHostSource::Manual)], vec![]);
+    let state = SshState::new(
+        vec![host("my-prod-server", SshHostSource::Manual)],
+        vec![],
+        false,
+    );
     let mut w = SshWidget::with_state(state);
     w.connection_mut().begin_connecting("my-prod-server".into());
     let s = render_to_string(&w, 80, 16);
@@ -88,7 +94,11 @@ fn snapshot_connecting_state() {
 
 #[test]
 fn snapshot_connected_with_sftp_toggled() {
-    let state = SshState::new(vec![host("my-prod-server", SshHostSource::Manual)], vec![]);
+    let state = SshState::new(
+        vec![host("my-prod-server", SshHostSource::Manual)],
+        vec![],
+        false,
+    );
     let mut w = SshWidget::with_state(state);
     w.connection_mut().begin_connecting("my-prod-server".into());
     w.connection_mut().mark_connected();
@@ -128,7 +138,11 @@ fn snapshot_connected_with_sftp_toggled() {
 /// Build a Connected widget with a single host and an attached `PtyPane`
 /// wrapping a fresh `Vt100Screen` sized `rows x cols`.
 fn connected_widget_with_pane(rows: u16, cols: u16) -> SshWidget {
-    let state = SshState::new(vec![host("my-prod-server", SshHostSource::Manual)], vec![]);
+    let state = SshState::new(
+        vec![host("my-prod-server", SshHostSource::Manual)],
+        vec![],
+        false,
+    );
     let mut w = SshWidget::with_state(state);
     w.connection_mut().begin_connecting("my-prod-server".into());
     w.connection_mut().mark_connected();

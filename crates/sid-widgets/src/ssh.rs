@@ -19,9 +19,13 @@ use sid_core::adapters::ssh::{SftpEntry, SshClient};
 use sid_core::context::WidgetCtx;
 use sid_core::event::Event;
 use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
-use sid_store::{SshHost, SshHostSource};
+use sid_store::{SshAuthKind, SshHost, SshHostSource};
 use sid_ui::Theme;
 use sid_ui::themes::cosmos;
+
+use crate::form::{FormField, FormSection, FormSpec, SectionKind, Validate};
+use crate::list_cursor::{CursorTarget, ListCursor};
+use crate::modal::Field;
 
 // ---------------------------------------------------------------------------
 // SSH config entry (lite copy — widget crate never names sid-ssh)
@@ -61,25 +65,32 @@ pub struct SshState {
     store_hosts: Vec<SshHost>,
     config_entries: Vec<SshConfigEntryLite>,
     merged: Vec<SshHost>,
-    selected_idx: usize,
+    /// Cursor tracking selection + optional synthetic add-new row.
+    pub cursor: ListCursor,
 }
 
 impl SshState {
     /// Construct from the store's manual hosts plus ssh-config entries.
     ///
+    /// `show_add_new` controls whether a synthetic "+ add new" row is prepended.
+    ///
     /// # Examples
     ///
     /// ```
     /// use sid_widgets::ssh::SshState;
-    /// let s = SshState::new(vec![], vec![]);
+    /// let s = SshState::new(vec![], vec![], false);
     /// assert!(s.selected_alias().is_none());
     /// ```
-    pub fn new(store_hosts: Vec<SshHost>, config_entries: Vec<SshConfigEntryLite>) -> Self {
+    pub fn new(
+        store_hosts: Vec<SshHost>,
+        config_entries: Vec<SshConfigEntryLite>,
+        show_add_new: bool,
+    ) -> Self {
         let mut s = Self {
             store_hosts,
             config_entries,
             merged: Vec::new(),
-            selected_idx: 0,
+            cursor: ListCursor::new(0, show_add_new, 0),
         };
         s.recompute_merged();
         s
@@ -108,37 +119,40 @@ impl SshState {
             by_alias.insert(h.alias.clone(), h.clone());
         }
         self.merged = by_alias.into_values().collect();
-        if self.merged.is_empty() {
-            self.selected_idx = 0;
-        } else if self.selected_idx >= self.merged.len() {
-            self.selected_idx = self.merged.len() - 1;
-        }
+        // Re-clamp: rebuild cursor with same add_new flag, same pos (clamps automatically).
+        let add_new = self.cursor.add_new;
+        let pos = self.cursor.pos;
+        self.cursor = ListCursor::new(self.merged.len(), add_new, pos);
     }
 
     pub fn visible_hosts(&self) -> &[SshHost] {
         &self.merged
     }
 
+    /// Returns the alias of the currently-selected item, or `None` when cursor
+    /// is on the add-new row or there are no hosts.
     pub fn selected_alias(&self) -> Option<&str> {
-        self.merged.get(self.selected_idx).map(|h| h.alias.as_str())
+        match self.cursor.target() {
+            CursorTarget::Item(i) => self.merged.get(i).map(|h| h.alias.as_str()),
+            _ => None,
+        }
     }
 
+    /// Returns the currently-selected host, or `None` when cursor is on the
+    /// add-new row or there are no hosts.
     pub fn selected_host(&self) -> Option<&SshHost> {
-        self.merged.get(self.selected_idx)
+        match self.cursor.target() {
+            CursorTarget::Item(i) => self.merged.get(i),
+            _ => None,
+        }
     }
 
     pub fn select_next(&mut self) {
-        if self.merged.is_empty() {
-            return;
-        }
-        self.selected_idx = (self.selected_idx + 1) % self.merged.len();
+        self.cursor.down();
     }
 
     pub fn select_prev(&mut self) {
-        if self.merged.is_empty() {
-            return;
-        }
-        self.selected_idx = (self.selected_idx + self.merged.len() - 1) % self.merged.len();
+        self.cursor.up();
     }
 
     pub fn set_store_hosts(&mut self, hosts: Vec<SshHost>) {
@@ -149,6 +163,16 @@ impl SshState {
     pub fn set_config_entries(&mut self, entries: Vec<SshConfigEntryLite>) {
         self.config_entries = entries;
         self.recompute_merged();
+    }
+
+    /// Current cursor state (add-new flag + position).
+    pub fn cursor(&self) -> ListCursor {
+        self.cursor
+    }
+
+    /// Toggle the synthetic add-new row on/off, preserving cursor position.
+    pub fn set_add_new(&mut self, v: bool) {
+        self.cursor = ListCursor::new(self.merged.len(), v, self.cursor.pos);
     }
 }
 
@@ -570,6 +594,9 @@ pub struct SshWidget {
     // widget marks intent (alias), the binary acts on it. See
     // `take_pending_connect`.
     pending_connect: Option<String>,
+    /// Set when the cursor is on the add-new row and the user presses `Enter`.
+    /// Drained by the wire layer, which opens the add-host `FormPane`.
+    pub pending_add_new: bool,
     // Injected by wire.rs in production.
     _ssh_factory: Option<Arc<dyn Fn() -> Box<dyn SshClient> + Send + Sync>>,
     _pty_provider: Option<Arc<dyn PtyProvider>>,
@@ -578,7 +605,7 @@ pub struct SshWidget {
 impl SshWidget {
     /// Zero-arg constructor (kept for `wire::build_app` compatibility).
     pub fn new() -> Self {
-        Self::with_state(SshState::new(Vec::new(), Vec::new()))
+        Self::with_state(SshState::new(Vec::new(), Vec::new(), false))
     }
 
     /// Construct with an explicit state value.
@@ -603,6 +630,7 @@ impl SshWidget {
             focused_pane: SshFocus::default(),
             pty_pane: None,
             pending_connect: None,
+            pending_add_new: false,
             _ssh_factory: None,
             _pty_provider: None,
         }
@@ -777,6 +805,27 @@ impl SshWidget {
     pub fn set_pending_connect(&mut self, alias: Option<String>) {
         self.pending_connect = alias;
     }
+
+    /// Drain the pending add-new intent. Returns `true` once when the user
+    /// pressed `Enter` on the synthetic add-new row; the wire layer then opens
+    /// the add-host `FormPane`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::SshWidget;
+    /// let mut w = SshWidget::new();
+    /// assert!(!w.take_pending_add_new());
+    /// w.pending_add_new = true;
+    /// assert!(w.take_pending_add_new());
+    /// assert!(!w.take_pending_add_new());
+    /// ```
+    pub fn take_pending_add_new(&mut self) -> bool {
+        let v = self.pending_add_new;
+        self.pending_add_new = false;
+        v
+    }
+
     /// Resize the embedded PTY pane to match the inner dimensions of `area`
     /// (the right-hand body rect, **before** the border subtraction).
     ///
@@ -851,17 +900,35 @@ impl SshWidget {
     }
 
     fn render_host_list(&self, frame: &mut Frame<'_>, rect: Rect, theme: &Theme) {
+        let cursor = self.state.cursor();
         let hosts = self.state.visible_hosts();
-        let selected = self.state.selected_alias();
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(hosts.len().max(1));
-        if hosts.is_empty() {
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(hosts.len() + 1);
+
+        // Prepend synthetic add-new row when enabled.
+        if cursor.add_new {
+            let is_add_selected = cursor.target() == CursorTarget::AddNew;
+            let marker = if is_add_selected { '>' } else { ' ' };
+            let style = if is_add_selected {
+                Style::default()
+                    .fg(theme.accent_primary.into())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.accent_primary.into())
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{marker} + add new"),
+                style,
+            )));
+        }
+
+        if hosts.is_empty() && !cursor.add_new {
             lines.push(Line::from(Span::styled(
                 "  (no hosts configured)",
                 Style::default().fg(theme.muted.into()),
             )));
         } else {
-            for h in hosts {
-                let is_selected = selected == Some(h.alias.as_str());
+            for (i, h) in hosts.iter().enumerate() {
+                let is_selected = cursor.target() == CursorTarget::Item(i);
                 let dot = if is_selected { '●' } else { '○' };
                 let marker = if is_selected { '>' } else { ' ' };
                 let suffix = if h.source == SshHostSource::SshConfig {
@@ -1184,13 +1251,22 @@ impl Widget for SshWidget {
         self
     }
     fn footer_hint(&self) -> Vec<FooterHint> {
+        // The first 3 entries are the "primary" verbs shown in the slim
+        // rendered footer (wire's slim_footer_hints truncates to 3 + ?: help).
+        // Everything after index 2 (E, G, S, K, X, F, D) is long-tail and
+        // surfaces only in the ? help overlay (plan decision 13 + round-2 fix:
+        // footer_hint returns the FULL ordered list so the overlay is complete).
         vec![
-            FooterHint::new("N", "new host"),
+            FooterHint::new("N", "add host"),
+            FooterHint::new("⏎", "connect"),
+            FooterHint::new("→", "inspect"),
+            FooterHint::new("E", "edit"),
             FooterHint::new("G", "gen key"),
             FooterHint::new("S", "setup remote"),
-            FooterHint::new("K", "keys"),
-            FooterHint::new("X", "debug"),
-            FooterHint::new("?", "help"),
+            FooterHint::new("K", "key manager"),
+            FooterHint::new("X", "export key"),
+            FooterHint::new("F", "SFTP persist"),
+            FooterHint::new("D", "delete host"),
         ]
     }
     fn render(&self, _target: &mut dyn RenderTarget) {
@@ -1235,6 +1311,10 @@ impl Widget for SshWidget {
                         return EventOutcome::Consumed;
                     }
                     (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if let CursorTarget::AddNew = self.state.cursor.target() {
+                            self.pending_add_new = true;
+                            return EventOutcome::Consumed;
+                        }
                         if let Some(alias) = self.state.selected_alias() {
                             let alias = alias.to_string();
                             self.connection.begin_connecting(alias.clone());
@@ -1348,4 +1428,635 @@ pub fn render_to_string_with_resize(widget: &mut SshWidget, width: u16, height: 
     let outer = Rect::new(0, 0, width, height);
     widget.pty_pane_resize_to_area(body_rect_for(outer));
     render_to_string(widget, width, height)
+}
+
+// ---------------------------------------------------------------------------
+// FormSpec builders — Add / Edit SSH host (FormPane path)
+// ---------------------------------------------------------------------------
+
+/// Build the [`FormSpec`] for the "Add SSH Host" side-pane form.
+///
+/// Field keys match those consumed by the wire-layer submit handler keyed on
+/// `"ssh.new"`: `alias`, `host`, `port`, `user`, `identity_file`, `auth`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::ssh::ssh_add_form_spec;
+/// let spec = ssh_add_form_spec();
+/// assert_eq!(spec.id.0, "ssh.new");
+/// assert!(spec.sections[0].fields.iter().any(|f| f.key == "alias"));
+/// ```
+pub fn ssh_add_form_spec() -> FormSpec {
+    FormSpec::new(
+        "ssh.new",
+        "Add SSH Host",
+        vec![FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Text {
+                        label: "Alias".to_string(),
+                        value: String::new(),
+                        placeholder: Some("prod".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "host",
+                    Field::Text {
+                        label: "Host / IP".to_string(),
+                        value: String::new(),
+                        placeholder: Some("10.0.0.1".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "port",
+                    Field::Text {
+                        label: "Port".to_string(),
+                        value: "22".to_string(),
+                        placeholder: Some("22".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::Port]),
+                FormField::new(
+                    "user",
+                    Field::Text {
+                        label: "User".to_string(),
+                        value: String::new(),
+                        placeholder: Some("alice".to_string()),
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: String::new(),
+                        placeholder: Some("~/.ssh/id_ed25519 (optional)".to_string()),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Choice {
+                        label: "Auth".to_string(),
+                        options: vec![
+                            "agent".to_string(),
+                            "key".to_string(),
+                            "password".to_string(),
+                        ],
+                        selected: 0,
+                    },
+                ),
+            ],
+        }],
+    )
+}
+
+/// Build the [`FormSpec`] for the "Edit SSH Host" side-pane form, pre-populated
+/// from an existing host record.
+///
+/// Field keys match those consumed by the wire-layer submit handler keyed on
+/// `"ssh.edit:<alias>"`: `alias`, `host`, `port`, `user`, `identity_file`, `auth`.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+/// use sid_widgets::ssh::ssh_edit_form_spec;
+/// let h = SshHost {
+///     alias: "dev".into(), host: "10.0.0.1".into(), port: 2222,
+///     user: "alice".into(), identity_file: None,
+///     source: SshHostSource::Manual, last_connected: 0,
+///     command_history: vec![], last_sftp_path: None,
+///     auth_kind: SshAuthKind::Key,
+/// };
+/// let spec = ssh_edit_form_spec(&h);
+/// assert_eq!(spec.id.0, "ssh.edit:dev");
+/// ```
+pub fn ssh_edit_form_spec(host: &SshHost) -> FormSpec {
+    let auth_idx: usize = match host.auth_kind {
+        SshAuthKind::Agent => 0,
+        SshAuthKind::Key => 1,
+        SshAuthKind::Password => 2,
+    };
+    FormSpec::new(
+        format!("ssh.edit:{}", host.alias),
+        format!("Edit SSH Host — {}", host.alias),
+        vec![FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Text {
+                        label: "Alias".to_string(),
+                        value: host.alias.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "host",
+                    Field::Text {
+                        label: "Host / IP".to_string(),
+                        value: host.host.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "port",
+                    Field::Text {
+                        label: "Port".to_string(),
+                        value: host.port.to_string(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::Port]),
+                FormField::new(
+                    "user",
+                    Field::Text {
+                        label: "User".to_string(),
+                        value: host.user.clone(),
+                        placeholder: None,
+                    },
+                )
+                .with_validate(vec![Validate::NonEmpty]),
+                FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: host.identity_file.clone().unwrap_or_default(),
+                        placeholder: Some("~/.ssh/id_ed25519 (optional)".to_string()),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Choice {
+                        label: "Auth".to_string(),
+                        options: vec![
+                            "agent".to_string(),
+                            "key".to_string(),
+                            "password".to_string(),
+                        ],
+                        selected: auth_idx,
+                    },
+                ),
+            ],
+        }],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// SshInspector — Info + Editable FormSpec builder for the right-pane inspector
+// ---------------------------------------------------------------------------
+
+/// Read-only + prefs view for a selected SSH host.
+///
+/// # Examples
+///
+/// ```
+/// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+/// use sid_widgets::ssh::SshInspector;
+/// let h = SshHost {
+///     alias: "dev".into(), host: "10.0.0.1".into(), port: 22,
+///     user: "alice".into(), identity_file: None,
+///     source: SshHostSource::Manual, last_connected: 0,
+///     command_history: vec![], last_sftp_path: None,
+///     auth_kind: SshAuthKind::Agent,
+/// };
+/// let insp = SshInspector::from_host(&h);
+/// assert_eq!(insp.alias, "dev");
+/// ```
+#[derive(Clone, Debug)]
+pub struct SshInspector {
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub identity_file: Option<String>,
+    pub source: SshHostSource,
+    pub last_connected: u64,
+    pub last_sftp_path: Option<String>,
+    pub auth_kind: SshAuthKind,
+}
+
+impl SshInspector {
+    /// Build an inspector from a host record. Copies all fields.
+    pub fn from_host(h: &SshHost) -> Self {
+        Self {
+            alias: h.alias.clone(),
+            host: h.host.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            identity_file: h.identity_file.clone(),
+            source: h.source,
+            last_connected: h.last_connected,
+            last_sftp_path: h.last_sftp_path.clone(),
+            auth_kind: h.auth_kind,
+        }
+    }
+
+    /// Format `last_connected` epoch seconds as a human-readable string.
+    /// `0` → `"never"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::{SshAuthKind, SshHost, SshHostSource};
+    /// use sid_widgets::ssh::SshInspector;
+    /// let h = SshHost {
+    ///     alias: "x".into(), host: "h".into(), port: 22, user: "u".into(),
+    ///     identity_file: None, source: SshHostSource::Manual, last_connected: 0,
+    ///     command_history: vec![], last_sftp_path: None, auth_kind: SshAuthKind::Agent,
+    /// };
+    /// assert_eq!(SshInspector::from_host(&h).last_connected_display(), "never");
+    /// ```
+    pub fn last_connected_display(&self) -> String {
+        if self.last_connected == 0 {
+            "never".to_string()
+        } else {
+            format!("{} s ago", self.last_connected)
+        }
+    }
+
+    /// Build a [`FormSpec`] for the inspector side pane.
+    ///
+    /// The `Info` section is always present with connection facts (alias, host,
+    /// port, user, auth, source, last-connected, last-SFTP-path).  The
+    /// `Editable` section (identity_file) is only included for `Manual` hosts;
+    /// SSH-Config entries are fully read-only.
+    ///
+    /// Form id: `"ssh.inspect:<alias>"`.
+    pub fn to_form_spec(&self) -> FormSpec {
+        let info_section = FormSection {
+            title: "Host".to_string(),
+            kind: SectionKind::Info,
+            fields: vec![
+                FormField::new(
+                    "alias",
+                    Field::Display {
+                        label: "Alias".to_string(),
+                        body: self.alias.clone(),
+                    },
+                ),
+                FormField::new(
+                    "host",
+                    Field::Display {
+                        label: "Host".to_string(),
+                        body: format!("{}:{}", self.host, self.port),
+                    },
+                ),
+                FormField::new(
+                    "user",
+                    Field::Display {
+                        label: "User".to_string(),
+                        body: self.user.clone(),
+                    },
+                ),
+                FormField::new(
+                    "auth",
+                    Field::Display {
+                        label: "Auth".to_string(),
+                        body: match self.auth_kind {
+                            SshAuthKind::Agent => "agent".to_string(),
+                            SshAuthKind::Key => "key".to_string(),
+                            SshAuthKind::Password => "password".to_string(),
+                        },
+                    },
+                ),
+                FormField::new(
+                    "source",
+                    Field::Display {
+                        label: "Source".to_string(),
+                        body: match self.source {
+                            SshHostSource::Manual => "manual".to_string(),
+                            SshHostSource::SshConfig => "~/.ssh/config".to_string(),
+                        },
+                    },
+                ),
+                FormField::new(
+                    "last_connected",
+                    Field::Display {
+                        label: "Last connected".to_string(),
+                        body: self.last_connected_display(),
+                    },
+                ),
+                FormField::new(
+                    "last_sftp_path",
+                    Field::Display {
+                        label: "Last SFTP path".to_string(),
+                        body: self
+                            .last_sftp_path
+                            .clone()
+                            .unwrap_or_else(|| "(none)".to_string()),
+                    },
+                ),
+            ],
+        };
+        // Only Manual hosts have an editable identity_file; SSH-Config entries
+        // are fully read-only (the config file itself stores that).
+        //
+        // Form-id convention (used by wire.rs submit and background-open arms):
+        //   "ssh.inspect:<alias>"    — Manual host, editable Preferences section
+        //   "ssh.inspect-ro:<alias>" — SshConfig host, info-only (no write path)
+        let (form_id, editable_section) = if self.source == SshHostSource::Manual {
+            let prefs = FormSection {
+                title: "Preferences".to_string(),
+                kind: SectionKind::Editable,
+                fields: vec![FormField::new(
+                    "identity_file",
+                    Field::Text {
+                        label: "Identity file".to_string(),
+                        value: self.identity_file.clone().unwrap_or_default(),
+                        placeholder: Some("~/.ssh/id_ed25519".to_string()),
+                    },
+                )],
+            };
+            (format!("ssh.inspect:{}", self.alias), Some(prefs))
+        } else {
+            // SshConfig: read-only note so the user knows why ⏎ closes, not saves.
+            let note = FormSection {
+                title: "Note".to_string(),
+                kind: SectionKind::Info,
+                fields: vec![FormField::new(
+                    "_ro_note",
+                    Field::Display {
+                        label: "Managed by".to_string(),
+                        body: "~/.ssh/config — read-only here".to_string(),
+                    },
+                )],
+            };
+            (format!("ssh.inspect-ro:{}", self.alias), Some(note))
+        };
+        let mut sections = vec![info_section];
+        if let Some(extra) = editable_section {
+            sections.push(extra);
+        }
+        FormSpec::new(form_id, format!("SSH · {}", self.alias), sections)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use sid_store::{SshAuthKind, SshHost, SshHostSource};
+
+    use super::*;
+    use crate::list_cursor::CursorTarget;
+
+    fn make_host(alias: &str) -> SshHost {
+        SshHost {
+            alias: alias.into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            user: "user".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        }
+    }
+
+    // --- Task 1: SshState + ListCursor ---
+
+    #[test]
+    fn ssh_state_selected_alias_follows_cursor() {
+        let h = make_host("dev");
+        let mut s = SshState::new(vec![h], vec![], false);
+        assert_eq!(s.selected_alias(), Some("dev"));
+        s.set_add_new(true);
+        assert_eq!(s.cursor.target(), CursorTarget::AddNew);
+        // Cursor on add-new row → no alias.
+        assert_eq!(s.selected_alias(), None);
+        // Move down once to the actual item.
+        s.select_next();
+        assert_eq!(s.selected_alias(), Some("dev"));
+    }
+
+    #[test]
+    fn take_pending_add_new_drains_flag() {
+        let mut w = SshWidget::new();
+        assert!(!w.take_pending_add_new());
+        w.pending_add_new = true;
+        assert!(w.take_pending_add_new());
+        assert!(!w.take_pending_add_new());
+    }
+
+    // --- Task 3: FormSpec builders ---
+
+    #[test]
+    fn add_form_spec_has_required_keys_and_validators() {
+        let spec = ssh_add_form_spec();
+        assert_eq!(spec.id.0, "ssh.new");
+        let keys: Vec<_> = spec.sections[0]
+            .fields
+            .iter()
+            .map(|f| f.key.as_str())
+            .collect();
+        assert!(keys.contains(&"alias"));
+        assert!(keys.contains(&"host"));
+        assert!(keys.contains(&"port"));
+        assert!(keys.contains(&"user"));
+        assert!(keys.contains(&"identity_file"));
+        assert!(keys.contains(&"auth"));
+        let alias_field = spec.sections[0]
+            .fields
+            .iter()
+            .find(|f| f.key == "alias")
+            .unwrap();
+        assert!(alias_field.validate.contains(&Validate::NonEmpty));
+        let port_field = spec.sections[0]
+            .fields
+            .iter()
+            .find(|f| f.key == "port")
+            .unwrap();
+        assert!(port_field.validate.contains(&Validate::Port));
+    }
+
+    #[test]
+    fn edit_form_spec_pre_populates_from_host() {
+        let h = SshHost {
+            alias: "staging".into(),
+            host: "192.168.1.1".into(),
+            port: 2222,
+            user: "bob".into(),
+            identity_file: Some("~/.ssh/stg_key".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Key,
+        };
+        let spec = ssh_edit_form_spec(&h);
+        assert_eq!(spec.id.0, "ssh.edit:staging");
+        let fields = &spec.sections[0].fields;
+        let alias_f = fields.iter().find(|f| f.key == "alias").unwrap();
+        if let Field::Text { value, .. } = &alias_f.field {
+            assert_eq!(value, "staging");
+        } else {
+            panic!("expected Text field for alias");
+        }
+        let port_f = fields.iter().find(|f| f.key == "port").unwrap();
+        if let Field::Text { value, .. } = &port_f.field {
+            assert_eq!(value, "2222");
+        } else {
+            panic!("expected Text field for port");
+        }
+        // auth pre-selected as Key (index 1)
+        let auth_f = fields.iter().find(|f| f.key == "auth").unwrap();
+        if let Field::Choice { selected, .. } = &auth_f.field {
+            assert_eq!(*selected, 1);
+        } else {
+            panic!("expected Choice field for auth");
+        }
+    }
+
+    // --- Task 2: SshInspector ---
+
+    #[test]
+    fn inspector_from_host_copies_fields() {
+        let h = SshHost {
+            alias: "prod".into(),
+            host: "10.0.0.1".into(),
+            port: 22,
+            user: "alice".into(),
+            identity_file: Some("~/.ssh/prod_ed25519".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: Some("/home/alice".into()),
+            auth_kind: SshAuthKind::Key,
+        };
+        let insp = SshInspector::from_host(&h);
+        assert_eq!(insp.alias, "prod");
+        assert_eq!(insp.auth_kind, SshAuthKind::Key);
+        assert_eq!(insp.last_sftp_path.as_deref(), Some("/home/alice"));
+    }
+
+    #[test]
+    fn inspector_last_connected_display_zero_is_never() {
+        let h = make_host("x");
+        assert_eq!(
+            SshInspector::from_host(&h).last_connected_display(),
+            "never"
+        );
+    }
+
+    #[test]
+    fn inspector_form_spec_info_only_for_ssh_config_host() {
+        use crate::form::SectionKind;
+        let h = SshHost {
+            alias: "cfg".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::SshConfig,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let spec = SshInspector::from_host(&h).to_form_spec();
+        // SSH-Config hosts: only Info sections (no editable prefs).
+        assert!(spec.sections.iter().all(|s| s.kind == SectionKind::Info));
+        // Read-only inspector uses the "ssh.inspect-ro:" prefix.
+        assert_eq!(spec.id.0, "ssh.inspect-ro:cfg");
+    }
+
+    #[test]
+    fn inspector_form_spec_has_editable_prefs_for_manual_host() {
+        use crate::form::SectionKind;
+        let h = SshHost {
+            alias: "m".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Key,
+        };
+        let spec = SshInspector::from_host(&h).to_form_spec();
+        assert!(
+            spec.sections
+                .iter()
+                .any(|s| s.kind == SectionKind::Editable)
+        );
+    }
+
+    // --- Task 6: Additional snapshots for cursor positions ---
+
+    #[test]
+    fn snapshot_host_list_cursor_on_add_new_row() {
+        let h1 = make_host("alpha");
+        let h2 = make_host("beta");
+        // add_new=true, cursor starts at pos=0 → AddNew row is selected
+        let state = SshState::new(vec![h1, h2], vec![], true);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
+    #[test]
+    fn snapshot_host_list_cursor_on_second_item() {
+        let h1 = make_host("alpha");
+        let h2 = make_host("beta");
+        // add_new=true: pos 0 = AddNew, pos 1 = Item(0)=alpha, pos 2 = Item(1)=beta
+        let mut state = SshState::new(vec![h1, h2], vec![], true);
+        state.cursor.down(); // pos 0 → 1 (alpha)
+        state.cursor.down(); // pos 1 → 2 (beta)
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
+    #[test]
+    fn snapshot_host_list_ssh_config_entry() {
+        use crate::ssh::SshConfigEntryLite;
+        let cfg = SshConfigEntryLite {
+            alias: "github.com".into(),
+            host: "github.com".into(),
+            port: 22,
+            user: "git".into(),
+            identity_file: None,
+        };
+        let state = SshState::new(vec![], vec![cfg], false);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
+
+    // --- Task 1: Snapshot — host list with add-new row ---
+
+    #[test]
+    fn snapshot_host_list_with_add_new() {
+        let h = SshHost {
+            alias: "staging".into(),
+            host: "1.2.3.4".into(),
+            port: 22,
+            user: "pi".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let state = SshState::new(vec![h], vec![], true);
+        let w = SshWidget::with_state(state);
+        let s = render_to_string(&w, 80, 16);
+        insta::assert_snapshot!(s);
+    }
 }

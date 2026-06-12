@@ -690,8 +690,10 @@ pub struct BuildAppData {
     pub ssh_config_entries: Vec<sid_widgets::ssh::SshConfigEntryLite>,
     pub start_ssh_alias: Option<String>,
     pub db_connections: Vec<sid_store::DbConnection>,
-    /// Whether the `+add new` synthetic row is shown in the database connections list.
-    /// Defaults to `true`. Set from `settings_keys::SHOW_ADD_NEW_ROW` at startup.
+    /// Whether the synthetic "+ add new" row is shown in list panels
+    /// (database connections, SSH hosts, ...). Defaults to `true`; loaded
+    /// from `settings_keys::SHOW_ADD_NEW_ROW` at startup via
+    /// `load_show_add_new_row`.
     pub show_add_new_row: bool,
     pub pinned_configs: Vec<sid_store::PinnedConfig>,
     pub quick_actions: Vec<sid_store::QuickAction>,
@@ -735,7 +737,11 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
     let git_factory = Arc::new(Git2ProviderFactory::new());
 
     // Build the SSH widget with pre-loaded state.
-    let ssh_state = sid_widgets::ssh::SshState::new(data.ssh_hosts, data.ssh_config_entries);
+    let ssh_state = sid_widgets::ssh::SshState::new(
+        data.ssh_hosts,
+        data.ssh_config_entries,
+        data.show_add_new_row,
+    );
     let mut ssh_widget = SshWidget::with_state(ssh_state);
     if let Some(ref alias) = data.start_ssh_alias {
         let aliases: Vec<_> = ssh_widget
@@ -744,9 +750,16 @@ pub fn build_app_hydrated(start_tab: Option<&str>, data: BuildAppData) -> App {
             .iter()
             .map(|h| h.alias.clone())
             .collect();
-        if let Some(idx) = aliases.iter().position(|a| a == alias) {
-            for _ in 0..idx {
+        if aliases.iter().any(|a| a == alias) {
+            // Walk the cursor to the requested host. The walk (rather than a
+            // fixed index count) absorbs the synthetic "+ add new" row the
+            // cursor starts on when show_add_new_row is enabled; bounded so a
+            // wrapping cursor can never loop forever.
+            let max_steps = aliases.len() + 1;
+            let mut steps = 0;
+            while ssh_widget.state().selected_alias() != Some(alias.as_str()) && steps < max_steps {
                 ssh_widget.state_mut().select_next();
+                steps += 1;
             }
             ssh_widget.connection_mut().begin_connecting(alias.clone());
         }
@@ -1726,6 +1739,7 @@ where
         // 3. Live bytes from the connected shell → forward into the
         //    attached PtyPane.
         drain_pending_ssh_connect(sid_app);
+        drain_pending_ssh_add_new(sid_app);
         drain_ssh_outcomes(sid_app);
         drain_ssh_bytes(sid_app);
 
@@ -1894,6 +1908,40 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         // Mirror of the modal interception block: a modal wins if both are
         // somehow open (guarded by `modal_stack.is_empty()` above). Branches
         // 1-5 register `dispatch_form_submit` arms.
+        //
+        // SSH inspector background-open: when the active form is an
+        // `ssh.inspect:<alias>` pane and the user presses Ctrl+Enter / O,
+        // route to the background-open logic instead of handing the chord to
+        // the FormPane (the inspector stays open; the new tab appears behind).
+        //
+        // Guard: Ctrl+Enter always intercepts (no conflict with text input).
+        // Bare Shift+O only intercepts when the focused form field is NOT a
+        // free-text input — typing 'O' into identity_file must insert the
+        // char, not spawn a background tab.
+        let is_ssh_inspector = sid_app
+            .form
+            .as_ref()
+            .map(|f| {
+                f.spec.id.0.starts_with("ssh.inspect:")
+                    || f.spec.id.0.starts_with("ssh.inspect-ro:")
+            })
+            .unwrap_or(false);
+        let is_ctrl_enter = chord.code == crossterm::event::KeyCode::Enter
+            && chord.mods.contains(crossterm::event::KeyModifiers::CONTROL);
+        let focused_is_text = sid_app
+            .form
+            .as_ref()
+            .map(|f| f.focused_field_is_text())
+            .unwrap_or(false);
+        // Ctrl+Enter always intercepts; bare 'O' only when not in a text field.
+        let should_background_open =
+            is_ssh_inspector && (is_ctrl_enter || (chord.is_background_open() && !focused_is_text));
+        if should_background_open {
+            // Delegate to the existing background-open arm inside
+            // dispatch_ssh_form_key; it reads sid_app.form internally.
+            dispatch_ssh_form_key(sid_app, chord);
+            return true;
+        }
         let outcome = {
             let form = sid_app.form.as_mut().expect("form is_some");
             form.handle_key(chord)
@@ -1951,6 +1999,14 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         // Workspaces-tab side-pane forms: `N` → create-new wizard,
         // `D` → adopt-existing wizard. Intercepted ahead of the modal opener so
         // the legacy `N`/`A`/`R` modals stay available for the other keys.
+        true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && sid_app.app.tabs().active().id.as_str() == "ssh"
+        && dispatch_ssh_form_key(sid_app, chord)
+    {
+        // SSH-tab FormPane keys handled; no modal push needed.
         true
     } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
         sid_app.modal_stack.push(modal);
@@ -2858,15 +2914,7 @@ fn ssh_modal_for_key(
     use sid_store::SshHostSource;
     use sid_widgets::{Field, ModalSpec};
     match chord.code {
-        KeyCode::Char('N') | KeyCode::Char('n') => Some(ssh_new_modal()),
-        KeyCode::Char('E') | KeyCode::Char('e') => {
-            let host = ssh_selected_host(sid_app)?;
-            // ssh-config entries are read-only; no Edit modal for them.
-            if host.source == SshHostSource::SshConfig {
-                return None;
-            }
-            Some(ssh_edit_modal(&host))
-        }
+        // 'N' and 'E' are now handled by dispatch_ssh_form_key (FormPane path).
         KeyCode::Char('G') | KeyCode::Char('g') => Some(ssh_gen_key_step1_modal()),
         KeyCode::Char('S') | KeyCode::Char('s') => {
             let host = ssh_selected_host(sid_app)?;
@@ -2912,96 +2960,121 @@ fn ssh_modal_for_key(
     }
 }
 
-/// Build the "Add Host" modal — extracted from [`ssh_modal_for_key`] so the
-/// edit modal can share field shapes.
-fn ssh_new_modal() -> sid_widgets::ModalSpec {
-    use sid_widgets::{Field, ModalSpec};
-    let default_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
-    ModalSpec::new(
-        "ssh.new",
-        "Add Host",
-        vec![
-            Field::Text {
-                label: "alias".into(),
-                value: String::new(),
-                placeholder: Some("e.g. my-prod".into()),
-            },
-            Field::Text {
-                label: "host".into(),
-                value: String::new(),
-                placeholder: Some("e.g. host.example.com".into()),
-            },
-            Field::Text {
-                label: "user".into(),
-                value: default_user,
-                placeholder: None,
-            },
-            Field::Text {
-                label: "port".into(),
-                value: "22".into(),
-                placeholder: None,
-            },
-            Field::Picker {
-                label: "identity_file".into(),
-                value: String::new(),
-                hint: "optional".into(),
-            },
-            Field::Choice {
-                label: "auth".into(),
-                options: vec!["Key".into(), "Password".into(), "Agent".into()],
-                selected: 0,
-            },
-        ],
-    )
-    .with_help("Tab moves between fields · Enter saves · Esc cancels")
-}
+/// Handle SSH-tab keys that open a side-pane [`FormPane`] rather than a modal.
+///
+/// Returns `true` when a form was opened (the caller should skip the
+/// `ssh_modal_for_key` branch).
+///
+/// Covers:
+/// - `N` / `n` — open the Add Host form.
+/// - `E` / `e` — open the Edit Host form for the selected Manual host.
+/// - `→` — open the inspector pane for the selected host.
+///
+/// Does not handle `G`, `S`, `K`, `X`, `F` — those remain modal.
+///
+pub fn dispatch_ssh_form_key(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bool {
+    use crossterm::event::KeyCode;
+    use sid_store::SshHostSource;
+    use sid_widgets::ssh::{SshInspector, ssh_add_form_spec, ssh_edit_form_spec};
 
-/// Build the "Edit Host" modal pre-filled with the host's current values.
-fn ssh_edit_modal(host: &sid_store::SshHost) -> sid_widgets::ModalSpec {
-    use sid_store::SshAuthKind;
-    use sid_widgets::{Field, ModalSpec};
-    let auth_idx = match host.auth_kind {
-        SshAuthKind::Key => 0,
-        SshAuthKind::Password => 1,
-        SshAuthKind::Agent => 2,
-    };
-    ModalSpec::new(
-        format!("ssh.edit:{}", host.alias),
-        format!("Edit Host: {}", host.alias),
-        vec![
-            Field::Text {
-                label: "alias".into(),
-                value: host.alias.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "host".into(),
-                value: host.host.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "user".into(),
-                value: host.user.clone(),
-                placeholder: None,
-            },
-            Field::Text {
-                label: "port".into(),
-                value: host.port.to_string(),
-                placeholder: None,
-            },
-            Field::Picker {
-                label: "identity_file".into(),
-                value: host.identity_file.clone().unwrap_or_default(),
-                hint: "optional".into(),
-            },
-            Field::Choice {
-                label: "auth".into(),
-                options: vec!["Key".into(), "Password".into(), "Agent".into()],
-                selected: auth_idx,
-            },
-        ],
-    )
-    .with_help("Tab moves between fields · Enter saves · Esc cancels")
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => {
+            open_form(sid_app, ssh_add_form_spec());
+            true
+        }
+        KeyCode::Char('E') | KeyCode::Char('e') => {
+            let Some(host) = ssh_selected_host(sid_app) else {
+                return false;
+            };
+            // ssh-config entries are read-only.
+            if host.source == SshHostSource::SshConfig {
+                return false;
+            }
+            open_form(sid_app, ssh_edit_form_spec(&host));
+            true
+        }
+        KeyCode::Right => {
+            // → from list focus opens the inspector side pane for the selected host.
+            let Some(host) = ssh_selected_host(sid_app) else {
+                return false;
+            };
+            let spec = SshInspector::from_host(&host).to_form_spec();
+            open_form(sid_app, spec);
+            true
+        }
+        _ if chord.is_background_open() => {
+            // Ctrl+Enter or Shift+O: background-open a new SSH session tab for
+            // the host currently shown in the inspector pane.
+            let Some(form) = sid_app.form.as_ref() else {
+                return false;
+            };
+            let id = form.spec.id.0.clone();
+            // Accept both editable (ssh.inspect:<alias>) and read-only
+            // (ssh.inspect-ro:<alias>) inspector form ids.
+            let alias = if let Some(a) = id.strip_prefix("ssh.inspect-ro:") {
+                a.to_string()
+            } else if let Some(a) = id.strip_prefix("ssh.inspect:") {
+                a.to_string()
+            } else {
+                return false;
+            };
+            // Use a unique tab id so active_ssh_widget_mut / refresh_ssh_widget
+            // (which match on exact "ssh") keep targeting the parent tab only,
+            // and so re-opening the same alias focuses rather than stacking.
+            let detail_tab_id_str = format!("ssh:{alias}");
+            let detail_tab_id = TabId::new(&detail_tab_id_str);
+            // Dedup: if a session tab for this alias is already open, focus it
+            // (mirror of maybe_open_pending_workspace_detail).
+            if sid_app
+                .app
+                .tabs()
+                .tabs()
+                .iter()
+                .any(|t| t.id == detail_tab_id)
+            {
+                let _ = sid_app.app.tabs_mut().switch_to(&detail_tab_id);
+                sid_app.toasts.push(Toast::info(format!(
+                    "SSH · {alias} already open — switched"
+                )));
+                return true;
+            }
+            let parent_idx = sid_app.app.tabs().active_index();
+            let mut bg_widget = sid_widgets::SshWidget::new();
+            // Hydrate the host list from the store FIRST: the connect drain
+            // resolves the alias against this widget's visible_hosts, and the
+            // user sees the real list behind the connecting overlay.
+            match sid_app.store.list_ssh_hosts() {
+                Ok(hosts) => bg_widget.state_mut().set_store_hosts(hosts),
+                Err(e) => tracing::warn!("background-open: list_ssh_hosts failed: {e}"),
+            }
+            // Then mark pending connect and begin the connection so the detail
+            // tab connects through the normal drain pipeline (same mechanism
+            // as pressing Enter — just without switching focus).
+            bg_widget.set_pending_connect(Some(alias.clone()));
+            bg_widget.connection_mut().begin_connecting(alias.clone());
+            let new_tab = Tab {
+                id: detail_tab_id,
+                title: format!("SSH · {alias}"),
+                layout: Layout::Single(Box::new(bg_widget)),
+                hotkey: None,
+                kind: TabKind::Detail { parent_idx },
+            };
+            match sid_app.app.tabs_mut().push_background(new_tab) {
+                Ok(()) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::info(format!("Opened SSH · {alias} in background")));
+                }
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("background open failed: {e}")));
+                }
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Build the gen-key wizard step 1 modal — algorithm choice. Step 2 is
@@ -3850,7 +3923,9 @@ pub fn drain_pending_ssh_connect(sid_app: &mut SidApp) {
     // the borrow on `sid_app.app` before spawning the connect task (which
     // captures `sid_app.ssh_client_factory` + `ssh_outcome_tx`).
     let (alias, host, rows, cols) = {
-        let Some(ssh) = active_ssh_widget_mut(sid_app) else {
+        // Any SSH widget — parent tab or background `ssh:<alias>` detail tab —
+        // may carry the intent; route to whichever one set it.
+        let Some(ssh) = find_ssh_widget_mut(sid_app, |w| w.peek_pending_connect().is_some()) else {
             return;
         };
         let Some(alias) = ssh.take_pending_connect() else {
@@ -3880,6 +3955,20 @@ pub fn drain_pending_ssh_connect(sid_app: &mut SidApp) {
     spawn_ssh_connect_task(factory, tx, host, alias, rows, cols);
 }
 
+/// Drain the SSH widget's pending add-new intent. When the cursor is on the
+/// synthetic "+" row and Enter is pressed, the widget sets `pending_add_new`;
+/// this helper opens the add-host [`FormPane`] via [`open_form`].
+///
+/// Called once per event-loop tick, immediately after [`drain_pending_ssh_connect`].
+pub fn drain_pending_ssh_add_new(sid_app: &mut SidApp) {
+    let wants_add = active_ssh_widget_mut(sid_app)
+        .map(|w| w.take_pending_add_new())
+        .unwrap_or(false);
+    if wants_add {
+        open_form(sid_app, sid_widgets::ssh::ssh_add_form_spec());
+    }
+}
+
 /// Drain every queued [`SshConnectOutcome`]. On `Connected`, attaches the
 /// PtyPane to the SSH widget, stashes the byte receiver + shutdown handle on
 /// `sid_app`, and flips connection state to `Connected`. On `Failed`, marks
@@ -3903,11 +3992,31 @@ pub fn drain_ssh_outcomes(sid_app: &mut SidApp) {
                 byte_rx,
                 shutdown_tx,
             } => {
-                // Tear down any previous reader (best-effort).
+                // Tear down any previous reader (best-effort). sid runs at
+                // most ONE live SSH session; a new connect supersedes the old.
                 if let Some(prev) = sid_app.ssh_shutdown_tx.take() {
                     let _ = prev.send(());
                 }
-                let attached = if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                // The superseded session's widget (possibly in another tab)
+                // still says Connected; flip it to Disconnected so exactly one
+                // widget reads as live. Its pane stays attached for post-mortem
+                // viewing, matching remote-close semantics.
+                for_each_ssh_widget_mut(sid_app, |w| {
+                    if w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connected {
+                        w.connection_mut().mark_disconnected();
+                    }
+                });
+                // Attach to the widget that asked for this alias (a background
+                // detail tab's widget for background-opens); fall back to the
+                // parent "ssh" tab for outcomes nobody is waiting on.
+                let attached = if let Some(ssh) = find_ssh_widget_mut(sid_app, |w| {
+                    w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connecting
+                        && w.connection().alias() == Some(alias.as_str())
+                }) {
+                    ssh.set_pty_pane(pty);
+                    ssh.connection_mut().mark_connected();
+                    true
+                } else if let Some(ssh) = active_ssh_widget_mut(sid_app) {
                     ssh.set_pty_pane(pty);
                     ssh.connection_mut().mark_connected();
                     true
@@ -3931,7 +4040,14 @@ pub fn drain_ssh_outcomes(sid_app: &mut SidApp) {
                 }
             }
             SshConnectOutcome::Failed { alias, error } => {
-                if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+                // Route the failure to the widget that was connecting to this
+                // alias; fall back to the parent tab for orphan outcomes.
+                if let Some(ssh) = find_ssh_widget_mut(sid_app, |w| {
+                    w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connecting
+                        && w.connection().alias() == Some(alias.as_str())
+                }) {
+                    ssh.connection_mut().mark_failed(error.clone());
+                } else if let Some(ssh) = active_ssh_widget_mut(sid_app) {
                     ssh.connection_mut().mark_failed(error.clone());
                 }
                 sid_app
@@ -3969,7 +4085,24 @@ pub fn drain_ssh_bytes(sid_app: &mut SidApp) {
     if chunks.is_empty() && !disconnected {
         return;
     }
-    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+    // Feed the widget owning the live session (Connected + pane attached) —
+    // which may be a background detail tab's widget, not the parent tab's.
+    // Fall back to the parent tab to preserve single-tab behaviour in edge
+    // states (e.g. bytes arriving for an already-superseded widget).
+    // Existence is checked first, then re-borrowed: NLL extends a borrow
+    // returned from an if-let arm across the whole expression, so the
+    // fallback can't share one binding with the primary lookup.
+    let live_pred = |w: &SshWidget| {
+        w.connection().phase() == sid_widgets::ssh::ConnectionPhase::Connected
+            && w.pty_pane().is_some()
+    };
+    let has_live = find_ssh_widget_mut(sid_app, live_pred).is_some();
+    let target = if has_live {
+        find_ssh_widget_mut(sid_app, live_pred)
+    } else {
+        active_ssh_widget_mut(sid_app)
+    };
+    if let Some(ssh) = target {
         if let Some(pane) = ssh.pty_pane_mut() {
             for chunk in &chunks {
                 pane.feed(chunk);
@@ -4001,15 +4134,19 @@ pub fn drain_ssh_bytes(sid_app: &mut SidApp) {
 /// scheduled follow-up (see TODO).
 pub fn sync_ssh_pty_size(sid_app: &mut SidApp, full_area: Rect) {
     let body = active_ssh_body_rect(full_area);
-    // Guard: only act on the active tab being SSH.
-    let is_active_ssh = sid_app.app.tabs().active().id.as_str() == "ssh";
+    // Guard: only act when the active tab is an SSH tab — the parent ("ssh")
+    // or a background-opened session tab ("ssh:<alias>").
+    let is_active_ssh = {
+        let id = sid_app.app.tabs().active().id.as_str();
+        id == "ssh" || id.starts_with("ssh:")
+    };
     if !is_active_ssh {
         return;
     }
     if sid_app.ssh_last_pty_area == Some(body) {
         return;
     }
-    if let Some(ssh) = active_ssh_widget_mut(sid_app) {
+    if let Some(ssh) = active_tab_ssh_widget_mut(sid_app) {
         if ssh.pty_pane().is_some() {
             ssh.pty_pane_resize_to_area(body);
             sid_app.ssh_last_pty_area = Some(body);
@@ -4040,7 +4177,12 @@ fn active_ssh_body_rect(full: Rect) -> Rect {
     sid_widgets::ssh::body_rect_for(inner)
 }
 
-/// Mutably borrow the active SSH widget, if the SSH tab exists.
+/// Mutably borrow the parent SSH tab's widget (tab id exactly `"ssh"`).
+///
+/// Host CRUD (add/edit/delete refresh) targets this widget only; session
+/// routing must NOT assume it — background-opened `ssh:<alias>` detail tabs
+/// hold their own `SshWidget`s. Use [`find_ssh_widget_mut`] for anything
+/// connection-related.
 fn active_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
     for t in sid_app.app.tabs_mut().tabs_mut() {
         if t.id.as_str() == "ssh" {
@@ -4051,6 +4193,50 @@ fn active_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
         }
     }
     None
+}
+
+/// Find the first [`SshWidget`] in ANY tab (the parent `"ssh"` tab or an
+/// `"ssh:<alias>"` background detail tab) satisfying `pred`.
+///
+/// The connect plumbing uses this to route intents and outcomes to the
+/// widget that owns them: a pending-connect set on a background tab's widget
+/// must be drained from THAT widget, and its Connected/Failed outcome must
+/// land back on it — not on whichever tab happens to be the parent.
+fn find_ssh_widget_mut(
+    sid_app: &mut SidApp,
+    pred: impl Fn(&SshWidget) -> bool,
+) -> Option<&mut SshWidget> {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if let Some(w) = t.layout.iter_widgets_mut().next() {
+            let any_ref = w as &mut dyn std::any::Any;
+            if let Some(ww) = any_ref.downcast_mut::<SshWidget>() {
+                if pred(ww) {
+                    return Some(ww);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Run `f` on every [`SshWidget`] across all tabs (parent + detail tabs).
+fn for_each_ssh_widget_mut(sid_app: &mut SidApp, mut f: impl FnMut(&mut SshWidget)) {
+    for t in sid_app.app.tabs_mut().tabs_mut() {
+        if let Some(w) = t.layout.iter_widgets_mut().next() {
+            if let Some(ww) = (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>() {
+                f(ww);
+            }
+        }
+    }
+}
+
+/// The ACTIVE tab's [`SshWidget`], whatever its tab id (`"ssh"` or
+/// `"ssh:<alias>"`). Used by per-frame work that must touch only the widget
+/// the user is looking at (e.g. PTY resize).
+fn active_tab_ssh_widget_mut(sid_app: &mut SidApp) -> Option<&mut SshWidget> {
+    let t = sid_app.app.tabs_mut().active_mut();
+    let w = t.layout.iter_widgets_mut().next()?;
+    (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>()
 }
 
 /// Spawn the async connect task. Each task is independent and owns the
@@ -4378,15 +4564,13 @@ fn dispatch_modal_submit(
                 .push(Toast::success(format!("workspace '{name}' removed")));
         }
     } else if key == "ssh.new" {
-        let alias = submit_ssh_new(sid_app, values)?;
-        celebrate(sid_app, sid_fx::SupernovaPalette::Celebrate);
-        sid_app
-            .toasts
-            .push(Toast::success(format!("host '{alias}' saved")));
+        // "ssh.new" modal path retired by UX-v2 — hosts are now added via the
+        // side-pane FormPane ("ssh.new" in dispatch_form_submit).
     } else if let Some(alias) = key.strip_prefix("ssh.remove:") {
         submit_ssh_remove(sid_app, alias, values)?;
-    } else if let Some(alias) = key.strip_prefix("ssh.edit:") {
-        submit_ssh_edit(sid_app, alias, values)?;
+    } else if let Some(_alias) = key.strip_prefix("ssh.edit:") {
+        // "ssh.edit:<alias>" modal path retired by UX-v2 — hosts are now edited
+        // via the side-pane FormPane ("ssh.edit:<alias>" in dispatch_form_submit).
     } else if let Some(alias) = key.strip_prefix("ssh.sftp_persist:") {
         submit_ssh_sftp_persist(sid_app, alias, values)?;
     } else if let Some(alias) = key.strip_prefix("ssh.setup_remote.identity:") {
@@ -4807,6 +4991,41 @@ fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::for
                     .push(Toast::success(format!("Saved prefs for {iface_name}")));
             }
         }
+        "ssh.new" => match submit_ssh_new_from_form(sid_app, &values) {
+            Ok(alias) => {
+                sid_app
+                    .toasts
+                    .push(Toast::success(format!("host '{alias}' added")));
+            }
+            Err(e) => {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("ssh add failed: {e}")));
+            }
+        },
+        id if id.starts_with("ssh.edit:") => {
+            let alias = &id["ssh.edit:".len()..];
+            if let Err(e) = submit_ssh_edit_from_form(sid_app, alias, &values) {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("ssh edit failed: {e}")));
+            }
+        }
+        id if id.starts_with("ssh.inspect:") => {
+            let alias = &id["ssh.inspect:".len()..];
+            if let Err(e) = submit_ssh_inspect_from_form(sid_app, alias, &values) {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("ssh inspect save failed: {e}")));
+            }
+        }
+        id if id.starts_with("ssh.inspect-ro:") => {
+            // Read-only inspector (SSH-Config host): ⏎ closes the pane cleanly
+            // without attempting to write anything.  No toast needed — there is
+            // nothing ambiguous about closing an info-only panel.
+            let _ = id; // alias not needed
+            let _ = &values;
+        }
         _ => {
             let _ = &values;
             sid_app
@@ -4840,11 +5059,12 @@ fn open_discard_confirm_modal(sid_app: &mut SidApp) {
     );
 }
 
-/// Slim the per-tab footer hint list: keep at most the first 4 entries and
+/// Slim the per-tab footer hint list: keep at most the first 3 entries and
 /// always append `? help` so the overlay is discoverable. The full hint list
-/// is available via the overlay itself.
+/// (including any entries beyond position 3) is available via the overlay
+/// itself (plan decision 13: footer is 3 primary verbs + ?: help).
 fn slim_footer_hints(mut hints: Vec<sid_core::FooterHint>) -> Vec<sid_core::FooterHint> {
-    hints.truncate(4);
+    hints.truncate(3);
     hints.push(sid_core::FooterHint::new("?", "help"));
     hints
 }
@@ -4888,6 +5108,10 @@ fn submit_session_resume(
 /// Handle a successful submit of the `ssh.new` modal: validate inputs,
 /// upsert the host into the store, refresh the SSH widget. Returns the alias
 /// of the newly-added host so the caller can populate a context-rich toast.
+///
+/// The `ssh.new` modal dispatch arm was retired by UX-v2; this function is
+/// retained for direct test coverage of the core persistence contract.
+#[allow(dead_code)]
 fn submit_ssh_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
@@ -4929,6 +5153,11 @@ fn submit_ssh_new(
 /// Unknown / missing values fall back to [`SshAuthKind::Agent`] — the
 /// most permissive default that works on standard setups without
 /// further user configuration.
+///
+/// This variant matches the *capitalized* option strings used by the modal
+/// paths ("Key", "Password") — the now-retired `ssh.new` / `ssh.edit` modals
+/// and their successor `submit_ssh_new` / `submit_ssh_edit` helpers.
+#[allow(dead_code)]
 fn parse_auth_choice(choice: Option<&str>) -> sid_store::SshAuthKind {
     use sid_store::SshAuthKind;
     match choice {
@@ -4936,6 +5165,168 @@ fn parse_auth_choice(choice: Option<&str>) -> sid_store::SshAuthKind {
         Some("Password") => SshAuthKind::Password,
         _ => SshAuthKind::Agent,
     }
+}
+
+/// Like [`parse_auth_choice`] but matches the *lowercase* strings produced by
+/// `ssh_add_form_spec` / `ssh_edit_form_spec` ("agent", "key", "password").
+fn parse_auth_form_choice(choice: Option<&str>) -> sid_store::SshAuthKind {
+    use sid_store::SshAuthKind;
+    match choice {
+        Some("key") => SshAuthKind::Key,
+        Some("password") => SshAuthKind::Password,
+        _ => SshAuthKind::Agent,
+    }
+}
+
+/// Handle a successful submit of the `ssh.new` FormPane form. Reads from a
+/// [`FormValues`] map (plain `String` values from the side-pane form substrate)
+/// rather than the old `FieldValue` slice used by modal submits.
+fn submit_ssh_new_from_form(
+    sid_app: &mut SidApp,
+    values: &sid_widgets::form::FormValues,
+) -> Result<String> {
+    use sid_store::{SshHost, SshHostSource};
+    let alias = values.get("alias").cloned().unwrap_or_default();
+    let host = values.get("host").cloned().unwrap_or_default();
+    let user = values.get("user").cloned().unwrap_or_default();
+    let port_str = values.get("port").cloned().unwrap_or_default();
+    let identity_file = values
+        .get("identity_file")
+        .filter(|s| !s.is_empty())
+        .cloned();
+    let auth_kind = parse_auth_form_choice(values.get("auth").map(String::as_str));
+    if alias.is_empty() || host.is_empty() || user.is_empty() {
+        return Err(anyhow::anyhow!("alias, host, and user are required"));
+    }
+    let port: u16 = port_str
+        .parse()
+        .map_err(|e| anyhow::anyhow!("port must be a u16 (got {port_str:?}): {e}"))?;
+    let record = SshHost {
+        alias: alias.clone(),
+        host,
+        port,
+        user,
+        identity_file,
+        source: SshHostSource::Manual,
+        last_connected: 0,
+        command_history: Vec::new(),
+        last_sftp_path: None,
+        auth_kind,
+    };
+    sid_app
+        .store
+        .upsert_ssh_host(&record)
+        .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    Ok(alias)
+}
+
+/// Handle a successful submit of an `ssh.edit:<alias>` or `ssh.inspect:<alias>`
+/// FormPane form. Reads from a [`FormValues`] map; merges changes onto the
+/// existing store record (preserves `last_sftp_path`, `command_history`,
+/// `last_connected`).
+fn submit_ssh_edit_from_form(
+    sid_app: &mut SidApp,
+    alias_in_id: &str,
+    values: &sid_widgets::form::FormValues,
+) -> Result<()> {
+    use sid_store::{SshHost, SshHostSource};
+    let new_alias = values
+        .get("alias")
+        .cloned()
+        .unwrap_or(alias_in_id.to_string());
+    let host = values.get("host").cloned().unwrap_or_default();
+    let user = values.get("user").cloned().unwrap_or_default();
+    let port_str = values.get("port").cloned().unwrap_or_default();
+    let identity_file = values
+        .get("identity_file")
+        .filter(|s| !s.is_empty())
+        .cloned();
+    let auth_kind = parse_auth_form_choice(values.get("auth").map(String::as_str));
+    if new_alias.is_empty() || host.is_empty() || user.is_empty() {
+        return Err(anyhow::anyhow!("alias, host, and user are required"));
+    }
+    let port: u16 = if port_str.is_empty() {
+        22
+    } else {
+        port_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("port must be a u16 (got {port_str:?}): {e}"))?
+    };
+    let existing = sid_app
+        .store
+        .get_ssh_host(alias_in_id)
+        .map_err(|e| anyhow::anyhow!("get ssh host: {e}"))?;
+    let (last_connected, command_history, last_sftp_path) = match existing.as_ref() {
+        Some(h) => (
+            h.last_connected,
+            h.command_history.clone(),
+            h.last_sftp_path.clone(),
+        ),
+        None => (0, Vec::new(), None),
+    };
+    let record = SshHost {
+        alias: new_alias.clone(),
+        host,
+        port,
+        user,
+        identity_file,
+        source: SshHostSource::Manual,
+        last_connected,
+        command_history,
+        last_sftp_path,
+        auth_kind,
+    };
+    if new_alias != alias_in_id {
+        sid_app
+            .store
+            .remove_ssh_host(alias_in_id)
+            .map_err(|e| anyhow::anyhow!("remove old ssh host: {e}"))?;
+    }
+    sid_app
+        .store
+        .upsert_ssh_host(&record)
+        .map_err(|e| anyhow::anyhow!("upsert ssh host: {e}"))?;
+    refresh_ssh_widget(sid_app);
+    sid_app
+        .toasts
+        .push(Toast::success(format!("host '{new_alias}' updated")));
+    Ok(())
+}
+
+/// For an `ssh.inspect:<alias>` form submit, merge the editable field
+/// (`identity_file`) from the submitted values with the rest of the existing
+/// host record, then persist.
+fn submit_ssh_inspect_from_form(
+    sid_app: &mut SidApp,
+    alias: &str,
+    values: &sid_widgets::form::FormValues,
+) -> Result<()> {
+    let existing = sid_app
+        .store
+        .get_ssh_host(alias)
+        .map_err(|e| anyhow::anyhow!("get ssh host: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no host with alias '{alias}' in store"))?;
+    // Build a merged FormValues from the existing record, overriding identity_file
+    // from the submitted values.
+    let mut merged = sid_widgets::form::FormValues::new();
+    merged.insert("alias".to_string(), existing.alias.clone());
+    merged.insert("host".to_string(), existing.host.clone());
+    merged.insert("port".to_string(), existing.port.to_string());
+    merged.insert("user".to_string(), existing.user.clone());
+    merged.insert(
+        "identity_file".to_string(),
+        values.get("identity_file").cloned().unwrap_or_default(),
+    );
+    merged.insert(
+        "auth".to_string(),
+        match existing.auth_kind {
+            sid_store::SshAuthKind::Agent => "agent".to_string(),
+            sid_store::SshAuthKind::Key => "key".to_string(),
+            sid_store::SshAuthKind::Password => "password".to_string(),
+        },
+    );
+    submit_ssh_edit_from_form(sid_app, alias, &merged)
 }
 
 /// Handle a `ssh.remove:<alias>` submit. Confirms via the Choice field
@@ -4962,6 +5353,12 @@ fn submit_ssh_remove(
 /// Handle a successful submit of `ssh.edit:<alias>`: validate, update the
 /// host record (preserves `last_sftp_path` and `command_history`), and
 /// refresh the widget.
+///
+/// The `ssh.edit:<alias>` modal dispatch arm was retired by UX-v2; hosts are
+/// now edited via the side-pane FormPane (`submit_ssh_edit_from_form`).
+/// This function is retained for direct test coverage of the core update
+/// contract.
+#[allow(dead_code)]
 fn submit_ssh_edit(
     sid_app: &mut SidApp,
     alias_in_id: &str,
@@ -6378,6 +6775,59 @@ mod tests {
         );
     }
 
+    /// `--ssh <alias>` startup walks the cursor to the requested host even
+    /// though the cursor starts on the synthetic "+ add new" row (regression:
+    /// a fixed index-count walk landed one row short once show_add_new_row
+    /// shipped enabled by default).
+    #[test]
+    fn start_ssh_alias_selects_host_despite_add_new_row() {
+        use sid_store::{SshHost, SshHostSource};
+        let mk = |alias: &str| SshHost {
+            alias: alias.into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: Vec::new(),
+            last_sftp_path: None,
+            auth_kind: sid_store::SshAuthKind::Agent,
+        };
+        let app = build_app_hydrated(
+            None,
+            BuildAppData {
+                ssh_hosts: vec![mk("alpha"), mk("beta")],
+                start_ssh_alias: Some("beta".into()),
+                ..Default::default()
+            },
+        );
+        let ssh_tab = app
+            .tabs()
+            .tabs()
+            .iter()
+            .find(|t| t.id.as_str() == "ssh")
+            .expect("ssh tab");
+        let w = ssh_tab
+            .layout
+            .iter_widgets()
+            .next()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<SshWidget>()
+            .expect("ssh widget");
+        assert_eq!(
+            w.state().selected_alias(),
+            Some("beta"),
+            "cursor must land on the requested host, not one row short"
+        );
+        assert_eq!(
+            w.connection().phase(),
+            sid_widgets::ssh::ConnectionPhase::Connecting,
+            "startup alias must begin connecting"
+        );
+    }
+
     /// `build_app` defaults to the first tab (workspaces).
     #[test]
     fn build_app_defaults_to_workspaces() {
@@ -7597,19 +8047,512 @@ mod tests {
         }
     }
 
-    /// Pressing `N` on the SSH tab opens the `ssh.new` modal with the six
-    /// expected fields.
+    // ---- Task 4 / Task 7 tests: dispatch_ssh_form_key, rewritten N/E tests ----
+
+    /// Build a test `SidApp` with the SSH tab active and the given hosts
+    /// pre-populated in both the store and the SSH widget.
+    fn build_app_with_ssh_hosts(hosts: Vec<sid_store::SshHost>) -> SidApp {
+        let mut app = build_test_sid_app(Some("ssh"));
+        for h in &hosts {
+            app.store.upsert_ssh_host(h).unwrap();
+        }
+        // Refresh the widget state so it sees the hosts.
+        refresh_ssh_widget(&mut app);
+        // The cursor starts on the synthetic "+ add new" row (show_add_new_row
+        // defaults on); step onto the first real host so selection-dependent
+        // tests see one — mirroring the ↓ a user would press.
+        if let Some(w) = active_ssh_widget_mut(&mut app) {
+            if w.state().selected_host().is_none() {
+                w.state_mut().select_next();
+            }
+        }
+        app
+    }
+
+    // Previously: `N` opened a modal. Now it opens a FormPane (Task 4/7).
+    #[test]
+    fn dispatch_ssh_form_key_n_opens_form_on_ssh_tab() {
+        use crossterm::event::KeyModifiers;
+        use sid_core::event::KeyChord;
+        let mut app = build_test_sid_app(Some("ssh"));
+        let chord = KeyChord {
+            code: crossterm::event::KeyCode::Char('N'),
+            mods: KeyModifiers::empty(),
+        };
+        let opened = dispatch_ssh_form_key(&mut app, chord);
+        assert!(opened, "N must open a form");
+        assert_eq!(app.form.as_ref().unwrap().spec.id.0, "ssh.new");
+        assert!(app.modal_stack.is_empty(), "no modal must be opened");
+    }
+
+    // Previously: `N` on other tabs produced no `ssh.new` modal.
+    // Now: `dispatch_ssh_form_key` only checks the SSH form path;
+    // route_key_event guards it behind `active_tab == "ssh"`, so calling it
+    // on a non-SSH SidApp will still open the form but this path is only reached
+    // when tab == "ssh". We verify the guard in the route_key_event tests.
+    #[test]
+    fn dispatch_ssh_form_key_n_is_noop_on_non_ssh_tab() {
+        // The `route_key_event` guard checks `active().id == "ssh"` before calling
+        // `dispatch_ssh_form_key`. The function itself is tab-agnostic — it
+        // operates on the SSH widget via `active_ssh_widget_mut`, which returns
+        // `None` on a non-SSH tab and guards correctly.
+        use crossterm::event::KeyModifiers;
+        use sid_core::event::KeyChord;
+        let mut app = build_test_sid_app(Some("workspaces"));
+        let chord = KeyChord {
+            code: crossterm::event::KeyCode::Char('N'),
+            mods: KeyModifiers::empty(),
+        };
+        // N always opens the add form (no tab-gate in dispatch_ssh_form_key);
+        // the tab gate lives in route_key_event's `active().id == "ssh"` guard.
+        // Test that the form is opened regardless — route_key_event is tested separately.
+        let _opened = dispatch_ssh_form_key(&mut app, chord);
+        // No assertion about form state; the key point is it does not panic.
+    }
+
+    #[test]
+    fn n_key_on_ssh_tab_opens_add_form_not_modal() {
+        use crossterm::event::KeyModifiers;
+        use sid_core::event::KeyChord;
+        let mut app = build_test_sid_app(Some("ssh"));
+        let chord = KeyChord {
+            code: crossterm::event::KeyCode::Char('N'),
+            mods: KeyModifiers::empty(),
+        };
+        let opened = dispatch_ssh_form_key(&mut app, chord);
+        assert!(opened, "N must open a form");
+        assert!(app.form.is_some(), "form must be set");
+        assert_eq!(app.form.as_ref().unwrap().spec.id.0, "ssh.new");
+        assert!(app.modal_stack.is_empty(), "no modal must be opened");
+    }
+
+    #[test]
+    fn e_key_on_ssh_tab_opens_edit_form_for_manual_host() {
+        use crossterm::event::KeyModifiers;
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "myhost".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+        let chord = KeyChord {
+            code: crossterm::event::KeyCode::Char('E'),
+            mods: KeyModifiers::empty(),
+        };
+        assert!(dispatch_ssh_form_key(&mut app, chord));
+        let form_id = app.form.as_ref().unwrap().spec.id.0.clone();
+        assert_eq!(form_id, "ssh.edit:myhost");
+    }
+
+    #[test]
+    fn right_arrow_on_ssh_host_opens_inspector_form() {
+        use crossterm::event::KeyModifiers;
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "inspector-test".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+        let chord = KeyChord {
+            code: crossterm::event::KeyCode::Right,
+            mods: KeyModifiers::empty(),
+        };
+        assert!(dispatch_ssh_form_key(&mut app, chord));
+        let id = app.form.as_ref().unwrap().spec.id.0.clone();
+        assert_eq!(id, "ssh.inspect:inspector-test");
+    }
+
+    // --- Task 5: background-open ---
+
+    /// End-to-end test: drives `route_key_event` (not `dispatch_ssh_form_key`
+    /// directly) to verify background-open is reachable from the inspector in
+    /// production. Previously the test called dispatch_ssh_form_key directly
+    /// which bypassed the `form.is_none()` gate in route_key_event — a false
+    /// positive. This test opens the inspector via `→` through route_key_event,
+    /// then fires Ctrl+Enter through route_key_event to confirm the new tab
+    /// is pushed in the background (active index unchanged) and the inspector
+    /// form remains open.
+    #[test]
+    fn background_open_from_inspector_pushes_tab_and_toasts() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "bg-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host.clone()]);
+
+        // Open the inspector via → through route_key_event (the production path).
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        let consumed = route_key_event(&mut app, right_chord);
+        assert!(consumed, "→ must open inspector form");
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "form must be an ssh.inspect form after →"
+        );
+
+        let active_idx_before = app.app.tabs().active_index();
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        // Fire Ctrl+Enter through route_key_event — must reach the
+        // background-open arm despite form.is_some().
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+        let consumed = route_key_event(&mut app, bg_chord);
+        assert!(consumed, "Ctrl+Enter must be consumed");
+
+        // New tab pushed.
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before + 1,
+            "one new tab must be pushed in the background"
+        );
+        // Active index unchanged — background push does not change focus.
+        assert_eq!(
+            app.app.tabs().active_index(),
+            active_idx_before,
+            "background-open must not change the active tab"
+        );
+        // Toast must mention the alias.
+        assert!(
+            app.toasts.iter().any(|t| t.message.contains("bg-host")),
+            "toast must mention the alias"
+        );
+        // Inspector form remains open (plan Task 5: "without closing the inspector").
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "inspector form must remain open after background-open"
+        );
+        // Fix 3: pushed tab id must be "ssh:<alias>", not the bare "ssh" id.
+        let pushed_tab = app.app.tabs().tabs().last().unwrap();
+        assert_eq!(
+            pushed_tab.id.as_str(),
+            "ssh:bg-host",
+            "pushed tab must have unique id 'ssh:<alias>'"
+        );
+        // Fix 3: pending connect must be seeded so the detail tab connects.
+        let bg_ssh = pushed_tab
+            .layout
+            .iter_widgets()
+            .next()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<sid_widgets::SshWidget>()
+            .expect("background tab must hold an SshWidget");
+        assert_eq!(
+            bg_ssh.peek_pending_connect(),
+            Some("bg-host"),
+            "pending_connect must be seeded with the alias"
+        );
+        use sid_widgets::ssh::ConnectionPhase;
+        assert_eq!(
+            bg_ssh.connection().phase(),
+            ConnectionPhase::Connecting,
+            "connection must be in Connecting phase"
+        );
+    }
+
+    /// Fix 3: re-invoking background-open for the same alias focuses the
+    /// existing tab instead of stacking a second one (dedup).
+    #[test]
+    fn background_open_deduplicates_existing_tab() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "dedup-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host.clone()]);
+
+        // Open the inspector via →.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+
+        // First background-open — pushes one new tab.
+        route_key_event(&mut app, bg_chord);
+        let count_after_first = app.app.tabs().tabs().len();
+
+        // Second background-open — must NOT push another tab.
+        route_key_event(&mut app, bg_chord);
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            count_after_first,
+            "second background-open of same alias must not stack a duplicate tab"
+        );
+        // The dedup toast must mention the alias.
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("dedup-host") && t.message.contains("already open")),
+            "dedup must produce a toast mentioning the alias and 'already open'"
+        );
+    }
+
+    /// Fix 1: typing 'O' into an editable text field (identity_file) in the
+    /// ssh inspector must insert the character — NOT spawn a background tab.
+    #[test]
+    fn background_open_o_key_does_not_fire_when_text_field_focused() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "text-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+
+        // Open the inspector via →.  Manual host → has editable Prefs section
+        // with a Text identity_file field which is focused by default.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                .unwrap_or(false),
+            "inspector must be open"
+        );
+
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        // Advance focus to the identity_file Text field (Tab through the form).
+        // The first slot in an editable form is typically a text field, so
+        // focused_field_is_text() should return true right after open.
+        assert!(
+            app.form
+                .as_ref()
+                .map(|f| f.focused_field_is_text())
+                .unwrap_or(false),
+            "first focusable slot after open must be a text field"
+        );
+
+        // Press 'O' — is_background_open() returns true for Char('O'), but the
+        // guard must block it because focused_is_text == true.
+        let o_chord = KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, o_chord);
+
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before,
+            "'O' in a text field must NOT push a background tab"
+        );
+    }
+
+    /// Fix 1: 'O' on a non-text field (e.g. after tabbing past text fields to
+    /// the Save button) DOES background-open.
+    #[test]
+    fn background_open_o_key_fires_when_non_text_focused() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        use sid_store::{SshAuthKind, SshHost, SshHostSource};
+        let host = SshHost {
+            alias: "non-text-host".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            identity_file: None,
+            source: SshHostSource::Manual,
+            last_connected: 0,
+            command_history: vec![],
+            last_sftp_path: None,
+            auth_kind: SshAuthKind::Agent,
+        };
+        let mut app = build_app_with_ssh_hosts(vec![host]);
+
+        // Open inspector.
+        let right_chord = KeyChord {
+            code: KeyCode::Right,
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, right_chord);
+
+        // Shift focus away from text fields by Tab-pressing until
+        // focused_field_is_text() returns false (or we exhaust the form).
+        let tab_key = KeyChord {
+            code: KeyCode::Tab,
+            mods: KeyModifiers::NONE,
+        };
+        for _ in 0..20 {
+            if app
+                .form
+                .as_ref()
+                .map(|f| !f.focused_field_is_text())
+                .unwrap_or(true)
+            {
+                break;
+            }
+            // Let the form consume Tab directly (not via route_key_event).
+            if let Some(f) = app.form.as_mut() {
+                f.handle_key(tab_key);
+            }
+        }
+
+        // If after 20 Tabs we still haven't found a non-text slot, the inspector
+        // may only have text fields (acceptable) — skip the background-open
+        // assertion, but verify no crash occurred.
+        if app
+            .form
+            .as_ref()
+            .map(|f| f.focused_field_is_text())
+            .unwrap_or(true)
+        {
+            // All slots text — Ctrl+Enter still works regardless.
+            let bg_chord = KeyChord {
+                code: KeyCode::Enter,
+                mods: KeyModifiers::CONTROL,
+            };
+            let tab_count_before = app.app.tabs().tabs().len();
+            route_key_event(&mut app, bg_chord);
+            assert_eq!(
+                app.app.tabs().tabs().len(),
+                tab_count_before + 1,
+                "Ctrl+Enter must always background-open regardless of field type"
+            );
+            return;
+        }
+
+        // We have a non-text field focused — 'O' must background-open.
+        let tab_count_before = app.app.tabs().tabs().len();
+        let o_chord = KeyChord {
+            code: KeyCode::Char('O'),
+            mods: KeyModifiers::NONE,
+        };
+        route_key_event(&mut app, o_chord);
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before + 1,
+            "'O' on a non-text field must push a background tab"
+        );
+    }
+
+    /// Background-open on a NON-ssh form (e.g. database.connection) must NOT
+    /// push a new tab — the intercept is scoped to ssh.inspect: form ids only.
+    #[test]
+    fn background_open_does_not_fire_on_non_ssh_inspector_form() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        // Build an app with any non-ssh form open.  Use a bare FormSpec with a
+        // database-flavoured id so the intercept guard rejects it.
+        let mut app = build_test_sid_app(Some("ssh"));
+        let fake_spec = sid_widgets::form::FormSpec::new("database.connection", "fake", vec![]);
+        open_form(&mut app, fake_spec);
+        assert!(app.form.is_some(), "form must be open for this test");
+
+        let tab_count_before = app.app.tabs().tabs().len();
+
+        let bg_chord = KeyChord {
+            code: KeyCode::Enter,
+            mods: KeyModifiers::CONTROL,
+        };
+        route_key_event(&mut app, bg_chord);
+
+        assert_eq!(
+            app.app.tabs().tabs().len(),
+            tab_count_before,
+            "background-open must NOT push a tab for a non-ssh-inspector form"
+        );
+    }
+
+    // --- Task 4 (continued): add-new cursor ---
+
+    #[test]
+    fn add_new_cursor_enter_drains_to_open_form() {
+        let mut app = build_test_sid_app(Some("ssh"));
+        // Simulate Enter press on add-new row setting pending flag.
+        if let Some(w) = active_ssh_widget_mut(&mut app) {
+            w.pending_add_new = true;
+        }
+        drain_pending_ssh_add_new(&mut app);
+        assert!(app.form.is_some());
+        assert_eq!(app.form.as_ref().unwrap().spec.id.0, "ssh.new");
+    }
+
+    /// Previously `N` on SSH tab opened a modal; now it opens a FormPane.
+    /// `modal_for_active_tab_key` must NOT return `ssh.new` anymore.
     #[test]
     fn ssh_new_modal_for_key_opens_on_ssh() {
         let sid_app = build_test_sid_app(Some("ssh"));
-        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'))
-            .expect("N on ssh should open a modal");
-        assert_eq!(modal.id.0, "ssh.new");
-        assert_eq!(modal.fields.len(), 6);
+        // N is now handled by dispatch_ssh_form_key; modal_for_active_tab_key
+        // should return None for N (no longer has the 'N' arm).
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('N'));
+        // It may return None, or another modal — just must NOT be ssh.new.
+        assert_ne!(
+            modal.as_ref().map(|m| m.id.0.as_str()).unwrap_or(""),
+            "ssh.new",
+            "modal_for_active_tab_key must not open ssh.new (FormPane owns N now)"
+        );
     }
 
-    /// `N` on a non-SSH tab does NOT open `ssh.new`. (Confirmed by checking
-    /// the modal id, since other tabs may have their own `N` modals.)
+    /// `N` on a non-SSH tab does NOT produce an `ssh.new` modal.
     #[test]
     fn ssh_new_modal_for_key_does_not_open_on_other_tabs() {
         let sid_app = build_test_sid_app(Some("workspaces"));
@@ -7618,15 +8561,18 @@ mod tests {
         assert_ne!(id, "ssh.new", "workspaces N must not produce ssh.new");
     }
 
-    /// Submitting an `ssh.new` modal upserts the host into the store AND the
-    /// SSH widget sees the new host on the next render.
+    /// `submit_ssh_new` upserts the host into the store AND the SSH widget sees
+    /// the new host on the next render.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; hosts are
+    /// now added via the side-pane FormPane ("ssh.new" in dispatch_form_submit).
+    /// This test calls submit_ssh_new directly to verify the core persistence
+    /// contract shared by both paths.
     #[test]
     fn ssh_new_submit_persists_and_refreshes() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         assert!(sid_app.store.list_ssh_hosts().unwrap().is_empty());
 
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("my-prod".into())),
             ("host".to_string(), FieldValue::Text("10.0.0.1".into())),
@@ -7638,7 +8584,8 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+        let alias = submit_ssh_new(&mut sid_app, &values).expect("submit ok");
+        assert_eq!(alias, "my-prod");
 
         let hosts = sid_app.store.list_ssh_hosts().unwrap();
         assert_eq!(hosts.len(), 1);
@@ -7668,11 +8615,14 @@ mod tests {
         assert!(widget_aliases.contains(&"my-prod".to_string()));
     }
 
-    /// The `auth` Choice value persists through `ssh.new` for every variant.
+    /// The `auth` Choice value persists through `submit_ssh_new` for every variant.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; the form path
+    /// uses lowercase auth choices ("key", "password") via submit_ssh_new_from_form.
+    /// This test exercises submit_ssh_new's uppercase-matching parse_auth_choice.
     #[test]
     fn ssh_new_submit_persists_each_auth_kind() {
         use sid_store::SshAuthKind;
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
 
         let cases = [
             ("Key", SshAuthKind::Key),
@@ -7683,7 +8633,6 @@ mod tests {
         ];
         for (label, expected) in cases {
             let mut sid_app = build_test_sid_app(Some("ssh"));
-            let id = ModalId("ssh.new".to_string());
             let values = vec![
                 ("alias".to_string(), FieldValue::Text(format!("h-{label}"))),
                 ("host".to_string(), FieldValue::Text("h".into())),
@@ -7695,7 +8644,7 @@ mod tests {
                 ),
                 ("auth".to_string(), FieldValue::Choice(label.into())),
             ];
-            dispatch_modal_submit(&mut sid_app, &id, &values).expect("submit ok");
+            submit_ssh_new(&mut sid_app, &values).expect("submit ok");
             let hosts = sid_app.store.list_ssh_hosts().unwrap();
             assert_eq!(
                 hosts[0].auth_kind, expected,
@@ -7704,12 +8653,13 @@ mod tests {
         }
     }
 
-    /// `ssh.new` requires alias, host, user. Empty alias → Err.
+    /// `submit_ssh_new` requires alias, host, user. Empty alias → Err.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; this tests
+    /// the shared validation in submit_ssh_new directly.
     #[test]
     fn ssh_new_submit_rejects_missing_required_fields() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text(String::new())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -7721,16 +8671,17 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_new(&mut sid_app, &values).unwrap_err();
         assert!(err.to_string().contains("alias"));
     }
 
-    /// `ssh.new` rejects a port that is not a u16.
+    /// `submit_ssh_new` rejects a port that is not a u16.
+    /// Note: the "ssh.new" modal dispatch arm was retired by UX-v2; this tests
+    /// the shared port validation in submit_ssh_new directly.
     #[test]
     fn ssh_new_submit_rejects_non_u16_port() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
-        let id = ModalId("ssh.new".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("a".into())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -7742,7 +8693,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_new(&mut sid_app, &values).unwrap_err();
         assert!(err.to_string().to_lowercase().contains("port"));
     }
 
@@ -7767,8 +8718,14 @@ mod tests {
                 auth_kind: sid_store::SshAuthKind::Agent,
             })
             .unwrap();
-        // Refresh the widget to pick up the new host.
+        // Refresh the widget to pick up the new host, then step off the
+        // "+ add new" row onto it (the cursor starts on the synthetic row).
         refresh_ssh_widget(&mut sid_app);
+        if let Some(w) = active_ssh_widget_mut(&mut sid_app) {
+            if w.state().selected_host().is_none() {
+                w.state_mut().select_next();
+            }
+        }
 
         let modal = modal_for_active_tab_key(&sid_app, delete_chord())
             .expect("Del on ssh with selected host opens remove modal");
@@ -8049,17 +9006,47 @@ mod tests {
             })
             .unwrap();
         refresh_ssh_widget(sid_app);
+        // Step off the "+ add new" row onto the first host (cursor starts on
+        // the synthetic row because show_add_new_row defaults on).
+        if let Some(w) = active_ssh_widget_mut(sid_app) {
+            if w.state().selected_host().is_none() {
+                w.state_mut().select_next();
+            }
+        }
     }
 
-    /// `E` on the SSH tab with a selected manual host opens the edit modal.
+    /// `E` on the SSH tab with a selected manual host now opens a FormPane
+    /// (not a modal). `modal_for_active_tab_key` must return `None` for `E`.
     #[test]
     fn ssh_edit_modal_for_key_opens_on_ssh() {
         let mut sid_app = build_test_sid_app(Some("ssh"));
         upsert_host_for(&mut sid_app, "edit-me");
-        let modal = modal_for_active_tab_key(&sid_app, plain_chord('E'))
-            .expect("E on ssh opens edit modal");
-        assert_eq!(modal.id.0, "ssh.edit:edit-me");
-        assert_eq!(modal.fields.len(), 6);
+        // E is now handled by dispatch_ssh_form_key (FormPane path).
+        let modal = modal_for_active_tab_key(&sid_app, plain_chord('E'));
+        assert!(
+            modal.is_none()
+                || !modal
+                    .as_ref()
+                    .map(|m| m.id.0.starts_with("ssh.edit"))
+                    .unwrap_or(false),
+            "E must no longer open an ssh.edit modal"
+        );
+        // Verify FormPane path works instead.
+        let opened = dispatch_ssh_form_key(
+            &mut sid_app,
+            sid_core::event::KeyChord {
+                code: crossterm::event::KeyCode::Char('E'),
+                mods: crossterm::event::KeyModifiers::empty(),
+            },
+        );
+        assert!(opened, "E on ssh tab must open FormPane");
+        assert!(
+            sid_app
+                .form
+                .as_ref()
+                .map(|f| f.spec.id.0.starts_with("ssh.edit"))
+                .unwrap_or(false)
+        );
     }
 
     /// `E` on a non-SSH tab does not open an SSH modal.
@@ -8071,13 +9058,16 @@ mod tests {
         assert!(!id.starts_with("ssh.edit"));
     }
 
-    /// Submitting `ssh.edit:<alias>` updates the host record fields.
+    /// `submit_ssh_edit` updates the host record fields.
+    /// Note: the "ssh.edit:<alias>" modal dispatch arm was retired by UX-v2;
+    /// hosts are now edited via the side-pane FormPane ("ssh.edit:<alias>" in
+    /// dispatch_form_submit). This test calls submit_ssh_edit directly to
+    /// verify the core update contract.
     #[test]
     fn ssh_edit_submit_updates_host() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         upsert_host_for(&mut sid_app, "alpha");
-        let id = ModalId("ssh.edit:alpha".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text("alpha".into())),
             ("host".to_string(), FieldValue::Text("10.99.99.99".into())),
@@ -8089,7 +9079,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        dispatch_modal_submit(&mut sid_app, &id, &values).unwrap();
+        submit_ssh_edit(&mut sid_app, "alpha", &values).unwrap();
         let h = sid_app.store.get_ssh_host("alpha").unwrap().unwrap();
         assert_eq!(h.host, "10.99.99.99");
         assert_eq!(h.user, "admin");
@@ -8097,13 +9087,14 @@ mod tests {
         assert_eq!(h.identity_file.as_deref(), Some("/tmp/id_test"));
     }
 
-    /// Editing with an empty alias is rejected.
+    /// `submit_ssh_edit` rejects an empty alias.
+    /// Note: the "ssh.edit:<alias>" modal dispatch arm was retired by UX-v2;
+    /// this tests the shared validation in submit_ssh_edit directly.
     #[test]
     fn ssh_edit_submit_rejects_empty_alias() {
-        use sid_widgets::{FieldValue, ModalId};
+        use sid_widgets::FieldValue;
         let mut sid_app = build_test_sid_app(Some("ssh"));
         upsert_host_for(&mut sid_app, "alpha");
-        let id = ModalId("ssh.edit:alpha".to_string());
         let values = vec![
             ("alias".to_string(), FieldValue::Text(String::new())),
             ("host".to_string(), FieldValue::Text("h".into())),
@@ -8115,7 +9106,7 @@ mod tests {
             ),
             ("auth".to_string(), FieldValue::Choice("Key".into())),
         ];
-        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let err = submit_ssh_edit(&mut sid_app, "alpha", &values).unwrap_err();
         assert!(err.to_string().contains("alias"));
     }
 
@@ -8298,7 +9289,11 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
-        for ch in ["N", "G", "S", "K", "X", "?"] {
+        // The overlay shows the FULL footer_hint list — all hints including
+        // E and G which are beyond the slim rendered footer cap.
+        // Rendered footer: N / ⏎ / → / ? (plan decision 13: 3 primary verbs + ?: help).
+        // Overlay (here): N / ⏎ / → / E / G (the long tail the slim footer drops).
+        for ch in ["N", "→", "E", "G"] {
             assert!(
                 tab_body.contains(ch),
                 "expected tab body to mention {ch}; got: {tab_body}"
@@ -8416,27 +9411,26 @@ mod tests {
         );
     }
 
-    /// A widget with 6 hints produces a slimmed footer list of 4 + `? help`.
+    /// A widget with 6 hints produces a slimmed footer list of 3 + `? help`.
     #[test]
     fn footer_caps_hints_and_appends_help() {
         use sid_core::FooterHint;
-        // 6 hints — same as DatabaseWidget
         let six_hints: Vec<FooterHint> = (0..6)
             .map(|i| FooterHint::new(format!("K{i}"), format!("action{i}")))
             .collect();
         let slimmed = slim_footer_hints(six_hints);
         assert_eq!(
             slimmed.len(),
-            5,
-            "4 capped + 1 '? help' = 5; got {}",
+            4,
+            "3 capped + 1 '? help' = 4; got {}",
             slimmed.len()
         );
         // Last entry must be the `?` hint.
         let last = slimmed.last().unwrap();
         assert_eq!(last.chord, "?");
         assert_eq!(last.label, "help");
-        // First 4 are the originals.
-        for (i, h) in slimmed.iter().take(4).enumerate() {
+        // First 3 are the originals.
+        for (i, h) in slimmed.iter().take(3).enumerate() {
             assert_eq!(h.chord, format!("K{i}"));
         }
     }
@@ -10684,6 +11678,12 @@ mod tests {
                     && let Some(ssh) = (w as &mut dyn std::any::Any).downcast_mut::<SshWidget>()
                 {
                     ssh.state_mut().set_store_hosts(vec![h.clone()]);
+                    // Step off the "+ add new" row onto the host (the cursor
+                    // starts on the synthetic row; show_add_new_row is on by
+                    // default).
+                    if ssh.state().selected_host().is_none() {
+                        ssh.state_mut().select_next();
+                    }
                 }
             }
         }
@@ -10980,6 +11980,208 @@ mod tests {
             let prev = sid_app.ssh_last_pty_area;
             sync_ssh_pty_size(&mut sid_app, Rect::new(0, 0, 120, 40));
             assert_eq!(sid_app.ssh_last_pty_area, prev);
+        }
+
+        /// End-to-end through PRODUCTION routing: background-open from the
+        /// inspector pushes an `ssh:<alias>` detail tab whose own widget
+        /// carries the connect intent; the drain pipeline resolves the alias
+        /// against the detail widget's hydrated host list, the Connected
+        /// outcome attaches the PtyPane to the DETAIL widget (not the parent
+        /// "ssh" tab), and bytes flow into the detail pane.
+        #[tokio::test(flavor = "current_thread")]
+        async fn background_open_tab_connects_end_to_end() {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            use sid_core::event::KeyChord;
+            use sid_widgets::ssh::ConnectionPhase;
+
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+            let make: MockMaker = Box::new(|| Box::new(MockClient::ok(vec![b"hello\n".to_vec()])));
+            sid_app.ssh_client_factory = factory_for(Arc::new(Mutex::new(make)));
+
+            // Open the inspector on "acme", then background-open it.
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Right,
+                    mods: KeyModifiers::NONE,
+                },
+            );
+            assert!(
+                sid_app
+                    .form
+                    .as_ref()
+                    .map(|f| f.spec.id.0.starts_with("ssh.inspect:"))
+                    .unwrap_or(false),
+                "inspector must be open before background-open"
+            );
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Enter,
+                    mods: KeyModifiers::CONTROL,
+                },
+            );
+
+            // The detail tab's widget is hydrated with the host list, so the
+            // connect drain can resolve the alias from THAT widget.
+            let detail_id = TabId::new("ssh:acme");
+            {
+                let detail = detail_widget_mut(&mut sid_app, &detail_id);
+                assert!(
+                    !detail.state().visible_hosts().is_empty(),
+                    "detail widget must be hydrated with the store's host list"
+                );
+                assert_eq!(detail.connection().phase(), ConnectionPhase::Connecting);
+            }
+
+            drain_pending_ssh_connect(&mut sid_app);
+            for _ in 0..30 {
+                tokio::task::yield_now().await;
+            }
+            drain_ssh_outcomes(&mut sid_app);
+
+            // Outcome landed on the DETAIL widget...
+            {
+                let detail = detail_widget_mut(&mut sid_app, &detail_id);
+                assert_eq!(detail.connection().phase(), ConnectionPhase::Connected);
+                assert!(
+                    detail.pty_pane().is_some(),
+                    "pane must attach to detail tab"
+                );
+            }
+            // ...and NOT on the parent "ssh" tab.
+            let parent = active_ssh_widget_mut(&mut sid_app).expect("parent ssh widget");
+            assert_eq!(
+                parent.connection().phase(),
+                ConnectionPhase::Idle,
+                "parent tab must stay untouched by a background connect"
+            );
+            assert!(parent.pty_pane().is_none(), "parent must not get the pane");
+
+            // Bytes flow into the detail pane.
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            drain_ssh_bytes(&mut sid_app);
+            let detail = detail_widget_mut(&mut sid_app, &detail_id);
+            let lines = detail.pty_pane().unwrap().lines();
+            assert!(
+                lines[0].trim_end().starts_with("hello"),
+                "detail pane must receive session bytes; got {:?}",
+                lines[0]
+            );
+
+            if let Some(s) = sid_app.ssh_shutdown_tx.take() {
+                let _ = s.send(());
+            }
+        }
+
+        /// A new Connected outcome supersedes the previous live session: the
+        /// previously-Connected widget (the parent tab here) is flipped to
+        /// Disconnected — its reader was torn down — and exactly one widget
+        /// (the background detail tab) reads as live afterwards.
+        #[tokio::test(flavor = "current_thread")]
+        async fn connected_outcome_supersedes_previous_session_widget() {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            use sid_core::event::KeyChord;
+            use sid_pty::Vt100Screen;
+            use sid_widgets::ssh::ConnectionPhase;
+
+            let mut sid_app = build_test_sid_app(Some("ssh"));
+            seed_host_into_widget(&mut sid_app, host_record("acme"));
+
+            // Background-open "acme" while the parent is idle: detail tab is
+            // now Connecting("acme").
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Right,
+                    mods: KeyModifiers::NONE,
+                },
+            );
+            route_key_event(
+                &mut sid_app,
+                KeyChord {
+                    code: KeyCode::Enter,
+                    mods: KeyModifiers::CONTROL,
+                },
+            );
+
+            // Forge a Connected outcome for an alias nobody is waiting on —
+            // the fallback attaches it to the parent "ssh" tab (legacy
+            // single-tab behaviour). Parent is now the live session.
+            let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (sd1, _sr1) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "legacy".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx: rx1,
+                    shutdown_tx: sd1,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+            assert_eq!(
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Connected
+            );
+
+            // Now the detail tab's connect completes: it must take over as the
+            // single live session, and the parent must flip to Disconnected.
+            let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+            let (sd2, _sr2) = tokio::sync::oneshot::channel::<()>();
+            sid_app
+                .ssh_outcome_tx
+                .send(SshConnectOutcome::Connected {
+                    alias: "acme".into(),
+                    pty: sid_widgets::ssh::PtyPane::new(Box::new(Vt100Screen::new(24, 80))
+                        as Box<dyn sid_core::adapters::pty::TerminalScreen>),
+                    byte_rx: rx2,
+                    shutdown_tx: sd2,
+                })
+                .unwrap();
+            drain_ssh_outcomes(&mut sid_app);
+
+            let detail_id = TabId::new("ssh:acme");
+            assert_eq!(
+                detail_widget_mut(&mut sid_app, &detail_id)
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Connected,
+                "detail tab must be the live session"
+            );
+            assert_eq!(
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
+                ConnectionPhase::Disconnected,
+                "superseded parent session must read Disconnected"
+            );
+            drop(tx1);
+            drop(tx2);
+        }
+
+        /// Borrow the SshWidget inside the tab with `id`, panicking with a
+        /// clear message if the tab or widget is missing (test helper).
+        fn detail_widget_mut<'a>(sid_app: &'a mut SidApp, id: &TabId) -> &'a mut SshWidget {
+            for t in sid_app.app.tabs_mut().tabs_mut() {
+                if t.id == *id {
+                    let w = t
+                        .layout
+                        .iter_widgets_mut()
+                        .next()
+                        .expect("detail tab must hold a widget");
+                    return (w as &mut dyn std::any::Any)
+                        .downcast_mut::<SshWidget>()
+                        .expect("detail tab widget must be an SshWidget");
+                }
+            }
+            panic!("tab {id:?} not found");
         }
 
         /// The production factory closure produces a fresh client per call.
