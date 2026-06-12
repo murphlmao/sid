@@ -8,9 +8,12 @@
 
 pub mod csv_export;
 pub mod database;
+pub mod form;
+pub mod list_cursor;
 pub mod modal;
 pub mod network;
 pub mod settings;
+pub mod split_view;
 pub mod ssh;
 pub mod stub;
 pub mod system;

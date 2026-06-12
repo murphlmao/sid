@@ -40,6 +40,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         animation: sid_core::animation::AnimationConfig::default(),
         fx_state: None,
         modal_stack: Vec::new(),
+        form: None,
+        form_origin_tab: None,
         pending_submits: Vec::new(),
         toasts: ToastQueue::new(4),
         jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),

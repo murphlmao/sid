@@ -31,7 +31,7 @@ proptest for the focus-never-strands property.
 - Create: `crates/sid-widgets/src/list_cursor.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod list_cursor;` next to the existing `pub mod modal;`)
 
-- [ ] **Step 1: Write the type + failing tests**
+- [x] **Step 1: Write the type + failing tests**
 
 ```rust
 //! Cursor math for list panes that may carry a synthetic "+ add new" first row.
@@ -153,13 +153,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [x] **Step 2: Run the tests**
 
 Run: `cargo test -p sid-widgets list_cursor`
 Expected: all 6 pass (write type and tests together; the failing-first ritual is waived for
 pure-data types this small, per the targeted-testing policy).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/list_cursor.rs crates/sid-widgets/src/lib.rs
@@ -174,7 +174,7 @@ git commit -m "feat(sid-widgets): ListCursor — selection math with synthetic a
 - Modify: `crates/sid-store/src/lib.rs` (the `pub mod settings_keys` block — add one constant beside `AUTO_RESTORE_SESSION`)
 - Modify: `crates/sid/src/wire.rs` (add loader fn near `load_animation_config`, ~line 534)
 
-- [ ] **Step 1: Add the constant with doc + doc test (match the existing constants' style exactly)**
+- [x] **Step 1: Add the constant with doc + doc test (match the existing constants' style exactly)**
 
 ```rust
 /// Whether list panels render the synthetic "+ add new" first row.
@@ -186,7 +186,7 @@ git commit -m "feat(sid-widgets): ListCursor — selection math with synthetic a
 pub const SHOW_ADD_NEW_ROW: &str = "show_add_new_row";
 ```
 
-- [ ] **Step 2: Add the loader in `wire.rs` (default ON when unset or unreadable)**
+- [x] **Step 2: Add the loader in `wire.rs` (default ON when unset or unreadable)**
 
 ```rust
 /// Read the `show_add_new_row` behavior toggle. Defaults to `true` when the
@@ -206,7 +206,7 @@ bool toggles in this codebase persist `b"true"`/`b"false"` via `put_bool` — ch
 `put_bool` actually writes. If `put_bool` stores something else (e.g. a single byte 0/1),
 compare against that instead; the doc-tested contract is only "unset/malformed → true".
 
-- [ ] **Step 3: Tests (in `wire.rs` test mod, next to the existing `load_animation_config` tests if present, else new `#[cfg(test)]` fns)**
+- [x] **Step 3: Tests (in `wire.rs` test mod, next to the existing `load_animation_config` tests if present, else new `#[cfg(test)]` fns)**
 
 ```rust
 #[test]
@@ -228,7 +228,7 @@ fn show_add_new_row_respects_stored_false() {
 Run: `cargo test -p sid show_add_new_row` and `cargo test -p sid-store --doc settings_keys`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid-store/src/lib.rs crates/sid/src/wire.rs
@@ -244,7 +244,7 @@ git commit -m "feat(sid-store,sid): show_add_new_row behavior toggle key + loade
 - Create: `crates/sid-widgets/src/form/spec.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod form;` and re-export `pub use form::{FormEvent, FormField, FormPane, FormSection, FormSpec, FormValues, PaneFocusState, SectionKind, Validate, render_form_pane};` — the pane/render names land in Tasks 4–5; add them to this re-export in those tasks)
 
-- [ ] **Step 1: Write `form/mod.rs`**
+- [x] **Step 1: Write `form/mod.rs`**
 
 ```rust
 //! Side-pane form substrate (UX-v2).
@@ -270,7 +270,7 @@ pub use spec::{FormField, FormId, FormSection, FormSpec, FormValues, SectionKind
 empty files with just `//! placeholder, filled by Tasks 4-5` and comment the two `pub use`
 lines out — uncomment in their tasks.)
 
-- [ ] **Step 2: Write `form/spec.rs`**
+- [x] **Step 2: Write `form/spec.rs`**
 
 Reuses the existing `crate::modal::Field` enum for field payloads (Text, Password, Toggle,
 Choice, Picker, Display) — do not duplicate it.
@@ -493,7 +493,7 @@ fn restore_value(field: &mut Field, prev: &str) {
 }
 ```
 
-- [ ] **Step 3: Tests (sibling `#[cfg(test)] mod tests` in `spec.rs`)**
+- [x] **Step 3: Tests (sibling `#[cfg(test)] mod tests` in `spec.rs`)**
 
 ```rust
 #[cfg(test)]
@@ -609,12 +609,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p sid-widgets form::spec`
 Expected: 5 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/ crates/sid-widgets/src/lib.rs
@@ -628,7 +628,7 @@ git commit -m "feat(sid-widgets): FormSpec — keyed sections, declarative valid
 **Files:**
 - Create: `crates/sid-widgets/src/form/pane.rs` (replace the Task-3 placeholder; uncomment its `pub use` in `form/mod.rs`)
 
-- [ ] **Step 1: Write the pane state machine**
+- [x] **Step 1: Write the pane state machine**
 
 Editing primitives (`type_char`, `backspace`, choice cycling) already exist on `ModalSpec` —
 copy their per-`Field` match logic into private helpers here rather than calling `ModalSpec`
@@ -847,7 +847,7 @@ impl FormPane {
 }
 ```
 
-- [ ] **Step 2: Tests (`#[cfg(test)] mod tests` in `pane.rs`)**
+- [x] **Step 2: Tests (`#[cfg(test)] mod tests` in `pane.rs`)**
 
 ```rust
 #[cfg(test)]
@@ -956,12 +956,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run the tests**
+- [x] **Step 3: Run the tests**
 
 Run: `cargo test -p sid-widgets form::pane`
 Expected: 7 tests pass.
 
-- [ ] **Step 4: Property test — no chord sequence strands focus or panics**
+- [x] **Step 4: Property test — no chord sequence strands focus or panics**
 
 Append to the test mod (proptest is already a workspace dev-dependency):
 
@@ -1002,7 +1002,7 @@ Append to the test mod (proptest is already a workspace dev-dependency):
 Run: `cargo test -p sid-widgets form::pane`
 Expected: PASS (including the property).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/
@@ -1017,7 +1017,7 @@ git commit -m "feat(sid-widgets): FormPane — focus cycling, validation gate, d
 - Create: `crates/sid-widgets/src/form/render.rs` (replace placeholder; uncomment `pub use` in `form/mod.rs`)
 - Create: `crates/sid-widgets/tests/snapshots/` entries via insta (auto)
 
-- [ ] **Step 1: Write the renderer**
+- [x] **Step 1: Write the renderer**
 
 Follow the rendering conventions of `crates/sid-widgets/src/modal.rs` (theme access, style
 helpers) — read its render fn first and reuse its theme-to-ratatui plumbing. Public surface:
@@ -1058,7 +1058,7 @@ rules: focused frame `fg(theme.accent_primary)`, unfocused `fg(theme.border)`, e
 `fg(theme.danger)` (check the actual Theme field names in `crates/sid-ui/src/themes.rs` —
 use the same fields modal.rs uses for its accent/border/danger styling).
 
-- [ ] **Step 2: Snapshot tests**
+- [x] **Step 2: Snapshot tests**
 
 In `render.rs` test mod, render into a fixed 60x24 `Buffer` and snapshot the ASCII (same
 golden-file pattern used by existing widget snapshot tests — find one with
@@ -1096,7 +1096,7 @@ mod tests {
 Run: `cargo test -p sid-widgets form::render` then `cargo insta review` (accept the 4 new snapshots).
 Expected: 5 tests pass after snapshot acceptance.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/form/ crates/sid-widgets/src/snapshots/
@@ -1111,7 +1111,7 @@ git commit -m "feat(sid-widgets): form pane renderer — framed fields, info row
 - Create: `crates/sid-widgets/src/split_view.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod split_view;`)
 
-- [ ] **Step 1: Write the helper**
+- [x] **Step 1: Write the helper**
 
 This is the focus model for widgets with *internal* right panes (workspace detail's ops →
 commits → diff stack). Generic over the widget's own view enum.
@@ -1202,7 +1202,7 @@ impl<V> SplitView<V> {
 }
 ```
 
-- [ ] **Step 2: Tests**
+- [x] **Step 2: Tests**
 
 ```rust
 #[cfg(test)]
@@ -1263,7 +1263,7 @@ mod tests {
 Run: `cargo test -p sid-widgets split_view`
 Expected: 4 tests pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/split_view.rs crates/sid-widgets/src/lib.rs
@@ -1277,7 +1277,7 @@ git commit -m "feat(sid-widgets): SplitView — list/pane focus with drill-in st
 **Files:**
 - Modify: `crates/sid-core/src/tab.rs` (next to `push_detail`, ~line 309 — read `push_detail` first and mirror its validation/error behavior exactly)
 
-- [ ] **Step 1: Implementation**
+- [x] **Step 1: Implementation**
 
 ```rust
 /// Push a detail tab WITHOUT switching the active index — the background
@@ -1313,7 +1313,7 @@ the current implementation, but verify), compute the restore index accordingly. 
 `Tab::new` doc-test constructor call to the real `Tab` constructor signature in this file
 (check how existing doc tests in tab.rs build a `Tab`).
 
-- [ ] **Step 2: Tests (in tab.rs's existing test mod)**
+- [x] **Step 2: Tests (in tab.rs's existing test mod)**
 
 ```rust
 #[test]
@@ -1342,7 +1342,7 @@ fn push_background_propagates_push_detail_errors() {
 Run: `cargo test -p sid-core tab::` and `cargo test -p sid-core --doc tab`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-core/src/tab.rs
@@ -1357,16 +1357,16 @@ git commit -m "feat(sid-core): TabManager::push_background — open detail tab w
 - Modify: `crates/sid-core/src/event.rs` (chord helper fns next to `KeyChord`)
 - Modify: the terminal setup/teardown in the `sid` binary (find it: `rg -n "EnableMouseCapture|enable_raw_mode" crates/sid/src` — flags go in the same `execute!` calls)
 
-- [ ] **Step 1: Chord helpers in `sid-core/src/event.rs`**
+- [x] **Step 1: Chord helpers in `sid-core/src/event.rs`**
 
 ```rust
 /// Intent of a chord at the tab-strip level (list focus only — pane-focused
 /// widgets consume Tab themselves and these are never consulted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StripNav {
-    /// `Tab` — next tab.
+    /// `Tab` / `Ctrl+Tab` — next tab.
     Next,
-    /// `Shift+Tab` / `BackTab` / `Ctrl+Tab` — previous tab.
+    /// `Shift+Tab` / `BackTab` / `Ctrl+Shift+Tab` — previous tab.
     Prev,
     /// Not a strip-navigation chord.
     None,
@@ -1433,7 +1433,7 @@ impl KeyChord {
 (If `KeyModifiers::NONE` doesn't exist in the vendored crossterm version, use
 `KeyModifiers::empty()` in the doc tests.)
 
-- [ ] **Step 2: Unit tests for chord classification edge cases (event.rs test mod)**
+- [x] **Step 2: Unit tests for chord classification edge cases (event.rs test mod)**
 
 ```rust
 #[test]
@@ -1459,7 +1459,7 @@ fn unrelated_keys_are_none_and_not_background_open() {
 Run: `cargo test -p sid-core event::` and `cargo test -p sid-core --doc event`
 Expected: PASS.
 
-- [ ] **Step 3: Enable kitty protocol in the binary's terminal setup**
+- [x] **Step 3: Enable kitty protocol in the binary's terminal setup**
 
 In the terminal init (alongside the existing raw-mode/mouse-capture `execute!`):
 
@@ -1482,11 +1482,11 @@ disables raw mode / leaves the alternate screen — including any panic-hook tea
 binary installs; grep `disable_raw_mode` for every call site and pair each one).
 
 Manual check (no automated test for terminal I/O): run `cargo run` inside a kitty-protocol
-terminal, press `Ctrl+Tab`, confirm the strip cycles backward; in a legacy terminal confirm
+terminal, press `Ctrl+Tab`, confirm the strip cycles forward (`Ctrl+Shift+Tab` backward); in a legacy terminal confirm
 `Shift+Tab` does, and that startup/exit leave the terminal sane (no stuck flags after exit,
 including after a forced panic).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid-core/src/event.rs crates/sid/src
@@ -1503,7 +1503,7 @@ git commit -m "feat(sid-core,sid): StripNav/background-open chord helpers + kitt
   2. the event-routing section of the main loop (where modal events are intercepted — form interception goes immediately after modal interception, modal wins when both are somehow open)
   3. the `draw` fn (where the body rect is computed — split it when a form is active for the active tab)
 
-- [ ] **Step 1: Event interception**
+- [x] **Step 1: Event interception**
 
 Mirror the modal interception block. Shape:
 
@@ -1566,12 +1566,15 @@ the executor writes by copying an existing delete-confirm modal — exact field 
 there; the behavior contract is in the comment above.)
 
 Tab-strip semantics in the same routing section: where the loop currently handles tab
-cycling keys, replace the raw key match with `chord.strip_nav()` so `Tab`→`tabs.next()`,
-`Shift+Tab`/`Ctrl+Tab`/`BackTab`→`tabs.prev()` — gated on no form/modal being active for
-the active tab (when a form is active, the interception above already consumed the key, so
-no extra gating code is needed — verify by test).
+cycling keys, use `chord.strip_nav()` — **interim rule (orchestrator ruling, 2026-06-12)**:
+wire-level cycling fires ONLY on Ctrl-modified chords (`Ctrl+Tab` → `tabs.next()`,
+`Ctrl+Shift+Tab` → `tabs.prev()`). Plain `Tab`/`Shift+Tab`/`BackTab` fall through to
+widgets, which consume them for intra-widget focus today. Branches 1–5 adopt `strip_nav`
+for plain Tab as they migrate widgets to the list/pane focus model. Gated on no form/modal
+being active for the active tab (when a form is active, the interception above already
+consumed the key, so no extra gating code is needed — verify by test).
 
-- [ ] **Step 2: Split render**
+- [x] **Step 2: Split render**
 
 In `draw`, where the active widget's body rect is computed:
 
@@ -1610,7 +1613,7 @@ fn form_footer_hints() -> Vec<sid_core::FooterHint> {
 }
 ```
 
-- [ ] **Step 3: Helper to open a form (the API branches 1-5 call)**
+- [x] **Step 3: Helper to open a form (the API branches 1-5 call)**
 
 ```rust
 /// Open `spec` as the side-pane form of the currently-active tab.
@@ -1622,7 +1625,7 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::FormSpec) {
 }
 ```
 
-- [ ] **Step 4: Integration tests (wire.rs test mod — use the existing test fixtures that build a `SidApp` for modal tests; same construction)**
+- [x] **Step 4: Integration tests (wire.rs test mod — use the existing test fixtures that build a `SidApp` for modal tests; same construction)**
 
 ```rust
 #[test]
@@ -1647,7 +1650,8 @@ fn submit_unknown_form_id_toasts_and_closes() {
 
 #[test]
 fn strip_nav_cycles_tabs_when_no_form_active() {
-    // Tab -> active_index+1; BackTab -> back; Ctrl+Tab -> back.
+    // Ctrl+Tab -> active_index+1; Ctrl+Shift+Tab -> back.
+    // (Interim rule: plain Tab/BackTab fall through — see strip-nav routing note above.)
 }
 ```
 
@@ -1655,7 +1659,7 @@ Run: `cargo test -p sid wire::` (scope to the new test names if the mod is huge:
 `cargo test -p sid form_only_intercepts strip_nav_cycles open_form_renders submit_unknown`)
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
@@ -1669,7 +1673,7 @@ git commit -m "feat(sid): host FormPane side panes — event interception, 40/60
 **Files:**
 - Modify: `crates/sid/src/wire.rs` (global key routing + an overlay builder fn)
 
-- [ ] **Step 1: Overlay builder on the existing modal substrate**
+- [x] **Step 1: Overlay builder on the existing modal substrate**
 
 The modal `Field::Display` was designed for exactly this ("help drawers" per its doc
 comment). Build the cheatsheet as a modal of Display fields — no new render surface needed:
@@ -1686,7 +1690,7 @@ comment). Build the cheatsheet as a modal of Display fields — no new render su
 ///    uses, so the overlay can never drift from reality.
 fn build_help_overlay(sid_app: &SidApp) -> sid_widgets::ModalSpec {
     let mut body = String::new();
-    body.push_str("Tab/S-Tab  cycle tabs (C-Tab back on kitty terms)\n");
+    body.push_str("Tab/S-Tab  cycle tabs (C-Tab next, C-S-Tab back on kitty terms)\n");
     body.push_str("C-Enter/O  open in background tab\n");
     body.push_str("→ / ←      enter / leave pane\n");
     body.push_str("C-W        close tab\n");
@@ -1714,13 +1718,13 @@ Routing: in the global key handling (same neighborhood as the strip-nav match), 
 list focus and no form/modal open → `sid_app.modal = Some(build_help_overlay(sid_app))`.
 Any key dismisses (the modal's existing Esc/secondary path).
 
-- [ ] **Step 2: Slim the footer**
+- [x] **Step 2: Slim the footer**
 
 Where the footer renders the active widget's hints, cap at the first 4 entries and always
 append `? help`. (Branches keep their `footer_hint()` lists ordered most-used-first, per
 master plan decision 13.)
 
-- [ ] **Step 3: Tests (wire.rs test mod)**
+- [x] **Step 3: Tests (wire.rs test mod)**
 
 ```rust
 #[test]
@@ -1744,7 +1748,7 @@ fn footer_caps_hints_and_appends_help() {
 Run: `cargo test -p sid help_overlay question_mark footer_caps`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
@@ -1755,18 +1759,18 @@ git commit -m "feat(sid): ? help overlay — keybind cheatsheet from footer hint
 
 ### Task 11: Branch wrap-up
 
-- [ ] **Step 1: Targeted regression sweep of touched crates only**
+- [x] **Step 1: Targeted regression sweep of touched crates only**
 
 Run: `cargo test -p sid-widgets -p sid-core -p sid-store -p sid`
 Expected: all green. Fix anything red before proceeding (most likely suspects: doc tests
 with stale constructor signatures, snapshot churn from the new lib.rs exports).
 
-- [ ] **Step 2: Clippy on touched crates**
+- [x] **Step 2: Clippy on touched crates**
 
 Run: `cargo clippy -p sid-widgets -p sid-core -p sid-store -p sid --all-targets -- -D warnings`
 Expected: clean.
 
-- [ ] **Step 3: Tick this plan's checkboxes, then merge to main**
+- [x] **Step 3: Tick this plan's checkboxes, then merge to main**
 
 ```bash
 git add docs/superpowers/plans/2026-06-11-uxv2-0-substrate.md
