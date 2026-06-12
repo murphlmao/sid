@@ -114,6 +114,25 @@ pub enum Focus {
 /// `<Widget>Focus` convention. See [`Focus`].
 pub type NetFocus = Focus;
 
+/// Pending cross-layer actions produced by `NetworkWidget::handle_event`.
+///
+/// Wire.rs polls `take_pending_net_action()` after each `app.handle_event`
+/// and calls the appropriate top-level function.
+///
+/// # Examples
+///
+/// ```
+/// use sid_widgets::network::PendingNetAction;
+/// assert_eq!(PendingNetAction::OpenDetailPane, PendingNetAction::OpenDetailPane);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingNetAction {
+    /// Wire.rs should call `network_open_detail_form(sid_app)`.
+    OpenDetailPane,
+    /// Wire.rs should clear `sid_app.form` and `form_origin_tab`.
+    CloseDetailPane,
+}
+
 /// Right-pane detail view variants for the Interfaces sidebar.
 ///
 /// Currently only one variant; future extensions (per-interface traffic
@@ -224,6 +243,8 @@ pub struct NetworkWidget {
     /// host's render code. Populated by [`Self::on_kill_outcome`]; consumed
     /// by [`Self::take_toast`].
     pending_toasts: std::collections::VecDeque<KillToast>,
+    /// Cross-layer action pending processing by wire.rs.
+    pending_net_action: Option<PendingNetAction>,
 }
 
 impl NetworkWidget {
@@ -240,6 +261,7 @@ impl NetworkWidget {
             focus: Focus::default(),
             split: SplitView::default(),
             pending_toasts: std::collections::VecDeque::new(),
+            pending_net_action: None,
         }
     }
 
@@ -297,6 +319,21 @@ impl NetworkWidget {
     /// Borrow the interfaces sidebar state.
     pub fn interfaces(&self) -> &InterfacesSidebarState {
         &self.ifs
+    }
+
+    /// Mutable borrow of the interfaces sidebar state. Used by the wire layer
+    /// to push updated prefs (aliases, pinned names) without waiting for a
+    /// probe tick.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::NetworkWidget;
+    /// let mut w = NetworkWidget::new();
+    /// assert!(w.ifs_mut().rows().is_empty());
+    /// ```
+    pub fn ifs_mut(&mut self) -> &mut InterfacesSidebarState {
+        &mut self.ifs
     }
 
     /// Borrow the filter input state.
@@ -358,6 +395,21 @@ impl NetworkWidget {
     /// Close the detail pane and return focus to the sidebar list.
     pub fn close_detail_pane(&mut self) {
         self.split.pop();
+    }
+
+    /// Take and return any pending detail-pane open/close action produced by
+    /// the last `handle_event`. `None` when no action is queued.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::NetworkWidget;
+    /// use sid_widgets::network::PendingNetAction;
+    /// let mut w = NetworkWidget::new();
+    /// assert!(w.take_pending_net_action().is_none());
+    /// ```
+    pub fn take_pending_net_action(&mut self) -> Option<PendingNetAction> {
+        self.pending_net_action.take()
     }
 
     /// Replace the data displayed in all three panes from a fresh
@@ -875,12 +927,13 @@ impl Widget for NetworkWidget {
                 EventOutcome::Consumed
             }
             // → or Enter on Interfaces: enter the detail pane. Wire layer
-            // opens the FormPane when it sees `network.open_detail_pane`.
+            // opens the FormPane when it sees `PendingNetAction::OpenDetailPane`.
             // No-op when the interface list is empty.
             KeyCode::Enter | KeyCode::Right
                 if self.focus == Focus::Interfaces && self.ifs.selected_row().is_some() =>
             {
                 self.split.push(DetailView::Prefs);
+                self.pending_net_action = Some(PendingNetAction::OpenDetailPane);
                 ctx.emit_action("network.open_detail_pane");
                 EventOutcome::Consumed
             }
@@ -891,6 +944,7 @@ impl Widget for NetworkWidget {
                 if self.focus == Focus::Interfaces && self.split.focus() == SplitFocus::Pane =>
             {
                 self.split.pop();
+                self.pending_net_action = Some(PendingNetAction::CloseDetailPane);
                 ctx.emit_action("network.close_detail_pane");
                 EventOutcome::Consumed
             }

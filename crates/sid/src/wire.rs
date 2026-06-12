@@ -1777,6 +1777,8 @@ where
             maybe_open_pending_workspace_detail(sid_app);
             // Drain settings outcomes (live-apply behavior toggles, etc.).
             apply_pending_settings_outcomes(sid_app);
+            // Drain network-tab widget actions (detail pane open/close).
+            apply_pending_network_actions(sid_app);
             let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
             if matches!(dispatch, Dispatch::Quit) {
                 break;
@@ -2392,66 +2394,172 @@ fn modal_for_active_tab_key(
     }
 }
 
-/// Network-tab modal opener. `Enter` on a focused interface opens the
-/// read-only detail modal; `E` is reserved for the future edit flow and
-/// currently no-ops (the widget itself emits a stub action that the
-/// wire layer toasts).
+/// Network-tab modal opener — **retired** in favour of UX-v2 form pane.
+/// Replaced by [`network_open_detail_form`]. Kept as a stub so that the
+/// `modal_for_active_tab_key` match arm compiles without change; returns
+/// `None` unconditionally.
+#[allow(dead_code)]
 fn network_modal_for_key(
-    sid_app: &SidApp,
-    chord: sid_core::event::KeyChord,
+    _sid_app: &SidApp,
+    _chord: sid_core::event::KeyChord,
 ) -> Option<sid_widgets::ModalSpec> {
-    use crossterm::event::KeyCode;
-    use sid_widgets::{Field, ModalSpec};
-    if chord.code != KeyCode::Enter {
-        return None;
-    }
-    // Read the currently-selected interface off the Network widget.
+    None
+}
+
+/// Load the sid-level prefs for the named interface from the store.
+///
+/// Returns defaults (not pinned, no alias) for any key that is absent or
+/// fails to parse — never propagates a store error to the caller.
+fn load_network_iface_prefs(
+    store: &impl sid_store::TypedSettings,
+    name: &str,
+) -> sid_widgets::network::detail_pane::NetInterfacePrefs {
+    let pinned = store
+        .get_bool(&sid_widgets::network::detail_pane::pinned_key(name))
+        .unwrap_or_default()
+        .unwrap_or(false);
+    let alias = store
+        .get_string(&sid_widgets::network::detail_pane::alias_key(name))
+        .unwrap_or_default()
+        .unwrap_or_default();
+    sid_widgets::network::detail_pane::NetInterfacePrefs { pinned, alias }
+}
+
+/// Open the UX-v2 detail form pane for the currently-selected interface.
+///
+/// No-op when: not on the network tab, interfaces pane not focused, or the
+/// list is empty.
+///
+/// # Examples
+///
+/// ```no_run
+/// use sid::wire::{network_open_detail_form, SidApp};
+/// # fn demo(sid_app: &mut SidApp) {
+/// network_open_detail_form(sid_app);
+/// # }
+/// ```
+pub fn network_open_detail_form(sid_app: &mut SidApp) {
     let active = sid_app.app.tabs().active();
-    let net = active
+    let net = match active
         .layout
         .iter_widgets()
         .next()
-        .and_then(|w| w.as_any().downcast_ref::<sid_widgets::NetworkWidget>())?;
-    if net.focused_pane_label() != "Interfaces" {
-        return None;
-    }
-    let iface = net.interfaces().selected_row()?;
-
-    let addrs = if iface.addrs.is_empty() {
-        "(none)".to_string()
-    } else {
-        iface.addrs.join(", ")
+        .and_then(|w| w.as_any().downcast_ref::<sid_widgets::NetworkWidget>())
+    {
+        Some(w) => w,
+        None => return,
     };
-    let fields = vec![
-        Field::Display {
-            label: "name".into(),
-            body: iface.name.clone(),
-        },
-        Field::Display {
-            label: "status".into(),
-            body: if iface.is_up { "up" } else { "down" }.into(),
-        },
-        Field::Display {
-            label: "addresses".into(),
-            body: addrs,
-        },
-        Field::Display {
-            label: "RX bytes".into(),
-            body: iface.rx_bytes.to_string(),
-        },
-        Field::Display {
-            label: "TX bytes".into(),
-            body: iface.tx_bytes.to_string(),
-        },
-    ];
-    Some(
-        ModalSpec::new(
-            format!("network.interface_detail:{}", iface.name),
-            format!("Interface: {}", iface.name),
-            fields,
-        )
-        .with_help("Edit (E) coming soon — read-only for now. Esc to close."),
-    )
+    if net.focused_pane_label() != "Interfaces" {
+        return;
+    }
+    let iface = match net.interfaces().selected_row() {
+        Some(i) => i.clone(),
+        None => return,
+    };
+    let is_default_route = net.interfaces().is_default_route(&iface.name);
+    let prefs = load_network_iface_prefs(sid_app.store.as_ref(), &iface.name);
+    let spec = sid_widgets::network::detail_pane::build_form_spec(&iface, &prefs, is_default_route);
+    open_form(sid_app, spec);
+}
+
+/// Write submitted network interface prefs to the store and push the updated
+/// alias + pinned state into the active network widget immediately.
+fn apply_network_prefs(
+    sid_app: &mut SidApp,
+    iface_name: &str,
+    prefs: sid_widgets::network::detail_pane::NetInterfacePrefs,
+) {
+    use sid_store::TypedSettings;
+    let _ = sid_app.store.put_bool(
+        &sid_widgets::network::detail_pane::pinned_key(iface_name),
+        prefs.pinned,
+    );
+    let _ = sid_app.store.put_string(
+        &sid_widgets::network::detail_pane::alias_key(iface_name),
+        &prefs.alias,
+    );
+
+    // Reload all aliases/pinned from the store and push into the live widget
+    // so the sidebar re-renders immediately without waiting for a probe tick.
+    let tab = sid_app.app.tabs_mut().active_mut();
+    if let Some(net) = tab
+        .layout
+        .iter_widgets_mut()
+        .next()
+        .and_then(|w| w.as_any_mut().downcast_mut::<sid_widgets::NetworkWidget>())
+    {
+        let mut aliases = std::collections::HashMap::new();
+        let mut pinned_names = std::collections::HashSet::new();
+        use sid_store::Store;
+        if let Ok(keys) = sid_app.store.list_setting_keys() {
+            for key in &keys {
+                if let Some(rest) = key.strip_prefix("network.iface.") {
+                    if let Some(name) = rest.strip_suffix(".alias") {
+                        if let Ok(Some(v)) = sid_app.store.get_string(key) {
+                            aliases.insert(name.to_string(), v);
+                        }
+                    }
+                    if let Some(name) = rest.strip_suffix(".pinned") {
+                        if let Ok(Some(true)) = sid_app.store.get_bool(key) {
+                            pinned_names.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        net.ifs_mut().set_aliases(aliases);
+        net.ifs_mut().set_pinned_names(pinned_names);
+    }
+}
+
+/// Dispatch a network-specific widget action emitted via `ctx.emit_action`.
+///
+/// Called from the main event loop whenever the active widget emits an
+/// action whose id starts with `"network."`.
+#[allow(dead_code)] // Used in tests; `apply_pending_network_actions` is the production call-site.
+pub fn handle_network_action(sid_app: &mut SidApp, action: &str) {
+    match action {
+        "network.open_detail_pane" => {
+            network_open_detail_form(sid_app);
+        }
+        "network.close_detail_pane" => {
+            // The widget already popped its SplitView; clear the form too.
+            sid_app.form = None;
+            sid_app.form_origin_tab = None;
+        }
+        _ => {}
+    }
+}
+
+/// Poll the active network widget for a pending action and dispatch it.
+///
+/// Called after each `app.handle_event` cycle, symmetrically with
+/// `maybe_open_pending_workspace_detail`.
+fn apply_pending_network_actions(sid_app: &mut SidApp) {
+    use sid_widgets::network::PendingNetAction;
+
+    // Downcast the active tab's widget only when we're on the network tab.
+    let tab_id = sid_app.app.tabs().active().id.as_str().to_string();
+    if tab_id.as_str() != "network" {
+        return;
+    }
+    let pending = {
+        let tab = sid_app.app.tabs_mut().active_mut();
+        let net = tab
+            .layout
+            .iter_widgets_mut()
+            .next()
+            .and_then(|w| w.as_any_mut().downcast_mut::<sid_widgets::NetworkWidget>());
+        net.and_then(|n| n.take_pending_net_action())
+    };
+    match pending {
+        Some(PendingNetAction::OpenDetailPane) => network_open_detail_form(sid_app),
+        Some(PendingNetAction::CloseDetailPane) => {
+            sid_app.form = None;
+            sid_app.form_origin_tab = None;
+        }
+        None => {}
+    }
 }
 
 /// Workspaces-tab modal opener. `N` creates, `A` adds a sub-repo to the
@@ -4113,11 +4221,20 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::form::FormSpec) {
 /// submit" diagnostic. Either way the form closes on submit — a successful
 /// submit is terminal.
 fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::form::FormValues) {
-    // Substrate ships only the wildcard; branches 1-5 insert their own
-    // `"<form.id>" => { ... }` arms above it (which is why this stays a `match`
-    // even while it has a single arm).
-    #[allow(clippy::match_single_binding)]
     match id {
+        // Network: interface prefs form — id carries the iface name after ':'.
+        id if id.starts_with("network.interface_prefs:") => {
+            let iface_name = id
+                .strip_prefix("network.interface_prefs:")
+                .unwrap_or("")
+                .to_string();
+            if let Some(prefs) = sid_widgets::network::detail_pane::prefs_from_values(&values) {
+                apply_network_prefs(sid_app, &iface_name, prefs);
+                sid_app
+                    .toasts
+                    .push(Toast::success(format!("Saved prefs for {iface_name}")));
+            }
+        }
         _ => {
             let _ = &values;
             sid_app
@@ -9352,5 +9469,118 @@ mod tests {
             assert!(s.contains("x"));
             assert!(s.contains("y"));
         }
+    }
+
+    // ── Network detail pane wiring tests (Task 5) ────────────────────────────
+
+    #[test]
+    fn network_open_detail_form_sets_form_on_app() {
+        let mut sid_app = build_test_sid_app(Some("network"));
+        let snap = sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![sid_core::adapters::sys::NetInterface {
+                name: "eth0".into(),
+                addrs: vec!["10.0.0.1".into()],
+                rx_bytes: 1024,
+                tx_bytes: 512,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        };
+        refresh_network_widget(&mut sid_app, snap);
+        {
+            let tab = sid_app.app.tabs_mut().active_mut();
+            let w = tab
+                .layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<sid_widgets::NetworkWidget>())
+                .expect("network widget");
+            while w.focus() != sid_widgets::network::Focus::Interfaces {
+                w.focus_next();
+            }
+        }
+        network_open_detail_form(&mut sid_app);
+        assert!(
+            sid_app.form.is_some(),
+            "form should be open after network_open_detail_form"
+        );
+        let form = sid_app.form.as_ref().unwrap();
+        assert!(
+            form.spec.id.0.starts_with("network.interface_prefs:"),
+            "form id should embed interface name; got: {}",
+            form.spec.id.0
+        );
+    }
+
+    #[test]
+    fn network_submit_prefs_writes_to_store_and_closes_form() {
+        use sid_store::TypedSettings;
+        use sid_widgets::form::FormValues;
+        use std::collections::BTreeMap;
+
+        let mut sid_app = build_test_sid_app(Some("network"));
+        let snap = sid_core::sys_probe::SysSnapshot {
+            processes: vec![],
+            listening_ports: vec![],
+            interfaces: vec![sid_core::adapters::sys::NetInterface {
+                name: "eth0".into(),
+                addrs: vec![],
+                rx_bytes: 0,
+                tx_bytes: 0,
+                is_up: true,
+            }],
+            default_route_iface: None,
+            captured_at_unix_secs: 0,
+        };
+        refresh_network_widget(&mut sid_app, snap);
+
+        let mut map = BTreeMap::new();
+        map.insert("pinned".into(), "true".into());
+        map.insert("alias".into(), "home-net".into());
+        let values: FormValues = map;
+
+        dispatch_form_submit(&mut sid_app, "network.interface_prefs:eth0", values);
+
+        assert!(sid_app.form.is_none());
+
+        assert_eq!(
+            sid_app.store.get_bool("network.iface.eth0.pinned").unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            sid_app
+                .store
+                .get_string("network.iface.eth0.alias")
+                .unwrap()
+                .as_deref(),
+            Some("home-net")
+        );
+    }
+
+    #[test]
+    fn network_close_detail_pane_action_clears_form() {
+        use sid_widgets::form::{FormId, FormSection, FormSpec, SectionKind};
+
+        let mut sid_app = build_test_sid_app(Some("network"));
+        let origin_tab = sid_app.app.tabs().active().id.clone();
+        sid_app.form = Some(sid_widgets::form::FormPane::new(FormSpec {
+            id: FormId("network.interface_prefs:eth0".into()),
+            title: "Interface: eth0".into(),
+            primary_label: "Save".into(),
+            sections: vec![FormSection {
+                kind: SectionKind::Info,
+                title: "".into(),
+                fields: vec![],
+            }],
+            reshape: None,
+            watch: vec![],
+        }));
+        sid_app.form_origin_tab = Some(origin_tab);
+
+        handle_network_action(&mut sid_app, "network.close_detail_pane");
+        assert!(sid_app.form.is_none());
     }
 }
