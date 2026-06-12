@@ -15,3 +15,11 @@ keyring.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+
+[features]
+# Opt-in round-trip test against the REAL OS keyring daemon. Off by default
+# because CI/headless boxes have no Secret Service / Keychain available. Run
+# locally where a daemon exists:
+#   cargo test -p sid-secrets --features os-keyring-smoke
+# Feature-gated (never #[ignore]) per CLAUDE.md: an ignored test is invisible decay.
+os-keyring-smoke = []

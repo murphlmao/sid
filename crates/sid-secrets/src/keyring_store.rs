@@ -1,13 +1,18 @@
 //! OS keyring-backed [`SecretStore`] implementation.
 //!
 //! `KeyringStore` maps every [`SecretId`] to a `keyring::Entry` under the
-//! service name `"sid"`. On Linux this talks to the secret-service D-Bus
-//! API; on macOS it talks to the Keychain API.
+//! service name `"sid"`. The concrete keystore is selected at compile time by
+//! the `keyring` crate's Cargo features (see the workspace `Cargo.toml`): on
+//! Linux the `sync-secret-service` feature talks to the Secret Service D-Bus
+//! API, and on macOS the `apple-native` feature talks to the Keychain. With
+//! NO keyring features the crate silently compiles its in-memory `mock`
+//! backend — values written through one `Entry` are unreadable through a
+//! fresh one — so those features are load-bearing, not optional.
 //!
 //! `KeyringStore` is generic over `B: KeyringBackend` so tests can inject a
-//! [`FakeKeyring`](crate::tests_support::FakeKeyring) without touching the
-//! real OS keyring daemon. Use [`KeyringStore::new`] for the production path
-//! or [`KeyringStore::with_backend`] in tests.
+//! fake (`FakeKeyring`) without touching the real OS keyring daemon. Use
+//! [`KeyringStore::new`] for the production path or
+//! [`KeyringStore::with_backend`] in tests.
 //!
 //! ## `list_ids` limitation
 //!
@@ -28,8 +33,10 @@ const SERVICE: &str = "sid";
 /// Abstracts over the OS keyring so tests can inject a fake without touching
 /// the real keyring daemon.
 ///
-/// All byte values are hex-encoded before being stored; implementations must
-/// accept arbitrary hex strings as the `secret` parameter.
+/// The contract is byte-level: implementations store and return raw `&[u8]`
+/// values verbatim, with no encoding layer. The production
+/// [`OsKeyringBackend`] satisfies this directly via keyring v3's byte-native
+/// `set_secret`/`get_secret` API.
 pub trait KeyringBackend: Send + Sync {
     /// Store `secret` under `key`. Returns `Err(String)` on failure.
     fn set(&self, key: &str, secret: &[u8]) -> Result<(), String>;
@@ -54,18 +61,15 @@ pub struct OsKeyringBackend;
 
 impl KeyringBackend for OsKeyringBackend {
     fn set(&self, key: &str, secret: &[u8]) -> Result<(), String> {
-        let hex = hex_encode(secret);
+        // keyring v3 is byte-native: store the raw bytes verbatim, no encoding.
         let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
-        entry.set_password(&hex).map_err(|e| e.to_string())
+        entry.set_secret(secret).map_err(|e| e.to_string())
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
-        match entry.get_password() {
-            Ok(hex) => {
-                let bytes = hex_decode(&hex)?;
-                Ok(Some(bytes))
-            }
+        match entry.get_secret() {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
@@ -90,36 +94,14 @@ impl KeyringBackend for OsKeyringBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Hex helpers (bytes ↔ hex string)
-// ---------------------------------------------------------------------------
-
-pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
-        return Err(format!("odd hex length {}", s.len()));
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| format!("invalid hex at offset {i}: {e}"))
-        })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
 // KeyringStore
 // ---------------------------------------------------------------------------
 
 /// OS keyring-backed [`SecretStore`].
 ///
-/// Generic over `B: KeyringBackend` so tests can inject a
-/// [`FakeKeyring`](crate::tests_support::FakeKeyring) without touching the
-/// real OS keyring daemon. Use [`KeyringStore::new`] for the production path
-/// or [`KeyringStore::with_backend`] in tests.
+/// Generic over `B: KeyringBackend` so tests can inject a fake (`FakeKeyring`)
+/// without touching the real OS keyring daemon. Use [`KeyringStore::new`] for
+/// the production path or [`KeyringStore::with_backend`] in tests.
 ///
 /// ## `list_ids` limitation
 ///
@@ -265,23 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn hex_encode_decode_roundtrip() {
-        let bytes: Vec<u8> = (0u8..=255).collect();
-        let hex = hex_encode(&bytes);
-        assert_eq!(hex_decode(&hex).unwrap(), bytes);
-    }
-
-    #[test]
-    fn hex_decode_rejects_odd_length() {
-        assert!(hex_decode("abc").is_err());
-    }
-
-    #[test]
-    fn hex_decode_rejects_non_hex() {
-        assert!(hex_decode("zz").is_err());
-    }
-
-    #[test]
     fn backend_error_surfaces_as_secret_error_storage() {
         struct AlwaysFail;
         impl KeyringBackend for AlwaysFail {
@@ -305,5 +270,84 @@ mod tests {
         assert!(matches!(store.get(&id), Err(SecretError::Storage(_))));
         assert!(matches!(store.delete(&id), Err(SecretError::Storage(_))));
         assert!(matches!(store.list_ids(), Err(SecretError::Storage(_))));
+    }
+
+    /// Always-on regression guard for Fix C1 (the mock-backend near-miss).
+    ///
+    /// keyring v3 compiles NO platform keystore by default; with no Cargo
+    /// features it resolves `keyring::default` to `pub use mock as default`,
+    /// a process-local in-memory store. If the `sync-secret-service` /
+    /// `apple-native` features were ever dropped from the workspace
+    /// `Cargo.toml`, this test fails at the next `cargo test` — long before a
+    /// user silently loses every secret to the plaintext fallback.
+    ///
+    /// keyring exposes the resolution at runtime: `keyring::default` is a
+    /// re-export of whichever backend module the active features selected, and
+    /// its `default_credential_builder()` returns a `MockCredentialBuilder`
+    /// only when the mock was chosen. We downcast and assert it is NOT the
+    /// mock, which is exactly the feasible runtime detection the fix called for.
+    #[test]
+    fn compiled_keyring_default_is_not_the_mock_backend() {
+        let builder = keyring::default::default_credential_builder();
+        let is_mock = builder
+            .as_any()
+            .downcast_ref::<keyring::mock::MockCredentialBuilder>()
+            .is_some();
+        assert!(
+            !is_mock,
+            "keyring compiled to its in-memory MOCK backend — the real \
+             platform keystore features (sync-secret-service / apple-native) \
+             are missing from the workspace Cargo.toml. Every secret would be \
+             written to a process-local store, fail the startup probe, and \
+             fall back to plaintext. Restore the keyring features."
+        );
+    }
+
+    /// Opt-in round-trip against the REAL OS keyring daemon (Fix C1).
+    ///
+    /// Off by default: CI and headless boxes have no Secret Service / Keychain.
+    /// Run locally where a daemon exists:
+    ///
+    /// ```text
+    /// cargo test -p sid-secrets --features os-keyring-smoke
+    /// ```
+    ///
+    /// Crucially this performs put → get through TWO SEPARATE `Entry`
+    /// constructions (a fresh `OsKeyringBackend` for the read), which is the
+    /// exact pattern the mock backend cannot satisfy: the mock keeps state per
+    /// process but not per fresh `Entry`, so a real keystore is required for
+    /// the read-back to succeed. Cleans up after itself with a delete.
+    #[cfg(feature = "os-keyring-smoke")]
+    #[test]
+    fn os_keyring_real_daemon_round_trip() {
+        // Unique key so concurrent test runs / leftover state never collide.
+        let key = format!("sid.smoke.{}", std::process::id());
+        let id = SecretId::new(key);
+        let payload = b"smoke-test-secret-\x00\xff-bytes";
+
+        // Write through one backend instance.
+        let writer = KeyringStore::new();
+        writer
+            .put(&id, payload)
+            .expect("put to real OS keyring should succeed");
+
+        // Read through a SEPARATE backend / Entry construction. This is what
+        // proves we hit a persistent OS keystore and not a per-Entry mock.
+        let reader = KeyringStore::new();
+        let got = reader
+            .get(&id)
+            .expect("get from real OS keyring should succeed")
+            .expect("secret written through a separate Entry must be readable");
+        assert_eq!(got, payload.to_vec(), "round-trip bytes must match exactly");
+
+        // Cleanup so repeated local runs stay clean.
+        reader.delete(&id).expect("delete should succeed");
+        assert!(
+            reader
+                .get(&id)
+                .expect("post-delete get should succeed")
+                .is_none(),
+            "secret must be gone after delete"
+        );
     }
 }
