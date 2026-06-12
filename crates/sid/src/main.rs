@@ -565,6 +565,7 @@ async fn main() -> Result<()> {
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
+        git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
         session_id: session_id.clone(),
         sys_probe: Some(Arc::clone(&sys_probe)),
         sys_rx: Some(sys_rx),
@@ -588,6 +589,10 @@ async fn main() -> Result<()> {
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
     };
+
+    // Hydrate the Workspaces overview "+ add new" row from the persisted
+    // `show_add_new_row` behavior toggle (default on).
+    wire::hydrate_workspaces_add_new_row(&mut sid_app);
 
     // Offer the user a resume-or-start-fresh modal if the previous session
     // was recent enough and had a recorded active tab. No-op when there's no

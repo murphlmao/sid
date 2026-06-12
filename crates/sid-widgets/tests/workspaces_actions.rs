@@ -390,15 +390,19 @@ mod task3 {
     }
 
     #[test]
-    fn enter_on_umbrella_does_not_emit_open_detail() {
+    fn enter_on_umbrella_now_opens_detail() {
+        // UX-v2 Decision 8: Enter on ANY node (umbrella included) opens it as a
+        // pushed subrepo tab. Inline tree expansion moved to →/↓/←.
         let mut w = WorkspacesWidget::new(vec![umbrella("/vcs/monorepo", "monorepo")], None);
         let (mut ctx, rx) = make_ctx();
         let ev = Event::Key(KeyChord::new(KeyCode::Enter, KeyModifiers::NONE));
         let _ = w.handle_event(&ev, &mut ctx);
-        assert!(
-            rx.try_recv().is_err(),
-            "Enter on umbrella should toggle expand, not emit open_detail",
-        );
+        let action = rx
+            .try_recv()
+            .expect("Enter on an umbrella must emit open_detail under Decision 8");
+        assert_eq!(action, "workspaces.open_detail");
+        let opened = w.take_pending_open_detail();
+        assert_eq!(opened.expect("pending detail set").name, "monorepo");
     }
 
     #[test]

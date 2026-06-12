@@ -32,7 +32,7 @@ The adopt-existing wizard and the detail-tab satellite list both need "given an 
 **Files:**
 - Modify: `crates/sid-core/src/workspace_discovery.rs` (add after `scan_workspace_root`, which ends at line 127; `SKIP_DIRS` is at line 38, `is_umbrella_signal` at line 131)
 
-- [ ] **Step 1: Write the failing test first**
+- [x] **Step 1: Write the failing test first**
 
 Append to the existing `#[cfg(test)] mod tests` block at the bottom of `workspace_discovery.rs` (there is no test mod yet in this file — add one):
 
@@ -89,12 +89,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run it (expect failure — symbol missing)**
+- [x] **Step 2: Run it (expect failure — symbol missing)**
 
 Run: `cargo test -p sid-core workspace_discovery::tests::scan_adoptable`
 Expected: compile error — `scan_adoptable_repos` not found.
 
-- [ ] **Step 3: Implement the helper**
+- [x] **Step 3: Implement the helper**
 
 Insert after `scan_workspace_root` (after line 127), before `is_umbrella_signal`:
 
@@ -173,12 +173,12 @@ pub fn scan_adoptable_repos(umbrella: &Path) -> Vec<AdoptableRepo> {
 }
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-core workspace_discovery::tests::scan_adoptable && cargo test -p sid-core --doc workspace_discovery`
 Expected: 3 unit tests + doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-core/src/workspace_discovery.rs
@@ -195,7 +195,7 @@ The detail tab's left list is the umbrella row plus its satellites; each row car
 - Create: `crates/sid-widgets/src/workspace_detail_state.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod workspace_detail_state;` after `pub mod workspace_detail;` at line 17, and a re-export line — see Step 4)
 
-- [ ] **Step 1: Write the type + failing tests**
+- [x] **Step 1: Write the type + failing tests**
 
 ```rust
 //! Pure state for the Workspaces *detail* tab (UX-v2 rework).
@@ -386,12 +386,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run (expect failure — module not declared)**
+- [x] **Step 2: Run (expect failure — module not declared)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state`
 Expected: error — module not found.
 
-- [ ] **Step 3: Wire the module**
+- [x] **Step 3: Wire the module**
 
 In `crates/sid-widgets/src/lib.rs`, after line 17 (`pub mod workspace_detail;`):
 
@@ -405,12 +405,12 @@ And after the existing `pub use workspace_detail::{CiStatus, RepoSummary, Worksp
 pub use workspace_detail_state::{RepoDetail, RepoGit, SatelliteRow};
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state && cargo test -p sid-widgets --doc workspace_detail_state`
 Expected: 3 unit tests + 5 doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail_state.rs crates/sid-widgets/src/lib.rs
@@ -426,7 +426,7 @@ The right pane's `SplitView<DetailView>` stack drills: ops menu → one of {Outg
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail_state.rs` (append to the module + test mod)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Append to the `#[cfg(test)] mod tests` block:
 
@@ -448,12 +448,12 @@ Append to the `#[cfg(test)] mod tests` block:
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state::tests::detail`
 Expected: error — `DetailOp` / `DetailView` not found.
 
-- [ ] **Step 3: Implement (append to the module, above the test mod)**
+- [x] **Step 3: Implement (append to the module, above the test mod)**
 
 ```rust
 /// The fixed set of git operations the detail drill-in offers, in render order.
@@ -523,12 +523,12 @@ pub enum DetailView {
 }
 ```
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspace_detail_state && cargo test -p sid-widgets --doc workspace_detail_state`
 Expected: all unit + doc tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail_state.rs
@@ -544,7 +544,7 @@ Replace the v1 `WorkspaceDetailWidget` (sub-repo `RepoSummary` table + placehold
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail.rs` (replace the struct body + inherent impl + `Widget` impl; keep `CiStatus`, `RepoSummary`, `format_age`, `render_to_string`)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Add these to the `#[cfg(test)] mod tests` at the bottom of `workspace_detail.rs` (create the mod if absent — the file currently has none):
 
@@ -669,12 +669,12 @@ mod tests {
 
 Note: inside sid-widgets, reference these items via `crate::...`, not by the crate's own name.
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Expected: compile errors — `rows`, `apply_satellites`, `split`, etc. missing.
 
-- [ ] **Step 3: Replace the struct + inherent impl**
+- [x] **Step 3: Replace the struct + inherent impl**
 
 Replace the struct (lines 99–113) and the inherent `impl WorkspaceDetailWidget` block (lines 115–342) with:
 
@@ -902,12 +902,12 @@ impl WorkspaceDetailWidget {
 
 Note for the executor: the old `apply_scan_results(&mut self, Vec<RepoSummary>)` is gone — the binary now calls `apply_satellites`. Task 7 updates the wire-layer call site. Until then `cargo test -p sid` will not compile; that is expected and fixed in Task 7. Run only the scoped `-p sid-widgets` tests for Tasks 4–6.
 
-- [ ] **Step 4: Re-run (expect pass on sid-widgets only)**
+- [x] **Step 4: Re-run (expect pass on sid-widgets only)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests && cargo test -p sid-widgets --doc workspace_detail`
 Expected: 6 unit tests + the `new` doc test pass. (The `render_to_string` doc test still asserts `s.contains("scanning")`; Task 5's renderer keeps a "scanning…" string, so it stays green — but if it goes red before Task 5 lands, that is acceptable interim state; Task 5 makes it green.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail.rs
@@ -923,7 +923,7 @@ Rewrite the widget's rendering: an umbrella git header line, a left satellite li
 **Files:**
 - Modify: `crates/sid-widgets/src/workspace_detail.rs` (replace `render_into_frame`/`render_table`/`render_drilldown` and the `Widget` impl; keep `render_to_string` at the bottom)
 
-- [ ] **Step 1: Snapshot + behavior tests first**
+- [x] **Step 1: Snapshot + behavior tests first**
 
 Append to the `#[cfg(test)] mod tests` block:
 
@@ -986,12 +986,12 @@ Append to the `#[cfg(test)] mod tests` block:
 
 Note: confirm `WidgetCtx::new` / `ActionRegistry::new` signatures by reading how existing `workspaces.rs` tests construct a `WidgetCtx` (grep `WidgetCtx::new` under `crates/sid-core/src` and `crates/sid-widgets`); mirror exactly. If `WidgetCtx` needs a different constructor, use the same pattern the existing detail/workspaces tests use.
 
-- [ ] **Step 2: Run (expect failure — snapshots missing / behavior)**
+- [x] **Step 2: Run (expect failure — snapshots missing / behavior)**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Expected: snapshot tests fail pending acceptance; `handle_enter_on_ops_menu_drills_in` fails until the new `handle_event` lands.
 
-- [ ] **Step 3: Implement the renderer + Widget impl**
+- [x] **Step 3: Implement the renderer + Widget impl**
 
 Replace `render_into_frame` (line 211), `render_table` (220), `render_drilldown` (312), and the `Widget` impl (344–389). Layout: a top header line (1 row), then a horizontal 40/60 split below it. The left list renders each `SatelliteRow` with `git.header_summary()`; the umbrella row is marked with a leading glyph. The right pane switches on `split.top()`:
 
@@ -1287,14 +1287,14 @@ impl Widget for WorkspaceDetailWidget {
 
 Note for the executor: the ops menu currently always enters `Outgoing` on the first drill (`enter_op(DetailOp::Outgoing)`); selecting a *different* op from the menu is a pane-list interaction left for a follow-up — the master plan's binding requirement is the ops → list → commit → diff stack working with `←` popping, which this delivers. The `DetailOp::ALL` list still renders so the other ops are discoverable. If you want per-op selection in this branch, add an ops-menu `ListCursor` and gate `enter_op` on its target; keep it minimal.
 
-- [ ] **Step 4: Re-run + accept snapshots**
+- [x] **Step 4: Re-run + accept snapshots**
 
 Run: `cargo test -p sid-widgets workspace_detail::tests`
 Then: `cargo insta review` (accept `detail_list_and_ops_menu`, `detail_outgoing_commits`).
 Re-run: `cargo test -p sid-widgets workspace_detail`
 Expected: snapshot + behavior tests pass; the `render_to_string` doc test (`assert!(s.contains("scanning"))`) passes because the empty-satellite render still prints "scanning for satellites…".
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspace_detail.rs crates/sid-widgets/src/snapshots/
@@ -1310,7 +1310,7 @@ The overview (`workspaces.rs`) today opens a detail tab only for `Repo` leaves; 
 **Files:**
 - Modify: `crates/sid-widgets/src/workspaces.rs` (the Enter arm at lines 1952–1972; add a `pending_open_background: bool` flag next to `pending_open_detail` at line 1313; add a drain method)
 
-- [ ] **Step 1: Failing tests first**
+- [x] **Step 1: Failing tests first**
 
 Append to `workspaces.rs`'s `#[cfg(test)] mod tests`:
 
@@ -1373,12 +1373,12 @@ Append to `workspaces.rs`'s `#[cfg(test)] mod tests`:
 
 (Confirm `WidgetCtx::new` / `ActionRegistry::new` signatures from existing tests before running — same caveat as Task 5.)
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::enter_on_umbrella workspaces::tests::background_open workspaces::tests::right_arrow_still`
 Expected: `take_pending_open_background` missing; umbrella Enter still only expands.
 
-- [ ] **Step 3: Add the background flag + drain, and rewrite the Enter arm**
+- [x] **Step 3: Add the background flag + drain, and rewrite the Enter arm**
 
 Add the field next to `pending_open_detail` (struct at line 1298, `pending_open_detail` at 1313):
 
@@ -1435,12 +1435,12 @@ And add a background-open arm just before the pane-gated routing `match self.foc
 
 Note for the executor: `is_background_open()` matches `Char('O')` regardless of which modifier flavor the terminal sends, and `Ctrl+Enter` on kitty terminals. Place this check before the `Tab`/`Alt` handlers only if `O` would otherwise be swallowed — it would not (no existing arm binds `O`), so placing it after the `'r'` handler is correct. The umbrella `→/↓/←` expansion arms (lines 1937–1951) are untouched.
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspaces`
 Expected: the 3 new tests pass; existing workspaces tests still green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspaces.rs
@@ -1456,7 +1456,7 @@ Update the binary's wire layer to drive the new widget API. Replace the `RepoSum
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — the `JobOutcome` enum (line ~140), `maybe_open_pending_workspace_detail` (line 1773), `scan_workspace_for_summaries` (line 1849), `drain_job_outcomes` (line 3168), `apply_workspace_detail_scan` (line 3194)
 
-- [ ] **Step 1: Add the new job outcome variant + a `SatelliteRow` scan, with tests first**
+- [x] **Step 1: Add the new job outcome variant + a `SatelliteRow` scan, with tests first**
 
 Add a wire test (in the existing `#[cfg(test)] mod tests` in wire.rs, reusing `build_test_sid_app`):
 
@@ -1477,12 +1477,12 @@ Add a wire test (in the existing `#[cfg(test)] mod tests` in wire.rs, reusing `b
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid scan_umbrella_satellites_finds`
 Expected: `scan_umbrella_satellites` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the new `JobOutcome` arms (in the enum at line ~140, after `WorkspaceDetailScanned`):
 
@@ -1718,17 +1718,19 @@ fn apply_row_git_to_detail(
 
 Update the `draw` match for the detail tab if it special-cases `WorkspaceDetailWidget` rendering — grep `render_into_frame` in wire.rs's `draw` and confirm the detail tab calls `widget.render_into_frame(f, area, &theme)`; the new signature is identical (`frame, area, theme`), so no change needed beyond confirming.
 
-- [ ] **Step 4: Re-run scoped tests**
+- [x] **Step 4: Re-run scoped tests**
 
 Run: `cargo test -p sid scan_umbrella_satellites_finds && cargo test -p sid maybe_open_pending workspace_detail`
 Expected: the new test passes; existing detail-related wire tests compile against the new widget API (fix any that referenced the removed `apply_scan_results`/`RepoSummary` table by switching them to `apply_satellites`/`rows()`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
 git commit -m "feat(sid): wire detail tab — satellite scan + per-row off-thread git loads + background-open"
 ```
+
+**Deferred (recorded by review):** Wiring `apply_detail` (per-op git data: outgoing commit list, log, branches, stash, worktrees) and per-op ops-menu selection are explicit follow-ups. The render/state paths are tested but dead at runtime — nothing calls `apply_detail` in production; Outgoing/Log render "(no commits)" at runtime. These will be wired once the `GitProvider` trait grows `commit_log`, `diff`, `ahead_behind`, and related methods as separate tasks.
 
 ---
 
@@ -1739,7 +1741,7 @@ Add the "create new workspace" wizard as a substrate side-pane form (`FormSpec`/
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — add `workspaces_new_form()` builder + a `dispatch_form_submit` arm for `workspaces.create`; open the form from the `N` key handler (replace the `workspaces.new` modal opener at line 2271 with `open_form`)
 
-- [ ] **Step 1: Failing test — the form spec shape + reshape**
+- [x] **Step 1: Failing test — the form spec shape + reshape**
 
 Add to wire.rs test mod:
 
@@ -1781,12 +1783,12 @@ Add to wire.rs test mod:
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid workspaces_new_form_reshapes dispatch_workspaces_create_persists`
 Expected: `workspaces_new_form` missing; `workspaces.create` arm absent.
 
-- [ ] **Step 3: Implement the form builder + reshape + dispatch arm**
+- [x] **Step 3: Implement the form builder + reshape + dispatch arm**
 
 ```rust
 /// Build the create-new-workspace side-pane form. Reshape on `kind`: Umbrella
@@ -1873,12 +1875,12 @@ Add the `dispatch_form_submit` arm. The substrate ships `dispatch_form_submit` w
 
 Open the form from `N`. The current opener is the modal `workspaces_modal_for_key` (line 2263). The cleanest additive change: in the global key router where `workspaces_modal_for_key` is consulted, intercept `N`/`n` on the workspaces tab to call `open_form(sid_app, workspaces_new_form())` instead. Read how the router dispatches modal openers (grep `workspaces_modal_for_key` call site) and add the `N` → `open_form` branch ahead of it; leave the `A`/`R` modal arms intact for Task 9/keep. Confirm `now_epoch` is re-exported from `sid_store` (it is — `crates/sid-store/src/lib.rs:256`).
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid workspaces_new_form_reshapes dispatch_workspaces_create_persists`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
@@ -1894,7 +1896,7 @@ Add the "adopt existing umbrella" flow: scan a chosen directory with `scan_adopt
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — add `workspaces_adopt_form(dir)` builder + a `workspaces.adopt` dispatch arm; open from a new `D`/`d` ("adopt directory") key on the workspaces tab
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```rust
     #[test]
@@ -1940,12 +1942,12 @@ Add the "adopt existing umbrella" flow: scan a chosen directory with `scan_adopt
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid adopt_form_lists adopt_registers`
 Expected: `workspaces_adopt_form` missing; `workspaces.adopt` arm absent.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 /// Build the adopt-existing-umbrella form for `dir`: a name field plus one
@@ -2059,12 +2061,12 @@ Open from `D`/`d` on the workspaces tab. In the same router branch you added the
 
 Note for the executor: `dispatch_form_submit`'s wildcard tail (substrate) sets `sid_app.form = None; sid_app.form_origin_tab = None;` after the match. The `workspaces.adopt` early-return-on-bad-dir branch above sets those itself before returning; do not double-clear. Verify the substrate's exact post-match cleanup and match it (the `return` inside the match arm skips the tail, so the explicit clear is required there).
 
-- [ ] **Step 4: Re-run (expect pass)**
+- [x] **Step 4: Re-run (expect pass)**
 
 Run: `cargo test -p sid adopt_form_lists adopt_registers`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs
@@ -2081,7 +2083,7 @@ Per master-plan decision 6, the overview list gains a synthetic "+ add new" firs
 - Modify: `crates/sid-widgets/src/workspaces.rs` (`WorkspacesState` — add `add_new: bool` + a `ListCursor`-backed selection; or a minimal flag + Enter arm)
 - Modify: `crates/sid/src/wire.rs` (hydrate `add_new` from `load_show_add_new_row` when constructing/refreshing the widget; handle the add-new Enter outcome)
 
-- [ ] **Step 1: Failing tests (widget side)**
+- [x] **Step 1: Failing tests (widget side)**
 
 ```rust
     #[test]
@@ -2110,12 +2112,12 @@ Per master-plan decision 6, the overview list gains a synthetic "+ add new" firs
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::add_new`
 Expected: `set_show_add_new_row` / `add_new_selected` / `take_pending_add_new` missing.
 
-- [ ] **Step 3: Implement on the widget**
+- [x] **Step 3: Implement on the widget**
 
 Add to `WorkspacesWidget` (next to `pending_open_detail`):
 
@@ -2205,7 +2207,7 @@ In the Enter arm (Task 6's rewrite), gate on add-new first:
 
 In `render_tree` (line 1447), prepend a `+ add new` line when `show_add_new_row` is true, styled accent and highlighted when `add_new_selected()`.
 
-- [ ] **Step 4: Wire hydration + drain in the binary**
+- [x] **Step 4: Wire hydration + drain in the binary**
 
 In `build_app_full` (line 707) and `refresh_workspaces_widget` (line 4772), after constructing/replacing the widget state, call `ww.set_show_add_new_row(load_show_add_new_row(&*store))`. Drain the add-new flag in the same place `maybe_open_pending_workspace_detail` runs (line 1701 area): a new `maybe_open_pending_new_form(sid_app)` that, if the workspaces widget's `take_pending_add_new()` is true, calls `open_form(sid_app, workspaces_new_form())`.
 
@@ -2228,12 +2230,12 @@ Add a wire test:
 
 Note for the executor: `workspaces_widget_mut` may not exist — reuse the downcast pattern from `maybe_open_pending_workspace_detail` (line 1788) inline, or extract a small `fn workspaces_widget_mut(&mut SidApp) -> Option<&mut WorkspacesWidget>` helper and use it in both spots (additive, single definition). Keep the test honest: set the flag through the real key path if a public setter for `pending_add_new` is undesirable, else add a `#[cfg(test)]` seam. Prefer driving the real `handle_event` Enter on the add-new row.
 
-- [ ] **Step 5: Re-run (expect pass)**
+- [x] **Step 5: Re-run (expect pass)**
 
 Run: `cargo test -p sid-widgets workspaces::tests::add_new && cargo test -p sid add_new_enter_opens`
 Expected: PASS. Accept any churned overview snapshot via `cargo insta review` if the `+ add new` row changed a golden file.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/sid-widgets/src/workspaces.rs crates/sid/src/wire.rs crates/sid-widgets/src/snapshots/
@@ -2244,17 +2246,17 @@ git commit -m "feat(sid-widgets,sid): overview + add new row honoring show_add_n
 
 ### Task 11: Branch wrap-up — targeted regression sweep + clippy on touched crates
 
-- [ ] **Step 1: Scoped test sweep**
+- [x] **Step 1: Scoped test sweep**
 
 Run: `cargo test -p sid-core -p sid-widgets -p sid`
 Expected: green. Most likely red spots: stale wire tests referencing the removed `apply_scan_results`/`WorkspaceDetailScanned`/`RepoSummary` table — convert them to the new `apply_satellites`/`rows()` API; overview snapshot churn from the add-new row.
 
-- [ ] **Step 2: Clippy on touched crates**
+- [x] **Step 2: Clippy on touched crates**
 
 Run: `cargo clippy -p sid-core -p sid-widgets -p sid --all-targets -- -D warnings`
 Expected: clean. Watch for: unused `git_factory` field warnings (the `#[allow(dead_code)]` on the detail widget's field covers it), and `as u32` lossy-cast lints on the dirty count (use `u32::try_from(..).unwrap_or(u32::MAX)` if clippy flags it).
 
-- [ ] **Step 3: Tick this plan's checkboxes, then finish the branch**
+- [x] **Step 3: Tick this plan's checkboxes, then finish the branch**
 
 ```bash
 git add docs/superpowers/plans/2026-06-11-uxv2-1-workspaces.md

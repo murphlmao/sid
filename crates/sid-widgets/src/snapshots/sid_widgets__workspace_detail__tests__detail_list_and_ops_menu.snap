@@ -1,0 +1,28 @@
+---
+source: crates/sid-widgets/src/workspace_detail.rs
+expression: s
+---
+ gen4-stack   main · 2 dirty · ↑3                                                                   
+┌ Repos ───────────────────────────────┐┌ Ops ─────────────────────────────────────────────────────┐
+│> ▾ gen4-stack  main · 2 dirty · ↑3   ││  Outgoing                                                │
+│  · api  main · clean                 ││  Log                                                     │
+│  · web  feat/x · 5 dirty · ↓1        ││  Branches                                                │
+│                                      ││  Stash                                                   │
+│                                      ││  Worktrees                                               │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+│                                      ││                                                          │
+└──────────────────────────────────────┘└──────────────────────────────────────────────────────────┘

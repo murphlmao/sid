@@ -137,13 +137,22 @@ pub enum JobOutcome {
         /// Captured stderr trailer / launch error.
         message: String,
     },
-    /// A workspace detail scan completed. The widget identified by `tab_id`
-    /// receives `summaries` via apply_scan_results. No toast — silent.
-    WorkspaceDetailScanned {
+    /// A detail tab's satellite list finished scanning. The widget identified
+    /// by `tab_id` receives `rows` via `apply_satellites`. No toast — silent.
+    WorkspaceSatellitesScanned {
         /// `TabId.as_str()` for the detail tab that requested the scan.
         tab_id: String,
-        /// Discovered sub-repo summaries.
-        summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+        /// Umbrella row first, then satellites.
+        rows: Vec<sid_widgets::SatelliteRow>,
+    },
+    /// One repo row's git snapshot finished loading off-thread.
+    RepoGitLoaded {
+        /// Detail tab id the row belongs to.
+        tab_id: String,
+        /// Absolute repo path (the row key).
+        path: std::path::PathBuf,
+        /// Loaded snapshot.
+        git: sid_widgets::RepoGit,
     },
 }
 
@@ -171,6 +180,7 @@ pub enum JobOutcome {
 /// let sid_app = SidApp {
 ///     app,
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -198,6 +208,10 @@ pub enum JobOutcome {
 pub struct SidApp {
     pub app: App,
     pub store: Arc<RedbStore>,
+    /// Shared git provider factory. Cloned into per-row off-thread git loads
+    /// when a workspace detail tab opens. The factory is `open()`-only; each
+    /// load opens its own per-repo provider.
+    pub git_factory: Arc<Git2ProviderFactory>,
     pub session_id: String,
     /// Periodic system / network probe. `None` in tests that don't want a
     /// background polling task; constructed by [`build_sys_probe`] in the
@@ -917,6 +931,7 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 /// let mut sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -1015,6 +1030,7 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 /// let sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -1643,6 +1659,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///     let mut sid_app = SidApp {
 ///         app,
 ///         store,
+///         git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///         session_id: "sess-1".to_string(),
 ///         sys_probe: None,
 ///         sys_rx: None,
@@ -1795,6 +1812,9 @@ where
             // Workspaces widget signalled that the user pressed Enter on a
             // Repo leaf. If so, open a detail tab.
             maybe_open_pending_workspace_detail(sid_app);
+            // Or, if the user pressed Enter on the "+ add new" row, open the
+            // create-new side-pane form.
+            maybe_open_pending_new_form(sid_app);
             // Drain settings outcomes (live-apply behavior toggles, etc.).
             apply_pending_settings_outcomes(sid_app);
             // Drain database widget commands (OpenConnectionForm, TestConnection, ...).
@@ -1920,11 +1940,53 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
         }
         let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
         true
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && maybe_open_workspaces_form_for_key(sid_app, chord)
+    {
+        // Workspaces-tab side-pane forms: `N` → create-new wizard,
+        // `D` → adopt-existing wizard. Intercepted ahead of the modal opener so
+        // the legacy `N`/`A`/`R` modals stay available for the other keys.
+        true
     } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
         sid_app.modal_stack.push(modal);
         true
     } else {
         false
+    }
+}
+
+/// If the active tab is Workspaces and `chord` is a form-opener key, open the
+/// corresponding side-pane form and return `true`. `N`/`n` opens the create-new
+/// wizard; `D`/`d` opens the adopt-existing wizard (Task 9). Returns `false`
+/// (so the caller falls through to the modal opener) for any other key or tab.
+fn maybe_open_workspaces_form_for_key(
+    sid_app: &mut SidApp,
+    chord: sid_core::event::KeyChord,
+) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if sid_app.app.tabs().active().id.as_str() != "workspaces" {
+        return false;
+    }
+    // Plain (unmodified) letter keys only — leave Ctrl/Alt chords to others.
+    if chord
+        .mods
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return false;
+    }
+    match chord.code {
+        KeyCode::Char('N') | KeyCode::Char('n') => {
+            open_form(sid_app, workspaces_new_form());
+            true
+        }
+        KeyCode::Char('D') | KeyCode::Char('d') => {
+            let dir = workspaces_adopt_dir(sid_app);
+            open_form(sid_app, workspaces_adopt_form(&dir));
+            true
+        }
+        _ => false,
     }
 }
 
@@ -2023,6 +2085,22 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         }
     };
 
+    // Drain the background-open flag too.
+    let background = {
+        let tabs = sid_app.app.tabs_mut().tabs_mut();
+        tabs.get_mut(parent_idx)
+            .and_then(|t| {
+                if let Layout::Single(w) = &mut t.layout {
+                    w.as_any_mut()
+                        .downcast_mut::<sid_widgets::WorkspacesWidget>()
+                        .map(|ww| ww.take_pending_open_background())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(false)
+    };
+
     let tab_id_str = format!("workspace_detail:{}", workspace.path.display());
     let tab_id = TabId::new(&tab_id_str);
 
@@ -2032,6 +2110,7 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         return;
     }
 
+    let git_factory = sid_app.git_factory.clone();
     let widget = sid_widgets::WorkspaceDetailWidget::new(workspace.clone(), None);
     let new_tab = Tab {
         id: tab_id.clone(),
@@ -2040,65 +2119,144 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         hotkey: None,
         kind: TabKind::Detail { parent_idx },
     };
-    if let Err(e) = sid_app.app.tabs_mut().push_detail(new_tab) {
+    let push_result = if background {
+        sid_app.app.tabs_mut().push_background(new_tab)
+    } else {
+        sid_app.app.tabs_mut().push_detail(new_tab)
+    };
+    if let Err(e) = push_result {
         sid_app
             .toasts
             .push(Toast::error(format!("open workspace detail: {e}")));
         return;
     }
-    let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+    if !background {
+        let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+    }
 
-    // Spawn the scan job. Completion routes back to apply_workspace_detail_scan
-    // via drain_job_outcomes.
-    let path = workspace.path.clone();
-    let scan_tab_id = tab_id_str;
+    // Scan satellites synchronously (cheap fs walk), push them, then spawn one
+    // git-load job per row.
+    let rows = scan_umbrella_satellites(&workspace.path, &workspace.name);
+    let paths: Vec<std::path::PathBuf> = rows.iter().map(|r| r.path.clone()).collect();
+    let scan_tab_id = tab_id_str.clone();
+    let scan_rows = rows.clone();
     let _ = sid_app.jobs.spawn(async move {
-        let summaries = scan_workspace_for_summaries(&path).await;
-        JobOutcome::WorkspaceDetailScanned {
+        JobOutcome::WorkspaceSatellitesScanned {
             tab_id: scan_tab_id,
-            summaries,
+            rows: scan_rows,
         }
     });
+    for path in paths {
+        let factory = git_factory.clone();
+        let job_tab_id = tab_id_str.clone();
+        let path_for_outcome = path.clone();
+        let _ = sid_app.jobs.spawn(async move {
+            let git = tokio::task::spawn_blocking(move || load_repo_git(&factory, &path))
+                .await
+                .unwrap_or_else(|_| sid_widgets::RepoGit::loaded("?".into(), 0, 0, 0));
+            JobOutcome::RepoGitLoaded {
+                tab_id: job_tab_id,
+                path: path_for_outcome,
+                git,
+            }
+        });
+    }
 }
 
-/// Walk `path` one level deep, find each git repo, and build a
-/// [`sid_widgets::workspace_detail::RepoSummary`] for each. Best-effort —
-/// failures on individual repos are reported with placeholder defaults.
-async fn scan_workspace_for_summaries(
+/// Build the detail tab's row list: the umbrella row first, then every
+/// adoptable satellite under it (one level deep, symlinks resolved). Git
+/// snapshots start in the `loading` state; per-row loads fill them in.
+fn scan_umbrella_satellites(
+    umbrella_path: &std::path::Path,
+    umbrella_name: &str,
+) -> Vec<sid_widgets::SatelliteRow> {
+    use sid_core::workspace_discovery::scan_adoptable_repos;
+    use sid_widgets::{RepoGit, SatelliteRow};
+    let mut rows = vec![SatelliteRow {
+        name: umbrella_name.to_string(),
+        path: umbrella_path.to_path_buf(),
+        is_umbrella: true,
+        git: RepoGit::loading(),
+    }];
+    for repo in scan_adoptable_repos(umbrella_path) {
+        rows.push(SatelliteRow {
+            name: repo.name,
+            path: repo.path,
+            is_umbrella: false,
+            git: RepoGit::loading(),
+        });
+    }
+    rows
+}
+
+/// Open `path` with `factory` and compute its [`sid_widgets::RepoGit`] snapshot.
+/// Best-effort: on any git error returns a `?`-branch loaded snapshot so the
+/// row stops showing "loading" rather than hanging.
+fn load_repo_git(
+    factory: &std::sync::Arc<sid_git::Git2ProviderFactory>,
     path: &std::path::Path,
-) -> Vec<sid_widgets::workspace_detail::RepoSummary> {
-    use sid_core::workspace_discovery::scan_workspace_root;
-    use sid_widgets::workspace_detail::{CiStatus, RepoSummary};
-    let discovered = match scan_workspace_root(path, 1) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!("scan_workspace_root({}) failed: {e}", path.display());
-            return Vec::new();
-        }
+) -> sid_widgets::RepoGit {
+    use sid_core::adapters::git::GitProvider;
+    use sid_widgets::RepoGit;
+    let provider = match factory.open(path) {
+        Ok(p) => p,
+        Err(_) => return RepoGit::loaded("?".into(), 0, 0, 0),
     };
-    discovered
-        .into_iter()
-        .filter(|d| d.kind == sid_core::workspace_metadata::WorkspaceKind::Repo)
-        .map(|d| {
-            let name = d
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| d.path.display().to_string());
-            // v1: branch / ahead-behind / dirty / age are best-effort defaults.
-            // A follow-up will wire the real GitProvider per row.
-            RepoSummary {
-                path: d.path.clone(),
-                name,
-                branch: "?".into(),
-                ahead: 0,
-                behind: 0,
-                dirty: 0,
-                last_commit_age_secs: 0,
-                ci_status: CiStatus::Unknown,
-            }
-        })
-        .collect()
+    let branch = provider
+        .current_branch()
+        .ok()
+        .flatten()
+        .map(|b| b.name)
+        .unwrap_or_else(|| "?".into());
+    let dirty = provider
+        .status()
+        .map(|s| u32::try_from(s.entries.len()).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    // Outgoing = commits on the current branch not on its upstream. The
+    // `GitProvider` trait exposes no ahead/behind method, so v1 reports 0
+    // (honest, not a guess); a follow-up that grows the trait can wire a real
+    // ahead/behind count.
+    RepoGit::loaded(branch, dirty, 0, 0)
+}
+
+/// Mutable handle to the Workspaces overview widget, if the tab is installed
+/// and the layout is a single widget. Used by the add-new-row hydration and
+/// drain paths.
+fn workspaces_widget_mut(sid_app: &mut SidApp) -> Option<&mut sid_widgets::WorkspacesWidget> {
+    use sid_core::layout::Layout;
+    for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
+        if tab.id.as_str() != "workspaces" {
+            continue;
+        }
+        if let Layout::Single(w) = &mut tab.layout {
+            return w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::WorkspacesWidget>();
+        }
+        return None;
+    }
+    None
+}
+
+/// Hydrate the Workspaces overview's `show_add_new_row` toggle from the store's
+/// `show_add_new_row` setting (default on). Call once after the app is built;
+/// the flag is widget-level so it survives state refreshes.
+pub fn hydrate_workspaces_add_new_row(sid_app: &mut SidApp) {
+    let show = load_show_add_new_row(&*sid_app.store);
+    if let Some(ww) = workspaces_widget_mut(sid_app) {
+        ww.set_show_add_new_row(show);
+    }
+}
+
+/// If the Workspaces widget signalled an add-new press (Enter on the synthetic
+/// "+ add new" row), open the create-new side-pane form. No-op otherwise.
+fn maybe_open_pending_new_form(sid_app: &mut SidApp) {
+    let pressed = workspaces_widget_mut(sid_app)
+        .map(|ww| ww.take_pending_add_new())
+        .unwrap_or(false);
+    if pressed && sid_app.form.is_none() {
+        open_form(sid_app, workspaces_new_form());
+    }
 }
 
 /// Spawn a new external terminal window running `sid --start-tab <active>`.
@@ -3430,8 +3588,11 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
                     .toasts
                     .push(Toast::error(format!("{label}: {message}")));
             }
-            Ok(JobOutcome::WorkspaceDetailScanned { tab_id, summaries }) => {
-                apply_workspace_detail_scan(sid_app, &tab_id, summaries);
+            Ok(JobOutcome::WorkspaceSatellitesScanned { tab_id, rows }) => {
+                apply_satellites_to_detail(sid_app, &tab_id, rows);
+            }
+            Ok(JobOutcome::RepoGitLoaded { tab_id, path, git }) => {
+                apply_row_git_to_detail(sid_app, &tab_id, &path, git);
             }
             Err(e) => {
                 sid_app.toasts.push(Toast::error(format!("job: {e}")));
@@ -3440,12 +3601,12 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
     }
 }
 
-/// Route a completed workspace-detail scan to the widget identified by
-/// `tab_id`. No-op if the tab was closed before the scan completed.
-fn apply_workspace_detail_scan(
+/// Push a scanned satellite list to the detail widget identified by `tab_id`.
+/// No-op if the tab was closed before the scan completed.
+fn apply_satellites_to_detail(
     sid_app: &mut SidApp,
     tab_id: &str,
-    summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+    rows: Vec<sid_widgets::SatelliteRow>,
 ) {
     use sid_core::layout::Layout;
     for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
@@ -3453,11 +3614,35 @@ fn apply_workspace_detail_scan(
             continue;
         }
         if let Layout::Single(w) = &mut tab.layout
-            && let Some(detail) = w
+            && let Some(d) = w
                 .as_any_mut()
                 .downcast_mut::<sid_widgets::WorkspaceDetailWidget>()
         {
-            detail.apply_scan_results(summaries);
+            d.apply_satellites(rows);
+        }
+        return;
+    }
+}
+
+/// Push one row's loaded git snapshot to the detail widget identified by `tab_id`.
+/// No-op if the tab was closed before the load completed.
+fn apply_row_git_to_detail(
+    sid_app: &mut SidApp,
+    tab_id: &str,
+    path: &std::path::Path,
+    git: sid_widgets::RepoGit,
+) {
+    use sid_core::layout::Layout;
+    for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
+        if tab.id.as_str() != tab_id {
+            continue;
+        }
+        if let Layout::Single(w) = &mut tab.layout
+            && let Some(d) = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::WorkspaceDetailWidget>()
+        {
+            d.apply_row_git(path, git);
         }
         return;
     }
@@ -4142,6 +4327,167 @@ pub fn open_form(sid_app: &mut SidApp, spec: sid_widgets::form::FormSpec) {
     sid_app.form = Some(sid_widgets::form::FormPane::new(spec));
 }
 
+/// Build the create-new-workspace side-pane form. Reshape on `kind`: Umbrella
+/// shows the satellite-scan + feature toggles; Repo hides them.
+pub fn workspaces_new_form() -> sid_widgets::form::FormSpec {
+    sid_widgets::form::FormSpec::new(
+        "workspaces.create",
+        "New Workspace",
+        workspaces_new_sections(&sid_widgets::form::FormValues::new()),
+    )
+    .with_reshape(vec!["kind".into()], workspaces_new_sections)
+}
+
+/// Section builder for [`workspaces_new_form`]. Reshape-driven: the `kind`
+/// value selects whether the umbrella-only "Features" section is present.
+fn workspaces_new_sections(
+    values: &sid_widgets::form::FormValues,
+) -> Vec<sid_widgets::form::FormSection> {
+    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
+    use sid_widgets::modal::Field;
+    let kind = values.get("kind").map(String::as_str).unwrap_or("Umbrella");
+    let mut fields = vec![
+        FormField::new(
+            "name",
+            Field::Text {
+                label: "name".into(),
+                value: String::new(),
+                placeholder: Some("e.g. gen4-stack".into()),
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+        FormField::new(
+            "path",
+            Field::Picker {
+                label: "path".into(),
+                value: String::new(),
+                hint: "absolute path".into(),
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+        FormField::new(
+            "kind",
+            Field::Choice {
+                label: "kind".into(),
+                options: vec!["Umbrella".into(), "Repo".into()],
+                selected: if kind == "Repo" { 1 } else { 0 },
+            },
+        ),
+    ];
+    let mut sections = vec![FormSection {
+        title: "Workspace".into(),
+        kind: SectionKind::Editable,
+        fields: std::mem::take(&mut fields),
+    }];
+    if kind == "Umbrella" {
+        sections.push(FormSection {
+            title: "Features".into(),
+            kind: SectionKind::Editable,
+            fields: vec![
+                FormField::new(
+                    "scan_satellites",
+                    Field::Toggle {
+                        label: "scan satellites now".into(),
+                        value: true,
+                    },
+                ),
+                FormField::new(
+                    "register_claude_md",
+                    Field::Toggle {
+                        label: "read CLAUDE.md actions".into(),
+                        value: true,
+                    },
+                ),
+            ],
+        });
+    }
+    sections
+}
+
+/// Resolve the directory to scan for the adopt-existing wizard. Prefers the
+/// currently-selected workspace path, falls back to the first default discovery
+/// root (`~/vcs`), then the current working directory.
+fn workspaces_adopt_dir(sid_app: &SidApp) -> PathBuf {
+    if let Some(p) = workspaces_selected_path(sid_app) {
+        return p;
+    }
+    if let Some(root) = default_discovery_roots().into_iter().next() {
+        return root;
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Build the adopt-existing-umbrella form for `dir`: a name field plus one
+/// pre-checked Toggle per repo found one level under `dir`. The repo path is
+/// encoded in the toggle key (`repo:<abs-path>`) so the submit handler can
+/// register each checked satellite without a second scan.
+pub fn workspaces_adopt_form(dir: &std::path::Path) -> sid_widgets::form::FormSpec {
+    use sid_core::workspace_discovery::scan_adoptable_repos;
+    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
+    use sid_widgets::modal::Field;
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("umbrella")
+        .to_string();
+    let mut header = vec![
+        FormField::new(
+            "dir",
+            Field::Display {
+                label: "directory".into(),
+                body: dir.display().to_string(),
+            },
+        ),
+        FormField::new(
+            "name",
+            Field::Text {
+                label: "umbrella name".into(),
+                value: name,
+                placeholder: None,
+            },
+        )
+        .with_validate(vec![Validate::NonEmpty]),
+    ];
+    let repos = scan_adoptable_repos(dir);
+    let toggles: Vec<FormField> = repos
+        .iter()
+        .map(|r| {
+            FormField::new(
+                format!("repo:{}", r.path.display()),
+                Field::Toggle {
+                    label: r.name.clone(),
+                    value: true,
+                },
+            )
+        })
+        .collect();
+    let mut sections = vec![FormSection {
+        title: "Umbrella".into(),
+        kind: SectionKind::Editable,
+        fields: std::mem::take(&mut header),
+    }];
+    if toggles.is_empty() {
+        sections.push(FormSection {
+            title: "Satellites".into(),
+            kind: SectionKind::Info,
+            fields: vec![FormField::new(
+                "none",
+                Field::Display {
+                    label: "found".into(),
+                    body: "no git repos found under this directory".into(),
+                },
+            )],
+        });
+    } else {
+        sections.push(FormSection {
+            title: "Satellites".into(),
+            kind: SectionKind::Editable,
+            fields: toggles,
+        });
+    }
+    sid_widgets::form::FormSpec::new("workspaces.adopt", "Adopt Existing Umbrella", sections)
+}
+
 /// Route a submitted form's values by form id, then close the form.
 ///
 /// Branches 1-5 register their own arms here keyed on the form id; the
@@ -4156,6 +4502,114 @@ fn dispatch_form_submit(sid_app: &mut SidApp, id: &str, values: sid_widgets::for
                 sid_app
                     .toasts
                     .push(Toast::error(format!("save connection: {e}")));
+            }
+        }
+        "workspaces.create" => {
+            let name = values.get("name").cloned().unwrap_or_default();
+            let path_str = values.get("path").cloned().unwrap_or_default();
+            let kind = match values.get("kind").map(String::as_str) {
+                Some("Repo") => sid_core::workspace_metadata::WorkspaceKind::Repo,
+                _ => sid_core::workspace_metadata::WorkspaceKind::Umbrella,
+            };
+            match std::fs::canonicalize(&path_str) {
+                Ok(path) => {
+                    let ws = sid_store::Workspace {
+                        path,
+                        name: name.clone(),
+                        kind,
+                        manifest_hash: 0,
+                        last_seen: sid_store::now_epoch(),
+                        parent: None,
+                    };
+                    match sid_app.store.upsert_workspace(&ws) {
+                        Ok(()) => {
+                            refresh_workspaces_widget(sid_app);
+                            sid_app
+                                .toasts
+                                .push(Toast::success(format!("workspace '{name}' added")));
+                        }
+                        Err(e) => {
+                            sid_app
+                                .toasts
+                                .push(Toast::error(format!("add workspace: {e}")));
+                        }
+                    }
+                }
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("bad path '{path_str}': {e}")));
+                }
+            }
+        }
+        "workspaces.adopt" => {
+            let dir_str = values.get("dir").cloned().unwrap_or_default();
+            let name = values.get("name").cloned().unwrap_or_default();
+            let umbrella_path = match std::fs::canonicalize(&dir_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    sid_app
+                        .toasts
+                        .push(Toast::error(format!("bad directory '{dir_str}': {e}")));
+                    sid_app.form = None;
+                    sid_app.form_origin_tab = None;
+                    return;
+                }
+            };
+            // Register the umbrella.
+            let umbrella = sid_store::Workspace {
+                path: umbrella_path.clone(),
+                name: name.clone(),
+                kind: sid_core::workspace_metadata::WorkspaceKind::Umbrella,
+                manifest_hash: 0,
+                last_seen: sid_store::now_epoch(),
+                parent: None,
+            };
+            let mut errors = 0usize;
+            let mut added = 0usize;
+            if sid_app.store.upsert_workspace(&umbrella).is_err() {
+                errors += 1;
+            } else {
+                added += 1;
+            }
+            // Register each checked satellite (key = "repo:<path>", value "true").
+            for (key, val) in values.iter() {
+                let Some(path_str) = key.strip_prefix("repo:") else {
+                    continue;
+                };
+                if val != "true" {
+                    continue;
+                }
+                let sat_path = std::path::PathBuf::from(path_str);
+                let sat_name = sat_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("repo")
+                    .to_string();
+                let sat = sid_store::Workspace {
+                    path: sat_path,
+                    name: sat_name,
+                    kind: sid_core::workspace_metadata::WorkspaceKind::Repo,
+                    manifest_hash: 0,
+                    last_seen: sid_store::now_epoch(),
+                    parent: Some(umbrella_path.clone()),
+                };
+                if sid_app.store.upsert_workspace(&sat).is_err() {
+                    errors += 1;
+                } else {
+                    added += 1;
+                }
+            }
+            refresh_workspaces_widget(sid_app);
+            if errors == 0 {
+                sid_app.toasts.push(Toast::success(format!(
+                    "adopted '{name}' + {} satellites",
+                    added.saturating_sub(1)
+                )));
+            } else {
+                sid_app
+                    .toasts
+                    .push(Toast::error(format!("adopted with {errors} error(s)")));
             }
         }
         _ => {
@@ -6320,6 +6774,7 @@ mod tests {
         SidApp {
             app: build_app(start_tab, vec![]),
             store,
+            git_factory: Arc::new(Git2ProviderFactory::new()),
             session_id: "draw-test-sess".into(),
             sys_probe: None,
             sys_rx: None,
@@ -6343,6 +6798,150 @@ mod tests {
             ssh_last_pty_area: None,
             ssh_shutdown_tx: None,
         }
+    }
+
+    #[test]
+    fn scan_umbrella_satellites_finds_repos_and_marks_umbrella() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("api").join(".git")).unwrap();
+        let rows = scan_umbrella_satellites(tmp.path(), "gen4");
+        // umbrella row first, then satellites
+        assert!(rows[0].is_umbrella);
+        assert_eq!(rows[0].name, "gen4");
+        assert!(rows.iter().any(|r| r.name == "api" && !r.is_umbrella));
+    }
+
+    #[test]
+    fn workspaces_new_form_reshapes_on_kind() {
+        use sid_widgets::modal::Field;
+        let mut spec = workspaces_new_form();
+        // default kind Umbrella exposes the umbrella feature toggles
+        let v = spec.values();
+        assert_eq!(v["kind"], "Umbrella");
+        assert!(
+            spec.sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .any(|f| f.key == "scan_satellites")
+        );
+        // flip to Repo, reshape drops umbrella-only toggles
+        for s in &mut spec.sections {
+            for f in &mut s.fields {
+                if f.key == "kind"
+                    && let Field::Choice { selected, .. } = &mut f.field
+                {
+                    *selected = 1; // Repo
+                }
+            }
+        }
+        spec.run_reshape();
+        assert_eq!(spec.values()["kind"], "Repo");
+        assert!(
+            !spec
+                .sections
+                .iter()
+                .flat_map(|s| &s.fields)
+                .any(|f| f.key == "scan_satellites")
+        );
+    }
+
+    #[test]
+    fn dispatch_workspaces_create_persists_workspace() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut values = sid_widgets::form::FormValues::new();
+        values.insert("name".into(), "neo".into());
+        values.insert("path".into(), tmp.path().display().to_string());
+        values.insert("kind".into(), "Repo".into());
+        dispatch_form_submit(&mut sid_app, "workspaces.create", values);
+        let ws = sid_app.store.list_workspaces().unwrap();
+        assert_eq!(ws.len(), 1);
+        assert_eq!(ws[0].name, "neo");
+    }
+
+    #[test]
+    fn adopt_form_lists_scanned_repos_as_prechecked_toggles() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("api").join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("web").join(".git")).unwrap();
+        let spec = workspaces_adopt_form(tmp.path());
+        let toggles: Vec<&str> = spec
+            .sections
+            .iter()
+            .flat_map(|s| &s.fields)
+            .filter(|f| f.key.starts_with("repo:"))
+            .map(|f| f.key.as_str())
+            .collect();
+        assert_eq!(toggles.len(), 2);
+        // every found repo is pre-checked (value true)
+        for f in spec
+            .sections
+            .iter()
+            .flat_map(|s| &s.fields)
+            .filter(|f| f.key.starts_with("repo:"))
+        {
+            assert_eq!(f.value_string(), "true");
+        }
+    }
+
+    #[test]
+    fn add_new_enter_opens_create_form() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Enable + select the add-new row, then drive a real Enter through the
+        // widget so it flags pending_add_new the way the user would.
+        if let Some(ww) = workspaces_widget_mut(&mut sid_app) {
+            ww.set_show_add_new_row(true);
+            assert!(ww.add_new_selected());
+            let (_tx, _rx) = std::sync::mpsc::channel::<String>();
+            let mut ctx = sid_core::context::WidgetCtx::new(_tx);
+            let ev = Event::Key(KeyChord {
+                code: KeyCode::Enter,
+                mods: KeyModifiers::NONE,
+            });
+            let _ = ww.handle_event(&ev, &mut ctx);
+        }
+        assert!(sid_app.form.is_none());
+        maybe_open_pending_new_form(&mut sid_app);
+        // A form is now open with id workspaces.create.
+        let form = sid_app.form.as_ref().expect("create form opened");
+        assert_eq!(form.spec.id.0, "workspaces.create");
+    }
+
+    #[test]
+    fn hydrate_workspaces_add_new_row_defaults_on() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        hydrate_workspaces_add_new_row(&mut sid_app);
+        let ww = workspaces_widget_mut(&mut sid_app).expect("workspaces widget");
+        // default setting is on, so the add-new row is selected at startup
+        assert!(ww.add_new_selected());
+    }
+
+    #[test]
+    fn dispatch_workspaces_adopt_registers_umbrella_and_checked_satellites() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        let tmp = tempfile::tempdir().unwrap();
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(api.join(".git")).unwrap();
+        let api_real = std::fs::canonicalize(&api).unwrap();
+
+        let mut values = sid_widgets::form::FormValues::new();
+        values.insert("dir".into(), tmp.path().display().to_string());
+        values.insert("name".into(), "gen4".into());
+        values.insert(format!("repo:{}", api_real.display()), "true".into());
+        dispatch_form_submit(&mut sid_app, "workspaces.adopt", values);
+
+        let ws = sid_app.store.list_workspaces().unwrap();
+        // umbrella + 1 satellite
+        assert_eq!(ws.len(), 2);
+        let _umbrella = ws.iter().find(|w| w.name == "gen4").unwrap();
+        let sat = ws.iter().find(|w| w.parent.is_some()).unwrap();
+        assert_eq!(
+            sat.parent.as_ref().unwrap(),
+            &std::fs::canonicalize(tmp.path()).unwrap()
+        );
     }
 
     // ---- load_active_theme / load_active_keybinds ----
