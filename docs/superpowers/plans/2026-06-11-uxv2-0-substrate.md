@@ -31,7 +31,7 @@ proptest for the focus-never-strands property.
 - Create: `crates/sid-widgets/src/list_cursor.rs`
 - Modify: `crates/sid-widgets/src/lib.rs` (add `pub mod list_cursor;` next to the existing `pub mod modal;`)
 
-- [ ] **Step 1: Write the type + failing tests**
+- [x] **Step 1: Write the type + failing tests**
 
 ```rust
 //! Cursor math for list panes that may carry a synthetic "+ add new" first row.
@@ -153,13 +153,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the tests**
+- [x] **Step 2: Run the tests**
 
 Run: `cargo test -p sid-widgets list_cursor`
 Expected: all 6 pass (write type and tests together; the failing-first ritual is waived for
 pure-data types this small, per the targeted-testing policy).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/sid-widgets/src/list_cursor.rs crates/sid-widgets/src/lib.rs
