@@ -2244,17 +2244,17 @@ git commit -m "feat(sid-widgets,sid): overview + add new row honoring show_add_n
 
 ### Task 11: Branch wrap-up — targeted regression sweep + clippy on touched crates
 
-- [ ] **Step 1: Scoped test sweep**
+- [x] **Step 1: Scoped test sweep**
 
 Run: `cargo test -p sid-core -p sid-widgets -p sid`
 Expected: green. Most likely red spots: stale wire tests referencing the removed `apply_scan_results`/`WorkspaceDetailScanned`/`RepoSummary` table — convert them to the new `apply_satellites`/`rows()` API; overview snapshot churn from the add-new row.
 
-- [ ] **Step 2: Clippy on touched crates**
+- [x] **Step 2: Clippy on touched crates**
 
 Run: `cargo clippy -p sid-core -p sid-widgets -p sid --all-targets -- -D warnings`
 Expected: clean. Watch for: unused `git_factory` field warnings (the `#[allow(dead_code)]` on the detail widget's field covers it), and `as u32` lossy-cast lints on the dirty count (use `u32::try_from(..).unwrap_or(u32::MAX)` if clippy flags it).
 
-- [ ] **Step 3: Tick this plan's checkboxes, then finish the branch**
+- [x] **Step 3: Tick this plan's checkboxes, then finish the branch**
 
 ```bash
 git add docs/superpowers/plans/2026-06-11-uxv2-1-workspaces.md
