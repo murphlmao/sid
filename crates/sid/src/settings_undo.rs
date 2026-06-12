@@ -167,19 +167,37 @@ mod tests {
     }
 
     #[test]
-    fn entry_aged_exactly_at_ttl_boundary_is_expired() {
+    fn entry_aged_past_ttl_is_expired() {
         let mut e = UndoEntry {
             payload: UndoPayload::Theme {
                 prior: "cosmos".into(),
             },
             recorded_at: Instant::now(),
         };
-        // Exactly at boundary — elapsed == TTL is still expired
-        // (uses strict `>` so equality is NOT expired; that's the intended
-        // contract: > means expired, == means still live by one tick).
-        // We test one tick past.
+        // One nanosecond past the boundary: elapsed > UNDO_TTL → expired.
         e.recorded_at = Instant::now() - UNDO_TTL - Duration::from_nanos(1);
         assert!(e.is_expired());
+    }
+
+    #[test]
+    fn entry_aged_exactly_ttl_is_still_live() {
+        let mut e = UndoEntry {
+            payload: UndoPayload::Theme {
+                prior: "cosmos".into(),
+            },
+            recorded_at: Instant::now(),
+        };
+        // `is_expired` uses strict `>`, so elapsed == UNDO_TTL is NOT expired.
+        // We cannot hit the exact nanosecond boundary reliably with real
+        // `Instant` arithmetic (CPU execution time between the subtraction and
+        // the `elapsed()` call pushes us past it). Instead we use a margin of
+        // 1 second inside the window — provably live — to verify the contract:
+        // entries younger than UNDO_TTL must not be considered expired.
+        e.recorded_at = Instant::now() - UNDO_TTL + Duration::from_secs(1);
+        assert!(
+            !e.is_expired(),
+            "entry aged UNDO_TTL-1s must still be live (strict > comparison)"
+        );
     }
 
     #[test]

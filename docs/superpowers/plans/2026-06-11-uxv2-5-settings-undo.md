@@ -1998,6 +1998,8 @@ settings_undo::random_toggle_undo_sequence_preserves_baseline proptest
 independently-computed model).
 ```
 
+**Follow-up (recorded by review):** undo-for-additions is deliberate future work — pressing `u` after adding a net-new quick action to remove it is not currently supported. Today, additions are simply not undoable and the toast reflects that (no `(u: undo)` suffix when no prior record existed).
+
 ---
 
 ### Task 7: Snapshot tests + final gate

@@ -1979,10 +1979,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                 };
                 match put_result {
                     Ok(()) => {
-                        sid_app
-                            .toasts
-                            .push(Toast::success(format!("Saved {key} (u: undo)")));
-                        if let Some(prior) = prior_toggle {
+                        let pushed = if let Some(prior) = prior_toggle {
                             push_undo(
                                 &mut sid_app.undo_ring,
                                 UndoEntry {
@@ -1990,7 +1987,14 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                                     recorded_at: std::time::Instant::now(),
                                 },
                             );
-                        }
+                            true
+                        } else {
+                            false
+                        };
+                        let suffix = if pushed { " (u: undo)" } else { "" };
+                        sid_app
+                            .toasts
+                            .push(Toast::success(format!("Saved {key}{suffix}")));
                     }
                     Err(e) => {
                         sid_app
@@ -2036,11 +2040,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                 let prior_qa = sid_app.store.get_quick_action(&qa.id).ok().flatten();
                 match sid_app.store.upsert_quick_action(&qa) {
                     Ok(()) => {
-                        sid_app.toasts.push(Toast::success(format!(
-                            "Quick action '{}' saved (u: undo)",
-                            qa.id
-                        )));
-                        if let Some(prior) = prior_qa {
+                        let pushed = if let Some(prior) = prior_qa {
                             push_undo(
                                 &mut sid_app.undo_ring,
                                 UndoEntry {
@@ -2048,7 +2048,15 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                                     recorded_at: std::time::Instant::now(),
                                 },
                             );
-                        }
+                            true
+                        } else {
+                            false
+                        };
+                        let suffix = if pushed { " (u: undo)" } else { "" };
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Quick action '{}' saved{suffix}",
+                            qa.id
+                        )));
                     }
                     Err(e) => {
                         sid_app
@@ -2062,10 +2070,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                 let prior_qa = sid_app.store.get_quick_action(&id).ok().flatten();
                 match sid_app.store.remove_quick_action(&id) {
                     Ok(()) => {
-                        sid_app.toasts.push(Toast::success(format!(
-                            "Quick action '{id}' removed (u: undo)"
-                        )));
-                        if let Some(prior) = prior_qa {
+                        let pushed = if let Some(prior) = prior_qa {
                             push_undo(
                                 &mut sid_app.undo_ring,
                                 UndoEntry {
@@ -2073,7 +2078,14 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                                     recorded_at: std::time::Instant::now(),
                                 },
                             );
-                        }
+                            true
+                        } else {
+                            false
+                        };
+                        let suffix = if pushed { " (u: undo)" } else { "" };
+                        sid_app.toasts.push(Toast::success(format!(
+                            "Quick action '{id}' removed{suffix}"
+                        )));
                     }
                     Err(e) => {
                         sid_app
@@ -9795,5 +9807,107 @@ mod tests {
             );
         }
         assert_eq!(ring.len(), UNDO_RING_CAP, "ring capped at UNDO_RING_CAP");
+    }
+
+    #[test]
+    fn u_chord_ignored_while_modal_open() {
+        use crate::settings_undo::{UndoEntry, UndoPayload};
+        use crossterm::event::KeyCode;
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(None);
+        // Seed the store and push a fresh undo entry that would normally apply.
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::THEME_NAME, "void")
+            .unwrap();
+        let ring_entry = UndoEntry {
+            payload: UndoPayload::Theme {
+                prior: "cosmos".into(),
+            },
+            recorded_at: std::time::Instant::now(),
+        };
+        sid_app.undo_ring.push_back(ring_entry);
+        let ring_len_before = sid_app.undo_ring.len();
+        // Push a modal onto the stack so the undo interceptor is bypassed.
+        sid_app.modal_stack.push(sid_widgets::ModalSpec::new(
+            "test.modal",
+            "Test",
+            vec![sid_widgets::modal::Field::Display {
+                label: "info".into(),
+                body: "blocking".into(),
+            }],
+        ));
+        let chord = chord(KeyCode::Char('u'));
+        let _consumed = route_key_event(&mut sid_app, chord);
+        // The modal intercepts the key (returns true), but the *undo* interceptor
+        // must NOT have fired — the ring is unchanged and the theme is not reverted.
+        assert_eq!(
+            sid_app.undo_ring.len(),
+            ring_len_before,
+            "undo ring must be unchanged — modal intercepted the key, not the undo ring"
+        );
+        // The theme must NOT have been reverted.
+        let stored = sid_app
+            .store
+            .get_string(sid_store::settings_keys::THEME_NAME)
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("void"),
+            "theme must not be reverted while modal is open"
+        );
+    }
+
+    #[test]
+    fn u_chord_ignored_while_form_open() {
+        use crate::settings_undo::{UndoEntry, UndoPayload};
+        use crossterm::event::KeyCode;
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(None);
+        // Seed the store and push a fresh undo entry.
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::THEME_NAME, "void")
+            .unwrap();
+        let ring_entry = UndoEntry {
+            payload: UndoPayload::Theme {
+                prior: "cosmos".into(),
+            },
+            recorded_at: std::time::Instant::now(),
+        };
+        sid_app.undo_ring.push_back(ring_entry);
+        let ring_len_before = sid_app.undo_ring.len();
+        // Open a form; the form intercept branch fires before the undo branch.
+        open_form(&mut sid_app, test_form_spec("test.edit"));
+        let chord = chord(KeyCode::Char('u'));
+        let consumed = route_key_event(&mut sid_app, chord);
+        // The form intercepts the key and returns Continue, so route_key_event
+        // returns true (form consumed it), not the undo interceptor.
+        assert!(
+            consumed,
+            "u should be consumed by the form, not the undo interceptor"
+        );
+        assert_eq!(
+            sid_app.undo_ring.len(),
+            ring_len_before,
+            "undo ring must be unchanged — form consumed the key, not undo"
+        );
+        // The theme must NOT have been reverted.
+        let stored = sid_app
+            .store
+            .get_string(sid_store::settings_keys::THEME_NAME)
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("void"),
+            "theme must not be reverted while form is open"
+        );
+        // The form's focused text field should now contain 'u' (typed into it).
+        let form = sid_app.form.as_ref().expect("form still open");
+        let first_field_value = form.spec.sections[0].fields[0].value_string();
+        assert_eq!(
+            first_field_value, "u",
+            "u must have been typed into the focused form field"
+        );
     }
 }
