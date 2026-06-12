@@ -57,6 +57,7 @@ mod focus {
     use sid_store::DbConnection;
     use sid_widgets::DatabaseWidget;
     use sid_widgets::database::{DbFocus, RightPane};
+    use sid_widgets::list_cursor::CursorTarget;
 
     fn ctx() -> WidgetCtx {
         let (tx, _rx) = mpsc::channel();
@@ -158,26 +159,26 @@ mod focus {
         let mut c = ctx();
         w.set_results_for_tests(results_page());
         // Focus is Connections. j should advance connection selection.
-        assert_eq!(w.state().selected_index(), 0);
+        assert_eq!(w.state().cursor.target(), CursorTarget::Item(0));
         w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
-        assert_eq!(w.state().selected_index(), 1);
+        assert_eq!(w.state().cursor.target(), CursorTarget::Item(1));
         // Tab to Editor; j must not advance connection selection.
         w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
         assert_eq!(w.focused_pane(), DbFocus::Editor);
         w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
-        assert_eq!(w.state().selected_index(), 1);
+        assert_eq!(w.state().cursor.target(), CursorTarget::Item(1));
         // Tab to Results; j moves the result row, not the connection.
         w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
         assert_eq!(w.focused_pane(), DbFocus::Results);
         assert_eq!(w.state().results.selected_row, 0);
         w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
         assert_eq!(w.state().results.selected_row, 1);
-        assert_eq!(w.state().selected_index(), 1); // unchanged
+        assert_eq!(w.state().cursor.target(), CursorTarget::Item(1)); // unchanged
         // Tab to History; j must not move the connection list either.
         w.handle_event(&key(KeyCode::Tab, KeyModifiers::NONE), &mut c);
         assert_eq!(w.focused_pane(), DbFocus::History);
         w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
-        assert_eq!(w.state().selected_index(), 1);
+        assert_eq!(w.state().cursor.target(), CursorTarget::Item(1));
     }
 
     #[test]

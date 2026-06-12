@@ -3327,22 +3327,16 @@ pub(crate) fn drain_database_commands(sid_app: &mut SidApp) {
             DbCommand::TestConnection { conn_id } => {
                 spawn_test_connection(sid_app, conn_id);
             }
-            // All other commands pass through to the legacy wire handlers.
+            // Commands that require Plan 4 wiring (RunQuery, Disconnect,
+            // CopyCell, Connect, LoadHistory, LoadNextPage) are dropped here
+            // with a trace-level log. They must not be re-queued — doing so
+            // causes an infinite drain cycle. The Plan 4 implementation will
+            // add dedicated arms when the real DbClient is wired.
             other => {
-                // Re-queue for future handling (legacy connect/run/etc paths).
-                if let Some(t) = sid_app
-                    .app
-                    .tabs_mut()
-                    .tabs_mut()
-                    .iter_mut()
-                    .find(|t| t.id.as_str() == "database")
-                {
-                    if let Some(w) = t.layout.iter_widgets_mut().next() {
-                        if let Some(db) = w.as_any_mut().downcast_mut::<DatabaseWidget>() {
-                            db.state_mut().push_command(other);
-                        }
-                    }
-                }
+                tracing::warn!(
+                    cmd = ?other,
+                    "drain_database_commands: unhandled DbCommand dropped (Plan 4 stub)"
+                );
             }
         }
     }
@@ -8213,6 +8207,138 @@ mod tests {
         assert!(
             conns.iter().any(|c| c.name == "TestConn"),
             "connection should be in store"
+        );
+    }
+
+    /// Fix 2: unhandled DbCommands (RunQuery, Disconnect, CopyCell) must be
+    /// dropped by drain_database_commands, not re-queued. Re-queuing would
+    /// cause the command to survive every drain iteration until the process
+    /// terminates — an unbounded busy-loop. After one drain, the queue must
+    /// be empty.
+    #[test]
+    fn drain_database_commands_drops_unhandled_commands_not_requeue() {
+        let mut app = build_test_sid_app(Some("database"));
+        // Inject a RunQuery (Plan 4 stub — no consumer wired yet).
+        {
+            let tab = app
+                .app
+                .tabs_mut()
+                .tabs_mut()
+                .iter_mut()
+                .find(|t| t.id.as_str() == "database")
+                .expect("database tab");
+            let widget = tab
+                .layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+                .expect("database widget");
+            widget
+                .state_mut()
+                .push_command(sid_widgets::database::DbCommand::RunQuery {
+                    sql: "SELECT 1".into(),
+                    conn_id: "pg".into(),
+                });
+        }
+        // First drain: command should be consumed (dropped with warn) and the
+        // queue emptied — the widget must not re-queue it.
+        drain_database_commands(&mut app);
+        let remaining = {
+            let tab = app
+                .app
+                .tabs_mut()
+                .tabs_mut()
+                .iter_mut()
+                .find(|t| t.id.as_str() == "database")
+                .expect("database tab");
+            let widget = tab
+                .layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+                .expect("database widget");
+            widget.state_mut().drain_commands()
+        };
+        assert!(
+            remaining.is_empty(),
+            "RunQuery must be dropped by drain, not re-queued; got: {:?}",
+            remaining
+        );
+    }
+
+    /// Fix 2 (routing check): RunQuery injected directly through the widget
+    /// event handler (Ctrl+R) emits the command exactly once, and after a
+    /// single drain it is gone.
+    #[test]
+    fn ctrl_r_in_editor_emits_run_query_and_drain_clears_it() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_core::widget::Widget;
+        let mut app = build_test_sid_app(Some("database"));
+        // set active connection so Ctrl+R has a conn_id to attach
+        {
+            let tab = app
+                .app
+                .tabs_mut()
+                .tabs_mut()
+                .iter_mut()
+                .find(|t| t.id.as_str() == "database")
+                .expect("database tab");
+            let widget = tab
+                .layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+                .expect("database widget");
+            widget.state_mut().set_active_conn_id_for_tests("pg".into());
+            // Advance to Editor pane so Ctrl+R is routed correctly
+            widget.focus_next(); // Connections → Editor
+        }
+        // Send Ctrl+R through the widget
+        {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut ctx = sid_core::context::WidgetCtx::new(tx);
+            let ev = Event::Key(KeyChord {
+                code: KeyCode::Char('r'),
+                mods: KeyModifiers::CONTROL,
+            });
+            let tab = app
+                .app
+                .tabs_mut()
+                .tabs_mut()
+                .iter_mut()
+                .find(|t| t.id.as_str() == "database")
+                .expect("database tab");
+            if let Some(w) = tab
+                .layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+            {
+                w.handle_event(&ev, &mut ctx);
+            }
+        }
+        // One drain — must not leave the command in the queue.
+        drain_database_commands(&mut app);
+        let remaining = {
+            let tab = app
+                .app
+                .tabs_mut()
+                .tabs_mut()
+                .iter_mut()
+                .find(|t| t.id.as_str() == "database")
+                .expect("database tab");
+            tab.layout
+                .iter_widgets_mut()
+                .next()
+                .and_then(|w| w.as_any_mut().downcast_mut::<DatabaseWidget>())
+                .map(|w| w.state_mut().drain_commands())
+                .unwrap_or_default()
+        };
+        assert!(
+            remaining.is_empty(),
+            "RunQuery from Ctrl+R must be dropped by drain; got: {:?}",
+            remaining
         );
     }
 

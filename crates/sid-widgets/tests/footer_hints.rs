@@ -74,11 +74,12 @@ fn database_footer_hints() {
     assert_hint(&hints, "N", "new");
     assert_hint(&hints, "D", "delete");
     assert_hint(&hints, "Ctrl+T", "test");
-    assert_hint(&hints, "→", "pane");
+    // "→ pane" removed: dead SplitView verb — the database side pane is opened
+    // via Enter/N (DbCommand::OpenConnectionForm) and has no widget-level arrow focus.
     assert_eq!(
         hints.len(),
-        5,
-        "DatabaseWidget (Connections focus) should expose exactly 5 footer hints"
+        4,
+        "DatabaseWidget (Connections focus) should expose exactly 4 footer hints"
     );
 }
 

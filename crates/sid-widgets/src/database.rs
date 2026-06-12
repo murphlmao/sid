@@ -394,7 +394,6 @@ impl HistoryState {
 /// Pure-state portion of [`DatabaseWidget`]. Testable without ratatui.
 pub struct DatabaseState {
     connections: Vec<DbConnection>,
-    selected_idx: usize,
     /// Cursor over the connections list including the optional +add new row.
     pub cursor: ListCursor,
     active_client: Option<Arc<dyn DbClient>>,
@@ -430,7 +429,6 @@ impl DatabaseState {
         Self {
             cursor: ListCursor::new(len, add_new, 0),
             connections,
-            selected_idx: 0,
             active_client: None,
             active_conn_id: None,
             right_pane: RightPane::Editor,
@@ -444,12 +442,6 @@ impl DatabaseState {
     /// Borrow the saved connection list.
     pub fn connections(&self) -> &[DbConnection] {
         &self.connections
-    }
-
-    /// Index of the currently-selected connection in [`Self::connections`].
-    /// Returns `0` when the list is empty (no row will be drawn anyway).
-    pub fn selected_index(&self) -> usize {
-        self.selected_idx
     }
 
     /// Currently-selected connection (`None` if cursor is on +add new or list is empty).
@@ -472,10 +464,6 @@ impl DatabaseState {
         self.connections = c;
         let old_pos = self.cursor.pos;
         self.cursor = ListCursor::new(new_len, add_new, old_pos);
-        self.selected_idx = match self.cursor.target() {
-            CursorTarget::Item(i) => i,
-            CursorTarget::AddNew | CursorTarget::Nothing => 0,
-        };
     }
 
     /// Which right-pane sub-view is focused.
@@ -552,9 +540,6 @@ impl DatabaseState {
             return;
         }
         self.cursor.pos = (self.cursor.pos + 1) % total;
-        if let CursorTarget::Item(i) = self.cursor.target() {
-            self.selected_idx = i;
-        }
     }
 
     /// Reverse the connection-list selection (wraps from top back to last item).
@@ -564,9 +549,6 @@ impl DatabaseState {
             return;
         }
         self.cursor.pos = (self.cursor.pos + total - 1) % total;
-        if let CursorTarget::Item(i) = self.cursor.target() {
-            self.selected_idx = i;
-        }
     }
 
     /// Drain pending commands the renderer should hand to the App.
@@ -586,8 +568,6 @@ pub struct DatabaseWidget {
     id: WidgetId,
     body: ComingSoonBody,
     focused_pane: DbFocus,
-    /// List/pane focus for the connections split.
-    pub split: crate::split_view::SplitView<()>,
 }
 
 impl DatabaseWidget {
@@ -623,7 +603,6 @@ impl DatabaseWidget {
                 "Postgres + SQLite query runner — Plan 4 wires the editor + results table in a follow-up.",
             ),
             focused_pane: DbFocus::default(),
-            split: crate::split_view::SplitView::default(),
         }
     }
 
@@ -832,7 +811,11 @@ impl DatabaseWidget {
             } else {
                 Style::default().fg(theme.accent_success.into())
             };
-            lines.push(Line::from(Span::styled("+ add new", style)));
+            let marker = if add_new_selected { '>' } else { ' ' };
+            lines.push(Line::from(Span::styled(
+                format!("{marker} + add new"),
+                style,
+            )));
         }
 
         if self.state.connections.is_empty() && !self.state.cursor.add_new {
@@ -1131,7 +1114,6 @@ impl Widget for DatabaseWidget {
                 FooterHint::new("N", "new"),
                 FooterHint::new("D", "delete"),
                 FooterHint::new("Ctrl+T", "test"),
-                FooterHint::new("→", "pane"),
             ],
             DbFocus::Editor => vec![
                 FooterHint::new("Ctrl+R", "run"),
@@ -1240,27 +1222,18 @@ impl Widget for DatabaseWidget {
                         // bubble so the existing modal path fires.
                         return EventOutcome::Bubble;
                     }
-                    // Ctrl+T — test active or selected connection.
+                    // Ctrl+T — test the highlighted connection; fall back to active.
                     (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
                         let conn_id = self
                             .state
-                            .active_conn_id()
-                            .or_else(|| self.state.selected_connection().map(|c| c.id.as_str()))
+                            .selected_connection()
+                            .map(|c| c.id.as_str())
+                            .or_else(|| self.state.active_conn_id())
                             .map(|s| s.to_string());
                         if let Some(id) = conn_id {
                             self.state
                                 .push_command(DbCommand::TestConnection { conn_id: id });
                         }
-                        return EventOutcome::Consumed;
-                    }
-                    // Right arrow: enter pane focus.
-                    (KeyCode::Right, KeyModifiers::NONE) => {
-                        self.split.push(());
-                        return EventOutcome::Consumed;
-                    }
-                    // Left arrow: return to list focus.
-                    (KeyCode::Left, KeyModifiers::NONE) => {
-                        self.split.pop();
                         return EventOutcome::Consumed;
                     }
                     _ => {}
@@ -1515,5 +1488,60 @@ mod tests {
         let w = DatabaseWidget::new_with_add_new(vec![stub_conn("pg")], false);
         let s = render_to_string(&w, 80, 24);
         insta::assert_snapshot!("connection_list_no_add_new", s);
+    }
+
+    /// Fix 3: Ctrl+T prefers the highlighted (selected) connection over the
+    /// active one when both exist.
+    #[test]
+    fn ctrl_t_prefers_selected_over_active() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg"), stub_conn("staging")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, false);
+        // pg is active, staging is highlighted (cursor on Item(1))
+        w.state.set_active_conn_id_for_tests("pg".to_string());
+        w.state.select_next(); // Item(0) → Item(1) = staging
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('t'),
+            mods: KeyModifiers::CONTROL,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter().any(
+                |c| matches!(c, DbCommand::TestConnection { conn_id } if conn_id == "staging")
+            ),
+            "Ctrl+T should test highlighted conn 'staging', not active 'pg'; got: {:?}",
+            cmds
+        );
+    }
+
+    /// Fix 3: Ctrl+T falls back to active when cursor is on +add new.
+    #[test]
+    fn ctrl_t_falls_back_to_active_on_add_new_row() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let conns = vec![stub_conn("pg")];
+        let mut w = DatabaseWidget::new_with_add_new(conns, true);
+        // Cursor starts on +add new (default with add_new=true); pg is active.
+        w.state.set_active_conn_id_for_tests("pg".to_string());
+        assert!(
+            w.state.is_add_new_selected(),
+            "cursor should be on +add new"
+        );
+        let ev = Event::Key(KeyChord {
+            code: KeyCode::Char('t'),
+            mods: KeyModifiers::CONTROL,
+        });
+        let mut ctx = stub_ctx();
+        w.handle_event(&ev, &mut ctx);
+        let cmds = w.state.drain_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, DbCommand::TestConnection { conn_id } if conn_id == "pg")),
+            "Ctrl+T should fall back to active 'pg' when on +add new; got: {:?}",
+            cmds
+        );
     }
 }

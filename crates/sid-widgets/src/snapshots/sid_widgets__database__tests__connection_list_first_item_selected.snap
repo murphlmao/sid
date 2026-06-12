@@ -3,7 +3,7 @@ source: crates/sid-widgets/src/database.rs
 expression: s
 ---
 ┌ Connections ─────────┐┌ SQL ─────────────────────────────────────────────────┐
-│+ add new             ││                                                      │
+│  + add new           ││                                                      │
 │> o pg (postgres)     ││                                                      │
 │  o staging (postgres)││                                                      │
 │                      ││                                                      │
