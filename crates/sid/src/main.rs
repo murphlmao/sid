@@ -564,6 +564,7 @@ async fn main() -> Result<()> {
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
+        git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
         session_id: session_id.clone(),
         sys_probe: Some(Arc::clone(&sys_probe)),
         sys_rx: Some(sys_rx),

@@ -1456,7 +1456,7 @@ Update the binary's wire layer to drive the new widget API. Replace the `RepoSum
 **Files:**
 - Modify: `crates/sid/src/wire.rs` — the `JobOutcome` enum (line ~140), `maybe_open_pending_workspace_detail` (line 1773), `scan_workspace_for_summaries` (line 1849), `drain_job_outcomes` (line 3168), `apply_workspace_detail_scan` (line 3194)
 
-- [ ] **Step 1: Add the new job outcome variant + a `SatelliteRow` scan, with tests first**
+- [x] **Step 1: Add the new job outcome variant + a `SatelliteRow` scan, with tests first**
 
 Add a wire test (in the existing `#[cfg(test)] mod tests` in wire.rs, reusing `build_test_sid_app`):
 
@@ -1477,12 +1477,12 @@ Add a wire test (in the existing `#[cfg(test)] mod tests` in wire.rs, reusing `b
     }
 ```
 
-- [ ] **Step 2: Run (expect failure)**
+- [x] **Step 2: Run (expect failure)**
 
 Run: `cargo test -p sid scan_umbrella_satellites_finds`
 Expected: `scan_umbrella_satellites` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the new `JobOutcome` arms (in the enum at line ~140, after `WorkspaceDetailScanned`):
 
@@ -1718,12 +1718,12 @@ fn apply_row_git_to_detail(
 
 Update the `draw` match for the detail tab if it special-cases `WorkspaceDetailWidget` rendering — grep `render_into_frame` in wire.rs's `draw` and confirm the detail tab calls `widget.render_into_frame(f, area, &theme)`; the new signature is identical (`frame, area, theme`), so no change needed beyond confirming.
 
-- [ ] **Step 4: Re-run scoped tests**
+- [x] **Step 4: Re-run scoped tests**
 
 Run: `cargo test -p sid scan_umbrella_satellites_finds && cargo test -p sid maybe_open_pending workspace_detail`
 Expected: the new test passes; existing detail-related wire tests compile against the new widget API (fix any that referenced the removed `apply_scan_results`/`RepoSummary` table by switching them to `apply_satellites`/`rows()`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/sid/src/wire.rs

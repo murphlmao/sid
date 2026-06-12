@@ -137,13 +137,22 @@ pub enum JobOutcome {
         /// Captured stderr trailer / launch error.
         message: String,
     },
-    /// A workspace detail scan completed. The widget identified by `tab_id`
-    /// receives `summaries` via apply_scan_results. No toast — silent.
-    WorkspaceDetailScanned {
+    /// A detail tab's satellite list finished scanning. The widget identified
+    /// by `tab_id` receives `rows` via `apply_satellites`. No toast — silent.
+    WorkspaceSatellitesScanned {
         /// `TabId.as_str()` for the detail tab that requested the scan.
         tab_id: String,
-        /// Discovered sub-repo summaries.
-        summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+        /// Umbrella row first, then satellites.
+        rows: Vec<sid_widgets::SatelliteRow>,
+    },
+    /// One repo row's git snapshot finished loading off-thread.
+    RepoGitLoaded {
+        /// Detail tab id the row belongs to.
+        tab_id: String,
+        /// Absolute repo path (the row key).
+        path: std::path::PathBuf,
+        /// Loaded snapshot.
+        git: sid_widgets::RepoGit,
     },
 }
 
@@ -171,6 +180,7 @@ pub enum JobOutcome {
 /// let sid_app = SidApp {
 ///     app,
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -198,6 +208,10 @@ pub enum JobOutcome {
 pub struct SidApp {
     pub app: App,
     pub store: Arc<RedbStore>,
+    /// Shared git provider factory. Cloned into per-row off-thread git loads
+    /// when a workspace detail tab opens. The factory is `open()`-only; each
+    /// load opens its own per-repo provider.
+    pub git_factory: Arc<Git2ProviderFactory>,
     pub session_id: String,
     /// Periodic system / network probe. `None` in tests that don't want a
     /// background polling task; constructed by [`build_sys_probe`] in the
@@ -897,6 +911,7 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 /// let mut sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -995,6 +1010,7 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 /// let sid_app = SidApp {
 ///     app: build_app(None, vec![]),
 ///     store,
+///     git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///     session_id: "sess-1".to_string(),
 ///     sys_probe: None,
 ///     sys_rx: None,
@@ -1623,6 +1639,7 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
 ///     let mut sid_app = SidApp {
 ///         app,
 ///         store,
+///         git_factory: Arc::new(sid_git::Git2ProviderFactory::new()),
 ///         session_id: "sess-1".to_string(),
 ///         sys_probe: None,
 ///         sys_rx: None,
@@ -2001,6 +2018,22 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         }
     };
 
+    // Drain the background-open flag too.
+    let background = {
+        let tabs = sid_app.app.tabs_mut().tabs_mut();
+        tabs.get_mut(parent_idx)
+            .and_then(|t| {
+                if let Layout::Single(w) = &mut t.layout {
+                    w.as_any_mut()
+                        .downcast_mut::<sid_widgets::WorkspacesWidget>()
+                        .map(|ww| ww.take_pending_open_background())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(false)
+    };
+
     let tab_id_str = format!("workspace_detail:{}", workspace.path.display());
     let tab_id = TabId::new(&tab_id_str);
 
@@ -2010,6 +2043,7 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         return;
     }
 
+    let git_factory = sid_app.git_factory.clone();
     let widget = sid_widgets::WorkspaceDetailWidget::new(workspace.clone(), None);
     let new_tab = Tab {
         id: tab_id.clone(),
@@ -2018,65 +2052,104 @@ fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
         hotkey: None,
         kind: TabKind::Detail { parent_idx },
     };
-    if let Err(e) = sid_app.app.tabs_mut().push_detail(new_tab) {
+    let push_result = if background {
+        sid_app.app.tabs_mut().push_background(new_tab)
+    } else {
+        sid_app.app.tabs_mut().push_detail(new_tab)
+    };
+    if let Err(e) = push_result {
         sid_app
             .toasts
             .push(Toast::error(format!("open workspace detail: {e}")));
         return;
     }
-    let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+    if !background {
+        let _ = sid_app.app.tabs_mut().switch_to(&tab_id);
+    }
 
-    // Spawn the scan job. Completion routes back to apply_workspace_detail_scan
-    // via drain_job_outcomes.
-    let path = workspace.path.clone();
-    let scan_tab_id = tab_id_str;
+    // Scan satellites synchronously (cheap fs walk), push them, then spawn one
+    // git-load job per row.
+    let rows = scan_umbrella_satellites(&workspace.path, &workspace.name);
+    let paths: Vec<std::path::PathBuf> = rows.iter().map(|r| r.path.clone()).collect();
+    let scan_tab_id = tab_id_str.clone();
+    let scan_rows = rows.clone();
     let _ = sid_app.jobs.spawn(async move {
-        let summaries = scan_workspace_for_summaries(&path).await;
-        JobOutcome::WorkspaceDetailScanned {
+        JobOutcome::WorkspaceSatellitesScanned {
             tab_id: scan_tab_id,
-            summaries,
+            rows: scan_rows,
         }
     });
+    for path in paths {
+        let factory = git_factory.clone();
+        let job_tab_id = tab_id_str.clone();
+        let path_for_outcome = path.clone();
+        let _ = sid_app.jobs.spawn(async move {
+            let git = tokio::task::spawn_blocking(move || load_repo_git(&factory, &path))
+                .await
+                .unwrap_or_else(|_| sid_widgets::RepoGit::loaded("?".into(), 0, 0, 0));
+            JobOutcome::RepoGitLoaded {
+                tab_id: job_tab_id,
+                path: path_for_outcome,
+                git,
+            }
+        });
+    }
 }
 
-/// Walk `path` one level deep, find each git repo, and build a
-/// [`sid_widgets::workspace_detail::RepoSummary`] for each. Best-effort —
-/// failures on individual repos are reported with placeholder defaults.
-async fn scan_workspace_for_summaries(
+/// Build the detail tab's row list: the umbrella row first, then every
+/// adoptable satellite under it (one level deep, symlinks resolved). Git
+/// snapshots start in the `loading` state; per-row loads fill them in.
+fn scan_umbrella_satellites(
+    umbrella_path: &std::path::Path,
+    umbrella_name: &str,
+) -> Vec<sid_widgets::SatelliteRow> {
+    use sid_core::workspace_discovery::scan_adoptable_repos;
+    use sid_widgets::{RepoGit, SatelliteRow};
+    let mut rows = vec![SatelliteRow {
+        name: umbrella_name.to_string(),
+        path: umbrella_path.to_path_buf(),
+        is_umbrella: true,
+        git: RepoGit::loading(),
+    }];
+    for repo in scan_adoptable_repos(umbrella_path) {
+        rows.push(SatelliteRow {
+            name: repo.name,
+            path: repo.path,
+            is_umbrella: false,
+            git: RepoGit::loading(),
+        });
+    }
+    rows
+}
+
+/// Open `path` with `factory` and compute its [`sid_widgets::RepoGit`] snapshot.
+/// Best-effort: on any git error returns a `?`-branch loaded snapshot so the
+/// row stops showing "loading" rather than hanging.
+fn load_repo_git(
+    factory: &std::sync::Arc<sid_git::Git2ProviderFactory>,
     path: &std::path::Path,
-) -> Vec<sid_widgets::workspace_detail::RepoSummary> {
-    use sid_core::workspace_discovery::scan_workspace_root;
-    use sid_widgets::workspace_detail::{CiStatus, RepoSummary};
-    let discovered = match scan_workspace_root(path, 1) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!("scan_workspace_root({}) failed: {e}", path.display());
-            return Vec::new();
-        }
+) -> sid_widgets::RepoGit {
+    use sid_core::adapters::git::GitProvider;
+    use sid_widgets::RepoGit;
+    let provider = match factory.open(path) {
+        Ok(p) => p,
+        Err(_) => return RepoGit::loaded("?".into(), 0, 0, 0),
     };
-    discovered
-        .into_iter()
-        .filter(|d| d.kind == sid_core::workspace_metadata::WorkspaceKind::Repo)
-        .map(|d| {
-            let name = d
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| d.path.display().to_string());
-            // v1: branch / ahead-behind / dirty / age are best-effort defaults.
-            // A follow-up will wire the real GitProvider per row.
-            RepoSummary {
-                path: d.path.clone(),
-                name,
-                branch: "?".into(),
-                ahead: 0,
-                behind: 0,
-                dirty: 0,
-                last_commit_age_secs: 0,
-                ci_status: CiStatus::Unknown,
-            }
-        })
-        .collect()
+    let branch = provider
+        .current_branch()
+        .ok()
+        .flatten()
+        .map(|b| b.name)
+        .unwrap_or_else(|| "?".into());
+    let dirty = provider
+        .status()
+        .map(|s| u32::try_from(s.entries.len()).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    // Outgoing = commits on the current branch not on its upstream. The
+    // `GitProvider` trait exposes no ahead/behind method, so v1 reports 0
+    // (honest, not a guess); a follow-up that grows the trait can wire a real
+    // ahead/behind count.
+    RepoGit::loaded(branch, dirty, 0, 0)
 }
 
 /// Spawn a new external terminal window running `sid --start-tab <active>`.
@@ -3389,8 +3462,11 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
                     .toasts
                     .push(Toast::error(format!("{label}: {message}")));
             }
-            Ok(JobOutcome::WorkspaceDetailScanned { tab_id, summaries }) => {
-                apply_workspace_detail_scan(sid_app, &tab_id, summaries);
+            Ok(JobOutcome::WorkspaceSatellitesScanned { tab_id, rows }) => {
+                apply_satellites_to_detail(sid_app, &tab_id, rows);
+            }
+            Ok(JobOutcome::RepoGitLoaded { tab_id, path, git }) => {
+                apply_row_git_to_detail(sid_app, &tab_id, &path, git);
             }
             Err(e) => {
                 sid_app.toasts.push(Toast::error(format!("job: {e}")));
@@ -3399,12 +3475,12 @@ pub fn drain_job_outcomes(sid_app: &mut SidApp) {
     }
 }
 
-/// Route a completed workspace-detail scan to the widget identified by
-/// `tab_id`. No-op if the tab was closed before the scan completed.
-fn apply_workspace_detail_scan(
+/// Push a scanned satellite list to the detail widget identified by `tab_id`.
+/// No-op if the tab was closed before the scan completed.
+fn apply_satellites_to_detail(
     sid_app: &mut SidApp,
     tab_id: &str,
-    summaries: Vec<sid_widgets::workspace_detail::RepoSummary>,
+    rows: Vec<sid_widgets::SatelliteRow>,
 ) {
     use sid_core::layout::Layout;
     for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
@@ -3412,11 +3488,35 @@ fn apply_workspace_detail_scan(
             continue;
         }
         if let Layout::Single(w) = &mut tab.layout
-            && let Some(detail) = w
+            && let Some(d) = w
                 .as_any_mut()
                 .downcast_mut::<sid_widgets::WorkspaceDetailWidget>()
         {
-            detail.apply_scan_results(summaries);
+            d.apply_satellites(rows);
+        }
+        return;
+    }
+}
+
+/// Push one row's loaded git snapshot to the detail widget identified by `tab_id`.
+/// No-op if the tab was closed before the load completed.
+fn apply_row_git_to_detail(
+    sid_app: &mut SidApp,
+    tab_id: &str,
+    path: &std::path::Path,
+    git: sid_widgets::RepoGit,
+) {
+    use sid_core::layout::Layout;
+    for tab in sid_app.app.tabs_mut().tabs_mut().iter_mut() {
+        if tab.id.as_str() != tab_id {
+            continue;
+        }
+        if let Layout::Single(w) = &mut tab.layout
+            && let Some(d) = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::WorkspaceDetailWidget>()
+        {
+            d.apply_row_git(path, git);
         }
         return;
     }
@@ -5877,6 +5977,7 @@ mod tests {
         SidApp {
             app: build_app(start_tab, vec![]),
             store,
+            git_factory: Arc::new(Git2ProviderFactory::new()),
             session_id: "draw-test-sess".into(),
             sys_probe: None,
             sys_rx: None,
@@ -5900,6 +6001,18 @@ mod tests {
             ssh_last_pty_area: None,
             ssh_shutdown_tx: None,
         }
+    }
+
+    #[test]
+    fn scan_umbrella_satellites_finds_repos_and_marks_umbrella() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("api").join(".git")).unwrap();
+        let rows = scan_umbrella_satellites(tmp.path(), "gen4");
+        // umbrella row first, then satellites
+        assert!(rows[0].is_umbrella);
+        assert_eq!(rows[0].name, "gen4");
+        assert!(rows.iter().any(|r| r.name == "api" && !r.is_umbrella));
     }
 
     // ---- load_active_theme / load_active_keybinds ----

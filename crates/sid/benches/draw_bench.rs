@@ -29,6 +29,7 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
     SidApp {
         app: build_app(start_tab, vec![]),
         store,
+        git_factory: std::sync::Arc::new(sid_git::Git2ProviderFactory::new()),
         session_id: "bench-sess".into(),
         sys_probe: None,
         sys_rx: None,
