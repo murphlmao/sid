@@ -14,7 +14,7 @@
 //! use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
 //!
 //! let v = BehaviorTogglesView::defaults();
-//! assert_eq!(v.toggles().len(), 6);
+//! assert_eq!(v.toggles().len(), 5);
 //! assert_eq!(v.focused_index(), 0);
 //! ```
 
@@ -116,7 +116,7 @@ impl BehaviorTogglesView {
     /// ```
     /// use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
     /// let v = BehaviorTogglesView::defaults();
-    /// assert_eq!(v.toggles().len(), 6);
+    /// assert_eq!(v.toggles().len(), 5);
     /// ```
     pub fn defaults() -> Self {
         use sid_store::settings_keys::*;
@@ -130,11 +130,9 @@ impl BehaviorTogglesView {
                         selected: 1,
                     },
                 },
-                Toggle {
-                    key: AUTO_SCAN_WORKSPACES,
-                    label: "Auto-scan workspace roots on startup",
-                    value: ToggleValue::Bool(true),
-                },
+                // AUTO_SCAN_WORKSPACES removed (deprecated — the store key is
+                // retained for backward-compat but the toggle has been removed
+                // from the UI).
                 Toggle {
                     key: PERSIST_DEBOUNCE_MS,
                     label: "State persist debounce (ms)",
@@ -486,9 +484,9 @@ mod tests {
     }
 
     #[test]
-    fn defaults_has_six_toggles() {
+    fn defaults_has_five_toggles() {
         let v = BehaviorTogglesView::defaults();
-        assert_eq!(v.toggles().len(), 6);
+        assert_eq!(v.toggles().len(), 5);
     }
 
     #[test]
@@ -501,16 +499,19 @@ mod tests {
     #[test]
     fn cycle_focused_bool_flips_and_marks_dirty() {
         let mut v = BehaviorTogglesView::defaults();
-        // Index 1 is `auto_scan_workspaces: Bool(true)`.
-        v.next();
+        // Index 4 is `use_os_keyring: Bool(false)` after removal of
+        // `auto_scan_workspaces`.
+        for _ in 0..4 {
+            v.next();
+        }
         v.cycle_focused_value(1);
         match &v.focused().unwrap().value {
-            ToggleValue::Bool(b) => assert!(!*b),
+            ToggleValue::Bool(b) => assert!(*b, "use_os_keyring should now be true"),
             other => panic!("expected Bool, got {other:?}"),
         }
         assert!(
             v.dirty_keys()
-                .any(|k| *k == settings_keys::AUTO_SCAN_WORKSPACES)
+                .any(|k| *k == settings_keys::USE_OS_KEYRING)
         );
     }
 
@@ -541,8 +542,8 @@ mod tests {
     #[test]
     fn cycle_focused_u64_increments_clamped() {
         let mut v = BehaviorTogglesView::defaults();
-        // Index 2: persist_debounce_ms = 250, max = 5000, step = 10.
-        v.next();
+        // Index 1: persist_debounce_ms = 250, max = 5000, step = 10
+        // (was index 2 before auto_scan_workspaces removal).
         v.next();
         for _ in 0..1000 {
             v.cycle_focused_value(1);
@@ -557,7 +558,6 @@ mod tests {
     fn cycle_focused_u64_decrements_clamped_at_min() {
         let mut v = BehaviorTogglesView::defaults();
         v.next();
-        v.next();
         for _ in 0..1000 {
             v.cycle_focused_value(-1);
         }
@@ -571,7 +571,6 @@ mod tests {
     fn cycle_u64_with_equal_min_max_is_noop() {
         let mut v = BehaviorTogglesView::defaults();
         // Replace persist_debounce_ms with min == max.
-        v.next();
         v.next();
         if let Some(t) = v.toggles.get_mut(v.focused) {
             t.value = ToggleValue::U64 {
@@ -624,19 +623,19 @@ mod tests {
     fn flush_dirty_round_trips_to_store() {
         let (_d, store) = store();
         let mut v = BehaviorTogglesView::defaults();
-        // Toggle bool (index 1).
+        // Cycle persist_debounce_ms (index 1, U64, step=10, default=250).
         v.next();
-        v.cycle_focused_value(1);
+        v.cycle_focused_value(1); // 250 + 10 = 260
         let wrote = v.flush_dirty(&store).unwrap();
         assert_eq!(wrote, 1);
         assert_eq!(v.dirty_keys().count(), 0);
 
         let mut v2 = BehaviorTogglesView::defaults();
         v2.load_from_store(&store).unwrap();
-        // index 1 should now be `false`.
+        // index 1 should now be 260.
         match &v2.toggles()[1].value {
-            ToggleValue::Bool(b) => assert!(!*b),
-            other => panic!("expected Bool, got {other:?}"),
+            ToggleValue::U64 { value, .. } => assert_eq!(*value, 260),
+            other => panic!("expected U64, got {other:?}"),
         }
     }
 
@@ -676,7 +675,8 @@ mod tests {
             .unwrap();
         let mut v = BehaviorTogglesView::defaults();
         v.load_from_store(&store).unwrap();
-        match &v.toggles()[2].value {
+        // persist_debounce_ms is now at index 1 (auto_scan_workspaces removed).
+        match &v.toggles()[1].value {
             ToggleValue::U64 { value, max, .. } => {
                 assert_eq!(*value, *max, "expected clamped to max");
             }
@@ -687,9 +687,11 @@ mod tests {
     #[test]
     fn load_invalid_bool_returns_err() {
         let (_d, store) = store();
+        // auto_scan_workspaces is no longer in the toggle list; target
+        // use_os_keyring (still a Bool toggle) instead.
         store
             .put_setting(
-                settings_keys::AUTO_SCAN_WORKSPACES,
+                settings_keys::USE_OS_KEYRING,
                 &SettingValue(b"maybe".to_vec()),
             )
             .unwrap();

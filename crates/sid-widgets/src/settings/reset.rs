@@ -39,6 +39,10 @@ pub enum ResetOutcome {
 }
 
 /// Setting keys cleared by [`ResetView::confirm`].
+///
+/// Note: `AUTO_SCAN_WORKSPACES` is intentionally omitted — the toggle was
+/// removed from the UI (deprecated) but the store key is kept for backward
+/// compatibility. Factory reset leaves it as-is.
 pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::THEME_NAME,
     settings_keys::KEYBIND_PROFILE_NAME,
@@ -46,7 +50,6 @@ pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::PERSIST_DEBOUNCE_MS,
     settings_keys::HEARTBEAT_INTERVAL_SECS,
     settings_keys::AUTO_RESTORE_SESSION,
-    settings_keys::AUTO_SCAN_WORKSPACES,
     settings_keys::DEFAULT_TAB,
     settings_keys::SETTINGS_FOCUSED_CATEGORY,
 ];
