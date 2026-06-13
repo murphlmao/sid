@@ -68,12 +68,19 @@ fn determinism_holds_over_many_ticks() {
 
 /// After one `tick`, every star's phase has advanced by its `speed`.
 ///
-/// We snapshot phases before tick, then tick once and assert each new phase
-/// equals `old.wrapping_add(speed)`.
+/// We use Drift mode (no boost) so we can assert the exact per-speed
+/// increment. Twinkle and Cosmos modes apply a visible boost multiplier
+/// (`TWINKLE_BOOST`) on top of `speed`; that path is tested separately in
+/// `twinkle_brightness_changes_across_ticks` (unit tests).
 #[test]
 fn tick_advances_phase() {
+    use sid_core::animation::MotionStyle;
     let mut state = FxState::with_seed(SEED);
-    let cfg = default_cfg();
+    // Use Drift mode so phase advances exactly by `speed` (no boost).
+    let cfg = AnimationConfig {
+        motion: MotionStyle::Drift,
+        ..default_cfg()
+    };
     // First tick spawns stars. Capture (speed, phase) pairs immediately after.
     state.tick(AREA, &cfg);
     let snapshot: Vec<(u8, u8)> = state.stars().iter().map(|s| (s.speed, s.phase)).collect();
@@ -90,7 +97,7 @@ fn tick_advances_phase() {
         assert_eq!(
             s.phase,
             old_phase.wrapping_add(*old_speed),
-            "phase must advance by exactly `speed` per tick"
+            "phase must advance by exactly `speed` per tick in Drift mode"
         );
     }
 }

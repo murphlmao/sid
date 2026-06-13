@@ -3,12 +3,10 @@ source: crates/sid-fx/tests/starfield.rs
 expression: rendered
 ---
                                         
-            ·                           
+                                        
                                  ✦      
-            ·                           
+      *                                 
                                         
                                         
-        ·    ·                          
-                                        
-                                        
-                       ·
+        ·  ·              ·             
+                      ·
