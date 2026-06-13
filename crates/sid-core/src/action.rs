@@ -242,7 +242,7 @@ impl ActionRegistry {
             .values()
             .filter_map(|a| score_label(&q, &a.label).map(|s| (s, a)))
             .collect();
-        scored.sort_by(|x, y| y.0.cmp(&x.0));
+        scored.sort_by_key(|x| std::cmp::Reverse(x.0));
         scored.into_iter().map(|(_, a)| a).collect()
     }
 }

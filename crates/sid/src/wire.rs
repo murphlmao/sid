@@ -399,12 +399,31 @@ pub fn build_secret_store(
         .unwrap_or(false);
 
     if want_keyring {
-        let ks = sid_secrets::KeyringStore::new();
-        if probe_keyring(&ks) {
-            tracing::info!("OS keyring available — using KeyringStore");
-            return (Arc::new(ks), true);
-        } else {
-            tracing::warn!("OS keyring requested but probe failed — falling back to PlainStore");
+        // keyring v4 selects the backend at runtime: register the platform
+        // store before any op, and refuse a non-durable (mock/in-memory) store
+        // so secrets can never be silently lost to an ephemeral keystore.
+        match sid_secrets::install_default_backend() {
+            Ok(()) if sid_secrets::default_backend_is_durable() => {
+                let ks = sid_secrets::KeyringStore::new();
+                if probe_keyring(&ks) {
+                    tracing::info!("OS keyring available — using KeyringStore");
+                    return (Arc::new(ks), true);
+                }
+                tracing::warn!(
+                    "OS keyring requested but probe failed — falling back to PlainStore"
+                );
+            }
+            Ok(()) => {
+                tracing::warn!(
+                    "OS keyring backend is ephemeral (in-memory) — refusing to avoid \
+                     silent secret loss; falling back to PlainStore"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "OS keyring backend registration failed ({e}) — falling back to PlainStore"
+                );
+            }
         }
     }
 
@@ -8331,6 +8350,72 @@ mod tests {
     fn show_add_new_row_defaults_true_when_unset() {
         let (_d, store) = fresh_store();
         assert!(load_show_add_new_row(&store));
+    }
+
+    /// A store whose `get_setting` always errors. Only that method is
+    /// reachable from `load_show_add_new_row`; everything else is
+    /// `unimplemented!()` so an unexpected call fails the test loudly.
+    struct FailingGetSettingStore;
+
+    #[rustfmt::skip]
+    impl Store for FailingGetSettingStore {
+        fn get_setting(&self, _: &str) -> Result<Option<sid_store::SettingValue>, sid_core::SidError> {
+            Err(sid_core::SidError::Storage("injected get_setting failure".into()))
+        }
+        fn put_setting(&self, _: &str, _: &sid_store::SettingValue) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_setting_keys(&self) -> Result<Vec<String>, sid_core::SidError> { unimplemented!() }
+        fn delete_setting(&self, _: &str) -> Result<bool, sid_core::SidError> { unimplemented!() }
+        fn current_session(&self) -> Result<Option<sid_store::SessionRecord>, sid_core::SidError> { unimplemented!() }
+        fn upsert_session(&self, _: &sid_store::SessionRecord) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn end_session(&self, _: &str, _: sid_store::Epoch) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_sessions(&self) -> Result<Vec<sid_store::SessionRecord>, sid_core::SidError> { unimplemented!() }
+        fn save_widget_state(&self, _: &sid_store::WidgetState) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn load_widget_state(&self, _: &sid_core::TabId, _: &sid_core::WidgetId) -> Result<Option<Vec<u8>>, sid_core::SidError> { unimplemented!() }
+        fn list_workspaces(&self) -> Result<Vec<Workspace>, sid_core::SidError> { unimplemented!() }
+        fn upsert_workspace(&self, _: &Workspace) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn get_workspace(&self, _: &Path) -> Result<Option<Workspace>, sid_core::SidError> { unimplemented!() }
+        fn remove_workspace(&self, _: &Path) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn secret_put(&self, _: &str, _: &[u8]) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn secret_get(&self, _: &str) -> Result<Option<Vec<u8>>, sid_core::SidError> { unimplemented!() }
+        fn secret_delete(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_secret_ids(&self) -> Result<Vec<String>, sid_core::SidError> { unimplemented!() }
+        fn list_themes(&self) -> Result<Vec<sid_store::ThemeSpec>, sid_core::SidError> { unimplemented!() }
+        fn get_theme(&self, _: &str) -> Result<Option<sid_store::ThemeSpec>, sid_core::SidError> { unimplemented!() }
+        fn upsert_theme(&self, _: &sid_store::ThemeSpec) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn remove_theme(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_keybind_profiles(&self) -> Result<Vec<sid_store::KeybindProfile>, sid_core::SidError> { unimplemented!() }
+        fn get_keybind_profile(&self, _: &str) -> Result<Option<sid_store::KeybindProfile>, sid_core::SidError> { unimplemented!() }
+        fn upsert_keybind_profile(&self, _: &sid_store::KeybindProfile) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn remove_keybind_profile(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_quick_actions(&self) -> Result<Vec<sid_store::QuickAction>, sid_core::SidError> { unimplemented!() }
+        fn get_quick_action(&self, _: &str) -> Result<Option<sid_store::QuickAction>, sid_core::SidError> { unimplemented!() }
+        fn upsert_quick_action(&self, _: &sid_store::QuickAction) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn remove_quick_action(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_pinned_configs(&self) -> Result<Vec<sid_store::PinnedConfig>, sid_core::SidError> { unimplemented!() }
+        fn upsert_pinned_config(&self, _: &sid_store::PinnedConfig) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn get_pinned_config(&self, _: &Path) -> Result<Option<sid_store::PinnedConfig>, sid_core::SidError> { unimplemented!() }
+        fn remove_pinned_config(&self, _: &Path) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn list_db_connections(&self) -> Result<Vec<sid_store::DbConnection>, sid_core::SidError> { unimplemented!() }
+        fn upsert_db_connection(&self, _: &sid_store::DbConnection) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn get_db_connection(&self, _: &str) -> Result<Option<sid_store::DbConnection>, sid_core::SidError> { unimplemented!() }
+        fn remove_db_connection(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn append_query_record(&self, _: &sid_store::QueryRecord) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn recent_queries(&self, _: &str, _: usize) -> Result<Vec<sid_store::QueryRecord>, sid_core::SidError> { unimplemented!() }
+        fn list_ssh_hosts(&self) -> Result<Vec<sid_store::SshHost>, sid_core::SidError> { unimplemented!() }
+        fn upsert_ssh_host(&self, _: &sid_store::SshHost) -> Result<(), sid_core::SidError> { unimplemented!() }
+        fn get_ssh_host(&self, _: &str) -> Result<Option<sid_store::SshHost>, sid_core::SidError> { unimplemented!() }
+        fn remove_ssh_host(&self, _: &str) -> Result<(), sid_core::SidError> { unimplemented!() }
+    }
+
+    /// Deferred from the branch-0 review: a store ERROR (not just an unset
+    /// key) must also fall back to showing the row — the Err and unset arms
+    /// deliberately converge on default-true, and this pins the Err arm.
+    #[test]
+    fn show_add_new_row_defaults_true_on_store_error() {
+        assert!(
+            load_show_add_new_row(&FailingGetSettingStore),
+            "a store read error must fall back to the default (row shown)"
+        );
     }
 
     #[test]

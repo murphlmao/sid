@@ -1,15 +1,24 @@
 [graph]
 targets = []
 
+# cargo-deny 0.19 schema (the 0.14-era keys vulnerability/notice/unlicensed
+# were removed; vulnerabilities and yanked crates are denied by default).
 [advisories]
 db-path = "~/.cargo/advisory-db"
-vulnerability = "deny"
-unmaintained = "warn"
+unmaintained = "workspace"
 yanked = "deny"
-notice = "warn"
+ignore = [
+  # RUSTSEC-2023-0071 — "Marvin Attack" timing side-channel in the `rsa` crate.
+  # There is NO fixed release upstream: `rsa` is pinned at 0.10.0-rc.x and has
+  # not shipped a constant-time fix. It enters transitively via russh/ssh-key
+  # for RSA SSH public-key auth. sid is an SSH *client*; the attack requires
+  # timing measurements over many attacker-chosen ciphertexts against a victim
+  # private key, which the client public-key signing path does not expose.
+  # Revisit when `rsa` ships a patched release (RustCrypto/RSA#19).
+  { id = "RUSTSEC-2023-0071", reason = "no upstream fix; transitive via russh RSA auth; not exploitable on the SSH-client signing path" },
+]
 
 [licenses]
-unlicensed = "deny"
 allow = [
   "MIT",
   "Apache-2.0",
@@ -28,7 +37,10 @@ exceptions = []
 
 [bans]
 multiple-versions = "warn"
+# Deny crates.io wildcard deps, but allow `version = "*"` for internal workspace
+# path dependencies (the sid-* crates reference each other this way).
 wildcards = "deny"
+allow-wildcard-paths = true
 deny = []
 
 [sources]

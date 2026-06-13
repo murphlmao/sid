@@ -810,7 +810,7 @@ async fn handle_net_cmd(op: NetOp) -> Result<()> {
                         .partial_cmp(&a.cpu_pct)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 }),
-                "rss" => procs.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes)),
+                "rss" => procs.sort_by_key(|p| std::cmp::Reverse(p.rss_bytes)),
                 "name" => procs.sort_by(|a, b| a.name.cmp(&b.name)),
                 _ => procs.sort_by_key(|p| p.pid.as_u32()),
             }

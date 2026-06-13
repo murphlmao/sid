@@ -25,6 +25,10 @@ rust-version = "1.85"
 license = "GPL-3.0-only"
 repository = "https://github.com/murphlmao/sid"
 authors = ["Murphy Malcolm"]
+# Internal workspace: the `sid` binary is the product; all crates use versionless
+# path deps and are never published to crates.io. publish=false makes this intent
+# explicit (and lets cargo-deny's allow-wildcard-paths exempt the path deps).
+publish = false
 
 [workspace.dependencies]
 # Internal
@@ -73,13 +77,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 
 # Git
-git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 walkdir = "2"
 
-# SSH
-russh = "0.50"
-russh-sftp = "2.0"
-russh-keys = "0.46"
+# SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
+# is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154
+# (CryptoVec allocation hardening). russh-sftp is version-independent of russh.
+russh = "0.61"
+russh-sftp = "2.3"
 
 # PTY
 portable-pty = "0.9"
@@ -87,27 +92,42 @@ vt100 = "0.16"
 
 # Database clients
 tokio-postgres = "0.7"
-rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 csv = "1.3"
 async-trait = "0.1"
 
 # System / network
-sysinfo = { version = "0.32", default-features = false, features = ["system", "network", "disk", "user"] }
-netstat2 = "0.10"
+sysinfo = { version = "0.39", default-features = false, features = ["system", "network", "disk", "user"] }
+netstat2 = "0.11"
 nix = { version = "0.29", features = ["signal", "process"] }
 
 # Paths
-directories = "5"
+directories = "6"
 
 # Keyring / OS secret service.
-# CRITICAL: the `features` below are what select a REAL platform keystore.
-# keyring v3 ships NO backend by default — with no features it resolves to
-# `pub use mock as default`, a process-local in-memory store. That would make
-# set→get via a fresh `Entry` always read `None`, fail the startup probe, and
-# silently fall every user back to the plaintext store forever (data-loss risk).
-# `sync-secret-service` = Linux Secret Service (libdbus, sync); `apple-native`
-# = macOS Keychain. These are sid's supported platforms. Do NOT drop them.
-keyring = { version = "3", features = ["sync-secret-service", "apple-native"] }
+# Secrets — keyring v4 split the library into `keyring-core` (the API) plus
+# per-platform backend STORE crates that are registered at RUNTIME (the v3
+# compile-time `features` model is gone). The `keyring` crate itself is now
+# only sample/CLI code — we depend on `keyring-core` directly. CRITICAL: a
+# backend store MUST be registered at startup (sid_secrets::install_default_backend)
+# or keyring-core has no default store and every secret op fails — the runtime
+# equivalent of the v3 mock-backend data-loss trap. Backend store crates are
+# declared per-target in crates/sid-secrets/Cargo.toml:
+#   Linux  → zbus-secret-service-keyring-store (pure-Rust zbus, no libdbus C dep)
+#   macOS  → apple-native-keyring-store (Keychain)
+keyring-core = "1"
+# LOAD-BEARING FEATURES (same class of trap as keyring v3's mock backend):
+# both store crates ship NO default features and fail to build without an
+# explicit selection.
+#   zbus: `rt-async-io-crypto-rust` picks the async-io runtime + pure-Rust
+#   crypto. async-io (NOT tokio) is deliberate: sid calls the sync keyring API
+#   from inside its tokio runtime at startup, and a tokio-based blocking
+#   wrapper would panic "runtime within a runtime"; async-io block_on is
+#   runtime-independent. crypto-rust avoids an OpenSSL C dependency.
+#   apple: `keychain` = the legacy login keychain (available to unsandboxed
+#   apps); `protected` would require sandbox entitlements sid does not have.
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 # System / subprocess utilities
 which = "7"

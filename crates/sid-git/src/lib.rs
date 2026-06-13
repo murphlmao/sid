@@ -226,7 +226,7 @@ impl GitProvider for Git2Provider {
             let c = self.repo.find_commit(oid).map_err(map_git2_error)?;
             out.push(CommitInfo {
                 oid: oid.to_string(),
-                summary: c.summary().unwrap_or("").to_string(),
+                summary: c.summary().ok().flatten().unwrap_or("").to_string(),
                 author_name: c.author().name().unwrap_or("").to_string(),
                 author_email: c.author().email().unwrap_or("").to_string(),
                 timestamp_secs: c.time().seconds(),
@@ -324,7 +324,7 @@ impl GitProvider for Git2Provider {
         let refname = branch
             .get()
             .name()
-            .ok_or_else(|| GitError::InvalidRef(name.to_string()))?
+            .map_err(|_| GitError::InvalidRef(name.to_string()))?
             .to_string();
         let obj = self
             .repo

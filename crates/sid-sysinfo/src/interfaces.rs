@@ -8,7 +8,7 @@ pub(crate) fn list_interfaces(_sys: &mut sysinfo::System) -> Result<Vec<NetInter
     let mut nets = Networks::new_with_refreshed_list();
     // A second refresh allows rx/tx delta-since-baseline; the absolute
     // counters we report are sysinfo's "total_received" / "total_transmitted".
-    nets.refresh();
+    nets.refresh(true);
 
     let mut out = Vec::with_capacity(nets.len());
     for (name, data) in nets.iter() {

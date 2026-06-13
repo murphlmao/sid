@@ -6,8 +6,11 @@
 //! no encryption at rest; that responsibility is left to the operating
 //! system's file permissions on the redb file.
 //!
-//! Future impls (libsecret on Linux, Keychain on macOS) will live alongside
-//! `PlainStore` in this crate and follow the same trait surface.
+//! [`KeyringStore`] is the OS-keyring-backed impl (keyring v4 / keyring-core):
+//! call [`install_default_backend`] once at startup to register the platform
+//! store (zbus Secret Service on Linux, legacy Keychain on macOS), then use
+//! [`default_backend_is_durable`] to confirm a real (non-ephemeral) store was
+//! registered before trusting the keyring with secrets.
 
 use std::sync::Arc;
 
@@ -18,7 +21,7 @@ use sid_store::Store;
 pub mod keyring_store;
 pub mod migration;
 
-pub use keyring_store::KeyringStore;
+pub use keyring_store::{KeyringStore, default_backend_is_durable, install_default_backend};
 
 /// File-backed [`SecretStore`] using the `secrets` table of a `sid-store`
 /// [`Store`].

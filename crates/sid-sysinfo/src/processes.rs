@@ -7,8 +7,8 @@ use sysinfo::{ProcessRefreshKind, RefreshKind, UpdateKind};
 pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInfo>, SysError> {
     // Refresh only what we need: process list + CPU + memory + command-line + user.
     sys.refresh_specifics(
-        RefreshKind::new().with_processes(
-            ProcessRefreshKind::new()
+        RefreshKind::nothing().with_processes(
+            ProcessRefreshKind::nothing()
                 .with_cpu()
                 .with_memory()
                 .with_user(UpdateKind::Always)

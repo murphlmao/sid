@@ -81,7 +81,16 @@ async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<()
     if identities.is_empty() {
         return Err(SshError::AuthFailed("agent has no identities".into()));
     }
-    for pubkey in identities {
+    for identity in identities {
+        // russh 0.61 distinguishes plain agent public keys from OpenSSH
+        // certificates (`AgentIdentity`); extract the underlying public key so
+        // certificate-backed agent identities still authenticate.
+        let pubkey = match identity {
+            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => key,
+            russh::keys::agent::AgentIdentity::Certificate { certificate, .. } => {
+                russh::keys::PublicKey::from(certificate.public_key().clone())
+            }
+        };
         let result = handle
             .authenticate_publickey_with(
                 user,

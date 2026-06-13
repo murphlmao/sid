@@ -1,13 +1,16 @@
 //! OS keyring-backed [`SecretStore`] implementation.
 //!
-//! `KeyringStore` maps every [`SecretId`] to a `keyring::Entry` under the
-//! service name `"sid"`. The concrete keystore is selected at compile time by
-//! the `keyring` crate's Cargo features (see the workspace `Cargo.toml`): on
-//! Linux the `sync-secret-service` feature talks to the Secret Service D-Bus
-//! API, and on macOS the `apple-native` feature talks to the Keychain. With
-//! NO keyring features the crate silently compiles its in-memory `mock`
-//! backend — values written through one `Entry` are unreadable through a
-//! fresh one — so those features are load-bearing, not optional.
+//! `KeyringStore` maps every [`SecretId`] to a `keyring_core::Entry` under the
+//! service name `"sid"`. keyring v4 selects the concrete keystore at RUNTIME
+//! (the v3 compile-time-feature model is gone): a backend store must be
+//! registered with keyring-core via [`install_default_backend`] before any
+//! operation. sid registers the pure-Rust zbus Secret Service store on Linux
+//! and the legacy Keychain store on macOS (see the per-target deps in this
+//! crate's `Cargo.toml`). If no store is registered, every keyring op fails
+//! loudly and the binary falls back to the (logged) plaintext `PlainStore` —
+//! there is no silent in-memory fallback. The one residual data-loss trap —
+//! registering an ephemeral (`ProcessOnly`) store such as the mock — is
+//! rejected by [`default_backend_is_durable`].
 //!
 //! `KeyringStore` is generic over `B: KeyringBackend` so tests can inject a
 //! fake (`FakeKeyring`) without touching the real OS keyring daemon. Use
@@ -27,6 +30,82 @@ use sid_core::adapters::secrets::{SecretError, SecretId, SecretStore};
 const SERVICE: &str = "sid";
 
 // ---------------------------------------------------------------------------
+// Runtime backend registration (keyring v4)
+// ---------------------------------------------------------------------------
+
+/// Register the platform OS keyring as keyring-core's process-global default
+/// credential store.
+///
+/// keyring v4 selects the backend at runtime, so this MUST be called once at
+/// startup before any [`KeyringStore`] operation. On Linux it registers the
+/// pure-Rust zbus Secret Service store; on macOS the legacy Keychain store.
+/// Returns `Err` if the platform store cannot be constructed (e.g. no Secret
+/// Service daemon is reachable) or the platform is unsupported — the binary
+/// treats that as "keyring unavailable" and falls back to the plaintext store.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Call once at startup, before constructing a KeyringStore.
+/// sid_secrets::install_default_backend().expect("register OS keyring backend");
+/// ```
+#[cfg(target_os = "linux")]
+pub fn install_default_backend() -> Result<(), String> {
+    let store = zbus_secret_service_keyring_store::Store::new().map_err(|e| e.to_string())?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// macOS: register the legacy Keychain store (available to unsandboxed apps).
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub fn install_default_backend() -> Result<(), String> {
+    let store = apple_native_keyring_store::keychain::Store::new().map_err(|e| e.to_string())?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// Unsupported platform: no OS keyring backend is compiled in.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+pub fn install_default_backend() -> Result<(), String> {
+    Err("no OS keyring backend is compiled for this platform".into())
+}
+
+/// Pure decision: does this persistence class survive a process restart?
+///
+/// `ProcessOnly` (the in-memory mock) and `EntryOnly` storage evaporate when
+/// the process exits, so a store reporting either would silently lose every
+/// secret — the keyring-v4 analogue of the v3 mock-backend trap. Everything
+/// else (the real Secret Service / Keychain backends report `UntilDelete`)
+/// persists across restarts and is acceptable.
+fn persistence_is_durable(p: keyring_core::CredentialPersistence) -> bool {
+    use keyring_core::CredentialPersistence::*;
+    !matches!(p, ProcessOnly | EntryOnly)
+}
+
+/// True if the currently-registered default store persists across a process
+/// restart (i.e. is a real OS keystore, not the in-memory mock).
+///
+/// The binary calls this after [`install_default_backend`] and refuses to use
+/// the keyring — falling back to the logged plaintext store — when it returns
+/// false, so an accidentally-registered ephemeral store can never silently
+/// swallow secrets. Returns `false` when no store is registered.
+///
+/// # Examples
+///
+/// ```no_run
+/// sid_secrets::install_default_backend().ok();
+/// if sid_secrets::default_backend_is_durable() {
+///     // safe to use the OS keyring
+/// }
+/// ```
+pub fn default_backend_is_durable() -> bool {
+    match keyring_core::get_default_store() {
+        Some(store) => persistence_is_durable(store.persistence()),
+        None => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend abstraction (enables injection of fake in tests)
 // ---------------------------------------------------------------------------
 
@@ -35,7 +114,7 @@ const SERVICE: &str = "sid";
 ///
 /// The contract is byte-level: implementations store and return raw `&[u8]`
 /// values verbatim, with no encoding layer. The production
-/// [`OsKeyringBackend`] satisfies this directly via keyring v3's byte-native
+/// [`OsKeyringBackend`] satisfies this directly via keyring-core's byte-native
 /// `set_secret`/`get_secret` API.
 pub trait KeyringBackend: Send + Sync {
     /// Store `secret` under `key`. Returns `Err(String)` on failure.
@@ -53,34 +132,35 @@ pub trait KeyringBackend: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// OsKeyringBackend — production path using `keyring` crate
+// OsKeyringBackend — production path using keyring-core
 // ---------------------------------------------------------------------------
 
-/// Production backend that delegates to the OS keyring via the `keyring` crate.
+/// Production backend that delegates to the OS keyring via keyring-core's
+/// runtime-registered default store (see [`install_default_backend`]).
 pub struct OsKeyringBackend;
 
 impl KeyringBackend for OsKeyringBackend {
     fn set(&self, key: &str, secret: &[u8]) -> Result<(), String> {
-        // keyring v3 is byte-native: store the raw bytes verbatim, no encoding.
-        let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+        // keyring-core is byte-native: store the raw bytes verbatim, no encoding.
+        let entry = keyring_core::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
         entry.set_secret(secret).map_err(|e| e.to_string())
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+        let entry = keyring_core::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
         match entry.get_secret() {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
     }
 
     fn delete(&self, key: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
+        let entry = keyring_core::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             // Deleting a non-existent entry is fine
-            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -272,44 +352,67 @@ mod tests {
         assert!(matches!(store.list_ids(), Err(SecretError::Storage(_))));
     }
 
-    /// Always-on regression guard for Fix C1 (the mock-backend near-miss).
+    /// Always-on regression guard for the keyring-v4 analogue of Fix C1.
     ///
-    /// keyring v3 compiles NO platform keystore by default; with no Cargo
-    /// features it resolves `keyring::default` to `pub use mock as default`,
-    /// a process-local in-memory store. If the `sync-secret-service` /
-    /// `apple-native` features were ever dropped from the workspace
-    /// `Cargo.toml`, this test fails at the next `cargo test` — long before a
-    /// user silently loses every secret to the plaintext fallback.
-    ///
-    /// keyring exposes the resolution at runtime: `keyring::default` is a
-    /// re-export of whichever backend module the active features selected, and
-    /// its `default_credential_builder()` returns a `MockCredentialBuilder`
-    /// only when the mock was chosen. We downcast and assert it is NOT the
-    /// mock, which is exactly the feasible runtime detection the fix called for.
+    /// keyring v4 selects the backend at runtime, so there is no longer a
+    /// compile-time "mock vs real" module to downcast. The residual data-loss
+    /// trap is registering an EPHEMERAL store (`ProcessOnly`, like the
+    /// in-memory mock, or `EntryOnly`) whose secrets evaporate at process exit.
+    /// [`default_backend_is_durable`] guards production against that by reading
+    /// the registered store's `persistence()`. This locks the decision logic:
+    /// every ephemeral persistence class is rejected and every durable one is
+    /// accepted, so the guard cannot silently start treating the mock as real.
+    /// Pure and parallel-safe — it touches no process-global state.
     #[test]
-    fn compiled_keyring_default_is_not_the_mock_backend() {
-        let builder = keyring::default::default_credential_builder();
-        let is_mock = builder
-            .as_any()
-            .downcast_ref::<keyring::mock::MockCredentialBuilder>()
-            .is_some();
+    fn ephemeral_persistence_classes_are_rejected_as_non_durable() {
+        use keyring_core::CredentialPersistence::*;
+        // Ephemeral: do not survive a process restart → must be rejected.
         assert!(
-            !is_mock,
-            "keyring compiled to its in-memory MOCK backend — the real \
-             platform keystore features (sync-secret-service / apple-native) \
-             are missing from the workspace Cargo.toml. Every secret would be \
-             written to a process-local store, fail the startup probe, and \
-             fall back to plaintext. Restore the keyring features."
+            !persistence_is_durable(ProcessOnly),
+            "ProcessOnly (the mock)"
+        );
+        assert!(!persistence_is_durable(EntryOnly), "EntryOnly");
+        // Durable enough to survive a process restart → accepted.
+        assert!(persistence_is_durable(UntilDelete), "UntilDelete (disk)");
+        assert!(
+            persistence_is_durable(UntilReboot),
+            "UntilReboot (keyutils)"
+        );
+        assert!(persistence_is_durable(UntilLogout), "UntilLogout");
+    }
+
+    /// Always-on guard that the in-memory mock self-reports as ephemeral.
+    ///
+    /// Pairs with [`ephemeral_persistence_classes_are_rejected_as_non_durable`]:
+    /// that test proves `ProcessOnly` is rejected; this proves the canonical
+    /// ephemeral store (keyring-core's mock) actually reports `ProcessOnly`.
+    /// Together they prove a mock backend can never pass the durability gate.
+    /// Constructs the mock directly (no `set_default_store`) so it stays
+    /// parallel-safe and needs no daemon.
+    #[test]
+    fn mock_store_self_reports_ephemeral() {
+        // Coerce to the trait-object store type used in production so the
+        // `persistence()` method resolves without importing the trait.
+        let mock: std::sync::Arc<keyring_core::CredentialStore> =
+            keyring_core::mock::Store::new().expect("mock store builds");
+        assert!(
+            !persistence_is_durable(mock.persistence()),
+            "keyring-core mock must report an ephemeral persistence class so \
+             default_backend_is_durable() rejects it"
         );
     }
 
     /// Opt-in round-trip against the REAL OS keyring daemon (Fix C1).
     ///
-    /// Off by default: CI and headless boxes have no Secret Service / Keychain.
-    /// Run locally where a daemon exists:
+    /// Compiled behind `--features os-keyring-smoke`, but `--all-features`
+    /// (CI, `/sid-gate --full`) compiles it on boxes with no Secret Service /
+    /// Keychain daemon too. A missing daemon is missing INFRASTRUCTURE, not a
+    /// bug: the test warns loudly and returns early in that case, asserting
+    /// only where a daemon exists. Set `SID_OS_KEYRING_SMOKE=1` to make a
+    /// missing daemon a hard failure (explicit operator runs):
     ///
     /// ```text
-    /// cargo test -p sid-secrets --features os-keyring-smoke
+    /// SID_OS_KEYRING_SMOKE=1 cargo test -p sid-secrets --features os-keyring-smoke
     /// ```
     ///
     /// Crucially this performs put → get through TWO SEPARATE `Entry`
@@ -325,11 +428,43 @@ mod tests {
         let id = SecretId::new(key);
         let payload = b"smoke-test-secret-\x00\xff-bytes";
 
+        let strict = std::env::var_os("SID_OS_KEYRING_SMOKE").is_some();
+
+        // keyring v4 selects the backend at runtime: the platform store must be
+        // registered before any op. A missing Secret Service / Keychain daemon
+        // surfaces here as a registration error.
+        if let Err(e) = install_default_backend() {
+            assert!(
+                !strict,
+                "install_default_backend should succeed (SID_OS_KEYRING_SMOKE is set): {e}"
+            );
+            eprintln!(
+                "WARNING: os_keyring_real_daemon_round_trip skipped — OS keyring \
+                 backend registration failed ({e}). Set SID_OS_KEYRING_SMOKE=1 to \
+                 make this a hard failure."
+            );
+            return;
+        }
+        assert!(
+            default_backend_is_durable(),
+            "a real OS keyring daemon must register a durable (non-mock) store, \
+             not an ephemeral ProcessOnly/EntryOnly one"
+        );
+
         // Write through one backend instance.
         let writer = KeyringStore::new();
-        writer
-            .put(&id, payload)
-            .expect("put to real OS keyring should succeed");
+        if let Err(e) = writer.put(&id, payload) {
+            assert!(
+                !strict,
+                "put to real OS keyring should succeed (SID_OS_KEYRING_SMOKE is set): {e}"
+            );
+            eprintln!(
+                "WARNING: os_keyring_real_daemon_round_trip skipped — no usable \
+                 OS keyring daemon on this box ({e}). Set SID_OS_KEYRING_SMOKE=1 \
+                 to make this a hard failure."
+            );
+            return;
+        }
 
         // Read through a SEPARATE backend / Entry construction. This is what
         // proves we hit a persistent OS keystore and not a per-Entry mock.

@@ -70,13 +70,11 @@ For example, the **Workspaces** tab in v2 could contain `[git-branches | git-sta
 
 ---
 
-### Keyring integration for secrets
+### ~~Keyring integration for secrets~~ — **shipped in UX-v2** (2026-06-12, branch #11)
+
+**Status:** `sid-secrets` now ships `KeyringStore` on keyring v4 / `keyring-core` (backends registered at runtime by `install_default_backend`: the pure-Rust zbus Secret Service store on Linux, the legacy Keychain on macOS), a startup liveness probe with plaintext fallback + warning toast, a `default_backend_is_durable` guard that refuses an ephemeral/mock store, the `use_os_keyring` behavior toggle, and an idempotent redb→keyring migration sweep that runs on every keyring-active startup (divergence resolved source-wins, loudly). Windows Credential Manager remains future work (the `windows-native-keyring-store` crate exists for it). _Migrated v3→v4 during the 2026-06-13 dependency-modernization pass._
 
 **What it does.** DB connection passwords, SSH keys (if non-default), and other secrets stored in OS keyring (secret-service on Linux, Keychain on macOS, Credential Manager on Windows) instead of as plaintext in the DB.
-
-**Why deferred.** User explicitly said it's fine to use plaintext-in-DB for v1; keyring integration adds OS-specific complexity and dependency surface.
-
-**v1 hook.** `SecretStore` trait already abstracts secret access. v1 has a `PlainSecretStore` impl that reads from the redb `secrets` table. v2 adds a `KeyringStore` impl with the same interface, plus a one-time migration tool to move existing secrets.
 
 ---
 
@@ -235,7 +233,9 @@ These items came up during the [TUI UX interaction overhaul spec](2026-05-22-tui
 
 ---
 
-### Kitty-protocol auto-enable on startup
+### ~~Kitty-protocol auto-enable on startup~~ — **shipped in UX-v2** (2026-06-12, branch #6 substrate)
+
+**Status:** `main.rs` pushes `DISAMBIGUATE_ESCAPE_CODES` at startup (silently ignored by legacy terminals) and pops it on exit. Known gap: the flags are not popped on panic — no panic hook exists, consistent with raw-mode handling; a panic-hook teardown is a recorded follow-up in the UX-v2 master plan.
 
 **What it does.** sid emits `CSI > 1 u` at startup to ask the terminal to deliver enhanced key chords. Terminals that support the protocol (kitty, ghostty, wezterm, foot, recent xterm/modifyOtherKeys=2) start sending `Ctrl+1`, `Ctrl+,`, etc. as distinct chords.
 
@@ -255,7 +255,9 @@ These items came up during the [TUI UX interaction overhaul spec](2026-05-22-tui
 
 ---
 
-### Settings live-apply — remaining sub-views
+### ~~Settings live-apply — remaining sub-views~~ — **shipped in UX-v2** (2026-06-12, branch #12)
+
+**Status:** All sub-views (WorkspaceRoots, KeybindEditor, QuickActions, DbPath, Reset, Theme, plus AnimationView from branch #13) emit `PendingSettingsOutcome` variants drained by `apply_pending_settings_outcomes`, persisting through the unified `persist_outcome` helper.
 
 **What it does.** WorkspaceRoots, KeybindEditor, QuickActions, DbPath, and Reset each grow their own `Outcome` enum and emit it the same way `BehaviorToggles` does. Wire layer dispatches each to the matching `Store::put_*`.
 
@@ -265,7 +267,9 @@ These items came up during the [TUI UX interaction overhaul spec](2026-05-22-tui
 
 ---
 
-### Settings undo ring + `u` chord
+### ~~Settings undo ring + `u` chord~~ — **shipped in UX-v2** (2026-06-12, branch #12)
+
+**Status:** `SidApp.undo_ring` (`VecDeque<UndoEntry>`, TTL-guarded) + the `u`-chord interceptor in `route_key_event`, gated exactly as specced: `u` fires only while the head toast is live and carries the `(u: undo)` marker. Undo entries are pushed only when a meaningful prior exists; non-revertable changes (factory reset, DB path) record nothing.
 
 **What it does.** Per-session ring buffer (capacity 10, 30-second TTL per entry) of recently-applied setting changes. Each success toast carries `(u: undo)` text; pressing `u` while the head toast is live re-applies the prior value.
 

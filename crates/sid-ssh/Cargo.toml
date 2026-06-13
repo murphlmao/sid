@@ -5,12 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 sid-core.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
-russh-keys.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

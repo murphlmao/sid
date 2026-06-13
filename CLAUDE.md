@@ -108,6 +108,34 @@ Tools:
   - Confirm `cargo test --all-features --workspace` still passes.
   - Check `cargo deny check` does not regress.
   - Confirm the new dep does not contradict the adapter pattern (no external crate names leak into `sid-core` or `sid-widgets`).
+  - **Verify what the default features actually select.** Some crates are
+    feature-SELECTED, not feature-ENRICHED, and the trap recurs in new forms
+    across major versions:
+    - keyring **v3** with no features silently compiled a process-local
+      in-memory mock instead of any real OS keystore (UX-v2 near-miss — every
+      secret would have landed in a store that evaporates at process exit).
+    - keyring **v4** moved backend selection to RUNTIME (`keyring-core` +
+      per-platform store crates registered via `install_default_backend`), and
+      the trap mutated: the transitive `secret-service` crate has a
+      mandatory-but-unselected async-runtime feature, and the *wrong* choice
+      (`rt-tokio-*`) compiles fine but panics "runtime within a runtime" when
+      the sync keyring API is called from inside sid's tokio runtime. We pin
+      `rt-async-io-crypto-rust` (runtime-independent, pure-Rust crypto, no C
+      deps) on Linux and `keychain` on macOS — see the comments in the
+      workspace `Cargo.toml` and `crates/sid-secrets/Cargo.toml`.
+    If a dep's backend/TLS/allocator/runtime is chosen by features, pin the
+    features explicitly with a comment saying why they are load-bearing, and
+    add an always-on test asserting the real selection. For keyring v4 that is
+    `ephemeral_persistence_classes_are_rejected_as_non_durable` +
+    `mock_store_self_reports_ephemeral` in `sid-secrets` (the store's
+    self-reported `persistence()` must not be `ProcessOnly`/`EntryOnly`), and
+    the binary refuses a non-durable store via `default_backend_is_durable`.
+  - For deps that talk to environment-specific infrastructure (OS keyrings,
+    system daemons, display servers): add a feature-gated smoke test against
+    the real thing — never `#[ignore]`d. Because CI runs `--all-features`,
+    the test must probe for the infrastructure and warn-and-return when it is
+    absent, with an env-var strict mode for explicit operator runs (see
+    `os_keyring_real_daemon_round_trip` + `SID_OS_KEYRING_SMOKE`).
 - When finishing a task, report to the user **what was tested**, including adversarial cases. Bullet list. No fluff.
 
 ---
