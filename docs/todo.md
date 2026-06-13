@@ -1,0 +1,4 @@
+- ability to zip and unzip directories. we need a new filesystem view for this, i think.
+- ability to configure what tabs are visible via the config
+- claude config config, memory, settings import/export, etc manager
+- backup systems, dotfiles repo integration and maintenance
