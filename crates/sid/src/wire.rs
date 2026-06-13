@@ -1727,6 +1727,23 @@ pub fn startup_discover(store: &dyn Store, roots: &[PathBuf]) -> anyhow::Result<
     Ok(total)
 }
 
+/// Derive the event-pump tick interval (milliseconds) from an animation FPS.
+///
+/// Clamps `fps` to `1..=30` — the valid [`sid_core::animation::AnimationConfig`]
+/// range — so a corrupt or zero value can never divide by zero or spin the
+/// pump faster than 30 Hz.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(sid::wire::fps_to_tick_ms(8), 125);
+/// assert_eq!(sid::wire::fps_to_tick_ms(0), 1000); // clamped up to 1 fps
+/// assert_eq!(sid::wire::fps_to_tick_ms(255), 33); // clamped down to 30 fps
+/// ```
+pub fn fps_to_tick_ms(fps: u8) -> u64 {
+    1000 / u64::from(fps.clamp(1, 30))
+}
+
 /// Run the main render + event loop until the app requests to quit.
 ///
 /// Draws each frame, waits for the next event, dispatches it through the
@@ -1840,29 +1857,39 @@ where
         // Sweep expired toasts so they fade out on the next render.
         sid_app.toasts.drain_expired();
 
-        // Advance starfield phase on each frame before drawing.
-        if let Some(fx) = sid_app.fx_state.as_mut() {
-            let area = terminal
-                .size()
-                .map(|s| Rect {
-                    x: 0,
-                    y: 0,
-                    width: s.width,
-                    height: s.height,
-                })
-                .unwrap_or(Rect {
-                    x: 0,
-                    y: 0,
-                    width: 80,
-                    height: 24,
-                });
-            fx.tick(area, &sid_app.animation);
-        }
         terminal.draw(|f| draw(f, sid_app))?;
         let ev = match rx.recv().await {
             Some(e) => e,
             None => break,
         };
+
+        // Advance starfield phase on timer ticks only — not on key/mouse events.
+        // This ensures the visual twinkle rate matches `animation.fps` (the pump
+        // interval is set from fps in main.rs) rather than keyboard activity.
+        // Per spec (docs/superpowers/specs/2026-05-22-sid-ux-iteration.md:364):
+        // "the tokio event pump wakes on either a key event OR a 1/FPS tick".
+        if ev == sid_core::event::Event::Tick {
+            if let Some(fx) = sid_app.fx_state.as_mut() {
+                let area = terminal
+                    .size()
+                    .map(|s| Rect {
+                        x: 0,
+                        y: 0,
+                        width: s.width,
+                        height: s.height,
+                    })
+                    .unwrap_or(Rect {
+                        x: 0,
+                        y: 0,
+                        width: 80,
+                        height: 24,
+                    });
+                // Skip ticking while a modal or form is open (spec line 366).
+                if sid_app.modal_stack.is_empty() && sid_app.form.is_none() {
+                    fx.tick(area, &sid_app.animation);
+                }
+            }
+        }
 
         // Translate mouse events into synthetic key events (scroll → j/k)
         // or direct tab switches (click on the tab strip), and route in-body
@@ -2390,6 +2417,22 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                             .push(Toast::error(format!("Reset failed: {e}")));
                     }
                 }
+            }
+            AnimationChanged(new_cfg) => {
+                // Toggle fx_state to match the new enabled flag before
+                // replacing animation so the comparison is against the
+                // *old* value.
+                if new_cfg.enabled && sid_app.fx_state.is_none() {
+                    sid_app.fx_state = Some(sid_fx::FxState::new());
+                } else if !new_cfg.enabled && sid_app.fx_state.is_some() {
+                    sid_app.fx_state = None;
+                }
+                sid_app.animation = new_cfg;
+                sid_app
+                    .toasts
+                    .push(Toast::success("Animation settings applied".to_string()));
+                // Live-applied in place — nothing persisted here beyond what
+                // AnimationView already flushed, so no undo entry is recorded.
             }
         }
     }
@@ -13812,6 +13855,249 @@ mod tests {
         assert!(
             restored.iter().count() > 0,
             "undo must restore the prior (non-empty) keybind map"
+        );
+    }
+
+    // ----- Animation tick-gate regression tests ----------------------------
+
+    /// After the user presses S in AnimationView (simulated here by injecting an
+    /// AnimationChanged outcome directly), `SidApp.animation` must reflect the
+    /// new config on the next event loop iteration.
+    ///
+    /// Before the fix: `apply_pending_settings_outcomes` ignores `AnimationChanged`
+    /// so `SidApp.animation` stays at the startup value forever.
+    #[tokio::test]
+    async fn animation_config_propagates_after_settings_save() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("settings"));
+        // Confirm default animation is enabled.
+        assert!(
+            sid_app.animation.enabled,
+            "precondition: animation enabled at startup"
+        );
+
+        // Build a new config with animation disabled.
+        let new_cfg = sid_core::animation::AnimationConfig {
+            enabled: false,
+            ..sid_core::animation::AnimationConfig::default()
+        };
+
+        // Inject the outcome directly into the settings widget's pending queue,
+        // bypassing the UI — this isolates the wire-layer drain logic.
+        {
+            use sid_core::layout::Layout;
+            let tabs = sid_app.app.tabs_mut().tabs_mut();
+            let settings_tab = tabs
+                .iter_mut()
+                .find(|t| t.id.as_str() == "settings")
+                .expect("settings tab must be present in test app");
+            let Layout::Single(w) = &mut settings_tab.layout else {
+                panic!("settings tab must have Single layout");
+            };
+            let settings_widget = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::SettingsWidget>()
+                .expect("must downcast to SettingsWidget");
+            settings_widget.push_pending_outcome(
+                sid_widgets::settings::PendingSettingsOutcome::AnimationChanged(new_cfg.clone()),
+            );
+        }
+
+        // Send one Tick so the loop runs once and drains the outcome.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(4);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        // After the fix: SidApp.animation reflects the new config.
+        assert!(
+            !sid_app.animation.enabled,
+            "SidApp.animation.enabled must be false after AnimationChanged drain"
+        );
+        // fx_state must be toggled to None because enabled=false.
+        assert!(
+            sid_app.fx_state.is_none(),
+            "fx_state must be None when animation.enabled == false"
+        );
+    }
+
+    /// Render the test terminal's buffer as text, one row per line.
+    ///
+    /// With `styled` the cell style is appended to each glyph so colour-only
+    /// animation changes are visible to comparisons; the plain form matches
+    /// the readable insta snapshot format.
+    fn test_buffer_text(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        styled: bool,
+    ) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| {
+                        let cell = &buf[(x, y)];
+                        if styled {
+                            format!("{}{:?}", cell.symbol(), cell.style())
+                        } else {
+                            cell.symbol().to_string()
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Two consecutive frames separated by exactly one `SidEvent::Tick` must
+    /// produce visually different buffer contents in at least one cell.
+    ///
+    /// This guards against "dead" animations where `tick_count` advances but
+    /// the rendered output never changes. The test uses a seeded `FxState` so
+    /// the star positions are deterministic; after one tick the `phase` of at
+    /// least one star changes, which changes the rendered colour or glyph.
+    ///
+    /// The frame comparison includes cell styles (a colour-only twinkle must
+    /// count as a change); the insta snapshot of the second frame stays
+    /// symbols-only so the golden file remains readable.
+    #[tokio::test]
+    async fn animation_frames_differ_after_tick() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        // Use a large-enough terminal so stars are guaranteed to exist.
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Seed the FxState so positions are deterministic and we can assert
+        // frame equality / difference reliably.
+        let cfg = sid_core::animation::AnimationConfig {
+            enabled: true,
+            density: 30,
+            fps: 8,
+            ..sid_core::animation::AnimationConfig::default()
+        };
+        sid_app.animation = cfg.clone();
+        sid_app.fx_state = Some(sid_fx::FxState::with_seed(42));
+
+        // First run: one Tick, then the channel closes. The loop draws once
+        // more after processing the tick, so on exit the terminal holds the
+        // post-tick-1 frame.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(8);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+        let frame_after_tick1 = test_buffer_text(&terminal, true);
+
+        // Second run against the SAME terminal and app: one more Tick.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(8);
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx);
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+        let frame_after_tick2 = test_buffer_text(&terminal, true);
+
+        // After two Tick events, tick_count must be 2.
+        let tc = sid_app
+            .fx_state
+            .as_ref()
+            .expect("fx_state present")
+            .tick_count;
+        assert_eq!(tc, 2, "exactly two ticks must have fired");
+
+        // The animation must be visibly alive: one tick apart, the two
+        // frames must differ in at least one cell (symbol or style).
+        assert_ne!(
+            frame_after_tick1, frame_after_tick2,
+            "consecutive animation frames must be visually different"
+        );
+
+        // Snapshot the second frame (symbols only) so the rendered star
+        // positions are locked. Re-accept with `cargo insta review` only
+        // after deliberate visual changes to the animation layer.
+        insta::assert_snapshot!(
+            "animation_two_ticks_80x24_seed42",
+            test_buffer_text(&terminal, false)
+        );
+    }
+
+    #[test]
+    fn fps_to_tick_ms_derives_and_clamps() {
+        // Default fps=8 → 125ms; min fps=1 → 1000ms; max fps=30 → 33ms.
+        assert_eq!(fps_to_tick_ms(8), 125);
+        assert_eq!(fps_to_tick_ms(1), 1000);
+        assert_eq!(fps_to_tick_ms(30), 33);
+        // Out-of-range values clamp instead of dividing by zero (fps=0) or
+        // over-spinning the pump (fps=255).
+        assert_eq!(fps_to_tick_ms(0), 1000);
+        assert_eq!(fps_to_tick_ms(255), 33);
+    }
+
+    /// `fx.tick()` must advance `tick_count` exactly once per `SidEvent::Tick`
+    /// and must NOT advance it on key presses or mouse events.
+    ///
+    /// Before the fix this test fails because `fx.tick()` fires once per loop
+    /// iteration regardless of event kind, so two key-press events advance
+    /// `tick_count` by 2 instead of 0.
+    #[tokio::test]
+    async fn animation_only_ticks_on_tick_event() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Replace the default None fx_state with a seeded one so tick_count is
+        // observable. (build_test_sid_app sets fx_state = None; override it.)
+        sid_app.fx_state = Some(sid_fx::FxState::with_seed(42));
+        sid_app.animation = sid_core::animation::AnimationConfig::default();
+
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(16);
+
+        // Send two key-press events then a Tick, then close the channel so the
+        // loop exits after draining them.
+        tx.send(sid_core::event::Event::Key(sid_core::event::KeyChord::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        tx.send(sid_core::event::Event::Key(sid_core::event::KeyChord::new(
+            crossterm::event::KeyCode::Char('k'),
+            crossterm::event::KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        tx.send(sid_core::event::Event::Tick).await.unwrap();
+        drop(tx); // close channel → loop exits after Tick
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        let tick_count = sid_app
+            .fx_state
+            .as_ref()
+            .expect("fx_state must remain Some")
+            .tick_count;
+
+        // BEFORE the fix: tick_count == 3 (once per loop iteration).
+        // AFTER the fix:  tick_count == 1 (only on the Tick event).
+        assert_eq!(
+            tick_count, 1,
+            "tick_count should be 1 (only the Tick event should advance it), got {tick_count}"
         );
     }
 }
