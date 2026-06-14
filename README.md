@@ -41,7 +41,7 @@ Plus:
 
 VS Code is slow and visually noisy. `lazygit`, `gitui`, `k9s` are great but each only solves one thing. `tmux` + a bag of CLIs is the closest pre-`sid` setup but requires re-deriving the same layout every session. Zed is cool, but limited in its scope and feature-set.
 
-`sid` is the layer above. One TUI, six tabs (detachable, re-attachable), an obsession with minimal footprint, fast startup, ease of use, all for the sole purpose of not needing to use slow database apps like DBeaver, or how to kill that one NodeJS instance via some command you Google every other week because you're too lazy to remember it's syntax (`lsof -ti:3000 | xargs kill -9`, `pkill -9 -f "next dev"`, etc). It's not trying to replace your editor or your shell. It's trying to be the cockpit you live in *between* edits and shells.
+`sid` is the layer above. One TUI, six tabs (detachable, re-attachable), an obsession with minimal footprint, fast startup, ease of use, all for the sole purpose of not needing to use slow database apps like DBeaver, or remembering how to kill that one NodeJS instance via some command you Google every other week because you're too lazy to remember it's syntax (`lsof -ti:3000 | xargs kill -9`, `pkill -9 -f "next dev"`, etc). It's not trying to replace your editor or your shell. It's trying to be the cockpit you live in *between* edits and shells.
 
 ## Design philosophy
 
