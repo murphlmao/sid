@@ -18,31 +18,41 @@ pub mod behavior_toggles;
 pub mod db_path;
 pub mod keybind_editor;
 pub mod live_preview;
+pub mod logs;
 pub mod quick_actions;
 pub mod reset;
 pub mod theme_picker;
 pub mod workspace_roots;
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use serde::{Deserialize, Serialize};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_ui::Theme;
 
-use crate::settings::animation::AnimationView;
-use crate::settings::behavior_toggles::BehaviorTogglesView;
-use crate::settings::db_path::DbPathView;
-use crate::settings::keybind_editor::KeybindEditorView;
-use crate::settings::quick_actions::QuickActionsView;
-use crate::settings::reset::ResetView;
-use crate::settings::theme_picker::{ThemePickerOutcome, ThemePickerView};
-use crate::settings::workspace_roots::WorkspaceRootsView;
-use crate::stub::ComingSoonBody;
+use crate::{
+    settings::{
+        animation::AnimationView,
+        behavior_toggles::BehaviorTogglesView,
+        db_path::DbPathView,
+        keybind_editor::KeybindEditorView,
+        logs::{LogEntry, LogsView},
+        quick_actions::QuickActionsView,
+        reset::ResetView,
+        theme_picker::{ThemePickerOutcome, ThemePickerView},
+        workspace_roots::WorkspaceRootsView,
+    },
+    stub::ComingSoonBody,
+};
 
 /// Encode a [`BehaviorTogglesOutcome::Toggled`] payload as a
 /// query-string-style key/value blob for [`emit_action_with_payload`].
@@ -91,6 +101,8 @@ pub enum SettingsCategory {
     Reset(ResetView),
     /// Cosmic background animation tuner (density, FPS, supernova rate, glyphs).
     Animation(AnimationView),
+    /// In-process log ring (newest-last, scrollable).
+    Logs(LogsView),
 }
 
 impl SettingsCategory {
@@ -105,6 +117,7 @@ impl SettingsCategory {
             Self::DbPath(_) => "DB path",
             Self::Reset(_) => "Reset to defaults",
             Self::Animation(_) => "Animation",
+            Self::Logs(_) => "Logs",
         }
     }
 }
@@ -406,6 +419,33 @@ impl SettingsWidget {
         }
     }
 
+    /// Append a [`LogEntry`] to the `Logs` category's ring buffer.
+    ///
+    /// If no `Logs` category is present in the widget, this is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_widgets::settings::logs::{LogEntry, LogLevel};
+    /// use sid_widgets::{SettingsCategory, SettingsWidget};
+    ///
+    /// let mut w = SettingsWidget::with_categories(vec![
+    ///     SettingsCategory::Logs(sid_widgets::settings::logs::LogsView::new()),
+    /// ]);
+    /// w.record_log(LogEntry::new(0, LogLevel::Info, "hello"));
+    /// if let Some(SettingsCategory::Logs(v)) = w.focused_category() {
+    ///     assert_eq!(v.len(), 1);
+    /// }
+    /// ```
+    pub fn record_log(&mut self, entry: LogEntry) {
+        for cat in self.categories.iter_mut() {
+            if let SettingsCategory::Logs(v) = cat {
+                v.push(entry);
+                return;
+            }
+        }
+    }
+
     /// Set the focused category, returning `true` on success. No-op if `idx`
     /// is out of range.
     pub fn focus_set(&mut self, idx: usize) -> bool {
@@ -456,10 +496,23 @@ impl SettingsWidget {
             return;
         }
 
+        // Minimum area guard: if the terminal is tiny (< 6 rows), skip the
+        // tail strip to avoid zero-height rects.
+        const TAIL_HEIGHT: u16 = 4;
+        let (body_area, tail_area) = if area.height >= TAIL_HEIGHT + 2 {
+            let v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(2), Constraint::Length(TAIL_HEIGHT)])
+                .split(area);
+            (v[0], Some(v[1]))
+        } else {
+            (area, None)
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-            .split(area);
+            .split(body_area);
         let left = chunks[0];
         let right = chunks[1];
 
@@ -530,11 +583,49 @@ impl SettingsWidget {
             Some(SettingsCategory::Animation(v)) => {
                 v.render_into_frame(frame, right, theme, subview_focused)
             }
+            Some(SettingsCategory::Logs(v)) => {
+                v.render_into_frame(frame, right, theme, subview_focused)
+            }
             None => {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme.muted.into()));
                 frame.render_widget(block, right);
+            }
+        }
+
+        // Log-tail strip: always-visible band at the bottom showing the
+        // newest entries from the Logs ring buffer.
+        if let Some(tail_rect) = tail_area {
+            if tail_rect.width > 0 && tail_rect.height > 0 {
+                // Find the LogsView (if any).
+                let logs_view = self.categories.iter().find_map(|c| {
+                    if let SettingsCategory::Logs(v) = c {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                });
+                let tail_inner_height = tail_rect.height.saturating_sub(2);
+                let tail_inner_width = tail_rect.width.saturating_sub(2);
+                let tail_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.muted.into()))
+                    .title(" Recent logs ")
+                    .title_style(Style::default().fg(theme.muted.into()));
+                let tail_inner = tail_block.inner(tail_rect);
+                frame.render_widget(tail_block, tail_rect);
+                if tail_inner.width > 0 && tail_inner.height > 0 {
+                    let n = tail_inner_height as usize;
+                    let lines = if let Some(lv) = logs_view {
+                        lv.tail_lines(n, theme, tail_inner_width)
+                    } else {
+                        vec![Line::from("(no logs)").style(Style::default().fg(theme.muted.into()))]
+                    };
+                    if !lines.is_empty() {
+                        frame.render_widget(Paragraph::new(lines), tail_inner);
+                    }
+                }
             }
         }
     }
@@ -554,8 +645,7 @@ impl SettingsWidget {
 /// assert!(s.contains("Settings"));
 /// ```
 pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
@@ -601,9 +691,11 @@ pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> Str
 /// assert!(s.contains("STYLES:"));
 /// ```
 pub fn render_to_string_with_styles(widget: &SettingsWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        style::{Color, Modifier},
+    };
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
@@ -728,9 +820,39 @@ impl Widget for SettingsWidget {
                         self.focus_prev();
                         return EventOutcome::Consumed;
                     }
+                    // Right / 'l' → enter the focused category's sub-view.
+                    (KeyCode::Right | KeyCode::Char('l'), KeyModifiers::NONE) => {
+                        self.focused_pane = SettingsFocus::SubView;
+                        return EventOutcome::Consumed;
+                    }
                     _ => {}
                 },
                 SettingsFocus::SubView => {
+                    // Esc always returns to the category list regardless of which
+                    // sub-view is focused.
+                    if k.code == KeyCode::Esc {
+                        self.focused_pane = SettingsFocus::Categories;
+                        return EventOutcome::Consumed;
+                    }
+                    // Left / 'h' — for most categories this returns to the
+                    // category list; for Behavior and DbPath, Left cycles
+                    // values inside the sub-view (we route it in below).
+                    if matches!(
+                        (k.code, k.mods),
+                        (KeyCode::Left | KeyCode::Char('h'), KeyModifiers::NONE)
+                    ) {
+                        let is_cycling_category = matches!(
+                            self.focused_category(),
+                            Some(SettingsCategory::Behavior(_)) | Some(SettingsCategory::DbPath(_))
+                        );
+                        if !is_cycling_category {
+                            self.focused_pane = SettingsFocus::Categories;
+                            return EventOutcome::Consumed;
+                        }
+                        // Fall through: let the sub-view handle Left for
+                        // value-cycling categories (Behavior, DbPath).
+                    }
+
                     // Route to the focused category's local handler.
                     if let Some(cat) = self.focused_category_mut() {
                         match cat {
@@ -901,6 +1023,14 @@ impl Widget for SettingsWidget {
                                         return EventOutcome::Consumed;
                                     }
                                 }
+                            }
+                            SettingsCategory::Logs(v) => {
+                                // The logs sub-view only consumes navigation
+                                // keys (scroll). It never emits a persistent
+                                // settings outcome.
+                                let page_size: usize = 10; // fallback; real height not available here
+                                v.handle_event(ev, page_size);
+                                return EventOutcome::Consumed;
                             }
                         }
                     }
@@ -1256,6 +1386,189 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, PendingSettingsOutcome::ThemeApplied { .. })),
             "ThemeApplied outcome expected"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // WG3: Arrow-key navigation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn right_in_categories_enters_subview() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+        w.handle_event(&key(KeyCode::Right, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+    }
+
+    #[test]
+    fn l_in_categories_enters_subview() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        w.handle_event(&key(KeyCode::Char('l'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+    }
+
+    #[test]
+    fn esc_in_subview_returns_to_categories() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        // Enter SubView first.
+        w.handle_event(&key(KeyCode::Right, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        // Esc returns.
+        let out = w.handle_event(&key(KeyCode::Esc, KeyModifiers::NONE), &mut c);
+        assert_eq!(out, EventOutcome::Consumed);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    #[test]
+    fn left_in_subview_theme_returns_to_categories() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // Theme is focused (index 0), not a cycling category.
+        let mut w = small_widget();
+        let mut c = ctx();
+        w.handle_event(&key(KeyCode::Right, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        let out = w.handle_event(&key(KeyCode::Left, KeyModifiers::NONE), &mut c);
+        assert_eq!(out, EventOutcome::Consumed);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    #[test]
+    fn left_in_subview_behavior_cycles_value_and_stays_in_subview() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // small_widget has Behavior at index 1.
+        let mut w = small_widget();
+        let mut c = ctx();
+        // Focus Behavior category.
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_category_index(), 1);
+        // Enter SubView.
+        w.handle_event(&key(KeyCode::Right, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::SubView);
+        // Left should cycle the value, not exit.
+        let before_pane = w.focused_pane();
+        let _out = w.handle_event(&key(KeyCode::Left, KeyModifiers::NONE), &mut c);
+        // Must remain in SubView.
+        assert_eq!(w.focused_pane(), before_pane);
+    }
+
+    #[test]
+    fn left_in_subview_reset_returns_to_categories() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // Reset is index 2 in small_widget — not a cycling category.
+        let mut w = small_widget();
+        let mut c = ctx();
+        // Focus Reset.
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        w.handle_event(&key(KeyCode::Char('j'), KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_category_index(), 2);
+        // Enter SubView.
+        w.handle_event(&key(KeyCode::Right, KeyModifiers::NONE), &mut c);
+        // Left returns.
+        w.handle_event(&key(KeyCode::Left, KeyModifiers::NONE), &mut c);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    #[test]
+    fn esc_in_categories_bubbles() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut w = small_widget();
+        let mut c = ctx();
+        // Esc in Categories pane should not be consumed by our code
+        // (only SubView handles it). The sub-view won't be reached, so it
+        // just falls through to Bubble.
+        let out = w.handle_event(&key(KeyCode::Esc, KeyModifiers::NONE), &mut c);
+        // Esc in Categories is not handled → Bubble.
+        assert_eq!(out, EventOutcome::Bubble);
+        assert_eq!(w.focused_pane(), SettingsFocus::Categories);
+    }
+
+    // ---------------------------------------------------------------------
+    // WG2: record_log + category list + layout smoke test
+    // ---------------------------------------------------------------------
+
+    fn widget_with_logs() -> SettingsWidget {
+        use crate::settings::logs::LogsView;
+        let r = ThemeRegistry::with_builtins();
+        SettingsWidget::with_categories(vec![
+            SettingsCategory::Theme(ThemePickerView::new(&r, "cosmos")),
+            SettingsCategory::Logs(LogsView::new()),
+        ])
+    }
+
+    #[test]
+    fn category_list_includes_logs() {
+        let w = widget_with_logs();
+        assert!(w.category_labels().contains(&"Logs"));
+    }
+
+    #[test]
+    fn record_log_appends_to_logs_view() {
+        use crate::settings::logs::{LogEntry, LogLevel};
+        let mut w = widget_with_logs();
+        w.record_log(LogEntry::new(0, LogLevel::Info, "first"));
+        w.record_log(LogEntry::new(1_000_000_000, LogLevel::Error, "second"));
+        // Find the Logs category.
+        let logs = w.categories.iter().find_map(|c| {
+            if let SettingsCategory::Logs(v) = c {
+                Some(v)
+            } else {
+                None
+            }
+        });
+        let logs = logs.expect("Logs category expected");
+        assert_eq!(logs.len(), 2);
+    }
+
+    #[test]
+    fn record_log_without_logs_category_is_noop() {
+        use crate::settings::logs::{LogEntry, LogLevel};
+        // small_widget has Theme, Behavior, Reset — no Logs.
+        let mut w = small_widget();
+        // Must not panic.
+        w.record_log(LogEntry::new(0, LogLevel::Info, "ignored"));
+    }
+
+    #[test]
+    fn render_with_logs_does_not_panic_on_normal_size() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use sid_ui::themes::cosmos;
+        let w = widget_with_logs();
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+            .unwrap();
+    }
+
+    #[test]
+    fn render_does_not_panic_on_tiny_area() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use sid_ui::themes::cosmos;
+        let w = widget_with_logs();
+        let backend = TestBackend::new(10, 3);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = cosmos();
+        term.draw(|f| w.render_into_frame(f, f.area(), &theme))
+            .unwrap();
+    }
+
+    #[test]
+    fn tail_strip_shows_recent_logs() {
+        use crate::settings::logs::{LogEntry, LogLevel};
+        let mut w = widget_with_logs();
+        w.record_log(LogEntry::new(3_661_000_000_000, LogLevel::Info, "tailmsg"));
+        let s = render_to_string(&w, 80, 24);
+        // The tail strip should display the timestamp and the message.
+        assert!(
+            s.contains("01:01:01") && s.contains("tailmsg"),
+            "tail strip expected to show timestamp and message, got:\n{s}"
         );
     }
 }

@@ -1,7 +1,9 @@
 //! Integration tests for `CommandPalette`.
 
-use sid_core::action::{Action, ActionRegistry};
-use sid_core::palette::CommandPalette;
+use sid_core::{
+    action::{Action, ActionRegistry},
+    palette::CommandPalette,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers

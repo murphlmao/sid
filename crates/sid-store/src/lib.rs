@@ -6,13 +6,13 @@
 //! Opening and using the store (requires a filesystem path — see the
 //! integration tests in `crates/sid-store/tests/` for runnable examples).
 
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
-use sid_core::SidError;
-use sid_core::tab::TabId;
-use sid_core::widget::WidgetId;
+use sid_core::{SidError, tab::TabId, widget::WidgetId};
 
 pub mod codec;
 pub mod keybind_load;
@@ -1780,8 +1780,7 @@ mod tests {
     /// Verify the Store trait can be object-safe and implemented by a MemStore.
     #[test]
     fn store_trait_can_be_implemented() {
-        use std::collections::HashMap;
-        use std::sync::Mutex;
+        use std::{collections::HashMap, sync::Mutex};
 
         struct MemStore {
             settings: Mutex<HashMap<String, SettingValue>>,

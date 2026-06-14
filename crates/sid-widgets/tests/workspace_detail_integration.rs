@@ -1,18 +1,20 @@
 //! Integration: workspace detail tab open/close round-trip through
 //! `TabManager` + `App::handle_event` + the `tab.close` action.
 
-use crossterm::event::{KeyCode, KeyModifiers};
-use sid_core::action::ActionRegistry;
-use sid_core::app::App;
-use sid_core::event::{Event, KeyChord};
-use sid_core::keybind::KeybindMap;
-use sid_core::layout::Layout;
-use sid_core::tab::{Tab, TabId, TabKind, TabManager};
-use sid_core::workspace_metadata::WorkspaceKind;
-use sid_store::Workspace;
-use sid_widgets::WorkspacesWidget;
-use sid_widgets::workspace_detail::WorkspaceDetailWidget;
 use std::path::PathBuf;
+
+use crossterm::event::{KeyCode, KeyModifiers};
+use sid_core::{
+    action::ActionRegistry,
+    app::App,
+    event::{Event, KeyChord},
+    keybind::KeybindMap,
+    layout::Layout,
+    tab::{Tab, TabId, TabKind, TabManager},
+    workspace_metadata::WorkspaceKind,
+};
+use sid_store::Workspace;
+use sid_widgets::{WorkspacesWidget, workspace_detail::WorkspaceDetailWidget};
 
 fn workspaces_tab(workspaces: Vec<Workspace>) -> Tab {
     Tab {

@@ -1,7 +1,9 @@
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
-use sid_store::SessionRecord;
-use sid_store::codec::{decode_versioned, encode_versioned};
+use sid_store::{
+    SessionRecord,
+    codec::{decode_versioned, encode_versioned},
+};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 struct ExampleV1 {

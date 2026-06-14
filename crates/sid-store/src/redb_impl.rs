@@ -7,17 +7,15 @@
 use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable};
-use sid_core::SidError;
-use sid_core::tab::TabId;
-use sid_core::widget::WidgetId;
+use sid_core::{SidError, tab::TabId, widget::WidgetId};
 
-use crate::schema::{
-    DB_CONNECTIONS, KEYBINDS, PINNED_CONFIGS, QUERY_HISTORY, QUICK_ACTIONS, SECRETS, SESSION_META,
-    SESSIONS, SETTINGS, SSH_HOSTS, THEMES, WIDGET_STATE, WORKSPACES,
-};
 use crate::{
     DbConnection, KeybindProfile, OpenStore, PinnedConfig, QueryRecord, QuickAction, SessionRecord,
     SettingValue, SshHost, Store, ThemeSpec, WidgetState, Workspace,
+    schema::{
+        DB_CONNECTIONS, KEYBINDS, PINNED_CONFIGS, QUERY_HISTORY, QUICK_ACTIONS, SECRETS,
+        SESSION_META, SESSIONS, SETTINGS, SSH_HOSTS, THEMES, WIDGET_STATE, WORKSPACES,
+    },
 };
 
 /// redb-backed implementation of [`crate::Store`].

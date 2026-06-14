@@ -1,4 +1,5 @@
 use std::process::Command;
+
 use tempfile::tempdir;
 
 fn run(bin: &str, db: &str, args: &[&str]) -> std::process::Output {

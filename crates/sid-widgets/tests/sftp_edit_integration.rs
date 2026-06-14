@@ -1,10 +1,13 @@
 //! End-to-end SFTP edit-in-place flow via a fake SshClient SftpSession.
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use sid_core::adapters::ssh::{SftpEntry, SftpSession, SshError};
-use sid_widgets::ssh::{SftpEditPhase, SftpEditState};
-use sid_widgets::workspaces::{EditorRunner, MockEditorRunner};
-use std::sync::{Arc, Mutex};
+use sid_widgets::{
+    ssh::{SftpEditPhase, SftpEditState},
+    workspaces::{EditorRunner, MockEditorRunner},
+};
 use tempfile::tempdir;
 
 struct FakeSftp {

@@ -17,8 +17,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::theme::Theme;
-use crate::themes::{cosmos, cosmos_light, dusk, void};
+use crate::{
+    theme::Theme,
+    themes::{cosmos, cosmos_light, dusk, void},
+};
 
 /// Registry of available themes. Built-in themes are seeded by
 /// [`ThemeRegistry::with_builtins`]; user-authored themes are added via

@@ -24,8 +24,10 @@
 //! assert_eq!(q.iter().nth(0).unwrap().kind, ToastKind::Success);
 //! ```
 
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 /// Severity / styling marker for a [`Toast`]. Determines the prefix glyph and
 /// colour used by the renderer in `wire::render_toasts`.

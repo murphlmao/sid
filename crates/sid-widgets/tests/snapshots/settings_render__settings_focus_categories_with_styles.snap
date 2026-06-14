@@ -9,10 +9,6 @@ expression: s
 │                  ││  o void                                                  │
 │                  ││                                                          │
 │                  ││                                                          │
-│                  ││                                                          │
-│                  ││                                                          │
-│                  ││                                                          │
-│                  ││                                                          │
 │                  ││┌────────────────────────────────────────────────────────┐│
 │                  │││✦ cosmos ✦                                              ││
 │                  │││  primary accent row                                    ││
@@ -26,6 +22,10 @@ expression: s
 │                  │││Enter to apply  ·  Esc to cancel                        ││
 │                  ││└────────────────────────────────────────────────────────┘│
 └──────────────────┘└──────────────────────────────────────────────────────────┘
+┌ Recent logs ─────────────────────────────────────────────────────────────────┐
+│(no logs)                                                                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 STYLES:
 aFFFFFFFFFFFFaaaaaaamfffffffmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
@@ -47,8 +47,8 @@ a                  am                                                          m
 a                  am                                                          m
 a                  am                                                          m
 a                  am                                                          m
-a                  am                                                          m
-a                  am                                                          m
-a                  am                                                          m
-a                  am                                                          m
 aaaaaaaaaaaaaaaaaaaammmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+mmmmmmmmmm                                                                     m
+m                                                                              m
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

@@ -5,17 +5,14 @@
 //! itself is off-thread; this benches only the render path the user
 //! sees immediately.
 
-use std::hint::black_box;
-use std::path::PathBuf;
+use std::{hint::black_box, path::PathBuf};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use ratatui::{Terminal, backend::TestBackend};
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
 use sid_ui::themes::cosmos;
-use sid_widgets::workspace_detail::WorkspaceDetailWidget;
-use sid_widgets::{RepoGit, SatelliteRow};
+use sid_widgets::{RepoGit, SatelliteRow, workspace_detail::WorkspaceDetailWidget};
 
 fn make_satellites(n: usize) -> Vec<SatelliteRow> {
     (0..n)

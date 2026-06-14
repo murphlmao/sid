@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use sid_core::adapters::git::{
-    Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
+use sid_core::{
+    adapters::git::{Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit},
+    workspace_metadata::WorkspaceKind,
 };
-use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
 use sid_widgets::workspaces::{DiffViewState, RightPane, WorkspacesState};
 

@@ -1,8 +1,6 @@
-use std::path::Path;
-use std::sync::Mutex;
+use std::{path::Path, sync::Mutex};
 
-use sid_system::env::resolve_editor;
-use sid_system::kitty::spawn_request_for_file;
+use sid_system::{env::resolve_editor, kitty::spawn_request_for_file};
 
 // $EDITOR is process-global state — serialize mutation across tests.
 static ENV_GUARD: Mutex<()> = Mutex::new(());

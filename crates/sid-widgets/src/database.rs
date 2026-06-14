@@ -9,25 +9,29 @@
 //! Right-pane sub-views are an enum: [`RightPane::Editor`] (default),
 //! [`RightPane::Results`], [`RightPane::History`]. `Tab` cycles between them.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Row as TableRow, Table};
-use sid_core::adapters::db_client::{DbClient, DbKind, PageCursor, QueryPage};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Row as TableRow, Table},
+};
+use sid_core::{
+    adapters::db_client::{DbClient, DbKind, PageCursor, QueryPage},
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_db_clients::lexer::{Token, tokenize};
 use sid_store::{DbConnection, QueryRecord};
-use sid_ui::Theme;
-use sid_ui::themes::cosmos;
+use sid_ui::{Theme, themes::cosmos};
 
-use crate::list_cursor::{CursorTarget, ListCursor};
-use crate::stub::ComingSoonBody;
+use crate::{
+    list_cursor::{CursorTarget, ListCursor},
+    stub::ComingSoonBody,
+};
 
 /// Which right-pane sub-view is currently focused.
 ///
@@ -1066,8 +1070,7 @@ impl DatabaseWidget {
 /// assert!(s.contains("Connections"));
 /// ```
 pub fn render_to_string(widget: &DatabaseWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
     let theme = cosmos();
@@ -1289,9 +1292,7 @@ fn char_byte_offset(s: &str, char_col: usize) -> usize {
 mod tests {
     use std::sync::mpsc;
 
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::Event;
-    use sid_core::widget::Widget;
+    use sid_core::{context::WidgetCtx, event::Event, widget::Widget};
 
     use super::*;
 

@@ -1,12 +1,10 @@
 ---
 source: crates/sid-widgets/tests/settings_render.rs
-assertion_line: 99
 expression: s
 ---
 ┌ Categories ──────┐┌ Behavior ────────────────────────────────────────────────┐
 │> * Behavior      ││> Auto-restore session                 ask                │
-│  o Reset to defau││  Auto-scan workspace roots on startup on                 │
-│                  ││  State persist debounce (ms)          250                │
+│  o Reset to defau││  State persist debounce (ms)          250                │
 │                  ││  Session heartbeat interval (s)       5                  │
 │                  ││  Default tab on launch                workspaces         │
 │                  ││  Use OS keyring for secrets (requires restart) off       │
@@ -23,7 +21,8 @@ expression: s
 │                  ││                                                          │
 │                  ││                                                          │
 │                  ││                                                          │
-│                  ││                                                          │
-│                  ││                                                          │
-│                  ││                                                          │
 └──────────────────┘└──────────────────────────────────────────────────────────┘
+┌ Recent logs ─────────────────────────────────────────────────────────────────┐
+│(no logs)                                                                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -24,32 +24,38 @@ pub mod kill_modal;
 pub mod ports_table;
 pub mod processes_table;
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
-use serde::{Deserialize, Serialize};
-use sid_core::adapters::sys::Pid;
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
-use sid_ui::Theme;
-use sid_ui::themes::cosmos;
-
-use crate::network::filter_input::{
-    FilterInputState, FilterMode, match_interface, match_listening_port, match_process,
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Row, Table},
 };
-use crate::network::interfaces_sidebar::InterfacesSidebarState;
-use crate::network::kill_modal::KillConfirmModalState;
-use crate::network::ports_table::{PortsSortBy, PortsTableState, SortDir};
-use crate::network::processes_table::{ProcessesSortBy, ProcessesTableState};
-use crate::split_view::{SplitFocus, SplitView};
-
+use serde::{Deserialize, Serialize};
 // Re-export the KillOutcome type so the binary's JobQueue wiring (Task 24)
 // can feed completion results back into the widget without naming
 // sid_core::sys_probe::kill_job directly.
 pub use sid_core::sys_probe::kill_job::KillOutcome;
+use sid_core::{
+    adapters::sys::Pid,
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
+use sid_ui::{Theme, themes::cosmos};
+
+use crate::{
+    network::{
+        filter_input::{
+            FilterInputState, FilterMode, match_interface, match_listening_port, match_process,
+        },
+        interfaces_sidebar::InterfacesSidebarState,
+        kill_modal::KillConfirmModalState,
+        ports_table::{PortsSortBy, PortsTableState, SortDir},
+        processes_table::{ProcessesSortBy, ProcessesTableState},
+    },
+    split_view::{SplitFocus, SplitView},
+};
 
 /// Toast level for a kill outcome. The widget produces these; the binary's
 /// render code maps them to colours.
@@ -1106,8 +1112,7 @@ pub(crate) fn format_bytes(b: u64) -> String {
 /// assert!(s.contains("Interfaces"));
 /// ```
 pub fn render_to_string(widget: &NetworkWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
     let theme = cosmos();
@@ -1166,9 +1171,10 @@ mod tests {
 
     #[test]
     fn enter_on_interfaces_emits_open_detail_request() {
+        use std::sync::mpsc;
+
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::{Event, KeyChord};
-        use std::sync::mpsc;
 
         let mut w = NetworkWidget::new();
         while w.focus() != Focus::Interfaces {
@@ -1200,9 +1206,10 @@ mod tests {
 
     #[test]
     fn esc_from_detail_returns_to_list() {
+        use std::sync::mpsc;
+
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::{Event, KeyChord};
-        use std::sync::mpsc;
 
         let mut w = NetworkWidget::new();
         while w.focus() != Focus::Interfaces {
@@ -1239,9 +1246,10 @@ mod tests {
 
     #[test]
     fn right_arrow_on_interfaces_enters_pane() {
+        use std::sync::mpsc;
+
         use crossterm::event::{KeyCode, KeyModifiers};
         use sid_core::event::{Event, KeyChord};
-        use std::sync::mpsc;
 
         let mut w = NetworkWidget::new();
         while w.focus() != Focus::Interfaces {
@@ -1272,8 +1280,9 @@ mod tests {
 
     #[test]
     fn apply_snapshot_with_prefs_preserves_aliases_across_refresh() {
-        use sid_core::adapters::sys::NetInterface;
         use std::collections::{HashMap, HashSet};
+
+        use sid_core::adapters::sys::NetInterface;
 
         let mut w = NetworkWidget::new();
         let iface = NetInterface {
@@ -1313,13 +1322,14 @@ mod tests {
 
     #[test]
     fn snapshot_detail_pane_clean() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_core::adapters::sys::NetInterface;
         use sid_ui::themes::cosmos;
 
-        use crate::form::FormPane;
-        use crate::network::detail_pane::{NetInterfacePrefs, build_form_spec};
+        use crate::{
+            form::FormPane,
+            network::detail_pane::{NetInterfacePrefs, build_form_spec},
+        };
 
         let iface = NetInterface {
             name: "eth0".into(),
@@ -1356,8 +1366,9 @@ mod tests {
 
     #[test]
     fn render_to_string_shows_alias_label() {
-        use sid_core::adapters::sys::NetInterface;
         use std::collections::HashMap;
+
+        use sid_core::adapters::sys::NetInterface;
 
         let mut w = NetworkWidget::new();
         w.apply_snapshot(sid_core::sys_probe::SysSnapshot {

@@ -1,10 +1,8 @@
 //! Additional umbrella detection tests — Task 20.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
-use sid_core::workspace_discovery::scan_workspace_root;
-use sid_core::workspace_metadata::WorkspaceKind;
+use sid_core::{workspace_discovery::scan_workspace_root, workspace_metadata::WorkspaceKind};
 use tempfile::tempdir;
 
 fn init_git_at(path: &Path) {

@@ -3,10 +3,12 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::action::{ActionId, ActionRegistry};
-use crate::keybind::KeybindMap;
-use crate::palette::CommandPalette;
-use crate::tab::TabManager;
+use crate::{
+    action::{ActionId, ActionRegistry},
+    keybind::KeybindMap,
+    palette::CommandPalette,
+    tab::TabManager,
+};
 
 /// Top-level application state for sid.
 ///
@@ -353,8 +355,9 @@ impl App {
     /// assert!(app.is_quitting());
     /// ```
     pub fn handle_event(&mut self, ev: &crate::event::Event) -> Dispatch {
-        use crate::event::Event;
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        use crate::event::Event;
 
         // ---- 1. Palette intercept ----
         if self.palette.is_open() {

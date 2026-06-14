@@ -9,18 +9,21 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
-use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Row, Table},
+};
+use sid_core::{
+    adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState},
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
-use sid_ui::Theme;
-use sid_ui::themes::cosmos;
+use sid_ui::{Theme, themes::cosmos};
 
 use crate::stub::ComingSoonBody;
 
@@ -1073,8 +1076,7 @@ impl Widget for SystemWidget {
 /// assert!(s.contains("Pinned configs"));
 /// ```
 pub fn render_to_string(widget: &SystemWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
     let theme = cosmos();

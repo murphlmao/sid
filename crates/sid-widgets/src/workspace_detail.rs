@@ -6,24 +6,29 @@
 //! sub-pane drill-in is a placeholder in v1 (the full Branches / Status /
 //! Log / Diff / Commit / Actions refactor is a follow-up).
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::adapters::git::GitProvider;
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    adapters::git::GitProvider,
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_store::Workspace;
 use sid_ui::Theme;
 
-use crate::list_cursor::{CursorTarget, ListCursor};
-use crate::split_view::{SplitFocus, SplitView};
-use crate::workspace_detail_state::{DetailOp, DetailView, RepoDetail, RepoGit, SatelliteRow};
+use crate::{
+    list_cursor::{CursorTarget, ListCursor},
+    split_view::{SplitFocus, SplitView},
+    workspace_detail_state::{DetailOp, DetailView, RepoDetail, RepoGit, SatelliteRow},
+};
 
 /// CI status badge for a sub-repo. v1 always reports `Unknown` — wiring a
 /// real `gh run list` fetcher is tracked in the future-features backlog.
@@ -696,8 +701,7 @@ pub fn format_age(secs: u64) -> String {
 /// assert!(s.contains("scanning"));
 /// ```
 pub fn render_to_string(widget: &WorkspaceDetailWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
@@ -717,11 +721,11 @@ pub fn render_to_string(widget: &WorkspaceDetailWidget, width: u16, height: u16)
 
 #[cfg(test)]
 mod tests {
+    use sid_core::{adapters::git::CommitInfo, workspace_metadata::WorkspaceKind};
+    use sid_store::Workspace;
+
     use super::*;
     use crate::split_view::SplitFocus;
-    use sid_core::adapters::git::CommitInfo;
-    use sid_core::workspace_metadata::WorkspaceKind;
-    use sid_store::Workspace;
 
     fn umbrella() -> Workspace {
         Workspace {
@@ -922,8 +926,7 @@ mod tests {
 
     #[test]
     fn handle_enter_on_ops_menu_drills_in() {
-        use sid_core::context::WidgetCtx;
-        use sid_core::event::Event;
+        use sid_core::{context::WidgetCtx, event::Event};
         let mut w = loaded_widget();
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut ctx = WidgetCtx::new(tx);

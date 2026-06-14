@@ -12,15 +12,19 @@
 //! but allow" directive — but yields a non-empty
 //! [`KeybindEditorView::dangerous_action_warnings`] for the UI to show.
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::action::{ActionId, ActionRegistry};
-use sid_core::event::KeyChord;
-use sid_core::keybind::{KeyBinding, KeybindMap};
-use sid_core::keybind_capture::{CaptureInput, CaptureState};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    action::{ActionId, ActionRegistry},
+    event::KeyChord,
+    keybind::{KeyBinding, KeybindMap},
+    keybind_capture::{CaptureInput, CaptureState},
+};
 use sid_ui::Theme;
 
 /// Outcome returned by [`KeybindEditorView::handle_event`].
@@ -604,10 +608,12 @@ impl KeybindEditorView {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::action::{Action, ActionId, ActionRegistry};
-    use sid_core::event::KeyChord;
-    use sid_core::keybind::{KeyBinding, KeybindMap};
-    use sid_core::keybind_capture::CaptureState;
+    use sid_core::{
+        action::{Action, ActionId, ActionRegistry},
+        event::KeyChord,
+        keybind::{KeyBinding, KeybindMap},
+        keybind_capture::CaptureState,
+    };
 
     use super::*;
 
@@ -859,8 +865,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &KeybindEditorView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(60, 12);
         let mut term = Terminal::new(backend).unwrap();
@@ -906,9 +911,11 @@ mod tests {
 
     #[test]
     fn handle_event_enter_starts_capture() {
-        use sid_core::action::Action;
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::keybind_capture::CaptureState;
+        use sid_core::{
+            action::Action,
+            event::{Event, KeyChord},
+            keybind_capture::CaptureState,
+        };
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
         let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
@@ -922,9 +929,11 @@ mod tests {
 
     #[test]
     fn handle_event_esc_in_capture_cancels() {
-        use sid_core::action::Action;
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::keybind_capture::CaptureState;
+        use sid_core::{
+            action::Action,
+            event::{Event, KeyChord},
+            keybind_capture::CaptureState,
+        };
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
         let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
@@ -936,8 +945,10 @@ mod tests {
 
     #[test]
     fn handle_event_chord_in_capture_produces_applied() {
-        use sid_core::action::Action;
-        use sid_core::event::{Event, KeyChord};
+        use sid_core::{
+            action::Action,
+            event::{Event, KeyChord},
+        };
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
         let mut v = KeybindEditorView::new(&reg, KeybindMap::new(), "cosmos");
@@ -955,8 +966,10 @@ mod tests {
     /// persist changes to the correct keybind profile.
     #[test]
     fn applied_outcome_carries_construction_time_profile_name() {
-        use sid_core::action::Action;
-        use sid_core::event::{Event, KeyChord};
+        use sid_core::{
+            action::Action,
+            event::{Event, KeyChord},
+        };
         let mut reg = ActionRegistry::new();
         reg.register(Action::new("a", "A"));
         // Construct with a non-default profile name.

@@ -1,5 +1,6 @@
-use sid_ssh::{RusshClientFactory, read_ssh_config};
 use std::path::Path;
+
+use sid_ssh::{RusshClientFactory, read_ssh_config};
 
 #[test]
 fn factory_constructs() {

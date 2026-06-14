@@ -2,8 +2,10 @@
 //! custom extension) or sniffed from common manifest files (CLAUDE.md, Procfile,
 //! `package.json#workspaces`, `Cargo.toml#workspace.members`).
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -382,8 +384,9 @@ pub fn read_workspace_metadata(path: &Path) -> Result<WorkspaceMetadata, Metadat
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use proptest::prelude::*;
+
+    use super::*;
 
     proptest! {
         #[test]

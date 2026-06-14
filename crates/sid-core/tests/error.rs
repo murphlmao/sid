@@ -1,5 +1,4 @@
-use std::error::Error as StdError;
-use std::path::PathBuf;
+use std::{error::Error as StdError, path::PathBuf};
 
 use sid_core::SidError;
 

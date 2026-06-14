@@ -3,8 +3,7 @@
 //! An [`Action`] represents a named, user-visible operation (e.g., "Open palette",
 //! "Quit"). The [`ActionRegistry`] stores actions by id and provides fuzzy-search.
 
-use std::collections::BTreeMap;
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 

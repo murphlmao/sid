@@ -1,14 +1,19 @@
 //! Renderer for [`FormPane`] — framed input boxes, Info rows, validation
 //! errors, and the primary Save button.
 
-use super::pane::{FormPane, PaneFocusState};
-use super::spec::SectionKind;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget as _};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Widget as _},
+};
 use sid_ui::Theme;
+
+use super::{
+    pane::{FormPane, PaneFocusState},
+    spec::SectionKind,
+};
 
 // Width of the label gutter (left column, right-aligned, truncated with `…`).
 const LABEL_GUTTER: u16 = 12;
@@ -451,9 +456,13 @@ fn render_field_value_line<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::pane::FormPane;
-    use super::super::spec::{FormField, FormSection, FormSpec, SectionKind, Validate};
-    use super::*;
+    use super::{
+        super::{
+            pane::FormPane,
+            spec::{FormField, FormSection, FormSpec, SectionKind, Validate},
+        },
+        *,
+    };
     use crate::modal::Field;
 
     /// Render `pane` into a fresh `width × height` buffer using the cosmos

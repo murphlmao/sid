@@ -271,9 +271,10 @@ impl<B: KeyringBackend> SecretStore for KeyringStore<B> {
 
 #[cfg(test)]
 mod tests {
+    use sid_core::adapters::secrets::{SecretId, SecretStore};
+
     use super::*;
     use crate::tests_support::FakeKeyring;
-    use sid_core::adapters::secrets::{SecretId, SecretStore};
 
     fn assert_send_sync<T: Send + Sync>() {}
 

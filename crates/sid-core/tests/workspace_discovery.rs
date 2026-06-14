@@ -1,12 +1,11 @@
 //! Tests for workspace_discovery — Tasks 19, 20, 21.
 
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
-use sid_core::workspace_discovery::{
-    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
+use sid_core::{
+    workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root},
+    workspace_metadata::WorkspaceKind,
 };
-use sid_core::workspace_metadata::WorkspaceKind;
 use tempfile::tempdir;
 
 /// Create a minimal fake git repo at `path` (just .git/HEAD is enough to trigger detection).
@@ -205,9 +204,7 @@ fn merge_into_store_persists_each_discovery() {
     init_git_at(&root.path().join("b"));
     let discoveries = scan_workspace_root(root.path(), 2).unwrap();
 
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 
     struct MemStore {
         ws: Mutex<BTreeMap<PathBuf, ()>>,

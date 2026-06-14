@@ -9,11 +9,11 @@ expression: s
 │  o Supernova idle (secs)    90                           │
 │  o Supernova on event       [on]                         │
 │  o Glyph set                Cosmos                       │
+│  o Motion style             Cosmos                       │
 │                                                          │
 │[ Space/Enter: toggle/cycle ]                             │
 │[ Left/Right: decrement/increment ]                       │
 │[ S: save ]                                               │
-│                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 border_top_left: fg=Rgb(74, 74, 96) modifier=NONE

@@ -5,8 +5,10 @@
 //! intentionally lightweight — they catch "the binary is missing / was
 //! corrupted / has regressed its CLI surface" before any functional test runs.
 
-use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::{
+    process::Command,
+    time::{Duration, SystemTime},
+};
 
 /// `sid --version` output must match the exact format `sid <CARGO_PKG_VERSION>`.
 ///

@@ -13,9 +13,10 @@
 //! All benchmarks wrap async operations in a `tokio::runtime::Runtime` because
 //! criterion is synchronous.
 
+use std::time::Duration;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use sid_job::JobQueue;
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // bench_spawn_single_job

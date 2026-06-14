@@ -246,9 +246,11 @@ fn actions_pane_can_receive_workspace_actions() {
 #[test]
 fn r_key_in_any_sub_view_opens_actions_pane_via_widget() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
+    use sid_core::{
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+    };
     use sid_widgets::WorkspacesWidget;
 
     let mut w = WorkspacesWidget::new(vec![_ws("/a")], None);
@@ -344,12 +346,15 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 mod task3 {
-    use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
+    use sid_core::{
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+    };
     use sid_widgets::WorkspacesWidget;
+
+    use super::*;
 
     fn repo(path: &str, name: &str) -> Workspace {
         Workspace {

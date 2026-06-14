@@ -1,11 +1,12 @@
 //! `RusshClient` core — connect/disconnect/exec/open_shell/open_sftp.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use russh::client::{Config, Handle, Handler};
-use russh::keys::PublicKey;
+use russh::{
+    client::{Config, Handle, Handler},
+    keys::PublicKey,
+};
 use sid_core::adapters::ssh::{
     ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
 };
@@ -131,7 +132,14 @@ impl SshClient for RusshClient {
                 ChannelMsg::ExitStatus { exit_status } => {
                     exit_code = Some(exit_status as i32);
                 }
-                ChannelMsg::Close | ChannelMsg::Eof => break,
+                // EOF means no more stdout/stderr, but the server still sends
+                // `exit-status` and then `close` afterwards. Breaking on Eof
+                // here would drop the exit status and report -1 (observed
+                // against OpenSSH). Keep reading until the channel closes; the
+                // `while let Some(..)` also ends naturally when `wait()` returns
+                // None, so a server that never sends Close cannot hang us.
+                ChannelMsg::Eof => {}
+                ChannelMsg::Close => break,
                 _ => {}
             }
         }

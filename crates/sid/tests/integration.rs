@@ -12,9 +12,11 @@
 /// scope for Plan 1.
 #[cfg(unix)]
 mod unix {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    use std::time::Duration;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+        time::Duration,
+    };
 
     use tempfile::tempdir;
 
@@ -80,8 +82,9 @@ mod unix {
     /// Skipped when not running in a TTY for the same reason as `sid_starts_and_exits_on_ctrl_q`.
     #[test]
     fn sid_redb_file_is_parseable_after_launch() {
-        use sid_store::{OpenStore, RedbStore, Store};
         use std::io::IsTerminal;
+
+        use sid_store::{OpenStore, RedbStore, Store};
 
         if !std::io::stdout().is_terminal() {
             eprintln!("SKIP: not a TTY — sid requires a terminal for raw mode");

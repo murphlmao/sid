@@ -73,6 +73,42 @@ pub struct AnimationConfig {
     pub supernova_on_event: bool,
     /// Which glyph palette the renderer draws stars from.
     pub glyph_set: GlyphSet,
+    /// How the starfield moves over time. See [`MotionStyle`].
+    ///
+    /// `#[serde(default)]` keeps `AnimationConfig` blobs persisted before this
+    /// field existed deserialising cleanly: they decode with
+    /// [`MotionStyle::Cosmos`] (the default) and every other field preserved,
+    /// rather than failing the whole struct and resetting the user's config.
+    #[serde(default)]
+    pub motion: MotionStyle,
+}
+
+/// How the starfield moves over time.
+///
+/// Selected in the Animation settings sub-view and persisted as part of
+/// [`AnimationConfig`]. The renderer (`sid-fx`) branches on this every tick;
+/// each variant is a distinct visual feel.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::animation::MotionStyle;
+/// assert_eq!(MotionStyle::default(), MotionStyle::Cosmos);
+/// ```
+// No `rename_all`: serialise as the variant name (PascalCase) to match the
+// sibling `GlyphSet` enum's wire form inside the same `AnimationConfig` JSON.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MotionStyle {
+    /// Stars hold fixed positions and pulse in brightness (a twinkle), tuned
+    /// to be clearly visible rather than the original near-imperceptible drift.
+    Twinkle,
+    /// Stars drift slowly across the field and wrap at the edges. Brighter
+    /// stars drift faster, giving a parallax sense of depth.
+    Drift,
+    /// The full cosmos: drift + a pronounced twinkle + occasional shooting-star
+    /// streaks and idle supernova blooms. The default.
+    #[default]
+    Cosmos,
 }
 
 /// Glyph palette for the starfield renderer.
@@ -107,6 +143,7 @@ impl Default for AnimationConfig {
             supernova_idle_secs: 90,
             supernova_on_event: true,
             glyph_set: GlyphSet::Cosmos,
+            motion: MotionStyle::Cosmos,
         }
     }
 }
@@ -124,11 +161,92 @@ mod tests {
         assert_eq!(cfg.supernova_idle_secs, 90);
         assert!(cfg.supernova_on_event);
         assert_eq!(cfg.glyph_set, GlyphSet::Cosmos);
+        assert_eq!(cfg.motion, MotionStyle::Cosmos);
     }
 
     #[test]
     fn glyph_set_default_is_cosmos() {
         assert_eq!(GlyphSet::default(), GlyphSet::Cosmos);
+    }
+
+    #[test]
+    fn motion_default_is_cosmos() {
+        assert_eq!(MotionStyle::default(), MotionStyle::Cosmos);
+    }
+
+    #[test]
+    fn config_round_trips_with_all_motion_styles() {
+        for motion in [
+            MotionStyle::Twinkle,
+            MotionStyle::Drift,
+            MotionStyle::Cosmos,
+        ] {
+            let cfg = AnimationConfig {
+                motion,
+                ..AnimationConfig::default()
+            };
+            let s = serde_json::to_string(&cfg).expect("serialize");
+            let back: AnimationConfig = serde_json::from_str(&s).expect("deserialize");
+            assert_eq!(cfg, back);
+            assert_eq!(back.motion, motion);
+        }
+    }
+
+    #[test]
+    fn motion_serializes_as_variant_name() {
+        // Wire form is the PascalCase variant name, matching sibling `GlyphSet`.
+        assert_eq!(
+            serde_json::to_string(&MotionStyle::Cosmos).unwrap(),
+            "\"Cosmos\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MotionStyle::Twinkle).unwrap(),
+            "\"Twinkle\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MotionStyle::Drift).unwrap(),
+            "\"Drift\""
+        );
+    }
+
+    #[test]
+    fn legacy_config_without_motion_field_deserializes_to_cosmos() {
+        // A blob persisted before `motion` existed: a JSON object with every
+        // field EXCEPT `motion`. `#[serde(default)]` must let it decode with
+        // motion = Cosmos and all other fields preserved — NOT reject the
+        // whole struct (which would silently reset the user's saved config).
+        let legacy = r#"{
+            "enabled": false,
+            "density": 17,
+            "fps": 12,
+            "supernova_idle_secs": 42,
+            "supernova_on_event": false,
+            "glyph_set": "Minimal"
+        }"#;
+        let back: AnimationConfig =
+            serde_json::from_str(legacy).expect("legacy config must still deserialize");
+        assert_eq!(
+            back.motion,
+            MotionStyle::Cosmos,
+            "missing motion -> default"
+        );
+        // Other fields survive intact.
+        assert!(!back.enabled);
+        assert_eq!(back.density, 17);
+        assert_eq!(back.fps, 12);
+        assert_eq!(back.supernova_idle_secs, 42);
+        assert!(!back.supernova_on_event);
+        assert_eq!(back.glyph_set, GlyphSet::Minimal);
+    }
+
+    #[test]
+    fn equality_distinguishes_motion() {
+        let cosmos = AnimationConfig::default();
+        let drift = AnimationConfig {
+            motion: MotionStyle::Drift,
+            ..AnimationConfig::default()
+        };
+        assert_ne!(cosmos, drift);
     }
 
     #[test]

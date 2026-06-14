@@ -1,10 +1,14 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use proptest::prelude::*;
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, RenderTarget, Widget, WidgetId},
+};
 
 // ── minimal test double ──────────────────────────────────────────────────────
 

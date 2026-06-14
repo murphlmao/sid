@@ -1,6 +1,5 @@
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use sid_core::tab::TabId;
-use sid_core::widget::WidgetId;
+use sid_core::{tab::TabId, widget::WidgetId};
 use sid_store::{OpenStore, RedbStore, SessionRecord, SettingValue, Store, WidgetState};
 use tempfile::tempdir;
 

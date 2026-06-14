@@ -4,8 +4,7 @@
 //! verifying that workspaces can be added, listed, and removed without
 //! launching the TUI.
 
-use std::fs;
-use std::process::Command;
+use std::{fs, process::Command};
 
 use tempfile::tempdir;
 

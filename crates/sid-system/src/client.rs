@@ -4,8 +4,7 @@
 //! time, then shells out for each operation. Stdout is parsed by the pure
 //! parsers in [`crate::parse`].
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 use sid_core::adapters::systemctl::{
     JournalEntry, SystemUnit, SystemctlClient, SystemctlError, UnitBus, UnitFilter,
@@ -117,8 +116,10 @@ impl SystemctlCmdClient {
         ),
         SystemctlError,
     > {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        use tokio::process::Command as TokioCommand;
+        use tokio::{
+            io::{AsyncBufReadExt, BufReader},
+            process::Command as TokioCommand,
+        };
 
         let bus_flag = bus_flag(bus);
         let mut child = TokioCommand::new(&self.journalctl_path)

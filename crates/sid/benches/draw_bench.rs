@@ -6,12 +6,13 @@
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use sid::toast::ToastQueue;
-use sid::wire::{
-    JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app,
-    build_ssh_client_factory_fn, draw,
+use ratatui::{Terminal, backend::TestBackend};
+use sid::{
+    toast::ToastQueue,
+    wire::{
+        JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app,
+        build_ssh_client_factory_fn, draw,
+    },
 };
 use sid_store::{OpenStore, RedbStore, Store};
 use tempfile::tempdir;
@@ -53,6 +54,9 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         ssh_byte_rx: None,
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
+        active_theme: sid_ui::themes::cosmos(),
+        persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+        last_heartbeat: std::time::Instant::now(),
     }
 }
 

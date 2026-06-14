@@ -4,23 +4,23 @@ expression: "test_buffer_text(&terminal, false)"
 ---
 ╔ ✦ sid — Workspaces ══════════════════════════════════════════════════════════╗
 ║● Workspaces  · SSH  · Database  · Network  · System  · Settings              ║
-║                                                                              ║
+║                                                                            · ║
 ║┌ Workspaces ─────────┐┌ Branches ───────────────────────────────────────────┐║
-║│no workspaces yet — p││(no branches loaded — select a workspace)         ·  │║
-║│                     ││     ·                          ·        ✦ ·         │║
+║│no workspaces yet — p││(no branches loaded — select a workspace)            │║
+║│·                    ││                                         ✦           │║
 ║│  or, from a shell: s││                                                     │║
-║│                     ││·                      ✦                             │║
-║│                     ││                                   ·                 │║
+║│                     ││                                               ·     │║
+║│                     ││                                  ·                  │║
+║│            *        ││                                 ·                   │║
+║│      ·              ││                        ✦                            │║
+║│              ·      ││                                                   · │║
+║│                     ││                                           ·         │║
 ║│                     ││                                                     │║
-║│             *       ││                                 ·                   │║
 ║│                     ││                                                     │║
-║│                     ││                                                     │║
-║│                     ││                                                     │║
-║│ ✦                   ││            ·                           ·            │║
-║│·             ·      ││  ·                                                  │║
-║│               ·     ││                ✦                                    │║
+║│              ·    * ││                             ·                       │║
+║│               ·     ││                            ·                        │║
 ║│                     ││                         *                           │║
-║│                     ││ ·    ·                                              │║
+║│                     ││ ·                                                   │║
 ║└─────────────────────┘└─────────────────────────────────────────────────────┘║
 ║ workspaces: 0  ·  hosts: 0  ·  databases: 0  ·  pins: 0  ·  animation on @ 8f║
 ║  [ N: new workspace ]  [ A: add repo ]  [ R: remove ]  [ ?: help ]           ║

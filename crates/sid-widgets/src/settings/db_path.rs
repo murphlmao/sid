@@ -27,11 +27,13 @@
 
 use std::path::{Path, PathBuf};
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_store::sid_toml::{SidToml, SidTomlError, read_sid_toml, write_sid_toml};
 use sid_ui::Theme;
 
@@ -479,8 +481,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &DbPathView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(60, 8);
         let mut term = Terminal::new(backend).unwrap();

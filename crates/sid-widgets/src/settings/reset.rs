@@ -13,11 +13,13 @@
 //! assert!(!view.is_confirming());
 //! ```
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_core::SidError;
 use sid_store::{Store, settings_keys};
 use sid_ui::Theme;
@@ -39,6 +41,10 @@ pub enum ResetOutcome {
 }
 
 /// Setting keys cleared by [`ResetView::confirm`].
+///
+/// Note: `AUTO_SCAN_WORKSPACES` is intentionally omitted — the toggle was
+/// removed from the UI (deprecated) but the store key is kept for backward
+/// compatibility. Factory reset leaves it as-is.
 pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::THEME_NAME,
     settings_keys::KEYBIND_PROFILE_NAME,
@@ -46,7 +52,6 @@ pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::PERSIST_DEBOUNCE_MS,
     settings_keys::HEARTBEAT_INTERVAL_SECS,
     settings_keys::AUTO_RESTORE_SESSION,
-    settings_keys::AUTO_SCAN_WORKSPACES,
     settings_keys::DEFAULT_TAB,
     settings_keys::SETTINGS_FOCUSED_CATEGORY,
 ];
@@ -400,8 +405,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &ResetView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(60, 8);
         let mut term = Terminal::new(backend).unwrap();

@@ -1,14 +1,16 @@
 //! Tests for WorkspaceUpserter trait and merge_discoveries_into — Task 21.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-use sid_core::workspace_discovery::{
-    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
 };
-use sid_core::workspace_metadata::WorkspaceKind;
+
+use sid_core::{
+    workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root},
+    workspace_metadata::WorkspaceKind,
+};
 use tempfile::tempdir;
 
 fn init_git_at(path: &Path) {

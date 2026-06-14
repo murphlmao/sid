@@ -1,8 +1,7 @@
 //! Integration tests for the `keybinds` table on `RedbStore`.
 
 use proptest::prelude::*;
-use sid_store::schema::KEYBINDS;
-use sid_store::{KeybindEntry, KeybindProfile, OpenStore, RedbStore, Store};
+use sid_store::{KeybindEntry, KeybindProfile, OpenStore, RedbStore, Store, schema::KEYBINDS};
 use tempfile::tempdir;
 
 fn store() -> (tempfile::TempDir, RedbStore) {

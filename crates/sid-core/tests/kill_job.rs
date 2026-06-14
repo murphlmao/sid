@@ -1,13 +1,15 @@
 //! Tests for `run_kill_job` — covers the three KillOutcome variants and
 //! the adversarial paths (pid 0, zero grace).
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
 };
-use sid_core::sys_probe::kill_job::{KillOutcome, run_kill_job};
+
+use sid_core::{
+    adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider},
+    sys_probe::kill_job::{KillOutcome, run_kill_job},
+};
 
 #[derive(Default)]
 struct RecordingProvider {

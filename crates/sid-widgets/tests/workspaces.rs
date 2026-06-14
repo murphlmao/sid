@@ -48,17 +48,17 @@ fn workspaces_is_send_and_sync() {
 // ---------------------------------------------------------------------------
 
 mod focus {
-    use std::path::PathBuf;
-    use std::sync::mpsc;
+    use std::{path::PathBuf, sync::mpsc};
 
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
-    use sid_core::workspace_metadata::WorkspaceKind;
+    use sid_core::{
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+        workspace_metadata::WorkspaceKind,
+    };
     use sid_store::Workspace;
-    use sid_widgets::WorkspacesWidget;
-    use sid_widgets::workspaces::WsFocus;
+    use sid_widgets::{WorkspacesWidget, workspaces::WsFocus};
 
     fn ctx() -> WidgetCtx {
         let (tx, _rx) = mpsc::channel();

@@ -2,20 +2,23 @@
 //! events, then injects a `KillOutcome` to verify the toast is emitted at
 //! the right severity. Also captures insta snapshots of each modal stage.
 
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState,
+use sid_core::{
+    adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState},
+    context::WidgetCtx,
+    event::Event as SidEvent,
+    sys_probe::{SysSnapshot, kill_job::KillOutcome},
+    widget::Widget,
 };
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event as SidEvent;
-use sid_core::sys_probe::SysSnapshot;
-use sid_core::sys_probe::kill_job::KillOutcome;
-use sid_core::widget::Widget;
-use sid_widgets::NetworkWidget;
-use sid_widgets::network::{ToastLevel, render_to_string};
+use sid_widgets::{
+    NetworkWidget,
+    network::{ToastLevel, render_to_string},
+};
 
 fn snap_with_one_port() -> SysSnapshot {
     SysSnapshot {

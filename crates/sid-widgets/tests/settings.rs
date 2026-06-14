@@ -50,10 +50,10 @@ fn settings_is_send_and_sync() {
 fn focus_at_top_left_focuses_categories() {
     use ratatui::layout::Rect;
     use sid_ui::theme_registry::ThemeRegistry;
-    use sid_widgets::SettingsCategory;
-    use sid_widgets::settings::SettingsFocus;
-    use sid_widgets::settings::reset::ResetView;
-    use sid_widgets::settings::theme_picker::ThemePickerView;
+    use sid_widgets::{
+        SettingsCategory,
+        settings::{SettingsFocus, reset::ResetView, theme_picker::ThemePickerView},
+    };
 
     let r = ThemeRegistry::with_builtins();
     let mut w = SettingsWidget::with_categories(vec![
@@ -78,10 +78,10 @@ fn focus_at_top_left_focuses_categories() {
 fn focus_at_top_right_focuses_subview() {
     use ratatui::layout::Rect;
     use sid_ui::theme_registry::ThemeRegistry;
-    use sid_widgets::SettingsCategory;
-    use sid_widgets::settings::SettingsFocus;
-    use sid_widgets::settings::reset::ResetView;
-    use sid_widgets::settings::theme_picker::ThemePickerView;
+    use sid_widgets::{
+        SettingsCategory,
+        settings::{SettingsFocus, reset::ResetView, theme_picker::ThemePickerView},
+    };
 
     let r = ThemeRegistry::with_builtins();
     let mut w = SettingsWidget::with_categories(vec![

@@ -25,15 +25,19 @@
 
 use std::sync::Arc;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::SidError;
-use sid_core::animation::{AnimationConfig, GlyphSet, SETTING_ANIMATION_KEY};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    SidError,
+    animation::{AnimationConfig, GlyphSet, MotionStyle, SETTING_ANIMATION_KEY},
+    context::WidgetCtx,
+    event::Event,
+};
 use sid_store::{SettingValue, Store};
 use sid_ui::Theme;
 
@@ -66,7 +70,7 @@ pub enum AnimationViewOutcome {
 }
 
 /// Number of editable rows in the Animation sub-view.
-const FIELD_COUNT: usize = 6;
+const FIELD_COUNT: usize = 7;
 
 /// Field positions in the rendered list — also the wrapping range for
 /// [`AnimationView::focus_next`] / [`AnimationView::focus_prev`].
@@ -92,6 +96,8 @@ pub enum AnimationField {
     SupernovaOnEvent,
     /// Glyph palette cycled across [`GlyphSet`] variants.
     GlyphSet,
+    /// Motion style cycled across [`MotionStyle`] variants (Twinkle/Drift/Cosmos).
+    Motion,
 }
 
 impl AnimationField {
@@ -102,7 +108,8 @@ impl AnimationField {
             2 => Self::Fps,
             3 => Self::SupernovaIdleSecs,
             4 => Self::SupernovaOnEvent,
-            _ => Self::GlyphSet,
+            5 => Self::GlyphSet,
+            _ => Self::Motion,
         }
     }
 }
@@ -251,6 +258,9 @@ impl AnimationView {
             }
             AnimationField::GlyphSet => {
                 self.cfg.glyph_set = cycle_glyph_set(self.cfg.glyph_set, dir);
+            }
+            AnimationField::Motion => {
+                self.cfg.motion = cycle_motion_style(self.cfg.motion, dir);
             }
         }
         if self.cfg != before {
@@ -482,6 +492,11 @@ impl AnimationView {
                 "Glyph set",
                 glyph_label(self.cfg.glyph_set).to_string(),
             ),
+            (
+                AnimationField::Motion,
+                "Motion style",
+                motion_label(self.cfg.motion).to_string(),
+            ),
         ];
 
         for (i, (_, label, value)) in field_rows.iter().enumerate() {
@@ -538,6 +553,33 @@ fn glyph_label(g: GlyphSet) -> &'static str {
 fn cycle_glyph_set(current: GlyphSet, dir: i32) -> GlyphSet {
     let order = [GlyphSet::Cosmos, GlyphSet::Minimal, GlyphSet::Ascii];
     let idx = order.iter().position(|g| *g == current).unwrap_or(0) as i32;
+    let len = order.len() as i32;
+    let step = if dir < 0 { -1 } else { 1 };
+    let new = (idx + step).rem_euclid(len) as usize;
+    order[new]
+}
+
+/// Human-readable label for a [`MotionStyle`] variant, used in the
+/// Animation sub-view row.
+fn motion_label(m: MotionStyle) -> &'static str {
+    match m {
+        MotionStyle::Twinkle => "Twinkle",
+        MotionStyle::Drift => "Drift",
+        MotionStyle::Cosmos => "Cosmos",
+    }
+}
+
+/// Cycle through [`MotionStyle`] variants.
+///
+/// Order: `Twinkle → Drift → Cosmos → Twinkle` (forward); reversed for
+/// `dir < 0`.
+fn cycle_motion_style(current: MotionStyle, dir: i32) -> MotionStyle {
+    let order = [
+        MotionStyle::Twinkle,
+        MotionStyle::Drift,
+        MotionStyle::Cosmos,
+    ];
+    let idx = order.iter().position(|m| *m == current).unwrap_or(0) as i32;
     let len = order.len() as i32;
     let step = if dir < 0 { -1 } else { 1 };
     let new = (idx + step).rem_euclid(len) as usize;
@@ -756,5 +798,116 @@ mod tests {
             v.handle_event(&ev, &mut ctx),
             AnimationViewOutcome::None
         ));
+    }
+
+    // -------------------------------------------------------------------------
+    // WG4: MotionStyle picker
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cycle_motion_style_forward_covers_all_variants() {
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Twinkle, 1),
+            MotionStyle::Drift
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Drift, 1),
+            MotionStyle::Cosmos
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Cosmos, 1),
+            MotionStyle::Twinkle
+        );
+    }
+
+    #[test]
+    fn cycle_motion_style_reverse() {
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Twinkle, -1),
+            MotionStyle::Cosmos
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Cosmos, -1),
+            MotionStyle::Drift
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Drift, -1),
+            MotionStyle::Twinkle
+        );
+    }
+
+    #[test]
+    fn motion_field_changes_config_motion_and_marks_dirty() {
+        let mut v = AnimationView::new(AnimationConfig::default());
+        // Navigate to the Motion field (index 6).
+        for _ in 0..6 {
+            v.focus_next();
+        }
+        assert_eq!(v.focused_field(), AnimationField::Motion);
+        assert_eq!(v.config().motion, MotionStyle::Cosmos);
+        v.adjust_focused(1); // Cosmos -> Twinkle
+        assert_eq!(v.config().motion, MotionStyle::Twinkle);
+        assert!(v.is_dirty());
+    }
+
+    #[test]
+    fn motion_field_cycles_all_three_through_right_key() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        let mut v = AnimationView::new(AnimationConfig::default());
+        // Navigate to Motion.
+        for _ in 0..6 {
+            v.focus_next();
+        }
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let right_ev = Event::Key(KeyChord::new(KeyCode::Right, KeyModifiers::NONE));
+
+        // Cosmos -> Twinkle
+        v.handle_event(&right_ev, &mut ctx);
+        assert_eq!(v.config().motion, MotionStyle::Twinkle);
+
+        // Twinkle -> Drift
+        v.handle_event(&right_ev, &mut ctx);
+        assert_eq!(v.config().motion, MotionStyle::Drift);
+
+        // Drift -> Cosmos
+        v.handle_event(&right_ev, &mut ctx);
+        assert_eq!(v.config().motion, MotionStyle::Cosmos);
+    }
+
+    #[test]
+    fn motion_change_emits_saved_outcome_on_s_press() {
+        use std::sync::mpsc;
+
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::{Event, KeyChord};
+        use sid_store::{OpenStore, RedbStore};
+        use tempfile::tempdir;
+        let d = tempdir().unwrap();
+        let store: Arc<dyn Store> = Arc::new(RedbStore::open(&d.path().join("m.redb")).unwrap());
+        let mut v = AnimationView::with_store(AnimationConfig::default(), Arc::clone(&store));
+        // Navigate to Motion and cycle.
+        for _ in 0..6 {
+            v.focus_next();
+        }
+        v.adjust_focused(1); // change motion
+        assert!(v.is_dirty());
+
+        let (tx, _rx) = mpsc::channel();
+        let mut ctx = WidgetCtx::new(tx);
+        let s_ev = Event::Key(KeyChord::new(KeyCode::Char('S'), KeyModifiers::NONE));
+        let outcome = v.handle_event(&s_ev, &mut ctx);
+        assert!(
+            matches!(outcome, AnimationViewOutcome::Saved(_)),
+            "S should return Saved after motion change, got {outcome:?}"
+        );
+        assert!(!v.is_dirty());
+        // Persisted config should reflect the new motion.
+        let got = store.get_setting(SETTING_ANIMATION_KEY).unwrap().unwrap();
+        let back: AnimationConfig = serde_json::from_slice(&got.0).unwrap();
+        assert_eq!(back.motion, MotionStyle::Twinkle);
     }
 }

@@ -1,8 +1,10 @@
 //! `PortablePtyProvider` — opens portable-pty master/slave pairs and spawns a
 //! child process on the slave end.
 
-use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::{
+    io::{Read, Write},
+    sync::{Arc, Mutex},
+};
 
 use portable_pty::{Child, CommandBuilder, PtySize as PortablePtySize, native_pty_system};
 use sid_core::adapters::pty::{PtyError, PtyHandle, PtyProvider, PtySize, PtySpawn};

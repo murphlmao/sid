@@ -1,6 +1,5 @@
 use proptest::prelude::*;
-use sid_core::tab::TabId;
-use sid_core::widget::WidgetId;
+use sid_core::{tab::TabId, widget::WidgetId};
 use sid_store::{OpenStore, RedbStore, Store, WidgetState};
 use tempfile::tempdir;
 

@@ -1,8 +1,9 @@
 //! Integration tests for the `quick_actions` table on `RedbStore`.
 
 use proptest::prelude::*;
-use sid_store::schema::QUICK_ACTIONS;
-use sid_store::{OpenStore, QuickAction, QuickActionScope, RedbStore, Store};
+use sid_store::{
+    OpenStore, QuickAction, QuickActionScope, RedbStore, Store, schema::QUICK_ACTIONS,
+};
 use tempfile::tempdir;
 
 fn store() -> (tempfile::TempDir, RedbStore) {

@@ -5,27 +5,36 @@
 //! constructing a real `SshClient` or `PtyProvider`. The widget is a thin
 //! render layer over the state.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::adapters::pty::{PtyProvider, TerminalScreen};
-use sid_core::adapters::ssh::{SftpEntry, SshClient};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    adapters::{
+        pty::{PtyProvider, TerminalScreen},
+        ssh::{SftpEntry, SshClient},
+    },
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_store::{SshAuthKind, SshHost, SshHostSource};
-use sid_ui::Theme;
-use sid_ui::themes::cosmos;
+use sid_ui::{Theme, themes::cosmos};
 
-use crate::form::{FormField, FormSection, FormSpec, SectionKind, Validate};
-use crate::list_cursor::{CursorTarget, ListCursor};
-use crate::modal::Field;
+use crate::{
+    form::{FormField, FormSection, FormSpec, SectionKind, Validate},
+    list_cursor::{CursorTarget, ListCursor},
+    modal::Field,
+};
 
 // ---------------------------------------------------------------------------
 // SSH config entry (lite copy — widget crate never names sid-ssh)
@@ -1356,8 +1365,7 @@ impl Widget for SshWidget {
 /// assert!(s.contains("Hosts"));
 /// ```
 pub fn render_to_string(widget: &SshWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
     let theme = cosmos();

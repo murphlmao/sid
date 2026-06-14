@@ -1,13 +1,15 @@
 //! Tokio-driven tests for `SysProbe::run`: emits one snapshot per interval,
 //! fans out to multiple subscribers, and survives a failing provider.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
 };
-use sid_core::sys_probe::SysProbe;
+
+use sid_core::{
+    adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider},
+    sys_probe::SysProbe,
+};
 
 struct StubProvider;
 impl SysProvider for StubProvider {

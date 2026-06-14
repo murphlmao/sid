@@ -28,7 +28,7 @@ fn new_starts_clean_with_provided_config() {
 }
 
 #[test]
-fn focus_next_wraps_across_all_six_fields() {
+fn focus_next_wraps_across_all_seven_fields() {
     let mut v = AnimationView::new(AnimationConfig::default());
     let expected = [
         AnimationField::Enabled,
@@ -37,12 +37,14 @@ fn focus_next_wraps_across_all_six_fields() {
         AnimationField::SupernovaIdleSecs,
         AnimationField::SupernovaOnEvent,
         AnimationField::GlyphSet,
+        AnimationField::Motion,
     ];
     assert_eq!(v.focused_field(), expected[0]);
     for f in &expected[1..] {
         v.focus_next();
         assert_eq!(v.focused_field(), *f);
     }
+    // From the last field (Motion), focus_next wraps back to the first.
     v.focus_next();
     assert_eq!(v.focused_field(), AnimationField::Enabled);
 }
@@ -50,7 +52,9 @@ fn focus_next_wraps_across_all_six_fields() {
 #[test]
 fn focus_prev_wraps_in_reverse() {
     let mut v = AnimationView::new(AnimationConfig::default());
-    // From Enabled, prev should wrap to GlyphSet.
+    // From Enabled, prev should wrap to the last field (Motion), then GlyphSet.
+    v.focus_prev();
+    assert_eq!(v.focused_field(), AnimationField::Motion);
     v.focus_prev();
     assert_eq!(v.focused_field(), AnimationField::GlyphSet);
     v.focus_prev();
@@ -165,8 +169,7 @@ fn flush_then_load_round_trips_through_store() {
 // Snapshot tests
 // ---------------------------------------------------------------------------
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use ratatui::{Terminal, backend::TestBackend};
 use sid_ui::themes::cosmos;
 
 fn render_view_to_string(v: &AnimationView, width: u16, height: u16, focused: bool) -> String {
