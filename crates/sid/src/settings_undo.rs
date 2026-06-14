@@ -228,9 +228,12 @@ mod tests {
             ops in prop::collection::vec((0usize..3, any::<bool>()), 1..20usize),
         ) {
             // Three boolean settings, all initialised false.
+            // `AUTO_SCAN_WORKSPACES` was removed from the Settings UI, so it is
+            // no longer a meaningful toggle target; `SHOW_ADD_NEW_ROW` is a
+            // live bool behavior key and exercises the same round-trip model.
             const KEYS: [&str; 3] = [
                 settings_keys::AUTO_RESTORE_SESSION,
-                settings_keys::AUTO_SCAN_WORKSPACES,
+                settings_keys::SHOW_ADD_NEW_ROW,
                 settings_keys::DEFAULT_TAB,
             ];
 

@@ -53,6 +53,9 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         ssh_byte_rx: None,
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
+        active_theme: sid_ui::themes::cosmos(),
+        persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+        last_heartbeat: std::time::Instant::now(),
     }
 }
 

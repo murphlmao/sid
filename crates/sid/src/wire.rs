@@ -204,6 +204,9 @@ pub enum JobOutcome {
 ///     ssh_byte_rx: None,
 ///     ssh_last_pty_area: None,
 ///     ssh_shutdown_tx: None,
+///     active_theme: sid_ui::themes::cosmos(),
+///     persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+///     last_heartbeat: std::time::Instant::now(),
 /// };
 /// ```
 pub struct SidApp {
@@ -299,6 +302,16 @@ pub struct SidApp {
     /// drop) to terminate the reader cleanly. `None` when no reader is
     /// running.
     pub ssh_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// The active colour theme, resolved from the persisted `THEME_NAME`
+    /// setting at startup and updated live when the user applies a new theme.
+    /// `draw()` reads this so theme selection actually takes effect.
+    pub active_theme: sid_ui::theme::Theme,
+    /// Debounces session-state persistence. Constructed from the
+    /// `PERSIST_DEBOUNCE_MS` setting; a zero duration flushes every iteration.
+    pub persister: sid_core::persister::StatePersister,
+    /// Wall-clock instant of the last session heartbeat. The event loop touches
+    /// the session's `last_active` every `HEARTBEAT_INTERVAL_SECS`.
+    pub last_heartbeat: std::time::Instant,
 }
 
 /// Fallback [`SystemctlClient`] used when `systemctl` / `journalctl` are not
@@ -1072,19 +1085,26 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 ///     ssh_byte_rx: None,
 ///     ssh_last_pty_area: None,
 ///     ssh_shutdown_tx: None,
+///     active_theme: sid_ui::themes::cosmos(),
+///     persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+///     last_heartbeat: std::time::Instant::now(),
 /// };
 /// // With a fresh store there's no prior session — no modal is pushed.
 /// maybe_push_resume_modal(&mut sid_app);
 /// assert!(sid_app.modal_stack.is_empty());
 /// ```
-pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
-    use sid_widgets::{Field, ModalSpec};
-    let Ok(Some(prev)) = sid_app.store.current_session() else {
-        return;
-    };
-    let Some(active_tab) = prev.active_tab.clone() else {
-        return;
-    };
+/// Inspect the store for a *restorable* prior session: one that has a recorded
+/// `active_tab` and either is still recorded as running (`ended_at == None`) or
+/// ended within [`RESUME_WINDOW_NS`]. Returns the tab to restore alongside the
+/// nanoseconds elapsed since it ended (`None` when still running).
+///
+/// This is the single source of truth for the recency window, shared by
+/// [`maybe_push_resume_modal`] (the `"ask"` path) and the silent `"yes"`
+/// auto-restore path in the binary. Returns `None` when there is nothing to
+/// restore.
+pub(crate) fn restorable_prior_tab(store: &dyn Store) -> Option<(TabId, Option<u64>)> {
+    let prev = store.current_session().ok().flatten()?;
+    let active_tab = prev.active_tab.clone()?;
     // Sessions still recorded as "open" (ended_at == None) are also valid
     // resume candidates — that's the common case where a process exited
     // without a clean `end_session`.
@@ -1095,10 +1115,19 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
         Some(ns) => ns < RESUME_WINDOW_NS,
     };
     if !recent_enough {
-        return;
+        return None;
     }
+    Some((active_tab, elapsed_ns))
+}
+
+pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
+    use sid_widgets::{Field, ModalSpec};
+    let Some((active_tab, elapsed_ns)) = restorable_prior_tab(&*sid_app.store) else {
+        return;
+    };
+    let still_running = elapsed_ns.is_none();
     let elapsed_secs = elapsed_ns.map(|ns| ns / 1_000_000_000).unwrap_or(0);
-    let when = if prev.ended_at.is_none() {
+    let when = if still_running {
         "(no ended_at; session still recorded as running)".to_string()
     } else if elapsed_secs == 0 {
         "(just now)".to_string()
@@ -1124,10 +1153,68 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
     sid_app.modal_stack.push(modal);
 }
 
+/// Resolve the start tab at launch. The CLI `--start-tab` argument always
+/// wins; the `DEFAULT_TAB` setting is the fallback when no CLI arg is given.
+///
+/// # Examples
+///
+/// ```
+/// use sid::wire::resolve_start_tab;
+///
+/// // CLI wins over the setting.
+/// assert_eq!(
+///     resolve_start_tab(Some("ssh"), Some("database".into())),
+///     Some("ssh".to_string())
+/// );
+/// // Falls back to the setting when no CLI arg.
+/// assert_eq!(
+///     resolve_start_tab(None, Some("database".into())),
+///     Some("database".to_string())
+/// );
+/// // Nothing set → None (caller uses its built-in default).
+/// assert_eq!(resolve_start_tab(None, None), None);
+/// ```
+pub fn resolve_start_tab(cli: Option<&str>, setting: Option<String>) -> Option<String> {
+    cli.map(|s| s.to_string()).or(setting)
+}
+
+/// Apply the `AUTO_RESTORE_SESSION` policy at startup.
+///
+/// Reads `settings_keys::AUTO_RESTORE_SESSION` (default `"ask"`) and dispatches:
+/// - `"ask"` → [`maybe_push_resume_modal`] (the interactive resume prompt).
+/// - `"yes"` → silently switch to the restorable prior tab (no modal). No-op
+///   when there is nothing to restore.
+/// - `"no"` → do nothing; start on the launch-default tab.
+///
+/// Unknown values fall back to `"ask"` so a malformed setting never strands the
+/// user without a resume path.
+pub fn apply_auto_restore(sid_app: &mut SidApp) {
+    use sid_store::{TypedSettings, settings_keys};
+    let policy = sid_app
+        .store
+        .get_string(settings_keys::AUTO_RESTORE_SESSION)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "ask".to_string());
+    match policy.as_str() {
+        "yes" => {
+            if let Some((tab, _)) = restorable_prior_tab(&*sid_app.store) {
+                let _ = sid_app.app.tabs_mut().switch_to(&tab);
+            }
+        }
+        "no" => {
+            // Start fresh — intentionally nothing to do.
+        }
+        // "ask" and any unknown value fall back to the interactive prompt.
+        _ => maybe_push_resume_modal(sid_app),
+    }
+}
+
 /// Draw one frame: tab strip on top, active panel body, help bar on bottom,
 /// optional command-palette overlay centred over everything.
 ///
-/// Uses the cosmos theme throughout. Pure layout — does not mutate any state.
+/// Reads `sid_app.active_theme` for all chrome colours. Pure layout — does not
+/// mutate any state.
 /// Receives `&SidApp` (not just `&App`) so the active panel can read live data
 /// out of the store (workspaces list, etc.) instead of relying on widget state.
 ///
@@ -1172,6 +1259,9 @@ pub fn maybe_push_resume_modal(sid_app: &mut SidApp) {
 ///     ssh_byte_rx: None,
 ///     ssh_last_pty_area: None,
 ///     ssh_shutdown_tx: None,
+///     active_theme: sid_ui::themes::cosmos(),
+///     persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+///     last_heartbeat: std::time::Instant::now(),
 /// };
 /// let backend = TestBackend::new(120, 40);
 /// let mut terminal = Terminal::new(backend).unwrap();
@@ -1182,7 +1272,11 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     use ratatui::style::Style as TextStyle;
     use ratatui::widgets::{Block as RBlock, BorderType, Borders as RBorders};
 
-    let theme = cosmos();
+    // `Theme` is a small RGB palette + glyph set; a per-frame clone is cheap
+    // and keeps the existing `&theme` call sites unchanged. Reading the live
+    // `active_theme` (rather than the hardcoded `cosmos()`) is what makes
+    // theme selection actually take effect at runtime.
+    let theme = sid_app.active_theme.clone();
     let app = &sid_app.app;
     let size = frame.area();
     if size.width == 0 || size.height == 0 {
@@ -1487,7 +1581,14 @@ pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
     // Drawn after the body / footer but BEFORE modal/palette so modals
     // visually cover the toast region. Toasts continue to age while a modal
     // is open; once dismissed they appear if still alive.
-    render_toasts(frame, inner, &theme, &sid_app.toasts);
+    //
+    // Gated by `TOASTS_ENABLED`: messages are now a logs-only channel (see
+    // `record`), so the floating overlay is suppressed by default. The queue
+    // is still fed, so flipping the flag back on restores the overlay with no
+    // further wiring.
+    if TOASTS_ENABLED {
+        render_toasts(frame, inner, &theme, &sid_app.toasts);
+    }
 
     // ─── Modal overlay (Phase 3) ──────────────────────────────────────────
     // The topmost modal renders on top of body+footer+status+toasts.
@@ -1825,6 +1926,9 @@ pub fn fps_to_tick_ms(fps: u8) -> u64 {
 ///         ssh_byte_rx: None,
 ///         ssh_last_pty_area: None,
 ///         ssh_shutdown_tx: None,
+///         active_theme: sid_ui::themes::cosmos(),
+///         persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+///         last_heartbeat: std::time::Instant::now(),
 ///     };
 ///     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 ///     // Drop the sender to close the channel so the loop exits immediately.
@@ -1832,6 +1936,24 @@ pub fn fps_to_tick_ms(fps: u8) -> u64 {
 ///     run_event_loop(&mut terminal, &mut sid_app, &mut rx).await.unwrap();
 /// }
 /// ```
+/// `true` when at least `interval` has elapsed since `last`. Pure helper so the
+/// heartbeat cadence is testable without wall-clock sleeps.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::{Duration, Instant};
+/// use sid::wire::heartbeat_due;
+///
+/// // Zero interval is always due.
+/// assert!(heartbeat_due(Instant::now(), Duration::ZERO));
+/// // A far-future interval is never due for a fresh instant.
+/// assert!(!heartbeat_due(Instant::now(), Duration::from_secs(86_400)));
+/// ```
+pub fn heartbeat_due(last: std::time::Instant, interval: std::time::Duration) -> bool {
+    last.elapsed() >= interval
+}
+
 pub async fn run_event_loop<B>(
     terminal: &mut Terminal<B>,
     sid_app: &mut SidApp,
@@ -1841,6 +1963,18 @@ where
     B: Backend,
     B::Error: Send + Sync + 'static,
 {
+    use sid_store::TypedSettings;
+    // Session heartbeat cadence. Read HEARTBEAT_INTERVAL_SECS (default 5s); the
+    // event loop touches the session's `last_active` no more than once per
+    // interval so a long-lived detached process keeps a fresh recency stamp.
+    let heartbeat_interval = std::time::Duration::from_secs(
+        sid_app
+            .store
+            .get_u64(sid_store::settings_keys::HEARTBEAT_INTERVAL_SECS)
+            .ok()
+            .flatten()
+            .unwrap_or(5),
+    );
     let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
     loop {
         // Drain any modal submits queued in the previous iteration.
@@ -1908,6 +2042,16 @@ where
                     fx.tick(area, &sid_app.animation);
                 }
             }
+            // Session heartbeat: at most once per HEARTBEAT_INTERVAL_SECS,
+            // refresh the current session's `last_active` so a long-running
+            // (possibly detached) process keeps a fresh recency stamp.
+            if heartbeat_due(sid_app.last_heartbeat, heartbeat_interval) {
+                if let Ok(Some(mut sess)) = sid_app.store.current_session() {
+                    sess.last_active = sid_store::now_epoch();
+                    let _ = sid_app.store.upsert_session(&sess);
+                }
+                sid_app.last_heartbeat = std::time::Instant::now();
+            }
         }
 
         // Translate mouse events into synthetic key events (scroll → j/k)
@@ -1969,8 +2113,19 @@ where
             drain_database_commands(sid_app);
             // Drain network-tab widget actions (detail pane open/close).
             apply_pending_network_actions(sid_app);
-            let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
+            // Debounced session-state persistence: mark dirty every iteration,
+            // but only write once the debounce window has elapsed. Compute the
+            // flush decision first (needs `&mut sid_app.persister`), then do the
+            // save (needs `&sid_app.store/app`) so the borrows don't overlap.
+            sid_app.persister.mark_dirty();
+            let should_flush = sid_app.persister.should_flush();
+            if should_flush {
+                let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
+            }
             if matches!(dispatch, Dispatch::Quit) {
+                // Flush unconditionally on quit so the final state is never
+                // lost to the debounce window.
+                let _ = save_active_tab(&*sid_app.store, &sid_app.session_id, &sid_app.app);
                 break;
             }
         }
@@ -2231,28 +2386,76 @@ fn maybe_open_workspaces_form_for_key(
 /// Drain the active Settings widget's pending outcomes (if any) and
 /// dispatch each to the right `Store::put_*` call. Pushes a success
 /// toast per applied outcome; pushes an error toast on `put_*` failure.
-fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
-    use sid_core::layout::Layout;
-    use sid_store::TypedSettings;
-    use sid_widgets::settings::behavior_toggles::ToggleValue;
+/// Master switch for the bottom-right toast overlay. Toasts are now a
+/// logs-only channel: every message is recorded into the Settings → Logs ring
+/// via [`record`], and the floating overlay is suppressed. Flip to `true` to
+/// restore the on-screen toasts (the queue is still fed regardless, so no
+/// message is lost when it is off).
+const TOASTS_ENABLED: bool = false;
 
-    // Find the settings tab; bail if it's not present (custom test setups).
-    let Some(settings_tab) = sid_app
+/// Mutably borrow the live [`sid_widgets::SettingsWidget`] out of the Settings
+/// tab, if present. Returns `None` when the Settings tab is absent (custom test
+/// setups) or its layout / widget type does not match.
+fn settings_widget_mut(sid_app: &mut SidApp) -> Option<&mut sid_widgets::SettingsWidget> {
+    use sid_core::layout::Layout;
+    let settings_tab = sid_app
         .app
         .tabs_mut()
         .tabs_mut()
         .iter_mut()
-        .find(|t| t.id.as_str() == "settings")
-    else {
-        return;
-    };
+        .find(|t| t.id.as_str() == "settings")?;
     let Layout::Single(w) = &mut settings_tab.layout else {
-        return;
+        return None;
     };
-    let Some(settings) = w.as_any_mut().downcast_mut::<sid_widgets::SettingsWidget>() else {
-        return;
+    w.as_any_mut().downcast_mut::<sid_widgets::SettingsWidget>()
+}
+
+/// Record a user-facing message into both channels:
+///
+/// 1. The Settings → Logs ring (via [`sid_widgets::SettingsWidget::record_log`]),
+///    which is the durable, scrollable surface the user reads.
+/// 2. The toast queue (kept fed even though the overlay is gated off by
+///    [`TOASTS_ENABLED`]) so flipping the overlay back on needs no further
+///    wiring.
+///
+/// The [`sid_widgets::settings::logs::LogLevel`] maps to a toast kind:
+/// `Success` → success, `Error` → error, `Info` → a neutral success toast
+/// (there is no dedicated "info" log level; info messages render as a plain
+/// success toast which carries no error styling).
+fn record(
+    sid_app: &mut SidApp,
+    level: sid_widgets::settings::logs::LogLevel,
+    message: impl Into<String>,
+) {
+    use sid_widgets::settings::logs::{LogEntry, LogLevel};
+    let entry = LogEntry::new(now_epoch(), level, message);
+    // Feed the toast queue first (cheap clone of the message string).
+    let toast = match level {
+        LogLevel::Success => Toast::success(entry.message.clone()),
+        LogLevel::Error => Toast::error(entry.message.clone()),
+        LogLevel::Info => Toast::success(entry.message.clone()),
     };
-    let outcomes = settings.take_pending_outcomes();
+    sid_app.toasts.push(toast);
+    // Then record into the Logs ring (no-op if the category is absent).
+    if let Some(settings) = settings_widget_mut(sid_app) {
+        settings.record_log(entry);
+    }
+}
+
+fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
+    use sid_store::TypedSettings;
+    use sid_widgets::settings::behavior_toggles::ToggleValue;
+
+    // Drain the pending outcomes into an owned Vec, then DROP the settings
+    // widget borrow before the loop. The loop calls `record(...)`, which
+    // re-borrows the same widget to push log entries — so the extraction
+    // borrow must not outlive it.
+    let outcomes = {
+        let Some(settings) = settings_widget_mut(sid_app) else {
+            return;
+        };
+        settings.take_pending_outcomes()
+    };
     if outcomes.is_empty() {
         return;
     }
@@ -2281,14 +2484,9 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     payload: UndoPayload::BehaviorToggle { key, prior },
                     recorded_at: std::time::Instant::now(),
                 });
-                persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
-                    put_result,
-                    undo,
-                    format!("Saved {key}"),
-                    |e| format!("Save failed for {key}: {e}"),
-                );
+                persist_outcome(sid_app, put_result, undo, format!("Saved {key}"), |e| {
+                    format!("Save failed for {key}: {e}")
+                });
             }
             WorkspaceRootsChanged(new_roots) => {
                 use sid_store::{SettingValue, settings_keys};
@@ -2309,8 +2507,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     recorded_at: std::time::Instant::now(),
                 });
                 persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
+                    sid_app,
                     put_result,
                     undo,
                     "Workspace roots saved".into(),
@@ -2328,14 +2525,9 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     recorded_at: std::time::Instant::now(),
                 });
                 let label = format!("Quick action '{}' saved", qa.id);
-                persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
-                    put_result,
-                    undo,
-                    label,
-                    |e| format!("Quick action save failed: {e}"),
-                );
+                persist_outcome(sid_app, put_result, undo, label, |e| {
+                    format!("Quick action save failed: {e}")
+                });
             }
             QuickActionRemoved(id) => {
                 // Read prior record so it can be restored. If the record is
@@ -2347,8 +2539,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     recorded_at: std::time::Instant::now(),
                 });
                 persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
+                    sid_app,
                     put_result,
                     undo,
                     format!("Quick action '{id}' removed"),
@@ -2377,8 +2568,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     recorded_at: std::time::Instant::now(),
                 });
                 persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
+                    sid_app,
                     put_result,
                     undo,
                     format!("Keybinds saved to '{profile_name}'"),
@@ -2401,39 +2591,45 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     payload: UndoPayload::Theme { prior: prior_theme },
                     recorded_at: std::time::Instant::now(),
                 });
-                // draw() hardcodes cosmos() so the theme isn't actually applied
-                // at runtime; be honest in the toast so the user understands.
+                let applied_ok = put_result.is_ok();
                 persist_outcome(
-                    &mut sid_app.undo_ring,
-                    &mut sid_app.toasts,
+                    sid_app,
                     put_result,
                     undo,
-                    format!("Theme '{name}' saved (takes effect on restart)"),
+                    format!("Theme '{name}' applied"),
                     |e| format!("Theme save failed: {e}"),
                 );
+                // Apply the new theme LIVE: re-resolve it from the store (which
+                // now holds the freshly-persisted THEME_NAME) so `draw()` picks
+                // it up on the next frame. Only on a successful persist.
+                if applied_ok {
+                    sid_app.active_theme = load_active_theme(&*sid_app.store).0;
+                }
             }
             DbPathOverrideWritten(notice) => {
-                sid_app.toasts.push(Toast::info(format!(
+                let msg = format!(
                     "DB path written to {} — restart to apply",
                     notice.sid_toml_path.display()
-                )));
+                );
                 // DB path change requires a restart — intentionally not undoable.
+                record(sid_app, sid_widgets::settings::logs::LogLevel::Info, msg);
             }
             FactoryResetConfirmed => {
+                use sid_widgets::settings::logs::LogLevel;
                 use sid_widgets::settings::reset::ResetView;
                 let mut rv = ResetView::new();
                 rv.open_confirm();
                 match rv.confirm(&*sid_app.store) {
                     Ok(n) => {
-                        sid_app
-                            .toasts
-                            .push(Toast::success(format!("Reset {n} settings to defaults")));
                         // Factory reset is intentionally not undoable.
+                        record(
+                            sid_app,
+                            LogLevel::Success,
+                            format!("Reset {n} settings to defaults"),
+                        );
                     }
                     Err(e) => {
-                        sid_app
-                            .toasts
-                            .push(Toast::error(format!("Reset failed: {e}")));
+                        record(sid_app, LogLevel::Error, format!("Reset failed: {e}"));
                     }
                 }
             }
@@ -2447,11 +2643,13 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                     sid_app.fx_state = None;
                 }
                 sid_app.animation = new_cfg;
-                sid_app
-                    .toasts
-                    .push(Toast::success("Animation settings applied".to_string()));
                 // Live-applied in place — nothing persisted here beyond what
                 // AnimationView already flushed, so no undo entry is recorded.
+                record(
+                    sid_app,
+                    sid_widgets::settings::logs::LogLevel::Success,
+                    "Animation settings applied".to_string(),
+                );
             }
         }
     }
@@ -2471,27 +2669,35 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
 ///   reason; restoring "unset" is a legitimate undo.
 /// - Pass `None` for net-new records with no prior (e.g. first upsert of a
 ///   quick-action); there is nothing to restore.
+///
+/// Both the success and error messages are routed through [`record`], so every
+/// outcome lands in the Settings → Logs ring (and the gated toast queue) — not
+/// just the on-screen toast overlay.
 fn persist_outcome(
-    ring: &mut std::collections::VecDeque<crate::settings_undo::UndoEntry>,
-    toasts: &mut crate::toast::ToastQueue,
+    sid_app: &mut SidApp,
     put_result: Result<(), sid_core::SidError>,
     undo: Option<crate::settings_undo::UndoEntry>,
     success_label: String,
     err_fn: impl FnOnce(sid_core::SidError) -> String,
 ) {
+    use sid_widgets::settings::logs::LogLevel;
     match put_result {
         Ok(()) => {
             let pushed = if let Some(entry) = undo {
-                push_undo(ring, entry);
+                push_undo(&mut sid_app.undo_ring, entry);
                 true
             } else {
                 false
             };
             let suffix = if pushed { " (u: undo)" } else { "" };
-            toasts.push(Toast::success(format!("{success_label}{suffix}")));
+            record(
+                sid_app,
+                LogLevel::Success,
+                format!("{success_label}{suffix}"),
+            );
         }
         Err(e) => {
-            toasts.push(Toast::error(err_fn(e)));
+            record(sid_app, LogLevel::Error, err_fn(e));
         }
     }
 }
@@ -7385,6 +7591,49 @@ mod tests {
         assert_eq!(app.tabs().active_index(), 0);
     }
 
+    // ---- T5: DEFAULT_TAB resolution ----------------------------------------
+
+    /// CLI arg always wins over the DEFAULT_TAB setting.
+    #[test]
+    fn resolve_start_tab_cli_wins_over_setting() {
+        assert_eq!(
+            resolve_start_tab(Some("ssh"), Some("database".into())),
+            Some("ssh".to_string())
+        );
+    }
+
+    /// With no CLI arg, the DEFAULT_TAB setting is used.
+    #[test]
+    fn resolve_start_tab_falls_back_to_setting() {
+        assert_eq!(
+            resolve_start_tab(None, Some("database".into())),
+            Some("database".to_string())
+        );
+    }
+
+    /// With neither set, returns None (caller uses its built-in default).
+    #[test]
+    fn resolve_start_tab_none_when_nothing_set() {
+        assert_eq!(resolve_start_tab(None, None), None);
+    }
+
+    /// End-to-end: the resolved tab actually drives the built app's active tab.
+    /// CLI=None + DEFAULT_TAB="database" → active tab is database.
+    #[test]
+    fn default_tab_setting_drives_active_tab_when_no_cli() {
+        let resolved = resolve_start_tab(None, Some("database".into()));
+        let app = build_app(resolved.as_deref(), vec![]);
+        assert_eq!(app.tabs().active().id.as_str(), "database");
+    }
+
+    /// End-to-end: CLI="ssh" wins over DEFAULT_TAB="database".
+    #[test]
+    fn cli_start_tab_overrides_default_tab_setting() {
+        let resolved = resolve_start_tab(Some("ssh"), Some("database".into()));
+        let app = build_app(resolved.as_deref(), vec![]);
+        assert_eq!(app.tabs().active().id.as_str(), "ssh");
+    }
+
     // ---- probe_keyring ----
 
     /// How a [`ProbeStore`] should misbehave on `get`, to drive each failure
@@ -7538,6 +7787,137 @@ mod tests {
             pretty_label("some.deeply.nested.action.id"),
             "some.deeply.nested.action.id"
         );
+    }
+
+    // ---- T6: PERSIST_DEBOUNCE_MS / persister-driven flush ------------------
+
+    /// Zero-debounce persister flushes immediately after `mark_dirty` — the
+    /// behaviour the event loop relies on when PERSIST_DEBOUNCE_MS is 0.
+    #[test]
+    fn persister_zero_debounce_flushes_immediately() {
+        use sid_core::persister::StatePersister;
+        let mut p = StatePersister::new(std::time::Duration::ZERO);
+        assert!(!p.should_flush(), "nothing dirty yet");
+        p.mark_dirty();
+        assert!(p.should_flush(), "zero debounce → due immediately");
+        assert!(!p.should_flush(), "marker consumed by the flush");
+    }
+
+    /// A large-debounce persister does not flush twice within the window: the
+    /// loop marks dirty every iteration, but only the first elapsed window
+    /// flushes. With a far-future debounce, no iteration flushes.
+    #[test]
+    fn persister_large_debounce_does_not_flush_within_window() {
+        use sid_core::persister::StatePersister;
+        let mut p = StatePersister::new(std::time::Duration::from_secs(3600));
+        p.mark_dirty();
+        assert!(!p.should_flush(), "debounce not elapsed → no flush");
+        // Re-marking does not reset / force a flush within the window.
+        p.mark_dirty();
+        assert!(!p.should_flush(), "still within the debounce window");
+        assert!(p.is_dirty(), "state remains dirty until the window elapses");
+    }
+
+    /// Quit flushes session state unconditionally even when the debounce window
+    /// has NOT elapsed. With a far-future debounce, the per-iteration flush
+    /// never fires, so the session row only exists because the quit path wrote
+    /// it. We assert the active tab round-trips through the store after a quit.
+    #[tokio::test]
+    async fn quit_flushes_session_state_despite_debounce() {
+        use ratatui::backend::TestBackend;
+        use tokio::sync::mpsc;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        let mut sid_app = build_test_sid_app(Some("database"));
+        // Far-future debounce: per-iteration `should_flush` can never fire.
+        sid_app.persister =
+            sid_core::persister::StatePersister::new(std::time::Duration::from_secs(86_400));
+        sid_app.session_id = "quit-flush-sess".into();
+
+        // Send a single Ctrl+Q so `App::handle_event` returns Dispatch::Quit.
+        let (tx, mut rx) = mpsc::channel::<sid_core::event::Event>(4);
+        let ctrl_q = sid_core::event::KeyChord {
+            code: crossterm::event::KeyCode::Char('q'),
+            mods: crossterm::event::KeyModifiers::CONTROL,
+        };
+        tx.send(sid_core::event::Event::Key(ctrl_q)).await.unwrap();
+        drop(tx);
+
+        run_event_loop(&mut terminal, &mut sid_app, &mut rx)
+            .await
+            .unwrap();
+
+        let loaded = sid_app
+            .store
+            .current_session()
+            .unwrap()
+            .expect("quit must have flushed a session record");
+        assert_eq!(loaded.id, "quit-flush-sess");
+        assert_eq!(
+            loaded.active_tab.unwrap().as_str(),
+            "database",
+            "quit flush must persist the active tab"
+        );
+    }
+
+    // ---- T7: HEARTBEAT_INTERVAL_SECS / heartbeat_due -----------------------
+
+    /// A zero interval is always due; a far-future interval is never due for a
+    /// fresh instant. Deterministic — no wall-clock sleeps.
+    #[test]
+    fn heartbeat_due_zero_interval_always_due() {
+        assert!(heartbeat_due(
+            std::time::Instant::now(),
+            std::time::Duration::ZERO
+        ));
+    }
+
+    #[test]
+    fn heartbeat_due_large_interval_not_due() {
+        assert!(!heartbeat_due(
+            std::time::Instant::now(),
+            std::time::Duration::from_secs(86_400)
+        ));
+    }
+
+    /// An instant already aged past the interval is due.
+    #[test]
+    fn heartbeat_due_past_interval_is_due() {
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        assert!(heartbeat_due(past, std::time::Duration::from_secs(5)));
+    }
+
+    /// The heartbeat body refreshes the session's `last_active` via the store.
+    /// Verifies the store contract the loop relies on (no timing involved).
+    #[test]
+    fn heartbeat_upsert_refreshes_last_active() {
+        let sid_app = build_test_sid_app(None);
+        // Seed a session with a stale last_active.
+        let stale = SessionRecord {
+            id: "hb-sess".into(),
+            started_at: now_epoch().saturating_sub(100_000_000_000),
+            last_active: 1,
+            ended_at: None,
+            active_tab: Some(TabId::new("system")),
+            open_tabs: vec![],
+        };
+        sid_app.store.upsert_session(&stale).unwrap();
+
+        // Mirror the loop's heartbeat body.
+        let mut sess = sid_app.store.current_session().unwrap().unwrap();
+        let before = sess.last_active;
+        sess.last_active = now_epoch();
+        sid_app.store.upsert_session(&sess).unwrap();
+
+        let after = sid_app
+            .store
+            .current_session()
+            .unwrap()
+            .unwrap()
+            .last_active;
+        assert!(after > before, "last_active must advance after a heartbeat");
     }
 
     // ---- centered ----
@@ -8108,6 +8488,9 @@ mod tests {
             ssh_byte_rx: None,
             ssh_last_pty_area: None,
             ssh_shutdown_tx: None,
+            active_theme: sid_ui::themes::cosmos(),
+            persister: sid_core::persister::StatePersister::new(std::time::Duration::ZERO),
+            last_heartbeat: std::time::Instant::now(),
         }
     }
 
@@ -8321,6 +8704,76 @@ mod tests {
         let (_theme, registry) = load_active_theme(&store);
         assert!(registry.get("mine").is_some());
         assert_eq!(registry.get("mine").unwrap().background.r, 0x01);
+    }
+
+    // ---- T1: active_theme actually drives draw() ----
+
+    /// `draw` renders different cell styling under two distinct themes. Proves
+    /// `sid_app.active_theme` is read by the render path rather than a
+    /// hardcoded palette. We render the same app twice — once with cosmos,
+    /// once with void — and assert the resulting buffers differ.
+    #[test]
+    fn draw_reflects_active_theme_palette() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let render = |theme: sid_ui::theme::Theme| {
+            let mut sid_app = build_test_sid_app(None);
+            sid_app.active_theme = theme;
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        let cosmos_buf = render(sid_ui::themes::cosmos());
+        let void_buf = render(sid_ui::themes::void());
+        // The border / foreground colours differ between the two built-in
+        // themes, so at least one cell's style must differ.
+        assert_ne!(
+            cosmos_buf, void_buf,
+            "rendered buffer must differ between cosmos and void themes"
+        );
+    }
+
+    /// The `ThemeApplied` settings outcome mutates `sid_app.active_theme` live
+    /// (not just on restart). Drive the outcome through the wire drain and
+    /// assert the field changed to the applied theme.
+    #[test]
+    fn theme_applied_outcome_updates_active_theme_live() {
+        use sid_core::layout::Layout;
+
+        let mut sid_app = build_test_sid_app(Some("settings"));
+        // Precondition: starts on cosmos.
+        assert_eq!(sid_app.active_theme.name, "cosmos");
+
+        // Inject a ThemeApplied outcome selecting a non-cosmos built-in theme.
+        {
+            let tabs = sid_app.app.tabs_mut().tabs_mut();
+            let settings_tab = tabs
+                .iter_mut()
+                .find(|t| t.id.as_str() == "settings")
+                .expect("settings tab present");
+            let Layout::Single(w) = &mut settings_tab.layout else {
+                panic!("settings tab must have Single layout");
+            };
+            let settings_widget = w
+                .as_any_mut()
+                .downcast_mut::<sid_widgets::SettingsWidget>()
+                .expect("downcast to SettingsWidget");
+            settings_widget.push_pending_outcome(
+                sid_widgets::settings::PendingSettingsOutcome::ThemeApplied {
+                    name: "void".into(),
+                },
+            );
+        }
+
+        apply_pending_settings_outcomes(&mut sid_app);
+
+        assert_eq!(
+            sid_app.active_theme.name, "void",
+            "active_theme must reflect the applied theme name immediately"
+        );
     }
 
     #[test]
@@ -11570,6 +12023,96 @@ mod tests {
         assert_eq!(sid_app.modal_stack[0].id.0, "session.resume:system");
     }
 
+    // ---- T4: AUTO_RESTORE_SESSION policy ----------------------------------
+
+    /// Seed a recent prior session with `active_tab = ssh`.
+    fn seed_recent_ssh_session(sid_app: &SidApp) {
+        let ended = now_epoch().saturating_sub(30 * 1_000_000_000);
+        write_session(&*sid_app.store, "sess-prev", Some("ssh"), Some(ended));
+    }
+
+    /// `"ask"` (the default) pushes the resume modal and does not switch tabs.
+    #[test]
+    fn auto_restore_ask_pushes_modal() {
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        seed_recent_ssh_session(&sid_app);
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::AUTO_RESTORE_SESSION, "ask")
+            .unwrap();
+        apply_auto_restore(&mut sid_app);
+        assert_eq!(sid_app.modal_stack.len(), 1, "ask must push a modal");
+        assert_eq!(sid_app.modal_stack[0].id.0, "session.resume:ssh");
+        // Active tab unchanged until the user chooses Resume.
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), "workspaces");
+    }
+
+    /// An unset setting defaults to `"ask"`.
+    #[test]
+    fn auto_restore_unset_defaults_to_ask() {
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        seed_recent_ssh_session(&sid_app);
+        apply_auto_restore(&mut sid_app);
+        assert_eq!(sid_app.modal_stack.len(), 1, "unset must behave as ask");
+    }
+
+    /// `"yes"` silently switches to the prior tab and pushes NO modal.
+    #[test]
+    fn auto_restore_yes_switches_tab_without_modal() {
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        seed_recent_ssh_session(&sid_app);
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::AUTO_RESTORE_SESSION, "yes")
+            .unwrap();
+        apply_auto_restore(&mut sid_app);
+        assert!(
+            sid_app.modal_stack.is_empty(),
+            "yes must not push a resume modal"
+        );
+        assert_eq!(
+            sid_app.app.tabs().active().id.as_str(),
+            "ssh",
+            "yes must restore the prior tab silently"
+        );
+    }
+
+    /// `"no"` pushes no modal and leaves the launch-default tab active.
+    #[test]
+    fn auto_restore_no_starts_fresh() {
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        seed_recent_ssh_session(&sid_app);
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::AUTO_RESTORE_SESSION, "no")
+            .unwrap();
+        apply_auto_restore(&mut sid_app);
+        assert!(sid_app.modal_stack.is_empty(), "no must not push a modal");
+        assert_eq!(
+            sid_app.app.tabs().active().id.as_str(),
+            "workspaces",
+            "no must leave the launch-default tab"
+        );
+    }
+
+    /// `"yes"` with no restorable prior session is a no-op (no panic, no
+    /// switch).
+    #[test]
+    fn auto_restore_yes_no_prior_session_is_noop() {
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::AUTO_RESTORE_SESSION, "yes")
+            .unwrap();
+        apply_auto_restore(&mut sid_app);
+        assert!(sid_app.modal_stack.is_empty());
+        assert_eq!(sid_app.app.tabs().active().id.as_str(), "workspaces");
+    }
+
     #[test]
     fn dispatch_session_resume_choice_resume_switches_tab() {
         use sid_widgets::{FieldValue, ModalId};
@@ -13416,9 +13959,9 @@ mod tests {
             recorded_at: std::time::Instant::now(),
         });
         // Spec: u fires ONLY when the head toast is live and carries the marker.
-        sid_app.toasts.push(Toast::success(
-            "Theme 'void' saved (takes effect on restart) (u: undo)",
-        ));
+        sid_app
+            .toasts
+            .push(Toast::success("Theme 'void' applied (u: undo)"));
         let chord = chord(KeyCode::Char('u'));
         let consumed = route_key_event(&mut sid_app, chord);
         assert!(
@@ -13501,9 +14044,9 @@ mod tests {
             recorded_at: std::time::Instant::now(),
         });
         // Head toast is live and carries the marker.
-        sid_app.toasts.push(Toast::success(
-            "Theme 'void' saved (takes effect on restart) (u: undo)",
-        ));
+        sid_app
+            .toasts
+            .push(Toast::success("Theme 'void' applied (u: undo)"));
         let consumed = route_key_event(&mut sid_app, chord(KeyCode::Char('u')));
         assert!(consumed, "u with live marker toast should fire undo");
         let stored = sid_app
@@ -14011,6 +14554,121 @@ mod tests {
         assert!(
             sid_app.fx_state.is_none(),
             "fx_state must be None when animation.enabled == false"
+        );
+    }
+
+    // ---- T3: message logging + toasts logs-only ----------------------------
+
+    /// Replace the test app's settings widget with one that carries a `Logs`
+    /// category (the default `build_app` path uses the legacy zero-category
+    /// widget, which has nowhere to record into).
+    fn install_logs_settings_widget(sid_app: &mut SidApp) {
+        use sid_core::layout::Layout;
+        use sid_widgets::settings::logs::LogsView;
+        use sid_widgets::{SettingsCategory, SettingsWidget};
+        let tabs = sid_app.app.tabs_mut().tabs_mut();
+        let settings_tab = tabs
+            .iter_mut()
+            .find(|t| t.id.as_str() == "settings")
+            .expect("settings tab present");
+        let widget = SettingsWidget::with_categories(vec![SettingsCategory::Logs(LogsView::new())]);
+        settings_tab.layout = Layout::Single(Box::new(widget));
+    }
+
+    /// Read the Logs category's entries out of the test app's settings widget.
+    /// The installed widget has `Logs` as its single (and focused) category.
+    fn logs_entries(sid_app: &mut SidApp) -> Vec<sid_widgets::settings::logs::LogEntry> {
+        use sid_widgets::SettingsCategory;
+        let settings = settings_widget_mut(sid_app).expect("settings widget present");
+        match settings.focused_category() {
+            Some(SettingsCategory::Logs(v)) => v.entries().iter().cloned().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `record` pushes into BOTH the Logs ring and the toast queue, and maps
+    /// each `LogLevel` to the right toast kind.
+    #[test]
+    fn record_feeds_logs_ring_and_toast_queue() {
+        use crate::toast::ToastKind;
+        use sid_widgets::settings::logs::LogLevel;
+
+        let mut sid_app = build_test_sid_app(Some("settings"));
+        install_logs_settings_widget(&mut sid_app);
+
+        record(&mut sid_app, LogLevel::Success, "saved ok");
+        record(&mut sid_app, LogLevel::Error, "boom");
+        record(&mut sid_app, LogLevel::Info, "heads up");
+
+        let entries = logs_entries(&mut sid_app);
+        assert_eq!(entries.len(), 3, "all three messages must be logged");
+        assert_eq!(entries[0].level, LogLevel::Success);
+        assert_eq!(entries[0].message, "saved ok");
+        assert_eq!(entries[1].level, LogLevel::Error);
+        assert_eq!(entries[2].level, LogLevel::Info);
+
+        // Toast queue is fed regardless of overlay gating, with mapped kinds.
+        let kinds: Vec<ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![ToastKind::Success, ToastKind::Error, ToastKind::Success],
+            "Info maps to a neutral Success toast; Success/Error map directly"
+        );
+    }
+
+    /// Driving a settings outcome that emits a message records it into the
+    /// Logs ring. Uses `AnimationChanged`, which always emits a success
+    /// message via `record`.
+    #[test]
+    fn settings_outcome_records_into_logs_ring() {
+        let mut sid_app = build_test_sid_app(Some("settings"));
+        install_logs_settings_widget(&mut sid_app);
+
+        // Queue an AnimationChanged outcome on the (now Logs-only) widget.
+        {
+            let settings = settings_widget_mut(&mut sid_app).expect("settings widget");
+            let new_cfg = sid_core::animation::AnimationConfig {
+                enabled: false,
+                ..sid_core::animation::AnimationConfig::default()
+            };
+            settings.push_pending_outcome(
+                sid_widgets::settings::PendingSettingsOutcome::AnimationChanged(new_cfg),
+            );
+        }
+
+        apply_pending_settings_outcomes(&mut sid_app);
+
+        let entries = logs_entries(&mut sid_app);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.message == "Animation settings applied"),
+            "AnimationChanged must record a log entry; got {entries:?}"
+        );
+    }
+
+    /// With `TOASTS_ENABLED == false` (the shipped default), `draw` must not
+    /// render any toast region even when the queue holds live toasts: the toast
+    /// body must not appear anywhere in the rendered buffer. If `TOASTS_ENABLED`
+    /// is ever flipped back to `true`, this test is expected to be revisited.
+    #[test]
+    fn toasts_overlay_suppressed_when_disabled() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut sid_app = build_test_sid_app(Some("workspaces"));
+        // Push a toast with a highly distinctive body unlikely to occur in
+        // normal chrome, so any appearance is attributable to the toast row.
+        sid_app.toasts.push(Toast::error("ZZQQ_TOAST_MARKER_ZZQQ"));
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
+
+        let text = test_buffer_text(&terminal, false);
+        assert!(
+            !text.contains("ZZQQ_TOAST_MARKER_ZZQQ"),
+            "toast body must not be rendered when TOASTS_ENABLED is false"
         );
     }
 

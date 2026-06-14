@@ -440,82 +440,27 @@ async fn main() -> Result<()> {
     let pinned_configs = store.list_pinned_configs().unwrap_or_default();
     let quick_actions = store.list_quick_actions().unwrap_or_default();
 
-    // Settings sub-views.
-    let (active_theme, theme_registry) = wire::load_active_theme(&*store);
-    let _ = active_theme; // theme is applied by the render layer, not the widget
-    let active_theme_name = {
+    // Settings sub-views. Resolved once and threaded into the Settings widget.
+    let (active_theme, _theme_registry) = wire::load_active_theme(&*store);
+    let sid_toml_path = directories::ProjectDirs::from("dev", "murphlmao", "sid")
+        .map(|d| d.config_dir().join("sid.toml"))
+        .unwrap_or_else(|| std::path::PathBuf::from("sid.toml"));
+    let settings_categories =
+        build_settings_categories(&store, path.clone(), sid_toml_path, &quick_actions);
+
+    // Resolve the start tab: CLI `--start-tab` always wins; otherwise fall
+    // back to the persisted DEFAULT_TAB setting (when set).
+    let default_tab_setting = {
         use sid_store::TypedSettings;
         store
-            .get_string(sid_store::settings_keys::THEME_NAME)
+            .get_string(sid_store::settings_keys::DEFAULT_TAB)
             .ok()
             .flatten()
-            .unwrap_or_else(|| "cosmos".into())
     };
-    let active_keybind_profile = {
-        use sid_store::TypedSettings;
-        store
-            .get_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "cosmos".into())
-    };
-    let active_keybinds = wire::load_active_keybinds(&*store);
-    let action_registry_for_keybinds = sid_core::action::ActionRegistry::new();
-    let workspace_roots_paths: Vec<std::path::PathBuf> = wire::default_discovery_roots();
-    let db_path_for_view = sid_widgets::settings::db_path::DbPathView::open(
-        path.clone(),
-        directories::ProjectDirs::from("dev", "murphlmao", "sid")
-            .map(|d| d.config_dir().join("sid.toml"))
-            .unwrap_or_else(|| std::path::PathBuf::from("sid.toml")),
-    )
-    .ok();
-    let mut settings_categories: Vec<sid_widgets::SettingsCategory> = Vec::new();
-    settings_categories.push(sid_widgets::SettingsCategory::Theme(
-        sid_widgets::settings::theme_picker::ThemePickerView::new(
-            &theme_registry,
-            &active_theme_name,
-        ),
-    ));
-    settings_categories.push(sid_widgets::SettingsCategory::Keybinds(
-        sid_widgets::settings::keybind_editor::KeybindEditorView::new(
-            &action_registry_for_keybinds,
-            active_keybinds,
-            active_keybind_profile,
-        ),
-    ));
-    {
-        let mut behavior = sid_widgets::settings::behavior_toggles::BehaviorTogglesView::defaults();
-        let _ = behavior.load_from_store(&*store);
-        settings_categories.push(sid_widgets::SettingsCategory::Behavior(behavior));
-    }
-    {
-        let animation_cfg = wire::load_animation_config(&*store);
-        // `with_store` lets the view's own `S`-key handler flush through
-        // the embedded handle without the wire layer needing to detect the
-        // press and route a separate action.
-        let store_handle: Arc<dyn Store> = Arc::clone(&store) as Arc<dyn Store>;
-        settings_categories.push(sid_widgets::SettingsCategory::Animation(
-            sid_widgets::settings::animation::AnimationView::with_store(
-                animation_cfg,
-                store_handle,
-            ),
-        ));
-    }
-    settings_categories.push(sid_widgets::SettingsCategory::WorkspaceRoots(
-        sid_widgets::settings::workspace_roots::WorkspaceRootsView::new(workspace_roots_paths),
-    ));
-    settings_categories.push(sid_widgets::SettingsCategory::QuickActions(
-        sid_widgets::settings::quick_actions::QuickActionsView::new(quick_actions.clone()),
-    ));
-    if let Some(v) = db_path_for_view {
-        settings_categories.push(sid_widgets::SettingsCategory::DbPath(v));
-    }
-    settings_categories.push(sid_widgets::SettingsCategory::Reset(
-        sid_widgets::settings::reset::ResetView::new(),
-    ));
+    let start_tab = wire::resolve_start_tab(cli.start_tab.as_deref(), default_tab_setting);
 
     let mut app = wire::build_app_hydrated(
-        cli.start_tab.as_deref(),
+        start_tab.as_deref(),
         wire::BuildAppData {
             workspaces,
             ssh_hosts,
@@ -649,6 +594,18 @@ async fn main() -> Result<()> {
     let jobs: Arc<sid_job::JobQueue<wire::JobOutcome>> = Arc::new(sid_job::JobQueue::new());
     let (ssh_outcome_tx, ssh_outcome_rx) = tokio::sync::mpsc::unbounded_channel();
 
+    // Session-state persistence debounce. Read PERSIST_DEBOUNCE_MS (default
+    // 250ms); the event loop marks the persister dirty each iteration and
+    // flushes only once the debounce has elapsed.
+    let persist_debounce_ms = {
+        use sid_store::TypedSettings;
+        store
+            .get_u64(sid_store::settings_keys::PERSIST_DEBOUNCE_MS)
+            .ok()
+            .flatten()
+            .unwrap_or(250)
+    };
+
     let mut sid_app = wire::SidApp {
         app,
         store: Arc::clone(&store),
@@ -676,6 +633,11 @@ async fn main() -> Result<()> {
         ssh_byte_rx: None,
         ssh_last_pty_area: None,
         ssh_shutdown_tx: None,
+        active_theme,
+        persister: sid_core::persister::StatePersister::new(Duration::from_millis(
+            persist_debounce_ms,
+        )),
+        last_heartbeat: std::time::Instant::now(),
     };
 
     // Hydrate the Workspaces overview "+ add new" row from the persisted
@@ -701,10 +663,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Offer the user a resume-or-start-fresh modal if the previous session
-    // was recent enough and had a recorded active tab. No-op when there's no
-    // prior session (e.g. first launch on a fresh store).
-    wire::maybe_push_resume_modal(&mut sid_app);
+    // Apply the AUTO_RESTORE_SESSION policy: "ask" (default) pushes the
+    // resume-or-start-fresh modal, "yes" silently restores the prior tab,
+    // "no" starts fresh. No-op when there's no restorable prior session.
+    wire::apply_auto_restore(&mut sid_app);
 
     // Set up terminal. Mouse capture is enabled so the event pump receives
     // wheel scrolls and click events alongside keyboard input; the wire layer
@@ -752,6 +714,98 @@ async fn main() -> Result<()> {
     let _ = store.end_session(&session_id, now_epoch());
 
     run_result
+}
+
+/// Assemble the ordered list of Settings categories from store-backed state.
+///
+/// Every category's data is read from `store` (themes, keybinds, behaviour
+/// toggles, animation, quick actions) or derived from the supplied paths
+/// (DB-path view). The order is the canonical Settings tab order:
+/// Theme, Keybinds, Behavior, Animation, WorkspaceRoots, QuickActions,
+/// DbPath (when openable), Logs, Reset. `Logs` is the in-process log ring
+/// the wire layer feeds via `SettingsWidget::record_log`; it is always
+/// present so log routing has a sink.
+///
+/// `db_path` is the active redb file; `sid_toml_path` is where DB-path
+/// overrides are written. `quick_actions` is borrowed (and cloned into the
+/// view) so the caller can still move the original into `BuildAppData`.
+fn build_settings_categories(
+    store: &Arc<RedbStore>,
+    db_path: PathBuf,
+    sid_toml_path: PathBuf,
+    quick_actions: &[sid_store::QuickAction],
+) -> Vec<sid_widgets::SettingsCategory> {
+    use sid_store::TypedSettings;
+
+    let (_active_theme, theme_registry) = wire::load_active_theme(&**store);
+    let active_theme_name = store
+        .get_string(sid_store::settings_keys::THEME_NAME)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "cosmos".into());
+    let active_keybind_profile = store
+        .get_string(sid_store::settings_keys::KEYBIND_PROFILE_NAME)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "cosmos".into());
+    let active_keybinds = wire::load_active_keybinds(&**store);
+    let action_registry_for_keybinds = sid_core::action::ActionRegistry::new();
+    let workspace_roots_paths: Vec<std::path::PathBuf> = wire::default_discovery_roots();
+    let db_path_for_view =
+        sid_widgets::settings::db_path::DbPathView::open(db_path, sid_toml_path).ok();
+
+    let mut settings_categories: Vec<sid_widgets::SettingsCategory> = Vec::new();
+    settings_categories.push(sid_widgets::SettingsCategory::Theme(
+        sid_widgets::settings::theme_picker::ThemePickerView::new(
+            &theme_registry,
+            &active_theme_name,
+        ),
+    ));
+    settings_categories.push(sid_widgets::SettingsCategory::Keybinds(
+        sid_widgets::settings::keybind_editor::KeybindEditorView::new(
+            &action_registry_for_keybinds,
+            active_keybinds,
+            active_keybind_profile,
+        ),
+    ));
+    {
+        let mut behavior = sid_widgets::settings::behavior_toggles::BehaviorTogglesView::defaults();
+        let _ = behavior.load_from_store(&**store);
+        settings_categories.push(sid_widgets::SettingsCategory::Behavior(behavior));
+    }
+    {
+        let animation_cfg = wire::load_animation_config(&**store);
+        // `with_store` lets the view's own `S`-key handler flush through
+        // the embedded handle without the wire layer needing to detect the
+        // press and route a separate action.
+        let store_handle: Arc<dyn Store> = Arc::clone(store) as Arc<dyn Store>;
+        settings_categories.push(sid_widgets::SettingsCategory::Animation(
+            sid_widgets::settings::animation::AnimationView::with_store(
+                animation_cfg,
+                store_handle,
+            ),
+        ));
+    }
+    settings_categories.push(sid_widgets::SettingsCategory::WorkspaceRoots(
+        sid_widgets::settings::workspace_roots::WorkspaceRootsView::new(workspace_roots_paths),
+    ));
+    settings_categories.push(sid_widgets::SettingsCategory::QuickActions(
+        sid_widgets::settings::quick_actions::QuickActionsView::new(quick_actions.to_vec()),
+    ));
+    if let Some(v) = db_path_for_view {
+        settings_categories.push(sid_widgets::SettingsCategory::DbPath(v));
+    }
+    // In-process log view. The wire layer feeds entries via
+    // `SettingsWidget::record_log`; the widget renders the full ring here and a
+    // tail strip at the bottom of every Settings frame. Placed last (before
+    // Reset) so the operational log is the final substantive category.
+    settings_categories.push(sid_widgets::SettingsCategory::Logs(
+        sid_widgets::settings::logs::LogsView::new(),
+    ));
+    settings_categories.push(sid_widgets::SettingsCategory::Reset(
+        sid_widgets::settings::reset::ResetView::new(),
+    ));
+    settings_categories
 }
 
 fn install_tracing() {
@@ -1357,4 +1411,40 @@ fn hex_string(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use sid_store::OpenStore;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// The production Settings category assembly includes a `Logs` category so
+    /// the wire layer's `record_log` routing has a sink, and a `Reset` category
+    /// after it (canonical tail order).
+    #[test]
+    fn build_settings_categories_includes_logs() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(RedbStore::open(&dir.path().join("t.redb")).unwrap());
+        let cats = build_settings_categories(
+            &store,
+            dir.path().join("t.redb"),
+            dir.path().join("sid.toml"),
+            &[],
+        );
+        let widget = sid_widgets::SettingsWidget::with_categories(cats);
+        let labels = widget.category_labels();
+        assert!(
+            labels.contains(&"Logs"),
+            "production settings must contain a Logs category; got {labels:?}"
+        );
+        // Logs must precede Reset (it is the final substantive category).
+        let logs_idx = labels.iter().position(|l| *l == "Logs").unwrap();
+        let reset_idx = labels
+            .iter()
+            .position(|l| *l == "Reset to defaults")
+            .unwrap();
+        assert!(logs_idx < reset_idx, "Logs must come before Reset");
+    }
 }
