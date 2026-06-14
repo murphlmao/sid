@@ -6534,40 +6534,40 @@ fn submit_ssh_setup_remote_step2(
 /// argument vector. Built by [`build_ssh_copy_id_invocation`] so the argv can
 /// be unit-tested without spawning a process.
 ///
-/// SECURITY: for password hosts `args` contains `-p <password>` (sshpass reads
-/// it as an argument). Never log `args` directly — use [`CopyIdInvocation::redacted_argv`].
+/// SECURITY: the password (for password hosts) is NOT stored here and never
+/// appears in `args`. It is delivered to the child via the `SSHPASS`
+/// environment variable consumed by `sshpass -e`, so it does not land in the
+/// world-readable `/proc/<pid>/cmdline`. The argv is therefore safe to log in
+/// full, and `Debug` on this struct cannot leak a secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CopyIdInvocation {
     /// Program name (`ssh-copy-id` for key/agent hosts, `sshpass` for password hosts).
     program: String,
-    /// Full argument vector passed to `program`.
+    /// Full argument vector passed to `program`. Contains no secrets.
     args: Vec<String>,
-    /// `true` when this invocation embeds a password (the `sshpass` path).
-    has_password: bool,
 }
 
 impl CopyIdInvocation {
-    /// The argv with any embedded password replaced by `<redacted>` — safe to
-    /// log. For the key/agent path this is identical to `[program] + args`.
-    fn redacted_argv(&self) -> Vec<String> {
+    /// `[program] + args` — safe to log: no secret is ever placed in argv
+    /// (passwords travel via the `SSHPASS` env var; see the struct docs).
+    fn argv(&self) -> Vec<String> {
         let mut out = Vec::with_capacity(self.args.len() + 1);
         out.push(self.program.clone());
-        let mut skip_next = false;
-        for (i, a) in self.args.iter().enumerate() {
-            if skip_next {
-                out.push("<redacted>".into());
-                skip_next = false;
-                continue;
-            }
-            // `sshpass -p <pw>`: redact the value following a `-p`.
-            if self.has_password && a == "-p" && i == 0 {
-                out.push(a.clone());
-                skip_next = true;
-                continue;
-            }
-            out.push(a.clone());
-        }
+        out.extend(self.args.iter().cloned());
         out
+    }
+}
+
+/// Reject a subprocess positional argument that begins with `-`, which
+/// `ssh`/`ssh-copy-id` would parse as a flag (neither reliably honours `--`).
+/// Returns `Err("err: …")` so callers can surface it directly as a failure.
+fn reject_flaglike(label: &str, value: &str) -> Result<(), String> {
+    if value.starts_with('-') {
+        Err(format!(
+            "err: refusing — {label} {value:?} starts with '-' (possible argument injection)"
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -6584,15 +6584,29 @@ fn pub_key_path(identity: &str) -> String {
 /// Build the `ssh-copy-id` invocation for a host (§C).
 ///
 /// - When `password` is `Some` (a password-auth host with a resolved
-///   password): `sshpass -p <pw> ssh-copy-id [-i <pub>] -p <port>
-///   -o StrictHostKeyChecking=accept-new {user}@{host}`.
+///   password): `sshpass -e ssh-copy-id [-i <pub>] -p <port>
+///   -o StrictHostKeyChecking=accept-new {user}@{host}`. The password is read
+///   by `sshpass` from the `SSHPASS` env var (set by [`run_ssh_copy_id`]), not
+///   from argv.
 /// - Otherwise (key/agent host): `ssh-copy-id [-i <pub>] {target}` where
 ///   `target` is the SSH-config alias (preserving the existing behaviour that
 ///   relies on the user's `~/.ssh/config`).
 ///
-/// The password (when present) is embedded as the `sshpass -p` argument; it is
-/// never written anywhere else and callers must log via
-/// [`CopyIdInvocation::redacted_argv`].
+/// The password (when present) is delivered to `sshpass` via the `SSHPASS`
+/// environment variable (`sshpass -e`), never in argv. Positional components
+/// (and the `-i` identity) are validated against flag smuggling; returns
+/// `Err("err: …")` on rejection.
+///
+/// SECURITY (host-key trust): the sshpass path hardcodes
+/// `StrictHostKeyChecking=accept-new`, which is Trust-On-First-Use — the
+/// remote's host key is accepted unverified on first contact and pinned in
+/// `known_hosts` thereafter. This is required for a non-interactive first
+/// copy (there is no TTY to answer the yes/no prompt, and the stricter `yes`
+/// mode would simply fail on an unknown host), and it matches OpenSSH's own
+/// default first-contact behaviour. A network MITM present at the very first
+/// copy could pin their key; later connections are protected by the pin. The
+/// key/agent path deliberately omits this flag so it honours whatever the
+/// user's `~/.ssh/config` mandates.
 fn build_ssh_copy_id_invocation(
     alias: &str,
     user: &str,
@@ -6600,11 +6614,24 @@ fn build_ssh_copy_id_invocation(
     port: u16,
     identity: Option<&str>,
     password: Option<&str>,
-) -> CopyIdInvocation {
+) -> Result<CopyIdInvocation, String> {
+    // The identity becomes the value of `-i`. getopt consumes the next token as
+    // that value, so a leading '-' is not a classic flag-injection here — but a
+    // path starting with '-' is almost certainly a bug or hostile input, and
+    // ssh-copy-id is a shell wrapper that re-forwards the path to ssh, so reject
+    // it for defence-in-depth and parity with the other positionals.
+    if let Some(i) = identity {
+        reject_flaglike("identity", i)?;
+    }
     match password {
-        Some(pw) => {
-            // sshpass-driven non-interactive copy for password-only hosts.
-            let mut args: Vec<String> = vec!["-p".into(), pw.to_string(), "ssh-copy-id".into()];
+        Some(_pw) => {
+            // sshpass-driven non-interactive copy for password-only hosts. The
+            // password is NOT placed here — it goes via the SSHPASS env var
+            // (see `run_ssh_copy_id`); `-e` tells sshpass to read it from there.
+            // `{user}@{host}` is a positional, so guard both halves.
+            reject_flaglike("user", user)?;
+            reject_flaglike("host", host)?;
+            let mut args: Vec<String> = vec!["-e".into(), "ssh-copy-id".into()];
             if let Some(i) = identity {
                 args.push("-i".into());
                 args.push(pub_key_path(i));
@@ -6614,25 +6641,25 @@ fn build_ssh_copy_id_invocation(
             args.push("-o".into());
             args.push("StrictHostKeyChecking=accept-new".into());
             args.push(format!("{user}@{host}"));
-            CopyIdInvocation {
+            Ok(CopyIdInvocation {
                 program: "sshpass".into(),
                 args,
-                has_password: true,
-            }
+            })
         }
         None => {
-            // Key/agent host: plain ssh-copy-id against the config alias.
+            // Key/agent host: plain ssh-copy-id against the config alias (a
+            // positional, so guard it).
+            reject_flaglike("alias", alias)?;
             let mut args: Vec<String> = Vec::new();
             if let Some(i) = identity {
                 args.push("-i".into());
                 args.push(pub_key_path(i));
             }
             args.push(alias.to_string());
-            CopyIdInvocation {
+            Ok(CopyIdInvocation {
                 program: "ssh-copy-id".into(),
                 args,
-                has_password: false,
-            }
+            })
         }
     }
 }
@@ -6700,8 +6727,9 @@ fn resolve_copy_id_target(sid_app: &SidApp, alias: &str) -> CopyIdTarget {
 ///
 /// When `password` is `Some`, the copy is driven via `sshpass` (preflighted on
 /// PATH) using the host's `user`/`host`/`port`; otherwise the plain
-/// `ssh-copy-id <alias>` path is used. The password is never logged: the
-/// invocation is traced via its redacted argv.
+/// `ssh-copy-id <alias>` path is used. The password is never logged or placed
+/// in argv — it is handed to the child via the `SSHPASS` env var (`sshpass
+/// -e`), so the full argv is safe to trace.
 fn run_ssh_copy_id(
     alias: &str,
     user: &str,
@@ -6715,10 +6743,19 @@ fn run_ssh_copy_id(
     if password.is_some() && !binary_on_path("sshpass") {
         return "err: sshpass not on PATH (required for password-auth key copy)".to_string();
     }
-    let invocation = build_ssh_copy_id_invocation(alias, user, host, port, identity, password);
-    tracing::info!(argv = ?invocation.redacted_argv(), "ssh-copy-id invocation");
+    let invocation = match build_ssh_copy_id_invocation(alias, user, host, port, identity, password)
+    {
+        Ok(inv) => inv,
+        Err(e) => return e,
+    };
+    tracing::info!(argv = ?invocation.argv(), "ssh-copy-id invocation");
     let mut cmd = Command::new(&invocation.program);
     cmd.args(&invocation.args);
+    // The password (if any) travels via the SSHPASS env var, consumed by
+    // `sshpass -e`. It is never placed in argv (see CopyIdInvocation docs).
+    if let Some(pw) = password {
+        cmd.env("SSHPASS", pw);
+    }
     match cmd.output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -6782,6 +6819,15 @@ fn submit_ssh_gen_key_step2(
 
     if output_path.is_empty() {
         return Err(anyhow::anyhow!("output_path is required"));
+    }
+    // The path is passed to `ssh-keygen -f` here and later forwarded as the
+    // `ssh-copy-id -i` identity (gen-key step 3). A leading '-' would be a
+    // flag-smuggling vector once it reaches those subprocesses; reject it up
+    // front so the wizard fails fast with a clear message.
+    if output_path.starts_with('-') {
+        return Err(anyhow::anyhow!(
+            "output_path must not start with '-' (looks like a flag): {output_path}"
+        ));
     }
     if passphrase != confirm {
         return Err(anyhow::anyhow!(
@@ -7016,6 +7062,13 @@ fn submit_ssh_debug(
     alias: &str,
     values: &[(String, sid_widgets::FieldValue)],
 ) -> Result<()> {
+    // The alias is passed as a positional arg to ssh/ssh-keygen below; a
+    // leading '-' would be parsed as a flag (argument injection). Reject it
+    // once here, covering every branch.
+    if let Err(e) = reject_flaglike("alias", alias) {
+        sid_app.toasts.push(Toast::error(e));
+        return Ok(());
+    }
     let action = choice_value(values, "action").unwrap_or_default();
     match action.as_str() {
         "Show known_hosts entry" => {
@@ -10601,6 +10654,35 @@ mod tests {
         ];
         let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
         assert!(err.to_string().contains("output_path"));
+    }
+
+    /// SECURITY: a flag-like `output_path` (leading '-') is rejected before it
+    /// can be smuggled to `ssh-keygen -f` / `ssh-copy-id -i` as a flag. Fails
+    /// fast with a clear message; never shells out.
+    #[test]
+    fn ssh_gen_key_step2_rejects_flaglike_output_path() {
+        use sid_widgets::{FieldValue, ModalId};
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let id = ModalId("ssh.gen_key.step2:Ed25519".to_string());
+        let values = vec![
+            (
+                "output_path".to_string(),
+                FieldValue::Picker("-oProxyCommand=evil".to_string()),
+            ),
+            (
+                "passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            (
+                "confirm_passphrase".to_string(),
+                FieldValue::Password(String::new()),
+            ),
+            ("comment".to_string(), FieldValue::Text(String::new())),
+        ];
+        let err = dispatch_modal_submit(&mut sid_app, &id, &values).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("output_path"), "got: {msg}");
+        assert!(msg.contains("flag"), "got: {msg}");
     }
 
     /// Step 1 → step 2 chain: a valid step-1 submit pushes step 2 onto the
@@ -14339,8 +14421,9 @@ mod tests {
 
         // ── §C: ssh-copy-id argv construction ───────────────────────────────
 
-        /// Password host → `sshpass -p <pw> ssh-copy-id -i <pub> -p <port>
-        /// -o StrictHostKeyChecking=accept-new user@host`.
+        /// Password host → `sshpass -e ssh-copy-id -i <pub> -p <port>
+        /// -o StrictHostKeyChecking=accept-new user@host`. The password is NOT
+        /// in argv — it travels via the `SSHPASS` env var (`-e`).
         #[test]
         fn copy_id_invocation_password_host_uses_sshpass() {
             let inv = build_ssh_copy_id_invocation(
@@ -14349,14 +14432,14 @@ mod tests {
                 "10.1.1.93",
                 2222,
                 Some("/home/u/.ssh/id_ed25519"),
-                Some("raspberry"),
-            );
+                Some("s3cr3t-pw"),
+            )
+            .expect("valid positional components");
             assert_eq!(inv.program, "sshpass");
             assert_eq!(
                 inv.args,
                 vec![
-                    "-p".to_string(),
-                    "raspberry".into(),
+                    "-e".to_string(),
                     "ssh-copy-id".into(),
                     "-i".into(),
                     "/home/u/.ssh/id_ed25519.pub".into(),
@@ -14366,6 +14449,12 @@ mod tests {
                     "StrictHostKeyChecking=accept-new".into(),
                     "raspberrypi@10.1.1.93".into(),
                 ]
+            );
+            // SECURITY: the password is delivered via SSHPASS, never argv.
+            assert!(
+                !inv.argv().iter().any(|a| a.contains("s3cr3t-pw")),
+                "password leaked into argv: {:?}",
+                inv.argv()
             );
         }
 
@@ -14380,34 +14469,86 @@ mod tests {
                 22,
                 Some("/k/id_rsa"),
                 None,
-            );
+            )
+            .expect("valid alias");
             assert_eq!(inv.program, "ssh-copy-id");
             assert_eq!(
                 inv.args,
                 vec!["-i".to_string(), "/k/id_rsa.pub".into(), "prod".into()]
             );
-            assert!(!inv.has_password);
         }
 
         /// `.pub` suffix is not doubled.
         #[test]
         fn copy_id_invocation_pub_suffix_not_doubled() {
-            let inv = build_ssh_copy_id_invocation("h", "u", "host", 22, Some("/k/id.pub"), None);
+            let inv = build_ssh_copy_id_invocation("h", "u", "host", 22, Some("/k/id.pub"), None)
+                .expect("valid alias");
             assert!(inv.args.contains(&"/k/id.pub".to_string()));
         }
 
-        /// The redacted argv hides the password but keeps the structure.
+        /// SECURITY: the full argv of a password-host invocation never contains
+        /// the password (it goes via the `SSHPASS` env var), so it is safe to
+        /// log via `argv()`.
         #[test]
-        fn copy_id_invocation_redacted_argv_hides_password() {
+        fn copy_id_invocation_argv_never_contains_password() {
             let inv =
-                build_ssh_copy_id_invocation("pi", "u", "host", 22, None, Some("supersecret"));
-            let red = inv.redacted_argv();
+                build_ssh_copy_id_invocation("pi", "u", "host", 22, None, Some("supersecret"))
+                    .expect("valid positional components");
+            let argv = inv.argv();
             assert!(
-                !red.iter().any(|a| a.contains("supersecret")),
-                "leak: {red:?}"
+                !argv.iter().any(|a| a.contains("supersecret")),
+                "leak: {argv:?}"
             );
-            assert!(red.contains(&"<redacted>".to_string()));
-            assert_eq!(red[0], "sshpass");
+            assert_eq!(argv[0], "sshpass");
+            assert!(argv.contains(&"-e".to_string()));
+        }
+
+        /// SECURITY: a flag-like `user` / `host` (password path) or `alias`
+        /// (key path) is rejected before it can be smuggled to ssh-copy-id as a
+        /// flag (argument injection). Returns `Err("err: …")`.
+        #[test]
+        fn copy_id_invocation_rejects_flaglike_components() {
+            // Password path guards both halves of user@host.
+            let e =
+                build_ssh_copy_id_invocation("a", "-oProxyCommand=evil", "h", 22, None, Some("p"))
+                    .expect_err("flag-like user must be rejected");
+            assert!(e.starts_with("err:"), "got: {e}");
+            assert!(e.contains("user"), "got: {e}");
+
+            let e = build_ssh_copy_id_invocation("a", "u", "-Gbad", 22, None, Some("p"))
+                .expect_err("flag-like host must be rejected");
+            assert!(e.contains("host"), "got: {e}");
+
+            // Key path guards the alias positional.
+            let e = build_ssh_copy_id_invocation("-Gbad", "u", "h", 22, None, None)
+                .expect_err("flag-like alias must be rejected");
+            assert!(e.contains("alias"), "got: {e}");
+
+            // The `-i` identity is guarded on BOTH the password and key paths.
+            let e = build_ssh_copy_id_invocation("a", "u", "h", 22, Some("-evil"), Some("p"))
+                .expect_err("flag-like identity (password path) must be rejected");
+            assert!(e.contains("identity"), "got: {e}");
+            let e = build_ssh_copy_id_invocation("a", "u", "h", 22, Some("-evil"), None)
+                .expect_err("flag-like identity (key path) must be rejected");
+            assert!(e.contains("identity"), "got: {e}");
+
+            // The error string never echoes the password.
+            let e = build_ssh_copy_id_invocation("a", "-x", "h", 22, None, Some("hunter2"))
+                .expect_err("rejected");
+            assert!(!e.contains("hunter2"), "password leaked into error: {e}");
+        }
+
+        /// `reject_flaglike` accepts ordinary values and rejects `-`-leading
+        /// ones (both `Ok` and `Err` arms).
+        #[test]
+        fn reject_flaglike_both_arms() {
+            assert!(reject_flaglike("user", "raspberrypi").is_ok());
+            assert!(reject_flaglike("host", "10.1.1.93").is_ok());
+            assert!(reject_flaglike("alias", "prod-box").is_ok());
+            assert!(reject_flaglike("user", "-oProxyCommand=x").is_err());
+            // An empty value does not start with '-', so it is accepted here
+            // (emptiness is validated elsewhere on the form path).
+            assert!(reject_flaglike("alias", "").is_ok());
         }
 
         /// `binary_on_path` reports a definitely-absent binary as missing
@@ -14420,22 +14561,20 @@ mod tests {
         }
 
         /// The missing-`sshpass` preflight (§C) yields a clear error that never
-        /// contains the password. Driven through `run_ssh_copy_id` with a
-        /// program name that cannot exist on PATH, exercised via a thin seam so
-        /// no global env is mutated.
+        /// contains the password.
         #[test]
-        fn run_copy_id_missing_sshpass_message_redacts_password() {
-            // The preflight only fires when sshpass is genuinely absent. In CI /
-            // dev machines sshpass MAY be installed, so assert on the redaction
-            // invariant that holds in both cases: a password-host invocation's
-            // argv never exposes the password except as the sshpass `-p` value,
-            // and the redacted form hides it entirely.
-            let inv = build_ssh_copy_id_invocation("pi", "u", "h", 22, None, Some("hunter2"));
-            assert!(inv.has_password);
-            let red = inv.redacted_argv();
-            assert!(!red.iter().any(|a| a == "hunter2"), "leak: {red:?}");
-            // And the missing-binary message itself carries no password (it is
-            // constructed from a static string + the program name only).
+        fn run_copy_id_missing_sshpass_message_carries_no_password() {
+            // A password-host invocation's argv never exposes the password (it
+            // goes via SSHPASS), and the static preflight message carries none.
+            let inv = build_ssh_copy_id_invocation("pi", "u", "h", 22, None, Some("hunter2"))
+                .expect("valid positional components");
+            assert!(
+                !inv.argv().iter().any(|a| a == "hunter2"),
+                "leak: {:?}",
+                inv.argv()
+            );
+            // The missing-binary message itself carries no password (it is
+            // constructed from a static string only).
             assert!(
                 !"err: sshpass not on PATH (required for password-auth key copy)"
                     .contains("hunter2")
