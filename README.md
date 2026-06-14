@@ -6,7 +6,7 @@
 
 **a fast, focused TUI cockpit for developer workflow.**
 
-*named after my dog, who was the best.*
+*named after my loving dog, my first true friend in life.*
 
 `✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;─────────────────────────────────&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
 
@@ -14,7 +14,7 @@
 
 ---
 
-`sid` is a personal developer cockpit built in Rust. It puts the things you actually use during a workday — git, SSH, databases, ports/processes, system tweaks — into one fast, keyboard-driven TUI. One focused tab per concern. No clutter, no daemon, no metadata-file zoo. Crash-safe. Detachable. Galaxy-themed.
+`sid` is a personal developer cockpit built in Rust. It puts the things you actually use during a workday — git, SSH, databases, ports/processes, system tweaks — into a quick little TUI. One focused tab per concern without any of the other bloat that you may see with applications that deal with these many systems at once. Galaxy-themed because... who doesn't like space?
 
 > **Status:** Early WIP. Spec drafted, implementation forthcoming.
 
@@ -39,13 +39,13 @@ Plus:
 
 ## Why
 
-VS Code is slow and visually noisy. `lazygit`, `gitui`, `k9s` are great but each only solves one thing. `tmux` + a bag of CLIs is the closest pre-`sid` setup but requires re-deriving the same layout every session.
+VS Code is slow and visually noisy. `lazygit`, `gitui`, `k9s` are great but each only solves one thing. `tmux` + a bag of CLIs is the closest pre-`sid` setup but requires re-deriving the same layout every session. Zed is cool, but limited in its scope and feature-set.
 
-`sid` is the layer above. One TUI, six tabs, an obsession with minimal footprint and fast startup. It's not trying to replace your editor or your shell. It's trying to be the cockpit you live in *between* edits and shells.
+`sid` is the layer above. One TUI, six tabs (detachable, re-attachable), an obsession with minimal footprint, fast startup, ease of use, all for the sole purpose of not needing to use slow database apps like DBeaver, or how to kill that one NodeJS instance via some command you Google every other week because you're too lazy to remember it's syntax (`lsof -ti:3000 | xargs kill -9`, `pkill -9 -f "next dev"`, etc). It's not trying to replace your editor or your shell. It's trying to be the cockpit you live in *between* edits and shells.
 
 ## Design philosophy
 
-- **Cognitive cleanliness over information density.** btop is beautiful but busy; `sid` is calm.
+- **Cognitive cleanliness over information density.** btop is beautiful but busy; `sid` is calm & straight to the point.
 - **Minimal footprint.** One binary, one DB file, zero dotfile sprawl.
 - **Adapter pattern everywhere.** Every external library hides behind a trait — swappable, testable, future-proof.
 - **Persistence-first.** Your work is saved continuously. There is no "save" because the DB *is* the state.
@@ -133,7 +133,7 @@ Specs and plans:
 
 | Layer | Choice |
 |:---|:---|
-| Language | Rust (edition 2024) |
+| Language | Rust |
 | TUI | [Ratatui](https://ratatui.rs) + crossterm |
 | Async | [Tokio](https://tokio.rs) |
 | Storage | [redb](https://github.com/cberner/redb) (pure-Rust ACID embedded DB, multi-process readers) |
@@ -150,14 +150,14 @@ Every dependency in this list is behind an internal trait, so any of them can be
 
 ## about sid &nbsp;🐕
 
-The app is named after my dog — a fat little black shih tzu terrier who passed away. He was the best.
+The app is named after my dog — a fat little black shih tzu terrier who passed away in 2016. He was *the* sweetest, the funniest, and the most loving dog.
 
-When he passed, I wanted to name something I'd touch every day after him. So the cockpit I live in between edits and shells got his name. Every launch is a small hello.
+When he passed, I wanted to name something I'd touch every day after him. Creating a custom tool that made my life easier is reflective of who Sid was to me every single day during the darkest period of my life. Every launch is a small hello, and a small reminder of what he continues to do for me every day. 
 
 ---
 
 <div align="center">
 
-`✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;&nbsp;*for sid, who liked all of the snow*&nbsp;&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
+`✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;&nbsp;*for sid, who liked all of the snow, hotdogs, and cake. *&nbsp;&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
 
 </div>
