@@ -176,7 +176,11 @@ mod tests {
 
     #[test]
     fn config_round_trips_with_all_motion_styles() {
-        for motion in [MotionStyle::Twinkle, MotionStyle::Drift, MotionStyle::Cosmos] {
+        for motion in [
+            MotionStyle::Twinkle,
+            MotionStyle::Drift,
+            MotionStyle::Cosmos,
+        ] {
             let cfg = AnimationConfig {
                 motion,
                 ..AnimationConfig::default()
@@ -221,7 +225,11 @@ mod tests {
         }"#;
         let back: AnimationConfig =
             serde_json::from_str(legacy).expect("legacy config must still deserialize");
-        assert_eq!(back.motion, MotionStyle::Cosmos, "missing motion -> default");
+        assert_eq!(
+            back.motion,
+            MotionStyle::Cosmos,
+            "missing motion -> default"
+        );
         // Other fields survive intact.
         assert!(!back.enabled);
         assert_eq!(back.density, 17);

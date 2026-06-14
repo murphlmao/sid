@@ -1,13 +1,15 @@
 //! Integration tests for `App` initialization.
 
-use sid_core::action::{Action, ActionId, ActionRegistry};
-use sid_core::app::App;
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::keybind::KeybindMap;
-use sid_core::layout::Layout;
-use sid_core::tab::{Tab, TabId, TabKind, TabManager};
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    action::{Action, ActionId, ActionRegistry},
+    app::App,
+    context::WidgetCtx,
+    event::Event,
+    keybind::KeybindMap,
+    layout::Layout,
+    tab::{Tab, TabId, TabKind, TabManager},
+    widget::{EventOutcome, RenderTarget, Widget, WidgetId},
+};
 
 // ---------------------------------------------------------------------------
 // Test widget stub

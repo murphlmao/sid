@@ -9,8 +9,7 @@
 //!   - Proptest that random areas + configs never panic the renderer.
 
 use proptest::prelude::*;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::{buffer::Buffer, layout::Rect};
 use sid_core::animation::{AnimationConfig, GlyphSet};
 use sid_fx::{FxState, render_starfield};
 use sid_ui::themes::cosmos;

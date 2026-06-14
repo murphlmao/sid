@@ -25,15 +25,19 @@
 
 use std::sync::Arc;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::SidError;
-use sid_core::animation::{AnimationConfig, GlyphSet, MotionStyle, SETTING_ANIMATION_KEY};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    SidError,
+    animation::{AnimationConfig, GlyphSet, MotionStyle, SETTING_ANIMATION_KEY},
+    context::WidgetCtx,
+    event::Event,
+};
 use sid_store::{SettingValue, Store};
 use sid_ui::Theme;
 
@@ -570,7 +574,11 @@ fn motion_label(m: MotionStyle) -> &'static str {
 /// Order: `Twinkle → Drift → Cosmos → Twinkle` (forward); reversed for
 /// `dir < 0`.
 fn cycle_motion_style(current: MotionStyle, dir: i32) -> MotionStyle {
-    let order = [MotionStyle::Twinkle, MotionStyle::Drift, MotionStyle::Cosmos];
+    let order = [
+        MotionStyle::Twinkle,
+        MotionStyle::Drift,
+        MotionStyle::Cosmos,
+    ];
     let idx = order.iter().position(|m| *m == current).unwrap_or(0) as i32;
     let len = order.len() as i32;
     let step = if dir < 0 { -1 } else { 1 };
@@ -798,16 +806,34 @@ mod tests {
 
     #[test]
     fn cycle_motion_style_forward_covers_all_variants() {
-        assert_eq!(cycle_motion_style(MotionStyle::Twinkle, 1), MotionStyle::Drift);
-        assert_eq!(cycle_motion_style(MotionStyle::Drift, 1), MotionStyle::Cosmos);
-        assert_eq!(cycle_motion_style(MotionStyle::Cosmos, 1), MotionStyle::Twinkle);
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Twinkle, 1),
+            MotionStyle::Drift
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Drift, 1),
+            MotionStyle::Cosmos
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Cosmos, 1),
+            MotionStyle::Twinkle
+        );
     }
 
     #[test]
     fn cycle_motion_style_reverse() {
-        assert_eq!(cycle_motion_style(MotionStyle::Twinkle, -1), MotionStyle::Cosmos);
-        assert_eq!(cycle_motion_style(MotionStyle::Cosmos, -1), MotionStyle::Drift);
-        assert_eq!(cycle_motion_style(MotionStyle::Drift, -1), MotionStyle::Twinkle);
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Twinkle, -1),
+            MotionStyle::Cosmos
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Cosmos, -1),
+            MotionStyle::Drift
+        );
+        assert_eq!(
+            cycle_motion_style(MotionStyle::Drift, -1),
+            MotionStyle::Twinkle
+        );
     }
 
     #[test]

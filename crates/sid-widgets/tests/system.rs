@@ -50,11 +50,12 @@ mod focus {
     use std::sync::mpsc;
 
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
-    use sid_widgets::SystemWidget;
-    use sid_widgets::system::SystemPane;
+    use sid_core::{
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+    };
+    use sid_widgets::{SystemWidget, system::SystemPane};
 
     fn ctx() -> WidgetCtx {
         let (tx, _rx) = mpsc::channel();

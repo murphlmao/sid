@@ -12,8 +12,10 @@
 
 use sid_core::adapters::systemctl::{JournalEntry, SystemUnit, UnitBus, UnitState};
 use sid_store::{PinnedConfig, QuickAction, QuickActionScope};
-use sid_widgets::SystemWidget;
-use sid_widgets::system::{JournalTailState, SystemPane, render_to_string};
+use sid_widgets::{
+    SystemWidget,
+    system::{JournalTailState, SystemPane, render_to_string},
+};
 
 fn pinned(path: &str, label: &str) -> PinnedConfig {
     PinnedConfig {

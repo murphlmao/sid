@@ -50,14 +50,18 @@ mod focus {
     use std::sync::mpsc;
 
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::adapters::db_client::{Column, ColumnType, DbKind, QueryPage, Row};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
+    use sid_core::{
+        adapters::db_client::{Column, ColumnType, DbKind, QueryPage, Row},
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+    };
     use sid_store::DbConnection;
-    use sid_widgets::DatabaseWidget;
-    use sid_widgets::database::{DbFocus, RightPane};
-    use sid_widgets::list_cursor::CursorTarget;
+    use sid_widgets::{
+        DatabaseWidget,
+        database::{DbFocus, RightPane},
+        list_cursor::CursorTarget,
+    };
 
     fn ctx() -> WidgetCtx {
         let (tx, _rx) = mpsc::channel();

@@ -2,20 +2,23 @@
 //! broadcast channel, and a synthetic 'k' + 'y' event drives the modal
 //! state machine. Uses tokio test-util to advance virtual time.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, Signal, SocketState, SysError,
-    SysProvider,
+use sid_core::{
+    adapters::sys::{
+        ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, Signal, SocketState, SysError,
+        SysProvider,
+    },
+    context::WidgetCtx,
+    event::Event as SidEvent,
+    sys_probe::SysProbe,
+    widget::Widget,
 };
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event as SidEvent;
-use sid_core::sys_probe::SysProbe;
-use sid_core::widget::Widget;
-use sid_widgets::NetworkWidget;
-use sid_widgets::network::ToastLevel;
+use sid_widgets::{NetworkWidget, network::ToastLevel};
 
 struct StubProvider {
     iter: std::sync::atomic::AtomicU32,

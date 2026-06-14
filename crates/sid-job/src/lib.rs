@@ -17,11 +17,12 @@
 //! # }
 //! ```
 
-use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::{sync::oneshot, task::JoinHandle};
 
 /// Errors that can be returned from a job result.
 ///

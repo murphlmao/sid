@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use sid_core::adapters::git::GitProvider;
 use sid_git::Git2ProviderFactory;

@@ -96,8 +96,9 @@ pub fn decode_versioned<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<(u
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde::{Deserialize, Serialize};
+
+    use super::*;
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct S {

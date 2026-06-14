@@ -21,8 +21,7 @@
 //!     └──────────────── Apply ◀───────────────────────┘
 //! ```
 
-use crate::action::ActionId;
-use crate::event::KeyChord;
+use crate::{action::ActionId, event::KeyChord};
 
 /// Current position in the capture-mode state machine.
 ///

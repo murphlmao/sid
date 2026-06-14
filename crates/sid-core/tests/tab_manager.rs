@@ -1,10 +1,12 @@
 //! Integration tests for `Tab`, `TabId`, and `TabManager`.
 
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::layout::Layout;
-use sid_core::tab::{Tab, TabId, TabKind, TabManager};
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    layout::Layout,
+    tab::{Tab, TabId, TabKind, TabManager},
+    widget::{EventOutcome, RenderTarget, Widget, WidgetId},
+};
 
 // ---------------------------------------------------------------------------
 // Test widget stub

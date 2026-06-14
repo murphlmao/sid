@@ -169,8 +169,7 @@ fn flush_then_load_round_trips_through_store() {
 // Snapshot tests
 // ---------------------------------------------------------------------------
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use ratatui::{Terminal, backend::TestBackend};
 use sid_ui::themes::cosmos;
 
 fn render_view_to_string(v: &AnimationView, width: u16, height: u16, focused: bool) -> String {

@@ -1,8 +1,10 @@
 //! `KittyTerminalSpawner` — launches `kitty` in a detached child process,
 //! cd'd to the requested cwd, running the requested command.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use sid_core::adapters::terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner};
 

@@ -8,8 +8,9 @@
 //! preserve.
 
 use proptest::prelude::*;
-use sid_store::settings_keys::AUTO_RESTORE_SESSION;
-use sid_store::{OpenStore, RedbStore, SettingValue, Store, TypedSettings};
+use sid_store::{
+    OpenStore, RedbStore, SettingValue, Store, TypedSettings, settings_keys::AUTO_RESTORE_SESSION,
+};
 use tempfile::TempDir;
 
 #[derive(Clone, Debug)]

@@ -1,9 +1,10 @@
 //! SFTP wrapper — bridges russh-sftp's `SftpSession` to the domain `SftpSession` trait.
 
 use async_trait::async_trait;
-use russh_sftp::client::SftpSession as RusshSftpSession;
-use russh_sftp::client::error::Error as RusshSftpError;
-use russh_sftp::protocol::StatusCode;
+use russh_sftp::{
+    client::{SftpSession as RusshSftpSession, error::Error as RusshSftpError},
+    protocol::StatusCode,
+};
 use sid_core::adapters::ssh::{SftpEntry, SftpSession, SshError};
 
 pub struct RusshSftp {

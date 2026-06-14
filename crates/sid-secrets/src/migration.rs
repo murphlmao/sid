@@ -199,15 +199,20 @@ fn write_and_verify(dest: &dyn SecretStore, id: &SecretId, value: &[u8]) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
 
-    use crate::PlainStore;
-    use crate::keyring_store::{KeyringBackend, KeyringStore};
-    use crate::tests_support::FakeKeyring;
     use sid_store::{OpenStore, RedbStore, Store};
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::{
+        PlainStore,
+        keyring_store::{KeyringBackend, KeyringStore},
+        tests_support::FakeKeyring,
+    };
 
     fn plain_store() -> (tempfile::TempDir, PlainStore) {
         let dir = tempdir().unwrap();

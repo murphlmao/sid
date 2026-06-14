@@ -1,5 +1,4 @@
-use sid_core::adapters::db_client::DbKind;
-use sid_core::adapters::secrets::SecretId;
+use sid_core::adapters::{db_client::DbKind, secrets::SecretId};
 use sid_store::{DbConnection, PlainSecret, QueryRecord, now_epoch};
 
 #[test]

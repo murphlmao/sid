@@ -2,49 +2,58 @@
 //! keybind map and action registry — into a running [`App`], and contains the
 //! Ratatui render loop.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::Result;
 use directories::{ProjectDirs, UserDirs};
-use ratatui::backend::Backend;
-use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::{Frame, Terminal};
-use sid_core::Result as SidResult;
-use sid_core::action::{Action, ActionRegistry};
-use sid_core::adapters::sys::SysProvider;
-use sid_core::adapters::systemctl::{
-    JournalEntry, SystemUnit, SystemctlClient, SystemctlError, UnitBus, UnitFilter,
+use ratatui::{
+    Frame, Terminal,
+    backend::Backend,
+    layout::Rect,
+    text::{Line, Span},
+    widgets::Paragraph,
 };
-use sid_core::adapters::terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner};
-use sid_core::animation::AnimationConfig;
-use sid_core::app::{App, Dispatch};
-use sid_core::event::Event as SidEvent;
-use sid_core::keybind::KeybindMap;
-use sid_core::layout::Layout;
-use sid_core::sys_probe::{SysProbe, SysSnapshot};
-use sid_core::tab::{Tab, TabId, TabKind, TabManager};
-use sid_core::widget::Widget;
-use sid_core::workspace_discovery::{
-    WorkspaceUpserter, merge_discoveries_into, scan_workspace_root,
+use sid_core::{
+    Result as SidResult,
+    action::{Action, ActionRegistry},
+    adapters::{
+        sys::SysProvider,
+        systemctl::{
+            JournalEntry, SystemUnit, SystemctlClient, SystemctlError, UnitBus, UnitFilter,
+        },
+        terminal_spawner::{SpawnRequest, SpawnerError, TerminalSpawner},
+    },
+    animation::AnimationConfig,
+    app::{App, Dispatch},
+    event::Event as SidEvent,
+    keybind::KeybindMap,
+    layout::Layout,
+    sys_probe::{SysProbe, SysSnapshot},
+    tab::{Tab, TabId, TabKind, TabManager},
+    widget::Widget,
+    workspace_discovery::{WorkspaceUpserter, merge_discoveries_into, scan_workspace_root},
+    workspace_metadata::WorkspaceKind,
 };
-use sid_core::workspace_metadata::WorkspaceKind;
 use sid_fx::FxState;
 use sid_git::Git2ProviderFactory;
 use sid_store::{RedbStore, SessionRecord, Store, Workspace, now_epoch};
-use sid_ui::helpers::styled_block;
-use sid_ui::theme::{Color as UiColor, GlyphSet, Theme};
-use sid_ui::theme_registry::ThemeRegistry;
-use sid_ui::themes::cosmos;
+use sid_ui::{
+    helpers::styled_block,
+    theme::{Color as UiColor, GlyphSet, Theme},
+    theme_registry::ThemeRegistry,
+    themes::cosmos,
+};
 use sid_widgets::{
     DatabaseWidget, NetworkWidget, SettingsWidget, SshWidget, SystemWidget, WorkspacesWidget,
 };
-use tokio::sync::broadcast::error::TryRecvError;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::error::TryRecvError as MpscTryRecvError;
+use tokio::sync::{
+    broadcast::error::TryRecvError,
+    mpsc::{Receiver, error::TryRecvError as MpscTryRecvError},
+};
 
 use crate::toast::{Toast, ToastQueue};
 
@@ -1268,9 +1277,10 @@ pub fn apply_auto_restore(sid_app: &mut SidApp) {
 /// terminal.draw(|frame| draw(frame, &sid_app)).unwrap();
 /// ```
 pub fn draw(frame: &mut Frame<'_>, sid_app: &SidApp) {
-    use ratatui::style::Modifier as TextMod;
-    use ratatui::style::Style as TextStyle;
-    use ratatui::widgets::{Block as RBlock, BorderType, Borders as RBorders};
+    use ratatui::{
+        style::{Modifier as TextMod, Style as TextStyle},
+        widgets::{Block as RBlock, BorderType, Borders as RBorders},
+    };
 
     // `Theme` is a small RGB palette + glyph set; a per-frame clone is cheap
     // and keeps the existing `&theme` call sites unchanged. Reading the live
@@ -2471,8 +2481,9 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
     }
 
     for outcome in outcomes {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_widgets::settings::PendingSettingsOutcome::*;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         match outcome {
             BehaviorToggled { key, value } => {
                 // Read prior value before write so it can be restored.
@@ -2625,8 +2636,7 @@ fn apply_pending_settings_outcomes(sid_app: &mut SidApp) {
                 record(sid_app, sid_widgets::settings::logs::LogLevel::Info, msg);
             }
             FactoryResetConfirmed => {
-                use sid_widgets::settings::logs::LogLevel;
-                use sid_widgets::settings::reset::ResetView;
+                use sid_widgets::settings::{logs::LogLevel, reset::ResetView};
                 let mut rv = ResetView::new();
                 rv.open_confirm();
                 match rv.confirm(&*sid_app.store) {
@@ -2715,8 +2725,9 @@ fn persist_outcome(
 /// Re-apply the prior value stored in `entry` to the store.
 /// Pushes a success toast on success; error toast on failure.
 fn apply_undo_entry(sid_app: &mut SidApp, entry: crate::settings_undo::UndoEntry) {
-    use crate::settings_undo::UndoPayload;
     use sid_store::TypedSettings;
+
+    use crate::settings_undo::UndoPayload;
     match entry.payload {
         UndoPayload::BehaviorToggle { key, prior } => {
             use sid_widgets::settings::behavior_toggles::ToggleValue;
@@ -2861,8 +2872,10 @@ fn read_prior_roots(store: &dyn sid_store::Store) -> Vec<std::path::PathBuf> {
 /// Avoids duplicate tabs: if a detail tab for the same workspace path is
 /// already open, switches to it instead of pushing a new one.
 fn maybe_open_pending_workspace_detail(sid_app: &mut SidApp) {
-    use sid_core::layout::Layout;
-    use sid_core::tab::{Tab, TabId, TabKind};
+    use sid_core::{
+        layout::Layout,
+        tab::{Tab, TabId, TabKind},
+    };
 
     // Find the workspaces tab and drain its pending flag.
     let parent_idx = match sid_app
@@ -4249,8 +4262,7 @@ fn system_modal_for_key(
     chord: sid_core::event::KeyChord,
 ) -> Option<sid_widgets::ModalSpec> {
     use crossterm::event::KeyCode;
-    use sid_widgets::system::SystemPane;
-    use sid_widgets::{Field, ModalSpec};
+    use sid_widgets::{Field, ModalSpec, system::SystemPane};
     let pane = system_focused_pane(sid_app)?;
     match (chord.code, pane) {
         (KeyCode::Char('N') | KeyCode::Char('n'), SystemPane::PinnedConfigs) => Some(
@@ -4772,12 +4784,10 @@ fn resolve_connect_auth(
             None => agent_auth_decision(),
         },
         sid_store::SshAuthKind::Agent => agent_auth_decision(),
-        sid_store::SshAuthKind::Password => {
-            match ssh_password_from_keyring(sid_app, alias) {
-                Some(pw) => ConnectAuthDecision::Spawn(SshAuth::Password(pw)),
-                None => ConnectAuthDecision::PromptPassword,
-            }
-        }
+        sid_store::SshAuthKind::Password => match ssh_password_from_keyring(sid_app, alias) {
+            Some(pw) => ConnectAuthDecision::Spawn(SshAuth::Password(pw)),
+            None => ConnectAuthDecision::PromptPassword,
+        },
     }
 }
 
@@ -5350,10 +5360,12 @@ pub fn render_toasts(
     theme: &Theme,
     queue: &ToastQueue,
 ) {
+    use ratatui::{
+        style::{Modifier as TextMod, Style as TextStyle},
+        widgets::Paragraph,
+    };
+
     use crate::toast::ToastKind;
-    use ratatui::style::Modifier as TextMod;
-    use ratatui::style::Style as TextStyle;
-    use ratatui::widgets::Paragraph;
 
     if queue.is_empty() || area.width < 6 || area.height == 0 {
         return;
@@ -5679,8 +5691,10 @@ pub fn workspaces_new_form() -> sid_widgets::form::FormSpec {
 fn workspaces_new_sections(
     values: &sid_widgets::form::FormValues,
 ) -> Vec<sid_widgets::form::FormSection> {
-    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
-    use sid_widgets::modal::Field;
+    use sid_widgets::{
+        form::{FormField, FormSection, SectionKind, Validate},
+        modal::Field,
+    };
     let kind = values.get("kind").map(String::as_str).unwrap_or("Umbrella");
     let mut fields = vec![
         FormField::new(
@@ -5759,8 +5773,10 @@ fn workspaces_adopt_dir(sid_app: &SidApp) -> PathBuf {
 /// register each checked satellite without a second scan.
 pub fn workspaces_adopt_form(dir: &std::path::Path) -> sid_widgets::form::FormSpec {
     use sid_core::workspace_discovery::scan_adoptable_repos;
-    use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
-    use sid_widgets::modal::Field;
+    use sid_widgets::{
+        form::{FormField, FormSection, SectionKind, Validate},
+        modal::Field,
+    };
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -7142,8 +7158,7 @@ fn submit_database_new(
     sid_app: &mut SidApp,
     values: &[(String, sid_widgets::FieldValue)],
 ) -> Result<String> {
-    use sid_core::adapters::db_client::DbKind;
-    use sid_core::adapters::secrets::SecretId;
+    use sid_core::adapters::{db_client::DbKind, secrets::SecretId};
     use sid_store::{DbConnection, now_epoch};
     let id = string_value(values, "id").unwrap_or_default();
     let name = string_value(values, "name").unwrap_or_default();
@@ -7273,8 +7288,10 @@ pub(crate) fn db_connection_form_spec(
     fn make_sections(
         values: &sid_widgets::form::FormValues,
     ) -> Vec<sid_widgets::form::FormSection> {
-        use sid_widgets::form::{FormField, FormSection, SectionKind, Validate};
-        use sid_widgets::modal::Field;
+        use sid_widgets::{
+            form::{FormField, FormSection, SectionKind, Validate},
+            modal::Field,
+        };
 
         let kind = values.get("kind").map(String::as_str).unwrap_or("Postgres");
         let name_val = values.get("name").cloned().unwrap_or_default();
@@ -7444,8 +7461,7 @@ pub(crate) fn submit_db_connection_form(
     sid_app: &mut SidApp,
     values: sid_widgets::form::FormValues,
 ) -> Result<()> {
-    use sid_core::adapters::db_client::DbKind;
-    use sid_core::adapters::secrets::SecretId;
+    use sid_core::adapters::{db_client::DbKind, secrets::SecretId};
     use sid_store::{DbConnection, now_epoch};
 
     let name = values.get("name").cloned().unwrap_or_default();
@@ -8840,8 +8856,7 @@ mod tests {
     /// `draw` renders without panicking on a normal-sized terminal.
     #[test]
     fn draw_does_not_panic_on_normal_terminal() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         let sid_app = build_test_sid_app(None);
         let backend = TestBackend::new(120, 40);
@@ -8852,8 +8867,7 @@ mod tests {
     /// `draw` renders without panicking on a very small (1×1) terminal.
     #[test]
     fn draw_does_not_panic_on_tiny_terminal() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         let sid_app = build_test_sid_app(None);
         let backend = TestBackend::new(1, 1);
@@ -8865,8 +8879,7 @@ mod tests {
     /// tab bar (height = 2, which is less than the 3-row bar height).
     #[test]
     fn draw_does_not_panic_when_shorter_than_bar() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         let sid_app = build_test_sid_app(None);
         // Height 2 < bar height 3; body_rect will have saturating_sub(3) = 0 height.
@@ -8878,8 +8891,7 @@ mod tests {
     /// `draw` renders all six tabs without panicking.
     #[test]
     fn draw_all_tabs_render_without_panic() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         for tab_id in [
             "workspaces",
@@ -9163,8 +9175,7 @@ mod tests {
     /// once with void — and assert the resulting buffers differ.
     #[test]
     fn draw_reflects_active_theme_palette() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         let render = |theme: sid_ui::theme::Theme| {
             let mut sid_app = build_test_sid_app(None);
@@ -11374,8 +11385,7 @@ mod tests {
     /// associated secret.
     #[test]
     fn database_remove_yes_deletes_and_clears_secret() {
-        use sid_core::adapters::db_client::DbKind;
-        use sid_core::adapters::secrets::SecretId;
+        use sid_core::adapters::{db_client::DbKind, secrets::SecretId};
         use sid_store::{DbConnection, now_epoch};
         use sid_widgets::{FieldValue, ModalId};
         let mut sid_app = build_test_sid_app(Some("database"));
@@ -11446,8 +11456,7 @@ mod tests {
 
     #[test]
     fn db_form_spec_reshapes_to_sqlite_on_kind_change() {
-        use sid_widgets::form::SectionKind;
-        use sid_widgets::modal::Field;
+        use sid_widgets::{form::SectionKind, modal::Field};
         let mut spec = db_connection_form_spec(None);
         // change kind to SQLite
         let kind_section = spec
@@ -11515,8 +11524,7 @@ mod tests {
 
     #[test]
     fn db_form_spec_dsn_info_row_reflects_postgres_fields() {
-        use sid_widgets::form::SectionKind;
-        use sid_widgets::modal::Field;
+        use sid_widgets::{form::SectionKind, modal::Field};
         let mut spec = db_connection_form_spec(None);
         // set host + port + database + user
         for section in spec
@@ -11751,8 +11759,10 @@ mod tests {
     #[test]
     fn ctrl_r_in_editor_emits_run_query_and_drain_clears_it() {
         use crossterm::event::{KeyCode, KeyModifiers};
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::widget::Widget;
+        use sid_core::{
+            event::{Event, KeyChord},
+            widget::Widget,
+        };
         let mut app = build_test_sid_app(Some("database"));
         // set active connection so Ctrl+R has a conn_id to attach
         {
@@ -12108,12 +12118,15 @@ mod tests {
 
     // ─── Live Network data + toasts + async jobs ──────────────────────────────
 
-    use sid_core::adapters::sys::{
-        ListeningPort, NetInterface, Pid as SysPid, ProcessInfo, Protocol, Signal, SocketState,
-        SysError, SysProvider,
-    };
-    use sid_core::sys_probe::{SysProbe, SysSnapshot};
     use std::sync::Mutex as StdMutex;
+
+    use sid_core::{
+        adapters::sys::{
+            ListeningPort, NetInterface, Pid as SysPid, ProcessInfo, Protocol, Signal, SocketState,
+            SysError, SysProvider,
+        },
+        sys_probe::{SysProbe, SysSnapshot},
+    };
 
     /// Trivial provider returning fixed, non-empty data on every call so
     /// snapshots arriving at the widget are detectable.
@@ -12852,8 +12865,10 @@ mod tests {
 
     /// A minimal two-field editable form spec for hosting tests.
     fn test_form_spec(id: &str) -> sid_widgets::form::FormSpec {
-        use sid_widgets::form::{FormField, FormSection, FormSpec, SectionKind};
-        use sid_widgets::modal::Field;
+        use sid_widgets::{
+            form::{FormField, FormSection, FormSpec, SectionKind},
+            modal::Field,
+        };
         FormSpec::new(
             id,
             "Test form",
@@ -13222,8 +13237,10 @@ mod tests {
             id: sid_core::tab::TabId::new("ws-detail-test"),
             title: "Test Detail".into(),
             layout: {
-                use sid_core::layout::Layout;
-                use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+                use sid_core::{
+                    layout::Layout,
+                    widget::{EventOutcome, RenderTarget, Widget, WidgetId},
+                };
                 struct Stub {
                     id: WidgetId,
                 }
@@ -13310,8 +13327,7 @@ mod tests {
     /// we substitute a hand-rolled `SshClient` so the wire layer is
     /// exercised end-to-end without network or subprocess.
     mod ssh_connect_wiring {
-        use std::sync::Arc;
-        use std::sync::Mutex;
+        use std::sync::{Arc, Mutex};
 
         use async_trait::async_trait;
         use sid_core::adapters::ssh::{
@@ -14167,8 +14183,14 @@ mod tests {
             assert!(sid_app.ssh_outcome_rx.try_recv().is_err());
             // The masked field + save toggle are present.
             let fields = &sid_app.modal_stack[0].fields;
-            assert!(matches!(fields[0], sid_widgets::modal::Field::Password { .. }));
-            assert!(matches!(fields[1], sid_widgets::modal::Field::Toggle { .. }));
+            assert!(matches!(
+                fields[0],
+                sid_widgets::modal::Field::Password { .. }
+            ));
+            assert!(matches!(
+                fields[1],
+                sid_widgets::modal::Field::Toggle { .. }
+            ));
         }
 
         /// Submitting the password modal routes `SshAuth::Password` into the
@@ -14214,7 +14236,10 @@ mod tests {
             // Password is NOT in the persisted host record.
             let persisted = sid_app.store.get_ssh_host("pi").unwrap().unwrap();
             let dbg = format!("{persisted:?}");
-            assert!(!dbg.contains("raspberry"), "password leaked into host: {dbg}");
+            assert!(
+                !dbg.contains("raspberry"),
+                "password leaked into host: {dbg}"
+            );
 
             if let Some(s) = sid_app.ssh_shutdown_tx.take() {
                 let _ = s.send(());
@@ -14265,12 +14290,18 @@ mod tests {
             seed_host_into_widget(&mut sid_app, password_host("pi"));
             begin_connecting(&mut sid_app, "pi");
             assert_eq!(
-                active_ssh_widget_mut(&mut sid_app).unwrap().connection().phase(),
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
                 ConnectionPhase::Connecting
             );
             cancel_pending_ssh_password(&mut sid_app, "pi");
             assert_eq!(
-                active_ssh_widget_mut(&mut sid_app).unwrap().connection().phase(),
+                active_ssh_widget_mut(&mut sid_app)
+                    .unwrap()
+                    .connection()
+                    .phase(),
                 ConnectionPhase::Idle
             );
         }
@@ -14351,31 +14382,30 @@ mod tests {
                 None,
             );
             assert_eq!(inv.program, "ssh-copy-id");
-            assert_eq!(inv.args, vec!["-i".to_string(), "/k/id_rsa.pub".into(), "prod".into()]);
+            assert_eq!(
+                inv.args,
+                vec!["-i".to_string(), "/k/id_rsa.pub".into(), "prod".into()]
+            );
             assert!(!inv.has_password);
         }
 
         /// `.pub` suffix is not doubled.
         #[test]
         fn copy_id_invocation_pub_suffix_not_doubled() {
-            let inv =
-                build_ssh_copy_id_invocation("h", "u", "host", 22, Some("/k/id.pub"), None);
+            let inv = build_ssh_copy_id_invocation("h", "u", "host", 22, Some("/k/id.pub"), None);
             assert!(inv.args.contains(&"/k/id.pub".to_string()));
         }
 
         /// The redacted argv hides the password but keeps the structure.
         #[test]
         fn copy_id_invocation_redacted_argv_hides_password() {
-            let inv = build_ssh_copy_id_invocation(
-                "pi",
-                "u",
-                "host",
-                22,
-                None,
-                Some("supersecret"),
-            );
+            let inv =
+                build_ssh_copy_id_invocation("pi", "u", "host", 22, None, Some("supersecret"));
             let red = inv.redacted_argv();
-            assert!(!red.iter().any(|a| a.contains("supersecret")), "leak: {red:?}");
+            assert!(
+                !red.iter().any(|a| a.contains("supersecret")),
+                "leak: {red:?}"
+            );
             assert!(red.contains(&"<redacted>".to_string()));
             assert_eq!(red[0], "sshpass");
         }
@@ -14406,8 +14436,10 @@ mod tests {
             assert!(!red.iter().any(|a| a == "hunter2"), "leak: {red:?}");
             // And the missing-binary message itself carries no password (it is
             // constructed from a static string + the program name only).
-            assert!(!"err: sshpass not on PATH (required for password-auth key copy)"
-                .contains("hunter2"));
+            assert!(
+                !"err: sshpass not on PATH (required for password-auth key copy)"
+                    .contains("hunter2")
+            );
         }
 
         // ── Host removal deletes the saved password ─────────────────────────
@@ -14484,9 +14516,10 @@ mod tests {
 
     #[test]
     fn network_submit_prefs_writes_to_store_and_closes_form() {
+        use std::collections::BTreeMap;
+
         use sid_store::TypedSettings;
         use sid_widgets::form::FormValues;
-        use std::collections::BTreeMap;
 
         let mut sid_app = build_test_sid_app(Some("network"));
         let snap = sid_core::sys_probe::SysSnapshot {
@@ -14765,8 +14798,10 @@ mod tests {
     #[test]
     fn fix2_tab_bubbles_when_pane_open() {
         use crossterm::event::KeyCode;
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::widget::{EventOutcome, Widget};
+        use sid_core::{
+            event::{Event, KeyChord},
+            widget::{EventOutcome, Widget},
+        };
 
         let mut sid_app = sid_app_with_eth0();
         open_pane_via_enter(&mut sid_app);
@@ -14798,8 +14833,10 @@ mod tests {
     #[test]
     fn fix2_tab_consumed_when_list_focused() {
         use crossterm::event::KeyCode;
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::widget::{EventOutcome, Widget};
+        use sid_core::{
+            event::{Event, KeyChord},
+            widget::{EventOutcome, Widget},
+        };
 
         let mut sid_app = sid_app_with_eth0();
         // Pane is NOT open — list mode.
@@ -14884,9 +14921,10 @@ mod tests {
 
     #[test]
     fn u_chord_with_fresh_entry_applies_and_is_consumed() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         // Seed the store with a theme value to undo.
         sid_app
@@ -14924,8 +14962,9 @@ mod tests {
 
     #[test]
     fn u_chord_with_expired_entry_returns_false_and_discards() {
-        use crate::settings_undo::{UNDO_TTL, UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
+
+        use crate::settings_undo::{UNDO_TTL, UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         let mut entry = UndoEntry {
             payload: UndoPayload::Theme {
@@ -14971,9 +15010,10 @@ mod tests {
     /// u with a live marker toast AND a fresh ring entry → undo fires.
     #[test]
     fn u_chord_live_marker_toast_fires_undo() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         sid_app
             .store
@@ -15004,10 +15044,13 @@ mod tests {
     /// entry is preserved (not popped).
     #[test]
     fn u_chord_expired_toast_with_fresh_entry_falls_through() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
-        use crate::toast::TOAST_LIFETIME;
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::{
+            settings_undo::{UndoEntry, UndoPayload},
+            toast::TOAST_LIFETIME,
+        };
         let mut sid_app = build_test_sid_app(None);
         sid_app
             .store
@@ -15048,9 +15091,10 @@ mod tests {
     /// ring unchanged.
     #[test]
     fn u_chord_live_toast_without_marker_falls_through() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         sid_app
             .store
@@ -15085,9 +15129,10 @@ mod tests {
 
     #[test]
     fn u_chord_ignored_while_modal_open() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         // Seed the store and push a fresh undo entry that would normally apply.
         sid_app
@@ -15136,9 +15181,10 @@ mod tests {
 
     #[test]
     fn u_chord_ignored_while_form_open() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use crossterm::event::KeyCode;
         use sid_store::TypedSettings;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
         let mut sid_app = build_test_sid_app(None);
         // Seed the store and push a fresh undo entry.
         sid_app
@@ -15199,9 +15245,10 @@ mod tests {
 
     #[test]
     fn behavior_toggle_apply_undo_round_trip() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_store::TypedSettings;
         use sid_widgets::settings::behavior_toggles::ToggleValue;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
 
         let mut sid_app = build_test_sid_app(None);
         const KEY: &str = sid_store::settings_keys::AUTO_RESTORE_SESSION;
@@ -15232,8 +15279,9 @@ mod tests {
 
     #[test]
     fn workspace_roots_apply_undo_round_trip() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_store::SettingValue;
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
 
         let mut sid_app = build_test_sid_app(None);
         let prior_roots: Vec<std::path::PathBuf> = vec!["/prior/a".into(), "/prior/b".into()];
@@ -15283,8 +15331,9 @@ mod tests {
 
     #[test]
     fn quick_action_upserted_apply_undo_round_trip() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_store::{QuickAction, QuickActionScope};
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
 
         let mut sid_app = build_test_sid_app(None);
         let original = QuickAction {
@@ -15341,8 +15390,9 @@ mod tests {
 
     #[test]
     fn quick_action_removed_apply_undo_round_trip() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_store::{QuickAction, QuickActionScope};
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
 
         let mut sid_app = build_test_sid_app(None);
         let qa = QuickAction {
@@ -15386,9 +15436,10 @@ mod tests {
 
     #[test]
     fn keybind_apply_undo_round_trip() {
-        use crate::settings_undo::{UndoEntry, UndoPayload};
         use sid_core::keybind::KeybindMap;
         use sid_store::keybind_load::{load_keybind_profile, save_keybind_profile};
+
+        use crate::settings_undo::{UndoEntry, UndoPayload};
 
         let mut sid_app = build_test_sid_app(None);
 
@@ -15506,8 +15557,7 @@ mod tests {
     /// widget, which has nowhere to record into).
     fn install_logs_settings_widget(sid_app: &mut SidApp) {
         use sid_core::layout::Layout;
-        use sid_widgets::settings::logs::LogsView;
-        use sid_widgets::{SettingsCategory, SettingsWidget};
+        use sid_widgets::{SettingsCategory, SettingsWidget, settings::logs::LogsView};
         let tabs = sid_app.app.tabs_mut().tabs_mut();
         let settings_tab = tabs
             .iter_mut()
@@ -15532,8 +15582,9 @@ mod tests {
     /// each `LogLevel` to the right toast kind.
     #[test]
     fn record_feeds_logs_ring_and_toast_queue() {
-        use crate::toast::ToastKind;
         use sid_widgets::settings::logs::LogLevel;
+
+        use crate::toast::ToastKind;
 
         let mut sid_app = build_test_sid_app(Some("settings"));
         install_logs_settings_widget(&mut sid_app);
@@ -15595,8 +15646,7 @@ mod tests {
     /// is ever flipped back to `true`, this test is expected to be revisited.
     #[test]
     fn toasts_overlay_suppressed_when_disabled() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
 
         let mut sid_app = build_test_sid_app(Some("workspaces"));
         // Push a toast with a highly distinctive body unlikely to occur in

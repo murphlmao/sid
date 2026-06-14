@@ -1,8 +1,10 @@
 use std::sync::mpsc;
 
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, RenderTarget},
+};
 use sid_widgets::stub::ComingSoonBody;
 
 struct FakeTarget;

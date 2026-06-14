@@ -1,13 +1,14 @@
 //! Smoke tests for the `SysProbe` skeleton.
 
-use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+use std::{
+    sync::{Arc, Mutex, atomic::AtomicU32},
+    time::Duration,
 };
-use sid_core::sys_probe::{SysProbe, SysSnapshot};
+
+use sid_core::{
+    adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider},
+    sys_probe::{SysProbe, SysSnapshot},
+};
 
 struct CountingProvider {
     processes_calls: AtomicU32,

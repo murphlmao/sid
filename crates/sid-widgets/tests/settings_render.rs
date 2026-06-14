@@ -8,19 +8,21 @@
 
 use std::path::PathBuf;
 
-use sid_core::action::{Action, ActionRegistry};
-use sid_core::keybind::KeybindMap;
+use sid_core::{
+    action::{Action, ActionRegistry},
+    keybind::KeybindMap,
+};
 use sid_store::{QuickAction, QuickActionScope};
 use sid_ui::theme_registry::ThemeRegistry;
-use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
-use sid_widgets::settings::db_path::DbPathView;
-use sid_widgets::settings::keybind_editor::KeybindEditorView;
-use sid_widgets::settings::quick_actions::QuickActionsView;
-use sid_widgets::settings::reset::ResetView;
-use sid_widgets::settings::theme_picker::ThemePickerView;
-use sid_widgets::settings::workspace_roots::WorkspaceRootsView;
-use sid_widgets::settings::{render_to_string, render_to_string_with_styles};
-use sid_widgets::{SettingsCategory, SettingsWidget};
+use sid_widgets::{
+    SettingsCategory, SettingsWidget,
+    settings::{
+        behavior_toggles::BehaviorTogglesView, db_path::DbPathView,
+        keybind_editor::KeybindEditorView, quick_actions::QuickActionsView, render_to_string,
+        render_to_string_with_styles, reset::ResetView, theme_picker::ThemePickerView,
+        workspace_roots::WorkspaceRootsView,
+    },
+};
 use tempfile::tempdir;
 
 fn theme_view() -> ThemePickerView {

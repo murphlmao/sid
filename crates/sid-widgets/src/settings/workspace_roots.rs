@@ -16,14 +16,15 @@
 
 use std::path::PathBuf;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_core::SidError;
-use sid_store::settings_keys::WORKSPACE_ROOTS;
-use sid_store::{SettingValue, Store};
+use sid_store::{SettingValue, Store, settings_keys::WORKSPACE_ROOTS};
 use sid_ui::Theme;
 
 /// Outcome returned by [`WorkspaceRootsView::handle_event`].
@@ -663,8 +664,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &WorkspaceRootsView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(60, 8);
         let mut term = Terminal::new(backend).unwrap();

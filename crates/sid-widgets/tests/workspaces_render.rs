@@ -12,8 +12,7 @@
 
 use std::path::PathBuf;
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use ratatui::{Terminal, backend::TestBackend};
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
 use sid_ui::themes::cosmos;

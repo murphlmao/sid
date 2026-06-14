@@ -1,5 +1,6 @@
-use sid_ssh::read_ssh_config;
 use std::fs;
+
+use sid_ssh::read_ssh_config;
 use tempfile::tempdir;
 
 #[test]

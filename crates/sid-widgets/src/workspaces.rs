@@ -23,21 +23,26 @@
 //!   2. It gives a stable locking point for the borrow story (`&mut self` on
 //!      `checkout_branch` is satisfied by `Mutex::lock`).
 
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_core::adapters::git::{Branch, CommitInfo, DiffEntry, GitProvider, GitStatus};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
-use sid_core::workspace_metadata::{WorkspaceAction, WorkspaceKind};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_core::{
+    adapters::git::{Branch, CommitInfo, DiffEntry, GitProvider, GitStatus},
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+    workspace_metadata::{WorkspaceAction, WorkspaceKind},
+};
 use sid_store::Workspace;
 use sid_ui::Theme;
 
@@ -176,8 +181,7 @@ impl EditorRunner for SystemEditorRunner {
     /// }
     /// ```
     fn run_editor(&self) -> Result<String, String> {
-        use std::io::Write;
-        use std::process::Command;
+        use std::{io::Write, process::Command};
 
         // 1. Create a temp file for the commit message
         let tmp_path = std::env::temp_dir().join(format!("sid-COMMIT_EDITMSG-{}", uuid_simple()));
@@ -2451,8 +2455,10 @@ mod tests {
     #[test]
     fn bg_open_on_add_new_is_consumed_noop() {
         use crossterm::event::{KeyCode, KeyModifiers};
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::widget::{EventOutcome, Widget};
+        use sid_core::{
+            event::{Event, KeyChord},
+            widget::{EventOutcome, Widget},
+        };
 
         let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
         w.set_show_add_new_row(true);
@@ -2477,8 +2483,10 @@ mod tests {
     #[test]
     fn right_on_add_new_does_not_mutate_expansion_state() {
         use crossterm::event::{KeyCode, KeyModifiers};
-        use sid_core::event::{Event, KeyChord};
-        use sid_core::widget::{EventOutcome, Widget};
+        use sid_core::{
+            event::{Event, KeyChord},
+            widget::{EventOutcome, Widget},
+        };
 
         let mut w = WorkspacesWidget::new(vec![umbrella_ws()], None);
         w.set_show_add_new_row(true);

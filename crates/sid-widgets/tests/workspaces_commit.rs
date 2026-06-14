@@ -1,12 +1,14 @@
 //! Tests for the Commit drafter (Task 27).
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-
-use sid_core::adapters::git::{
-    Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
-use sid_core::workspace_metadata::WorkspaceKind;
+
+use sid_core::{
+    adapters::git::{Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit},
+    workspace_metadata::WorkspaceKind,
+};
 use sid_store::Workspace;
 use sid_widgets::workspaces::{
     CommitDraftPhase, CommitDraftState, EditorRunner, MockEditorRunner, RightPane, WorkspacesState,

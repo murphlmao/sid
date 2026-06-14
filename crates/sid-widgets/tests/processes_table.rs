@@ -3,8 +3,10 @@
 
 use proptest::prelude::*;
 use sid_core::adapters::sys::{Pid, ProcessInfo};
-use sid_widgets::network::ports_table::SortDir;
-use sid_widgets::network::processes_table::{ProcessesSortBy, ProcessesTableState};
+use sid_widgets::network::{
+    ports_table::SortDir,
+    processes_table::{ProcessesSortBy, ProcessesTableState},
+};
 
 fn p(pid: u32, name: &str, cpu: f32, rss: u64, started: i64) -> ProcessInfo {
     ProcessInfo {

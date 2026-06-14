@@ -23,9 +23,11 @@
 //! );
 //! ```
 
-use sid_core::SidError;
-use sid_core::keybind::KeybindMap;
-use sid_core::keybind_profile::{ProfileEntry, from_map, to_map};
+use sid_core::{
+    SidError,
+    keybind::KeybindMap,
+    keybind_profile::{ProfileEntry, from_map, to_map},
+};
 
 use crate::{KeybindEntry, KeybindProfile, Store};
 

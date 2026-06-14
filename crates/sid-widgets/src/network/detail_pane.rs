@@ -6,8 +6,10 @@
 
 use sid_core::adapters::sys::NetInterface;
 
-use crate::form::{FormField, FormSection, FormSpec, FormValues, SectionKind, Validate};
-use crate::modal::Field;
+use crate::{
+    form::{FormField, FormSection, FormSpec, FormValues, SectionKind, Validate},
+    modal::Field,
+};
 
 /// Sid-level per-interface user preferences persisted in the settings store.
 ///

@@ -46,11 +46,13 @@
 //! }
 //! ```
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+};
 use sid_ui::Theme;
 
 /// Identity for a modal — used so the caller (a widget or the binary) can
@@ -1081,8 +1083,7 @@ fn render_chrome(frame: &mut Frame<'_>, area: Rect, theme: &Theme, modal: &Modal
 /// assert!(s.contains("Demo"));
 /// ```
 pub fn render_modal_to_string(modal: &ModalSpec, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();

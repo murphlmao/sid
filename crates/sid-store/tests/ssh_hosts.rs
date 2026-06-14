@@ -133,8 +133,7 @@ fn long_command_history_round_trips() {
 #[test]
 fn decode_v1_blob_maps_to_v2_with_none_last_sftp_path() {
     use serde::{Deserialize, Serialize};
-    use sid_store::codec::encode_versioned;
-    use sid_store::{SshHostSource, decode_ssh_host};
+    use sid_store::{SshHostSource, codec::encode_versioned, decode_ssh_host};
 
     // Mirror of the pre-v2 wire shape.
     #[derive(Serialize, Deserialize)]
@@ -171,8 +170,7 @@ fn decode_v1_blob_maps_to_v2_with_none_last_sftp_path() {
 #[test]
 fn decode_v2_blob_maps_to_v3_with_agent_auth_kind() {
     use serde::{Deserialize, Serialize};
-    use sid_store::codec::encode_versioned;
-    use sid_store::{SshHostSource, decode_ssh_host};
+    use sid_store::{SshHostSource, codec::encode_versioned, decode_ssh_host};
 
     // Mirror of the pre-v3 wire shape (v2 had `last_sftp_path` but no `auth_kind`).
     #[derive(Serialize, Deserialize)]

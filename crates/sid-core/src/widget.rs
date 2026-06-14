@@ -2,8 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::context::WidgetCtx;
-use crate::event::Event;
+use crate::{context::WidgetCtx, event::Event};
 
 /// Stable identity of a widget instance. Used for state restoration and keybind scope.
 ///

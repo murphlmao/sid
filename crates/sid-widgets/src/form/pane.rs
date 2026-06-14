@@ -1,7 +1,8 @@
-use super::spec::{FormSpec, FormValues, SectionKind};
-use crate::modal::Field;
 use crossterm::event::{KeyCode, KeyModifiers};
 use sid_core::event::KeyChord;
+
+use super::spec::{FormSpec, FormValues, SectionKind};
+use crate::modal::Field;
 
 /// Where focus sits inside the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,10 +256,13 @@ impl FormPane {
 
 #[cfg(test)]
 mod tests {
-    use super::super::spec::{FormField, FormSection, FormSpec, SectionKind, Validate};
-    use super::*;
-    use crate::modal::Field;
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    use super::{
+        super::spec::{FormField, FormSection, FormSpec, SectionKind, Validate},
+        *,
+    };
+    use crate::modal::Field;
 
     fn chord(code: KeyCode) -> KeyChord {
         KeyChord {

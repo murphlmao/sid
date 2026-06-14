@@ -1,11 +1,12 @@
 //! `RusshClient` core — connect/disconnect/exec/open_shell/open_sftp.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use russh::client::{Config, Handle, Handler};
-use russh::keys::PublicKey;
+use russh::{
+    client::{Config, Handle, Handler},
+    keys::PublicKey,
+};
 use sid_core::adapters::ssh::{
     ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
 };

@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use russh::client::Msg;
-use russh::{Channel, ChannelMsg, CryptoVec};
+use russh::{Channel, ChannelMsg, CryptoVec, client::Msg};
 use sid_core::adapters::ssh::{SshError, SshShell};
 use tokio::sync::Mutex;
 

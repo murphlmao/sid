@@ -1,10 +1,8 @@
 //! Auth methods — key, password, ssh-agent. Used by `RusshClient::connect`.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
-use russh::client::Handle;
-use russh::keys::PrivateKeyWithHashAlg;
+use russh::{client::Handle, keys::PrivateKeyWithHashAlg};
 use sid_core::adapters::ssh::{SshAuth, SshError};
 
 use crate::client::ClientHandler;

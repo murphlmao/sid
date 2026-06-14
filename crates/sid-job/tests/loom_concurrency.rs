@@ -19,8 +19,10 @@
 
 #![cfg(loom)]
 
-use loom::sync::{Arc, Mutex};
-use loom::thread;
+use loom::{
+    sync::{Arc, Mutex},
+    thread,
+};
 
 // ---------------------------------------------------------------------------
 // helpers

@@ -1,11 +1,12 @@
 use std::sync::mpsc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use sid_core::context::WidgetCtx;
-use sid_core::event::{Event, KeyChord};
-use sid_core::widget::Widget;
-use sid_widgets::SshWidget;
-use sid_widgets::ssh::SshFocus;
+use sid_core::{
+    context::WidgetCtx,
+    event::{Event, KeyChord},
+    widget::Widget,
+};
+use sid_widgets::{SshWidget, ssh::SshFocus};
 
 fn ctx() -> WidgetCtx {
     let (tx, _rx) = mpsc::channel();

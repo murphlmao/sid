@@ -24,27 +24,35 @@ pub mod reset;
 pub mod theme_picker;
 pub mod workspace_roots;
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use serde::{Deserialize, Serialize};
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, FooterHint, RenderTarget, Widget, WidgetId},
+};
 use sid_ui::Theme;
 
-use crate::settings::animation::AnimationView;
-use crate::settings::behavior_toggles::BehaviorTogglesView;
-use crate::settings::db_path::DbPathView;
-use crate::settings::keybind_editor::KeybindEditorView;
-use crate::settings::logs::{LogEntry, LogsView};
-use crate::settings::quick_actions::QuickActionsView;
-use crate::settings::reset::ResetView;
-use crate::settings::theme_picker::{ThemePickerOutcome, ThemePickerView};
-use crate::settings::workspace_roots::WorkspaceRootsView;
-use crate::stub::ComingSoonBody;
+use crate::{
+    settings::{
+        animation::AnimationView,
+        behavior_toggles::BehaviorTogglesView,
+        db_path::DbPathView,
+        keybind_editor::KeybindEditorView,
+        logs::{LogEntry, LogsView},
+        quick_actions::QuickActionsView,
+        reset::ResetView,
+        theme_picker::{ThemePickerOutcome, ThemePickerView},
+        workspace_roots::WorkspaceRootsView,
+    },
+    stub::ComingSoonBody,
+};
 
 /// Encode a [`BehaviorTogglesOutcome::Toggled`] payload as a
 /// query-string-style key/value blob for [`emit_action_with_payload`].
@@ -494,10 +502,7 @@ impl SettingsWidget {
         let (body_area, tail_area) = if area.height >= TAIL_HEIGHT + 2 {
             let v = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(2),
-                    Constraint::Length(TAIL_HEIGHT),
-                ])
+                .constraints([Constraint::Min(2), Constraint::Length(TAIL_HEIGHT)])
                 .split(area);
             (v[0], Some(v[1]))
         } else {
@@ -615,8 +620,7 @@ impl SettingsWidget {
                     let lines = if let Some(lv) = logs_view {
                         lv.tail_lines(n, theme, tail_inner_width)
                     } else {
-                        vec![Line::from("(no logs)")
-                            .style(Style::default().fg(theme.muted.into()))]
+                        vec![Line::from("(no logs)").style(Style::default().fg(theme.muted.into()))]
                     };
                     if !lines.is_empty() {
                         frame.render_widget(Paragraph::new(lines), tail_inner);
@@ -641,8 +645,7 @@ impl SettingsWidget {
 /// assert!(s.contains("Settings"));
 /// ```
 pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
@@ -688,9 +691,11 @@ pub fn render_to_string(widget: &SettingsWidget, width: u16, height: u16) -> Str
 /// assert!(s.contains("STYLES:"));
 /// ```
 pub fn render_to_string_with_styles(widget: &SettingsWidget, width: u16, height: u16) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        style::{Color, Modifier},
+    };
     use sid_ui::themes::cosmos;
     let backend = TestBackend::new(width, height);
     let mut term = Terminal::new(backend).unwrap();
@@ -1532,8 +1537,7 @@ mod tests {
 
     #[test]
     fn render_with_logs_does_not_panic_on_normal_size() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let w = widget_with_logs();
         let backend = TestBackend::new(80, 24);
@@ -1545,8 +1549,7 @@ mod tests {
 
     #[test]
     fn render_does_not_panic_on_tiny_area() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let w = widget_with_logs();
         let backend = TestBackend::new(10, 3);

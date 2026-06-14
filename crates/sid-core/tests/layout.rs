@@ -1,8 +1,10 @@
 use proptest::prelude::*;
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::layout::{Dir, Layout};
-use sid_core::widget::{EventOutcome, RenderTarget, Widget, WidgetId};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    layout::{Dir, Layout},
+    widget::{EventOutcome, RenderTarget, Widget, WidgetId},
+};
 
 // ── minimal widget stub ──────────────────────────────────────────────────────
 

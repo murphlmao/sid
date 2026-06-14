@@ -7,14 +7,17 @@
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use sid_core::Widget;
-use sid_core::animation::AnimationConfig;
-use sid_core::context::WidgetCtx;
-use sid_core::event::{Event, KeyChord};
+use sid_core::{
+    Widget,
+    animation::AnimationConfig,
+    context::WidgetCtx,
+    event::{Event, KeyChord},
+};
 use sid_store::{OpenStore, RedbStore, Store};
-use sid_widgets::settings::PendingSettingsOutcome;
-use sid_widgets::settings::animation::AnimationView;
-use sid_widgets::{SettingsCategory, SettingsWidget};
+use sid_widgets::{
+    SettingsCategory, SettingsWidget,
+    settings::{PendingSettingsOutcome, animation::AnimationView},
+};
 use tempfile::tempdir;
 
 fn key(code: KeyCode, mods: KeyModifiers) -> Event {

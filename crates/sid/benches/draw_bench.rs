@@ -6,12 +6,13 @@
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use sid::toast::ToastQueue;
-use sid::wire::{
-    JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app,
-    build_ssh_client_factory_fn, draw,
+use ratatui::{Terminal, backend::TestBackend};
+use sid::{
+    toast::ToastQueue,
+    wire::{
+        JobOutcome, NoopSystemctlClient, NoopTerminalSpawner, SidApp, build_app,
+        build_ssh_client_factory_fn, draw,
+    },
 };
 use sid_store::{OpenStore, RedbStore, Store};
 use tempfile::tempdir;

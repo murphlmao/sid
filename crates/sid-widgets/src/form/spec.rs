@@ -1,5 +1,6 @@
-use crate::modal::Field;
 use std::collections::BTreeMap;
+
+use crate::modal::Field;
 
 /// Stable identifier for a form so the binary's submit handler can dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]

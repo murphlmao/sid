@@ -23,11 +23,13 @@
 
 use std::collections::VecDeque;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_ui::Theme;
 
 /// Severity of a [`LogEntry`].
@@ -282,11 +284,7 @@ impl LogsView {
     /// v.handle_event(&ev, 10);
     /// assert_eq!(v.scroll_offset(), 1);
     /// ```
-    pub fn handle_event(
-        &mut self,
-        ev: &sid_core::event::Event,
-        page_size: usize,
-    ) -> LogsOutcome {
+    pub fn handle_event(&mut self, ev: &sid_core::event::Event, page_size: usize) -> LogsOutcome {
         use crossterm::event::{KeyCode, KeyModifiers};
         let sid_core::event::Event::Key(k) = ev else {
             return LogsOutcome::None;
@@ -375,8 +373,8 @@ impl LogsView {
         let view_height = inner.height as usize;
 
         if self.entries.is_empty() {
-            let placeholder = Line::from("(no log entries)")
-                .style(Style::default().fg(theme.muted.into()));
+            let placeholder =
+                Line::from("(no log entries)").style(Style::default().fg(theme.muted.into()));
             frame.render_widget(Paragraph::new(vec![placeholder]), inner);
             return;
         }
@@ -398,8 +396,7 @@ impl LogsView {
                 } else {
                     e.message.clone()
                 };
-                Line::from(format!("{ts} {marker} {msg}"))
-                    .style(Style::default().fg(color.into()))
+                Line::from(format!("{ts} {marker} {msg}")).style(Style::default().fg(color.into()))
             })
             .collect();
 
@@ -412,11 +409,7 @@ impl LogsView {
             let bottom_start = total - view_height;
             bottom_start.saturating_sub(self.scroll_offset)
         };
-        let visible: Vec<Line<'static>> = lines
-            .into_iter()
-            .skip(first)
-            .take(view_height)
-            .collect();
+        let visible: Vec<Line<'static>> = lines.into_iter().skip(first).take(view_height).collect();
 
         frame.render_widget(Paragraph::new(visible), inner);
     }
@@ -448,8 +441,7 @@ impl LogsView {
                 } else {
                     e.message.clone()
                 };
-                Line::from(format!("{ts} {marker} {msg}"))
-                    .style(Style::default().fg(color.into()))
+                Line::from(format!("{ts} {marker} {msg}")).style(Style::default().fg(color.into()))
             })
             .collect()
     }
@@ -758,8 +750,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render(v: &LogsView, width: u16, height: u16, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
@@ -812,7 +803,11 @@ mod tests {
     fn render_many_entries_does_not_panic() {
         let mut v = LogsView::new();
         for i in 0..LOG_RING_CAP {
-            v.push(LogEntry::new(i as u64 * 1_000_000_000, LogLevel::Info, format!("e{i}")));
+            v.push(LogEntry::new(
+                i as u64 * 1_000_000_000,
+                LogLevel::Info,
+                format!("e{i}"),
+            ));
         }
         render(&v, 80, 24, false);
     }
@@ -834,7 +829,11 @@ mod tests {
         use sid_ui::themes::cosmos;
         let mut v = LogsView::new();
         for i in 0..10u64 {
-            v.push(LogEntry::new(i * 1_000_000_000, LogLevel::Info, format!("m{i}")));
+            v.push(LogEntry::new(
+                i * 1_000_000_000,
+                LogLevel::Info,
+                format!("m{i}"),
+            ));
         }
         let theme = cosmos();
         let lines = v.tail_lines(3, &theme, 80);
@@ -843,10 +842,18 @@ mod tests {
         let texts: Vec<String> = lines
             .iter()
             .map(|l| {
-                l.spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>().concat()
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .concat()
             })
             .collect();
-        assert!(texts[0].contains("m7"), "first tail line should be m7, got: {}", texts[0]);
+        assert!(
+            texts[0].contains("m7"),
+            "first tail line should be m7, got: {}",
+            texts[0]
+        );
         assert!(texts[1].contains("m8"));
         assert!(texts[2].contains("m9"));
     }

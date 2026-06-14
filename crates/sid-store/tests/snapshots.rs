@@ -5,9 +5,11 @@
 //! are always intentional and reviewed.
 
 use redb::TableHandle;
-use sid_store::SessionRecord;
-use sid_store::codec::encode_versioned;
-use sid_store::schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE};
+use sid_store::{
+    SessionRecord,
+    codec::encode_versioned,
+    schema::{SESSION_META, SESSIONS, SETTINGS, WIDGET_STATE},
+};
 
 /// A deterministic `SessionRecord` with fixed timestamps for snapshot stability.
 fn canonical_session() -> SessionRecord {

@@ -7,12 +7,11 @@
 
 use std::collections::HashSet;
 
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState,
+use sid_core::{
+    adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState},
+    sys_probe::SysSnapshot,
 };
-use sid_core::sys_probe::SysSnapshot;
-use sid_widgets::NetworkWidget;
-use sid_widgets::network::render_to_string;
+use sid_widgets::{NetworkWidget, network::render_to_string};
 
 fn fixture_snapshot() -> SysSnapshot {
     SysSnapshot {

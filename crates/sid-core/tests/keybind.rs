@@ -1,9 +1,11 @@
 //! Integration tests for `KeyBinding` and `KeybindMap`.
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use sid_core::action::ActionId;
-use sid_core::event::KeyChord;
-use sid_core::keybind::{KeyBinding, KeybindMap};
+use sid_core::{
+    action::ActionId,
+    event::KeyChord,
+    keybind::{KeyBinding, KeybindMap},
+};
 
 // ---------------------------------------------------------------------------
 // Helper

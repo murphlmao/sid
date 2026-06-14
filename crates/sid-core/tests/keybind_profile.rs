@@ -1,11 +1,11 @@
 //! Integration tests for `keybind_profile` round-trip through `KeybindMap`.
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use sid_core::action::ActionId;
-use sid_core::event::KeyChord;
-use sid_core::keybind::{KeyBinding, KeybindMap};
-use sid_core::keybind_profile::{
-    ProfileEntry, chord_from_string, chord_to_string, from_map, to_map,
+use sid_core::{
+    action::ActionId,
+    event::KeyChord,
+    keybind::{KeyBinding, KeybindMap},
+    keybind_profile::{ProfileEntry, chord_from_string, chord_to_string, from_map, to_map},
 };
 
 #[test]

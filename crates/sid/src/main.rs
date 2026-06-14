@@ -1,19 +1,16 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::Parser;
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+use crossterm::{
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::{Terminal, backend::CrosstermBackend};
 use sid_core::workspace_metadata::read_workspace_metadata;
 use sid_store::{OpenStore, RedbStore, Store, Workspace, now_epoch};
 use tracing_subscriber::EnvFilter;
@@ -821,8 +818,10 @@ fn install_tracing() {
 async fn handle_net_cmd(op: NetOp) -> Result<()> {
     use std::time::Duration as StdDuration;
 
-    use sid_core::adapters::sys::{Signal, SysProvider as _};
-    use sid_core::sys_probe::kill_job::{KillOutcome, run_kill_job};
+    use sid_core::{
+        adapters::sys::{Signal, SysProvider as _},
+        sys_probe::kill_job::{KillOutcome, run_kill_job},
+    };
 
     let mut provider = sid_sysinfo::SysinfoProvider::new();
     match op {
@@ -1265,8 +1264,10 @@ fn handle_system_cmd(store: &dyn Store, op: SystemOp) -> Result<()> {
 }
 
 async fn handle_db_cmd(store: Arc<RedbStore>, op: DbOp) -> Result<()> {
-    use sid_core::adapters::db_client::{DbClient, DbKind, OpenParams};
-    use sid_core::adapters::secrets::{SecretId, SecretStore};
+    use sid_core::adapters::{
+        db_client::{DbClient, DbKind, OpenParams},
+        secrets::{SecretId, SecretStore},
+    };
     use sid_db_clients::{PostgresClient, SqliteClient};
     use sid_secrets::PlainStore;
     use sid_store::{DbConnection, QueryRecord};

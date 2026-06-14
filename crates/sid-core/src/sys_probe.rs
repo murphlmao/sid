@@ -16,8 +16,10 @@
 
 pub mod kill_job;
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use tokio::sync::broadcast;
 
@@ -279,9 +281,13 @@ pub enum SysProbeError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
+    };
 
     use super::*;
     use crate::adapters::sys::{

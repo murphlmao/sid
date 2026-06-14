@@ -3,13 +3,12 @@
 
 use std::path::PathBuf;
 
-use sid_widgets::workspace_detail::{
-    CiStatus, WorkspaceDetailWidget, format_age, render_to_string,
-};
-use sid_widgets::{RepoGit, SatelliteRow};
-
 use sid_core::workspace_metadata::WorkspaceKind;
 use sid_store::Workspace;
+use sid_widgets::{
+    RepoGit, SatelliteRow,
+    workspace_detail::{CiStatus, WorkspaceDetailWidget, format_age, render_to_string},
+};
 
 fn umbrella(path: &str, name: &str) -> Workspace {
     Workspace {
@@ -144,9 +143,11 @@ fn ci_status_glyphs() {
 #[test]
 fn tab_is_consumed_while_pane_focused() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::{EventOutcome, Widget};
+    use sid_core::{
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::{EventOutcome, Widget},
+    };
     use sid_widgets::split_view::SplitFocus;
 
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);
@@ -264,10 +265,12 @@ fn pop_from_diff_preserves_commit_cursor() {
 #[test]
 fn jk_in_diff_scrolls_diff_not_commit_cursor() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::adapters::git::{CommitInfo, DiffEntry};
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::widget::Widget;
+    use sid_core::{
+        adapters::git::{CommitInfo, DiffEntry},
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        widget::Widget,
+    };
     use sid_widgets::{DetailOp, RepoDetail};
 
     let mut w = WorkspaceDetailWidget::new(umbrella("/vcs/x", "x"), None);

@@ -1,6 +1,7 @@
 //! End-to-end integration tests for `sid db` CLI subcommands.
 
 use std::process::Command;
+
 use tempfile::tempdir;
 
 #[test]

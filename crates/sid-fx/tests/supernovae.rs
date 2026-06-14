@@ -10,8 +10,7 @@
 //!   - Insta snapshot of a 40×10 buffer with one centered supernova at age 0.
 
 use proptest::prelude::*;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::{buffer::Buffer, layout::Rect};
 use sid_core::animation::{AnimationConfig, GlyphSet};
 use sid_fx::{FxState, SUPERNOVA_LIFETIME_FRAMES, Supernova, SupernovaPalette, render_supernovae};
 use sid_ui::themes::cosmos;

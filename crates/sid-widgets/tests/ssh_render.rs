@@ -8,9 +8,9 @@
 use sid_core::adapters::ssh::SftpEntry;
 use sid_pty::Vt100Screen;
 use sid_store::{SshHost, SshHostSource};
-use sid_widgets::SshWidget;
-use sid_widgets::ssh::{
-    PtyPane, SshConfigEntryLite, SshState, render_to_string, render_to_string_with_resize,
+use sid_widgets::{
+    SshWidget,
+    ssh::{PtyPane, SshConfigEntryLite, SshState, render_to_string, render_to_string_with_resize},
 };
 
 fn host(alias: &str, source: SshHostSource) -> SshHost {

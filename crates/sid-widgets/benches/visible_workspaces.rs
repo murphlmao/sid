@@ -3,8 +3,7 @@
 //! Called multiple times per frame from the render path (tree pane, selection
 //! lookup, hint string). 100 µs budget at n=500 per the interaction spec.
 
-use std::hint::black_box;
-use std::path::PathBuf;
+use std::{hint::black_box, path::PathBuf};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use sid_core::workspace_metadata::WorkspaceKind;

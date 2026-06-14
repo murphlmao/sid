@@ -1,8 +1,9 @@
 //! Integration tests for the `themes` table on `RedbStore`.
 
 use proptest::prelude::*;
-use sid_store::schema::THEMES;
-use sid_store::{OpenStore, RedbStore, Store, ThemeGlyphs, ThemePalette, ThemeSpec};
+use sid_store::{
+    OpenStore, RedbStore, Store, ThemeGlyphs, ThemePalette, ThemeSpec, schema::THEMES,
+};
 use tempfile::tempdir;
 
 fn store() -> (tempfile::TempDir, RedbStore) {

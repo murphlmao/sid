@@ -18,12 +18,13 @@
 //! assert!(s.contains("cosmos"));
 //! ```
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color as RatColor, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
-
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color as RatColor, Modifier, Style},
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_ui::theme::{Color, Theme};
 
 /// Render the preview block for `theme` at `width × height` cells. Returns an
@@ -170,8 +171,10 @@ fn draw(f: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
 
 #[cfg(test)]
 mod tests {
-    use sid_ui::theme::GlyphSet;
-    use sid_ui::themes::{cosmos, cosmos_light, dusk, void};
+    use sid_ui::{
+        theme::GlyphSet,
+        themes::{cosmos, cosmos_light, dusk, void},
+    };
 
     use super::*;
 

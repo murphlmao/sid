@@ -20,11 +20,13 @@
 
 use std::collections::BTreeSet;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
 use sid_core::SidError;
 use sid_store::{Store, TypedSettings};
 use sid_ui::Theme;
@@ -509,10 +511,7 @@ mod tests {
             ToggleValue::Bool(b) => assert!(*b, "use_os_keyring should now be true"),
             other => panic!("expected Bool, got {other:?}"),
         }
-        assert!(
-            v.dirty_keys()
-                .any(|k| *k == settings_keys::USE_OS_KEYRING)
-        );
+        assert!(v.dirty_keys().any(|k| *k == settings_keys::USE_OS_KEYRING));
     }
 
     #[test]
@@ -729,8 +728,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &BehaviorTogglesView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(60, 12);
         let mut term = Terminal::new(backend).unwrap();

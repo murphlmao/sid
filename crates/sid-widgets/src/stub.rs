@@ -1,8 +1,10 @@
 //! Shared "coming soon" body used by all six tab widget stubs.
 
-use sid_core::context::WidgetCtx;
-use sid_core::event::Event;
-use sid_core::widget::{EventOutcome, RenderTarget};
+use sid_core::{
+    context::WidgetCtx,
+    event::Event,
+    widget::{EventOutcome, RenderTarget},
+};
 
 /// Reusable body for stub widgets that are not yet implemented.
 ///
@@ -113,9 +115,11 @@ impl ComingSoonBody {
 mod tests {
     use std::sync::mpsc;
 
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::Event;
-    use sid_core::widget::{EventOutcome, RenderTarget};
+    use sid_core::{
+        context::WidgetCtx,
+        event::Event,
+        widget::{EventOutcome, RenderTarget},
+    };
 
     use super::ComingSoonBody;
 

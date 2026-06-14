@@ -1,8 +1,10 @@
 //! End-to-end tests for the `sid net …` CLI subcommands.
 
-use std::net::TcpListener;
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::{
+    net::TcpListener,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 fn sid_bin() -> &'static str {
     env!("CARGO_BIN_EXE_sid")

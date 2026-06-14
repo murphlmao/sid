@@ -103,8 +103,8 @@ fn sid_help_mentions_start_tab() {
 #[cfg(unix)]
 #[test]
 fn db_unreadable_file_exits_nonzero_with_stderr() {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, os::unix::fs::PermissionsExt};
+
     use tempfile::tempdir;
 
     // Skip if running as root — root can read/write any file regardless of

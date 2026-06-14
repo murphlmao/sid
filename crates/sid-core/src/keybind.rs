@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::action::ActionId;
-use crate::event::KeyChord;
+use crate::{action::ActionId, event::KeyChord};
 
 /// A single binding from a key chord to an action id.
 ///

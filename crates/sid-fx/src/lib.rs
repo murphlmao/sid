@@ -35,9 +35,11 @@ use std::collections::VecDeque;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect},
+    style::{Color, Style},
+};
 use sid_core::animation::{AnimationConfig, GlyphSet, MotionStyle};
 use sid_ui::theme::{Color as UiColor, Theme};
 
@@ -829,8 +831,7 @@ pub fn render_shooting_stars(
         for t in 1..=3i32 {
             let tx = head_x + step_x * t;
             let ty = head_y + step_y * t;
-            let trail_brightness =
-                (head_brightness as i32 - (t * 60)).clamp(0, 255) as u8;
+            let trail_brightness = (head_brightness as i32 - (t * 60)).clamp(0, 255) as u8;
             if trail_brightness == 0 {
                 break;
             }
@@ -1132,9 +1133,10 @@ fn palette_anchors(palette: SupernovaPalette, theme: &Theme) -> (UiColor, UiColo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sid_core::animation::{AnimationConfig, MotionStyle};
     use sid_ui::themes::cosmos;
+
+    use super::*;
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -1366,10 +1368,7 @@ mod tests {
             state.tick(area, &cfg);
         }
         let final_pos: Vec<(i32, i32)> = state.stars().iter().map(|s| (s.xq, s.yq)).collect();
-        assert_eq!(
-            initial, final_pos,
-            "Twinkle mode must not move stars"
-        );
+        assert_eq!(initial, final_pos, "Twinkle mode must not move stars");
     }
 
     #[test]
@@ -1497,7 +1496,10 @@ mod tests {
                 break;
             }
         }
-        assert!(seen, "Cosmos must spawn at least one shooting star within 2000 ticks");
+        assert!(
+            seen,
+            "Cosmos must spawn at least one shooting star within 2000 ticks"
+        );
     }
 
     #[test]
@@ -1680,16 +1682,8 @@ mod tests {
         for _ in 0..100 {
             state.tick(area, &cfg);
             for s in state.stars() {
-                assert_eq!(
-                    s.x,
-                    (s.xq >> 8) as u16,
-                    "star.x must equal xq>>8"
-                );
-                assert_eq!(
-                    s.y,
-                    (s.yq >> 8) as u16,
-                    "star.y must equal yq>>8"
-                );
+                assert_eq!(s.x, (s.xq >> 8) as u16, "star.x must equal xq>>8");
+                assert_eq!(s.y, (s.yq >> 8) as u16, "star.y must equal yq>>8");
             }
         }
     }

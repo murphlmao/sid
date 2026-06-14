@@ -13,13 +13,14 @@
 //! programmer error in wiring. This mirrors the Plan 1 `TabManager::new(vec![])`
 //! convention.
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
-use sid_ui::theme::Theme;
-use sid_ui::theme_registry::ThemeRegistry;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
+};
+use sid_ui::{theme::Theme, theme_registry::ThemeRegistry};
 
 use crate::settings::live_preview::render_preview;
 
@@ -390,8 +391,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use proptest::prelude::*;
     use sid_core::event::{Event, KeyChord};
-    use sid_ui::theme::{Color, GlyphSet, Theme};
-    use sid_ui::theme_registry::ThemeRegistry;
+    use sid_ui::{
+        theme::{Color, GlyphSet, Theme},
+        theme_registry::ThemeRegistry,
+    };
 
     use super::*;
 
@@ -568,8 +571,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn render_with_focus(v: &ThemePickerView, focused: bool) -> String {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use ratatui::{Terminal, backend::TestBackend};
         use sid_ui::themes::cosmos;
         let backend = TestBackend::new(40, 18);
         let mut term = Terminal::new(backend).unwrap();

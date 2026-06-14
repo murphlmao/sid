@@ -6,8 +6,10 @@
 //! returned future resolves to a [`KillOutcome`] which the caller turns into
 //! a user-visible toast.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::adapters::sys::{Pid, Signal, SysError, SysProvider};
 

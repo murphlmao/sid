@@ -13,8 +13,10 @@
 
 #![cfg(loom)]
 
-use loom::sync::{Arc, Mutex};
-use loom::thread;
+use loom::{
+    sync::{Arc, Mutex},
+    thread,
+};
 
 /// The poll task and the kill task race on the same provider. After both
 /// terminate, the inner counter must equal the sum of both threads'

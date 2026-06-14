@@ -14,8 +14,10 @@
 
 use std::sync::Arc;
 
-use sid_core::SidError;
-use sid_core::adapters::secrets::{SecretError, SecretId, SecretStore};
+use sid_core::{
+    SidError,
+    adapters::secrets::{SecretError, SecretId, SecretStore},
+};
 use sid_store::Store;
 
 pub mod keyring_store;
@@ -105,8 +107,7 @@ impl SecretStore for PlainStore {
 /// Test-only fake keyring backend. Never compiled outside `#[cfg(test)]`.
 #[cfg(test)]
 pub(crate) mod tests_support {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     use super::keyring_store::KeyringBackend;
 
@@ -144,9 +145,10 @@ pub(crate) mod tests_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use sid_store::{OpenStore, RedbStore};
     use tempfile::tempdir;
+
+    use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
 

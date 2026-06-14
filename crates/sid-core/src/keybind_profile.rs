@@ -27,9 +27,11 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::action::ActionId;
-use crate::event::KeyChord;
-use crate::keybind::{KeyBinding, KeybindMap};
+use crate::{
+    action::ActionId,
+    event::KeyChord,
+    keybind::{KeyBinding, KeybindMap},
+};
 
 /// One (chord, action) pair in a portable string form.
 ///

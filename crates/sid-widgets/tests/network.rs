@@ -55,15 +55,14 @@ mod focus {
     use std::sync::mpsc;
 
     use crossterm::event::{KeyCode, KeyModifiers};
-    use sid_core::adapters::sys::{
-        ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState,
+    use sid_core::{
+        adapters::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Protocol, SocketState},
+        context::WidgetCtx,
+        event::{Event, KeyChord},
+        sys_probe::SysSnapshot,
+        widget::Widget,
     };
-    use sid_core::context::WidgetCtx;
-    use sid_core::event::{Event, KeyChord};
-    use sid_core::sys_probe::SysSnapshot;
-    use sid_core::widget::Widget;
-    use sid_widgets::NetworkWidget;
-    use sid_widgets::network::NetFocus;
+    use sid_widgets::{NetworkWidget, network::NetFocus};
 
     fn ctx() -> WidgetCtx {
         let (tx, _rx) = mpsc::channel();

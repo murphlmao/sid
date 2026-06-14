@@ -4,18 +4,14 @@
 
 use std::path::Path;
 
-use sid_core::adapters::clipboard::Clipboard;
-use sid_core::adapters::db_client::DbClient;
-use sid_core::adapters::git::{
-    Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit,
-};
-use sid_core::adapters::notifier::{Notifier, NotifyLevel};
-use sid_core::adapters::pty::{PtyError, PtyHandle, PtyProvider, PtySize, PtySpawn};
-use sid_core::adapters::ssh::{
-    ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell,
-};
-use sid_core::adapters::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+use sid_core::adapters::{
+    clipboard::Clipboard,
+    db_client::DbClient,
+    git::{Branch, CommitInfo, DiffEntry, GitError, GitProvider, GitStatus, NewCommit},
+    notifier::{Notifier, NotifyLevel},
+    pty::{PtyError, PtyHandle, PtyProvider, PtySize, PtySpawn},
+    ssh::{ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell},
+    sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider},
 };
 
 // ---------------------------------------------------------------------------

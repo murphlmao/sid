@@ -6,8 +6,10 @@
 
 use sid_core::adapters::db_client::{Column, ColumnType, DbKind, QueryPage, Row};
 use sid_store::{DbConnection, QueryRecord};
-use sid_widgets::DatabaseWidget;
-use sid_widgets::database::{RightPane, render_to_string};
+use sid_widgets::{
+    DatabaseWidget,
+    database::{RightPane, render_to_string},
+};
 
 fn conn(id: &str, kind: DbKind) -> DbConnection {
     DbConnection {
