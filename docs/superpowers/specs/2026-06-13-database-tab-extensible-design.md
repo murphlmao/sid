@@ -44,6 +44,15 @@ Replace per-engine `SidApp` fields with a **registry**:
 - `ConfigStoreReader` (sid-store, critical path): lists real tables; scans a seeded table; value decode for utf8/binary; read-only (no mutation method exists).
 - redb viewer auto-added to the connection list; opens browse view; never writes.
 
+## Recon-confirmed implementation detail (2026-06-13)
+Architecture assessment confirms the above and pins specifics:
+
+- **Current blockers (file:line):** per-engine fields `SidApp.postgres`/`.sqlite` (`wire.rs:240-244`); hardcoded factory match in `spawn_test_connection` (`wire.rs:7145`); form `make_sections`/`build_dsn` hardcoded to Postgres+SQLite (`wire.rs:6790-7000`); kind label match in `database.rs:837`. `DbClient` (`db_client.rs:260-305`) has `kind()` but **no descriptor method**. `DbConnection` (`sid-store/src/lib.rs:687`) + secret key `db.connection.{id}.password` are already engine-agnostic — keep.
+- **Phase 1 (blocker, do first): registry + descriptor.** Add `ConnField`/`ConnFieldKind`/`trait DbClientDescriptor { connection_fields(), label(), assemble_params(values)->OpenParams }` to `sid-core/db_client.rs`; add `fn descriptor(&self)->&'static dyn DbClientDescriptor` to `DbClient`. Add `PostgresDescriptor`/`SqliteDescriptor` in `sid-db-clients`. Replace the two `SidApp` fields with `db_registry: DbClientRegistry` (`DbKind -> (Arc<dyn DbClient>, &'static dyn DbClientDescriptor)`). Rewrite the connection form to render from `descriptor.connection_fields()` and submit via `assemble_params`. **Regression guard:** register a dummy 3rd engine in a test and assert the form adapts with zero widget changes.
+- **Phase 2: SQLite modes.** Add `OpenParams.sqlite_mode: Option<SqliteMode { OpenExisting, CreateNew }>` (clean, not DSN-encoded). `SqliteClient::open` (`sid-db-clients/src/sqlite.rs:48`): OpenExisting errors if missing; CreateNew errors if exists, else `create_dir_all(parent)` then open. SQLite descriptor exposes a `path` Path field + a `mode` Choice (default open_existing).
+- **Phase 3: redb viewer.** `trait ConfigStoreReader { list_tables(), scan_table(name)->Vec<(String,String)> }` + `ConfigError` in `sid-core`; impl on `RedbStore` in `sid-store/src/config_reader.rs` (redb tables are in `sid-store/src/schema.rs`; values rendered best-effort utf8/hex/"versioned-postcard: N bytes"). Add a `DbKind::ConfigReader` (or `Redb`) variant + auto-insert a read-only "sid config (redb)" connection; `database.rs` gains a `RightPane::ConfigBrowse` tree view (distinct from the SQL results grid). No write path.
+- **Phase order:** 1 → (2 ∥ 3). Phase 1 unblocks everything; 2 and 3 are independent after it.
+
 ## Out of scope (now)
 - Actually implementing many engines (MySQL/etc.) — only the architecture + SQLite + redb viewer. Adding engines is follow-up, made cheap by §1.
 - Writing to the redb config store from the DB tab.
