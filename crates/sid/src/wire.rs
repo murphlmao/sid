@@ -205,6 +205,8 @@ pub enum JobOutcome {
 ///     form: None,
 ///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
+///     pending_config_edit: None,
+///     pump_control: None,
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::<JobOutcome>::new()),
 ///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
@@ -274,6 +276,14 @@ pub struct SidApp {
     /// Modals submitted on the previous frame whose handler hasn't run yet.
     /// Drained at the top of [`run_event_loop`] each iteration.
     pub pending_submits: Vec<(sid_widgets::ModalId, Vec<(String, sid_widgets::FieldValue)>)>,
+    /// A config file the user asked to edit (System tab `E`). Set by
+    /// [`route_key_event`] (sync) and drained by [`run_event_loop`] (async),
+    /// which owns the terminal needed to suspend/restore around the editor.
+    pub pending_config_edit: Option<std::path::PathBuf>,
+    /// Control channel for the input pump, used to release the TTY while an
+    /// inline editor runs. `None` in tests / headless drivers (no real pump),
+    /// in which case the inline editor runs without suspending input.
+    pub pump_control: Option<tokio::sync::mpsc::Sender<crate::runtime::PumpControl>>,
     /// Lower-right corner toast queue. Pushed by modal submit handlers
     /// (success / error) and by completed background jobs.
     pub toasts: ToastQueue,
@@ -1086,6 +1096,8 @@ pub(crate) const RESUME_WINDOW_NS: u64 = 60 * 60 * 1_000_000_000;
 ///     form: None,
 ///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
+///     pending_config_edit: None,
+///     pump_control: None,
 ///     toasts: ToastQueue::new(4),
 ///     jobs: Arc::new(JobQueue::new()),
 ///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
@@ -1260,6 +1272,8 @@ pub fn apply_auto_restore(sid_app: &mut SidApp) {
 ///     form: None,
 ///     form_origin_tab: None,
 ///     pending_submits: Vec::new(),
+///     pending_config_edit: None,
+///     pump_control: None,
 ///     toasts: sid::toast::ToastQueue::new(4),
 ///     jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
 ///     ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
@@ -1922,6 +1936,8 @@ pub fn fps_to_tick_ms(fps: u8) -> u64 {
 ///         form: None,
 ///         form_origin_tab: None,
 ///         pending_submits: Vec::new(),
+///         pending_config_edit: None,
+///         pump_control: None,
 ///         toasts: sid::toast::ToastQueue::new(4),
 ///         jobs: std::sync::Arc::new(sid_job::JobQueue::<sid::wire::JobOutcome>::new()),
 ///         ssh_client_factory: sid::wire::build_ssh_client_factory_fn(),
@@ -2107,6 +2123,15 @@ where
             SidEvent::Key(chord) => route_key_event(sid_app, *chord),
             _ => false,
         };
+
+        // A System-tab `E` staged a config file for editing. Open it here —
+        // this is the only place that owns `terminal` (to suspend/restore for
+        // an inline editor) and can drive the input-pump suspend/resume. Then
+        // restart the loop so the next frame is a clean redraw.
+        if let Some(path) = sid_app.pending_config_edit.take() {
+            open_config_editor(terminal, sid_app, &path).await;
+            continue;
+        }
 
         if !handled {
             let dispatch = sid_app.app.handle_event(&ev);
@@ -2362,11 +2387,54 @@ fn route_key_event(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bo
             // No undo entry available — let the key fall through to the widget.
             false
         }
+    } else if !is_global_quit
+        && sid_app.modal_stack.is_empty()
+        && sid_app.form.is_none()
+        && maybe_request_config_edit(sid_app, chord)
+    {
+        // System tab `E`: stage the selected pinned config for editing. The
+        // actual editor shell-out happens in `run_event_loop` (async, owns the
+        // terminal). Staging it here keeps `route_key_event` synchronous.
+        true
     } else if !is_global_quit && let Some(modal) = modal_for_active_tab_key(sid_app, chord) {
         sid_app.modal_stack.push(modal);
         true
     } else {
         false
+    }
+}
+
+/// System tab `E`/`e`: if the PinnedConfigs pane is focused and a config row is
+/// selected, stage its path in [`SidApp::pending_config_edit`] for
+/// [`run_event_loop`] to open. Returns `true` when it consumed the key.
+///
+/// Plain (unmodified) `E` only — `Ctrl`/`Alt` combos are reserved for global
+/// actions. No-op (returns `false`) on any other tab/pane or with no selection,
+/// so the key falls through to the widget.
+fn maybe_request_config_edit(sid_app: &mut SidApp, chord: sid_core::event::KeyChord) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use sid_widgets::system::SystemPane;
+    if sid_app.app.tabs().active().id.as_str() != "system" {
+        return false;
+    }
+    if !matches!(chord.code, KeyCode::Char('E') | KeyCode::Char('e')) {
+        return false;
+    }
+    if chord
+        .mods
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return false;
+    }
+    if system_focused_pane(sid_app) != Some(SystemPane::PinnedConfigs) {
+        return false;
+    }
+    match system_selected_pin(sid_app) {
+        Some(pin) => {
+            sid_app.pending_config_edit = Some(pin.path);
+            true
+        }
+        None => false,
     }
 }
 
@@ -3125,6 +3193,219 @@ pub fn handle_ctrl_d_detach(sid_app: &mut SidApp) {
 fn shell_quote(s: &str) -> String {
     let escaped = s.replace('\'', "'\\''");
     format!("'{escaped}'")
+}
+
+/// Read the persisted [`EditorChoice`] (System-tab config editor) from the
+/// store, defaulting to [`EditorChoice::default`] (`Nano`) when unset or
+/// unreadable.
+fn config_editor_choice(sid_app: &SidApp) -> sid_core::EditorChoice {
+    use sid_store::TypedSettings;
+    let raw = sid_app
+        .store
+        .get_string(sid_store::settings_keys::CONFIG_EDITOR)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    sid_core::EditorChoice::from_setting(&raw)
+}
+
+/// Resolve the editor binary for the *terminal-spawn* mode: the
+/// `terminal_command`-adjacent `$VISUAL`/`$EDITOR` env vars, falling back to
+/// `nano`. (The inline modes resolve their binary from the
+/// [`EditorChoice`] variant directly via `inline_binary`.)
+fn resolve_terminal_editor() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "nano".to_string())
+}
+
+/// Build the [`SpawnRequest`] for terminal-spawn config editing: open `file`
+/// with `editor`, working directory set to `parent` (so the spawned terminal
+/// `cd`s into the file's directory per the spec). Both `editor` and the file
+/// path are shell-quoted so spaces/odd characters survive the spawner's
+/// `sh -c` layer.
+fn build_editor_spawn_request(editor: &str, file: &Path, parent: &Path) -> SpawnRequest {
+    let cmd = format!(
+        "{} {}",
+        shell_quote(editor),
+        shell_quote(&file.to_string_lossy())
+    );
+    SpawnRequest {
+        cwd: parent.to_path_buf(),
+        cmd,
+    }
+}
+
+/// Run `body` between `suspend` and `restore`, guaranteeing `restore` runs
+/// afterward **even if `body` panics** (RAII). Returns `body`'s value.
+///
+/// This is the testable core of the inline-editor terminal dance: production
+/// passes crossterm suspend/restore closures, tests pass recording closures to
+/// assert the ordering and the restore-on-panic invariant.
+fn with_suspend<T>(suspend: impl FnOnce(), restore: impl FnOnce(), body: impl FnOnce() -> T) -> T {
+    struct Restorer<R: FnOnce()>(Option<R>);
+    impl<R: FnOnce()> Drop for Restorer<R> {
+        fn drop(&mut self) {
+            if let Some(r) = self.0.take() {
+                r();
+            }
+        }
+    }
+    suspend();
+    let _restorer = Restorer(Some(restore));
+    body()
+}
+
+/// Leave the alternate screen / raw mode so an inline child editor owns a
+/// normal cooked terminal. Mirror of the startup sequence in `main.rs`; the
+/// inverse of [`restore_terminal_for_tui`].
+fn suspend_terminal_for_editor() {
+    use crossterm::{
+        event::PopKeyboardEnhancementFlags,
+        execute,
+        terminal::{LeaveAlternateScreen, disable_raw_mode},
+    };
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen,
+    );
+}
+
+/// Re-enter the alternate screen / raw mode after an inline editor exits.
+/// Mirror of the startup sequence in `main.rs`.
+fn restore_terminal_for_tui() {
+    use crossterm::{
+        event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+        execute,
+        terminal::{EnterAlternateScreen, enable_raw_mode},
+    };
+    let _ = enable_raw_mode();
+    let _ = execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+    );
+}
+
+/// Suspend the input pump (drop its [`crossterm::event::EventStream`] reader),
+/// waiting for the ack so the caller only spawns the child once the TTY is
+/// free. No-op when there is no pump (tests / headless).
+async fn suspend_input_pump(sid_app: &SidApp) {
+    if let Some(ctl) = &sid_app.pump_control {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        if ctl
+            .send(crate::runtime::PumpControl::Suspend(ack_tx))
+            .await
+            .is_ok()
+        {
+            let _ = ack_rx.await;
+        }
+    }
+}
+
+/// Resume the input pump (recreate its reader). No-op when there is no pump.
+async fn resume_input_pump(sid_app: &SidApp) {
+    if let Some(ctl) = &sid_app.pump_control {
+        let _ = ctl.send(crate::runtime::PumpControl::Resume).await;
+    }
+}
+
+/// Open `path` in the user's configured config editor (System-tab `E`).
+///
+/// Branches on the persisted [`EditorChoice`]:
+/// - inline (`nano`/`vim`/`vi`): preflight the binary on PATH, suspend the
+///   input pump + the TUI, run the editor against the file with the working
+///   directory set to the file's parent, then restore everything and force a
+///   redraw (`terminal.clear()`).
+/// - `terminal`: spawn the user's terminal emulator (via the existing
+///   [`SidApp::spawner`]) running `$VISUAL`/`$EDITOR` (else `nano`) against the
+///   file, `cd`'d into the parent — sid keeps running underneath.
+///
+/// sudo is intentionally NOT handled (per spec): a permission-denied write is
+/// the editor's problem; steer those to the terminal mode.
+async fn open_config_editor<B>(terminal: &mut Terminal<B>, sid_app: &mut SidApp, path: &Path)
+where
+    B: Backend,
+    B::Error: Send + Sync + 'static,
+{
+    use sid_widgets::settings::logs::LogLevel;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let choice = config_editor_choice(sid_app);
+
+    match choice.inline_binary() {
+        Some(bin) => {
+            if !binary_on_path(bin) {
+                record(
+                    sid_app,
+                    LogLevel::Error,
+                    format!("config editor '{bin}' not found on PATH"),
+                );
+                return;
+            }
+            // Pause input (release the TTY), then suspend the TUI, run the
+            // editor, restore the TUI, resume input. `with_suspend` guarantees
+            // the TUI is restored even if the spawn panics.
+            suspend_input_pump(sid_app).await;
+            let file = path.to_path_buf();
+            let status = with_suspend(
+                suspend_terminal_for_editor,
+                restore_terminal_for_tui,
+                || {
+                    std::process::Command::new(bin)
+                        .arg(&file)
+                        .current_dir(&parent)
+                        .status()
+                },
+            );
+            resume_input_pump(sid_app).await;
+            // Force a full redraw — the editor scribbled over the screen.
+            let _ = terminal.clear();
+            match status {
+                Ok(s) if s.success() => record(
+                    sid_app,
+                    LogLevel::Success,
+                    format!("edited {}", path.display()),
+                ),
+                Ok(s) => record(
+                    sid_app,
+                    LogLevel::Error,
+                    format!("editor exited with {s} for {}", path.display()),
+                ),
+                Err(e) => record(
+                    sid_app,
+                    LogLevel::Error,
+                    format!("failed to launch '{bin}': {e}"),
+                ),
+            }
+        }
+        None => {
+            // Terminal-spawn mode: hand off to the terminal emulator.
+            let editor = resolve_terminal_editor();
+            let req = build_editor_spawn_request(&editor, path, &parent);
+            match sid_app.spawner.spawn(req) {
+                Ok(()) => record(
+                    sid_app,
+                    LogLevel::Success,
+                    format!("opened {} in a new terminal", path.display()),
+                ),
+                Err(e) => record(
+                    sid_app,
+                    LogLevel::Error,
+                    format!("terminal spawn failed: {e}"),
+                ),
+            }
+        }
+    }
 }
 
 /// What the mouse-event router decided to do with a raw [`crossterm::event::MouseEvent`].
@@ -8993,6 +9274,8 @@ mod tests {
             form: None,
             form_origin_tab: None,
             pending_submits: Vec::new(),
+            pending_config_edit: None,
+            pump_control: None,
             toasts: ToastQueue::new(4),
             undo_ring: std::collections::VecDeque::new(),
             jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),
@@ -12845,6 +13128,252 @@ mod tests {
         handle_ctrl_d_detach(&mut sid_app);
         let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
         assert!(kinds.contains(&crate::toast::ToastKind::Error));
+    }
+
+    // ─── System-tab config editing (EditorChoice / `E`) ──────────────────────
+
+    /// `with_suspend` runs suspend → body → restore in order and returns the
+    /// body's value.
+    #[test]
+    fn with_suspend_runs_suspend_body_restore_in_order() {
+        use std::{cell::RefCell, rc::Rc};
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
+        let out = with_suspend(
+            move || l1.borrow_mut().push("suspend"),
+            move || l2.borrow_mut().push("restore"),
+            move || {
+                l3.borrow_mut().push("body");
+                42
+            },
+        );
+        assert_eq!(out, 42);
+        assert_eq!(*log.borrow(), vec!["suspend", "body", "restore"]);
+    }
+
+    /// `with_suspend` restores even when the body panics (RAII guard) — the
+    /// "restore the terminal even if the editor errors" invariant.
+    #[test]
+    fn with_suspend_restores_even_when_body_panics() {
+        use std::{cell::RefCell, panic::AssertUnwindSafe, rc::Rc};
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let (l1, l2) = (log.clone(), log.clone());
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            with_suspend(
+                move || l1.borrow_mut().push("suspend"),
+                move || l2.borrow_mut().push("restore"),
+                || panic!("editor blew up"),
+            )
+        }));
+        assert!(result.is_err(), "the panic should propagate out");
+        // ...but restore still ran, after suspend.
+        assert_eq!(*log.borrow(), vec!["suspend", "restore"]);
+    }
+
+    /// `build_editor_spawn_request` sets the cwd to the file's parent and
+    /// shell-quotes both the editor and the (space-containing) path.
+    #[test]
+    fn build_editor_spawn_request_sets_parent_cwd_and_quotes() {
+        let file = Path::new("/etc/app/my config.toml");
+        let parent = Path::new("/etc/app");
+        let req = build_editor_spawn_request("nano", file, parent);
+        assert_eq!(req.cwd, PathBuf::from("/etc/app"));
+        assert!(req.cmd.contains("'nano'"), "editor not quoted: {}", req.cmd);
+        assert!(
+            req.cmd.contains("'/etc/app/my config.toml'"),
+            "file path not quoted intact: {}",
+            req.cmd
+        );
+    }
+
+    /// `config_editor_choice` defaults to `Nano` when unset and decodes a
+    /// persisted value.
+    #[test]
+    fn config_editor_choice_reads_setting_with_nano_default() {
+        use sid_store::TypedSettings;
+        let sid_app = build_test_sid_app(Some("system"));
+        assert_eq!(
+            config_editor_choice(&sid_app),
+            sid_core::EditorChoice::Nano,
+            "unset must default to nano"
+        );
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::CONFIG_EDITOR, "terminal")
+            .unwrap();
+        assert_eq!(
+            config_editor_choice(&sid_app),
+            sid_core::EditorChoice::Terminal
+        );
+    }
+
+    /// Seed one pinned config into the active System tab's widget.
+    fn seed_pinned_config(sid_app: &mut SidApp, path: &str) {
+        use sid_widgets::system::{PinnedConfigsState, SystemWidget};
+        let pin = sid_store::PinnedConfig {
+            path: PathBuf::from(path),
+            label: "test cfg".to_string(),
+            opener_cmd: None,
+            created_at: now_epoch(),
+        };
+        let w = sid_app
+            .app
+            .tabs_mut()
+            .active_mut()
+            .layout
+            .iter_widgets_mut()
+            .next()
+            .expect("system tab has a widget");
+        let sys = (w as &mut dyn std::any::Any)
+            .downcast_mut::<SystemWidget>()
+            .expect("active widget is the SystemWidget");
+        *sys.pinned_configs_mut() = PinnedConfigsState::new(vec![pin]);
+    }
+
+    /// `E` on the System tab with the PinnedConfigs pane focused and a row
+    /// selected stages that path for editing and reports the key as consumed.
+    #[test]
+    fn config_edit_e_stages_selected_pin() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let mut sid_app = build_test_sid_app(Some("system"));
+        seed_pinned_config(&mut sid_app, "/etc/app/conf.toml");
+        let chord = KeyChord {
+            code: KeyCode::Char('E'),
+            mods: KeyModifiers::NONE,
+        };
+        assert!(maybe_request_config_edit(&mut sid_app, chord));
+        assert_eq!(
+            sid_app.pending_config_edit,
+            Some(PathBuf::from("/etc/app/conf.toml"))
+        );
+    }
+
+    /// `E` does nothing off the System tab (no staging, not consumed).
+    #[test]
+    fn config_edit_e_ignored_off_system_tab() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let mut sid_app = build_test_sid_app(Some("ssh"));
+        let chord = KeyChord {
+            code: KeyCode::Char('E'),
+            mods: KeyModifiers::NONE,
+        };
+        assert!(!maybe_request_config_edit(&mut sid_app, chord));
+        assert_eq!(sid_app.pending_config_edit, None);
+    }
+
+    /// `Ctrl+E` is reserved (not a config-edit trigger), even on the System
+    /// tab with a selection.
+    #[test]
+    fn config_edit_ctrl_e_is_not_a_trigger() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use sid_core::event::KeyChord;
+        let mut sid_app = build_test_sid_app(Some("system"));
+        seed_pinned_config(&mut sid_app, "/etc/app/conf.toml");
+        let chord = KeyChord {
+            code: KeyCode::Char('e'),
+            mods: KeyModifiers::CONTROL,
+        };
+        assert!(!maybe_request_config_edit(&mut sid_app, chord));
+        assert_eq!(sid_app.pending_config_edit, None);
+    }
+
+    /// Terminal-mode `open_config_editor` hands the file to the spawner with
+    /// the cwd set to the parent dir, and records success. Uses a TestBackend
+    /// terminal + mock spawner — no real editor or terminal emulator.
+    #[tokio::test]
+    async fn open_config_editor_terminal_mode_spawns_with_parent_cwd() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("system"));
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::CONFIG_EDITOR, "terminal")
+            .unwrap();
+        let mock = Arc::new(MockTerminalSpawner::new());
+        sid_app.spawner = mock.clone() as Arc<dyn TerminalSpawner>;
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        let path = PathBuf::from("/etc/app/conf.toml");
+        open_config_editor(&mut term, &mut sid_app, &path).await;
+
+        let reqs = mock.requests();
+        assert_eq!(reqs.len(), 1, "expected exactly one spawn");
+        assert_eq!(reqs[0].cwd, PathBuf::from("/etc/app"));
+        assert!(
+            reqs[0].cmd.contains("conf.toml"),
+            "spawn cmd should reference the file: {}",
+            reqs[0].cmd
+        );
+        let kinds: Vec<crate::toast::ToastKind> = sid_app.toasts.iter().map(|t| t.kind).collect();
+        assert!(kinds.contains(&crate::toast::ToastKind::Success));
+    }
+
+    /// Terminal-mode surfaces a spawner failure as an error record.
+    #[tokio::test]
+    async fn open_config_editor_terminal_mode_reports_spawn_failure() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use sid_store::TypedSettings;
+        let mut sid_app = build_test_sid_app(Some("system"));
+        sid_app
+            .store
+            .put_string(sid_store::settings_keys::CONFIG_EDITOR, "terminal")
+            .unwrap();
+        let mock = Arc::new(MockTerminalSpawner::with_failure(
+            SpawnerError::TerminalMissing("kitty".into()),
+        ));
+        sid_app.spawner = mock.clone() as Arc<dyn TerminalSpawner>;
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        open_config_editor(
+            &mut term,
+            &mut sid_app,
+            &PathBuf::from("/etc/app/conf.toml"),
+        )
+        .await;
+
+        let msgs: Vec<String> = sid_app.toasts.iter().map(|t| t.message.clone()).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("terminal spawn failed")),
+            "expected a spawn-failure message; got {msgs:?}"
+        );
+    }
+
+    /// `suspend_input_pump` sends a `Suspend` and only returns once the pump
+    /// acks (so the caller never spawns the child before the TTY is free);
+    /// `resume_input_pump` then sends a `Resume`.
+    #[tokio::test]
+    async fn input_pump_suspend_awaits_ack_then_resume() {
+        use crate::runtime::PumpControl;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<PumpControl>(8);
+        let mut sid_app = build_test_sid_app(Some("system"));
+        sid_app.pump_control = Some(tx);
+        // Pump stand-in: ack the suspend, then hand the receiver back.
+        let responder = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(PumpControl::Suspend(ack)) => {
+                    let _ = ack.send(());
+                }
+                other => panic!("expected Suspend, got {other:?}"),
+            }
+            rx
+        });
+        // Returns only after the ack fires.
+        suspend_input_pump(&sid_app).await;
+        let mut rx = responder.await.unwrap();
+        resume_input_pump(&sid_app).await;
+        assert!(matches!(rx.recv().await, Some(PumpControl::Resume)));
+    }
+
+    /// The pump helpers are no-ops (and crucially never hang) when there is no
+    /// pump wired — the test/headless case.
+    #[tokio::test]
+    async fn input_pump_helpers_noop_without_control() {
+        let sid_app = build_test_sid_app(Some("system"));
+        assert!(sid_app.pump_control.is_none());
+        suspend_input_pump(&sid_app).await;
+        resume_input_pump(&sid_app).await;
     }
 
     // ─── Feature 3 — Mouse click-to-focus dispatch ───────────────────────────

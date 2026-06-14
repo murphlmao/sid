@@ -621,6 +621,8 @@ async fn main() -> Result<()> {
         form: None,
         form_origin_tab: None,
         pending_submits: Vec::new(),
+        pending_config_edit: None,
+        pump_control: None,
         toasts: toast::ToastQueue::new(4),
         undo_ring: std::collections::VecDeque::new(),
         jobs,
@@ -688,10 +690,13 @@ async fn main() -> Result<()> {
     // fires at the configured rate (clamped to AnimationConfig's 1..=30 range).
     let tick_ms = wire::fps_to_tick_ms(animation_fps);
     let pump = runtime::spawn_event_pump(tx, Duration::from_millis(tick_ms));
+    // Hand the pump's control channel to the app so the System-tab inline
+    // editor can suspend/resume the input reader around the shell-out.
+    sid_app.pump_control = Some(pump.control.clone());
 
     // Run.
     let run_result = wire::run_event_loop(&mut terminal, &mut sid_app, &mut rx).await;
-    pump.abort();
+    pump.handle.abort();
     probe_task.abort();
 
     // Restore terminal. Disable mouse capture in the same execute! call so a

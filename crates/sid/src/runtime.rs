@@ -11,10 +11,38 @@ use futures::StreamExt;
 use sid_core::event::Event as SidEvent;
 use tokio::sync::mpsc::{Receiver, Sender};
 
+/// Control message sent to a running [`spawn_event_pump`] task.
+///
+/// Used so the render loop can hand the real terminal (stdin/TTY) to an
+/// inline child process — e.g. `$EDITOR` shelled out from the System tab —
+/// without the pump's [`EventStream`] reader stealing the child's keystrokes.
+#[derive(Debug)]
+pub enum PumpControl {
+    /// Drop the input reader (releasing the TTY) and then fire the ack
+    /// oneshot so the caller knows it is safe to spawn the child. The pump
+    /// keeps emitting `Tick`s while suspended.
+    Suspend(tokio::sync::oneshot::Sender<()>),
+    /// Recreate the input reader after the child has exited.
+    Resume,
+}
+
+/// A spawned event pump: its join handle plus the control channel used to
+/// suspend/resume the input reader (see [`PumpControl`]).
+pub struct EventPump {
+    /// Join handle for the pump task; `abort()` it at shutdown.
+    pub handle: tokio::task::JoinHandle<()>,
+    /// Sender for [`PumpControl`] messages.
+    pub control: Sender<PumpControl>,
+}
+
 /// Spawn a background Tokio task that feeds [`SidEvent`]s onto `tx`.
 ///
 /// The task terminates (joining cleanly) when the receiver is dropped or the
 /// crossterm stream ends.  A `Tick` event is emitted every `tick_rate`.
+///
+/// Returns an [`EventPump`] bundling the join handle and a [`PumpControl`]
+/// sender. Send [`PumpControl::Suspend`] to drop the input reader while an
+/// inline child owns the TTY, then [`PumpControl::Resume`] to recreate it.
 ///
 /// # Examples
 ///
@@ -25,22 +53,45 @@ use tokio::sync::mpsc::{Receiver, Sender};
 /// #[tokio::main]
 /// async fn main() {
 ///     let (tx, mut rx) = make_channel();
-///     let handle = spawn_event_pump(tx, Duration::from_millis(250));
+///     let pump = spawn_event_pump(tx, Duration::from_millis(250));
 ///     // The pump runs in the background until the handle is aborted or the
 ///     // receiver is dropped.
-///     handle.abort();
+///     pump.handle.abort();
 /// }
 /// ```
-pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut reader = EventStream::new();
+pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> EventPump {
+    let (control, mut control_rx) = tokio::sync::mpsc::channel::<PumpControl>(8);
+    let handle = tokio::spawn(async move {
+        // `Some` while reading input; `None` while suspended (TTY released to a
+        // child). The `if reader.is_some()` select guard ensures the reader
+        // branch is never polled — and thus never consumes stdin bytes — while
+        // suspended.
+        let mut reader: Option<EventStream> = Some(EventStream::new());
         let mut ticker = tokio::time::interval(tick_rate);
         loop {
             tokio::select! {
+                ctl = control_rx.recv() => {
+                    match ctl {
+                        Some(PumpControl::Suspend(ack)) => {
+                            // Drop the EventStream FIRST (releasing the TTY),
+                            // then ack so the caller only spawns the child once
+                            // the reader is gone.
+                            reader = None;
+                            let _ = ack.send(());
+                        }
+                        Some(PumpControl::Resume) => {
+                            reader = Some(EventStream::new());
+                        }
+                        // All control senders dropped: keep ticking + reading.
+                        None => {}
+                    }
+                }
                 _ = ticker.tick() => {
                     if tx.send(SidEvent::Tick).await.is_err() { break; }
                 }
-                maybe_ev = reader.next() => {
+                maybe_ev = async { reader.as_mut().expect("guarded by is_some").next().await },
+                    if reader.is_some() =>
+                {
                     match maybe_ev {
                         Some(Ok(ev)) => {
                             if tx.send(SidEvent::from_crossterm(ev)).await.is_err() { break; }
@@ -48,12 +99,15 @@ pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> tokio::tas
                         Some(Err(e)) => {
                             tracing::warn!(error = %e, "crossterm read error");
                         }
-                        None => break,
+                        // Stream ended: stop polling it, but keep the task alive
+                        // so ticks (and resume) still work.
+                        None => { reader = None; }
                     }
                 }
             }
         }
-    })
+    });
+    EventPump { handle, control }
 }
 
 /// Create a bounded channel for [`SidEvent`]s.
