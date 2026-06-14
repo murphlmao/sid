@@ -53,6 +53,7 @@ pub const FACTORY_KEYS: &[&str] = &[
     settings_keys::HEARTBEAT_INTERVAL_SECS,
     settings_keys::AUTO_RESTORE_SESSION,
     settings_keys::DEFAULT_TAB,
+    settings_keys::CONFIG_EDITOR,
     settings_keys::SETTINGS_FOCUSED_CATEGORY,
 ];
 

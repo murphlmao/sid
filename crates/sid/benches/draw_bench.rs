@@ -45,6 +45,8 @@ fn build_bench_sid_app(start_tab: Option<&str>) -> SidApp {
         form: None,
         form_origin_tab: None,
         pending_submits: Vec::new(),
+        pending_config_edit: None,
+        pump_control: None,
         toasts: ToastQueue::new(4),
         undo_ring: std::collections::VecDeque::new(),
         jobs: Arc::new(sid_job::JobQueue::<JobOutcome>::new()),

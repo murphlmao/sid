@@ -40,6 +40,8 @@ pub use redb_impl::RedbStore;
 /// assert_eq!(settings_keys::AUTO_SCAN_WORKSPACES, "auto_scan_workspaces");
 /// assert_eq!(settings_keys::DEFAULT_TAB, "default_tab");
 /// assert_eq!(settings_keys::SETTINGS_FOCUSED_CATEGORY, "settings_focused_category");
+/// assert_eq!(settings_keys::CONFIG_EDITOR, "config_editor");
+/// assert_eq!(settings_keys::TERMINAL_COMMAND, "terminal_command");
 /// ```
 pub mod settings_keys {
     /// Canonical name of the active theme.
@@ -62,6 +64,13 @@ pub mod settings_keys {
     pub const DEFAULT_TAB: &str = "default_tab";
     /// Settings widget — last-focused sub-category (string id).
     pub const SETTINGS_FOCUSED_CATEGORY: &str = "settings_focused_category";
+    /// Which editor the System tab opens config files with. One of
+    /// `nano` / `vim` / `vi` / `terminal`; decoded via
+    /// `sid_core::EditorChoice::from_setting`.
+    pub const CONFIG_EDITOR: &str = "config_editor";
+    /// Terminal-emulator command used when the config editor is `terminal`.
+    /// Blank means the binary autodetects via `$TERMINAL` and a candidate list.
+    pub const TERMINAL_COMMAND: &str = "terminal_command";
     /// Whether list panels render the synthetic "+ add new" first row.
     ///
     /// ```

@@ -14,7 +14,7 @@
 //! use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
 //!
 //! let v = BehaviorTogglesView::defaults();
-//! assert_eq!(v.toggles().len(), 5);
+//! assert_eq!(v.toggles().len(), 6);
 //! assert_eq!(v.focused_index(), 0);
 //! ```
 
@@ -118,7 +118,7 @@ impl BehaviorTogglesView {
     /// ```
     /// use sid_widgets::settings::behavior_toggles::BehaviorTogglesView;
     /// let v = BehaviorTogglesView::defaults();
-    /// assert_eq!(v.toggles().len(), 5);
+    /// assert_eq!(v.toggles().len(), 6);
     /// ```
     pub fn defaults() -> Self {
         use sid_store::settings_keys::*;
@@ -174,6 +174,17 @@ impl BehaviorTogglesView {
                     key: USE_OS_KEYRING,
                     label: "Use OS keyring for secrets (requires restart)",
                     value: ToggleValue::Bool(false),
+                },
+                Toggle {
+                    key: CONFIG_EDITOR,
+                    label: "Config editor (System tab)",
+                    value: ToggleValue::Choice {
+                        // Order/strings mirror `sid_core::EditorChoice`:
+                        // nano (default) / vim / vi run inline; terminal spawns
+                        // the user's terminal emulator. `selected: 0` == nano.
+                        options: vec!["nano".into(), "vim".into(), "vi".into(), "terminal".into()],
+                        selected: 0,
+                    },
                 },
             ],
             focused: 0,
@@ -486,9 +497,28 @@ mod tests {
     }
 
     #[test]
-    fn defaults_has_five_toggles() {
+    fn defaults_has_six_toggles() {
         let v = BehaviorTogglesView::defaults();
-        assert_eq!(v.toggles().len(), 5);
+        assert_eq!(v.toggles().len(), 6);
+    }
+
+    #[test]
+    fn behavior_toggles_includes_config_editor_choice() {
+        use sid_store::settings_keys::CONFIG_EDITOR;
+        let v = BehaviorTogglesView::defaults();
+        let t = v
+            .toggles()
+            .iter()
+            .find(|t| t.key == CONFIG_EDITOR)
+            .expect("config_editor toggle present");
+        match &t.value {
+            ToggleValue::Choice { options, selected } => {
+                assert_eq!(options, &["nano", "vim", "vi", "terminal"]);
+                // Default is nano (index 0), matching EditorChoice::default().
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("config_editor should be a Choice, got {other:?}"),
+        }
     }
 
     #[test]
