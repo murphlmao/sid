@@ -87,7 +87,14 @@ pub fn spawn_event_pump(tx: Sender<SidEvent>, tick_rate: Duration) -> EventPump 
                     }
                 }
                 _ = ticker.tick() => {
-                    if tx.send(SidEvent::Tick).await.is_err() { break; }
+                    // Suppress ticks while suspended (reader released to an
+                    // inline child). Otherwise they pile up in the bounded
+                    // channel while the render loop is blocked on the child and
+                    // replay as an animation storm on resume. No reader == no
+                    // visible UI to animate anyway.
+                    if reader.is_some() && tx.send(SidEvent::Tick).await.is_err() {
+                        break;
+                    }
                 }
                 maybe_ev = async { reader.as_mut().expect("guarded by is_some").next().await },
                     if reader.is_some() =>

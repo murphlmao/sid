@@ -3361,10 +3361,16 @@ where
                 suspend_terminal_for_editor,
                 restore_terminal_for_tui,
                 || {
-                    std::process::Command::new(bin)
-                        .arg(&file)
-                        .current_dir(&parent)
-                        .status()
+                    // The editor blocks until the user quits it. Hand the
+                    // current worker to tokio's blocking pool for the duration
+                    // (multi-thread runtime) so the other workers — SSH PTY
+                    // readers, the sys probe, background jobs — keep running.
+                    tokio::task::block_in_place(|| {
+                        std::process::Command::new(bin)
+                            .arg(&file)
+                            .current_dir(&parent)
+                            .status()
+                    })
                 },
             );
             resume_input_pump(sid_app).await;
