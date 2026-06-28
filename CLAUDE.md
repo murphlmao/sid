@@ -23,12 +23,15 @@ The **SSH/SFTP** tab is the spearhead.
 
 2. **Layered scope is the core data invariant.**
    - A **global** store (always loaded; "nothing lost"; redb).
-   - A **per-workspace** `.sid/` of committed **text** files (git-diffable — never
-     redb) that **overlays** global when that workspace is focused.
-   - On key collision, **workspace shadows global**.
+   - A **per-workspace** committed `.sid/config.toml` (git-diffable — never redb),
+     attributed to that workspace.
+   - **Composition is attributive — never override.** A read is the union of global +
+     workspace, each tagged by origin; nothing is shadowed or lost. The default view
+     collapses true duplicates (workspace wins) with an opt-in "hide global" filter —
+     view checkboxes over a lossless store. redb values are `postcard`; the file is TOML.
    - **Secrets are never committed** — they live in the OS keyring, referenced by an
      opaque id from the committed config.
-   - **Single process.** Focusing a workspace swaps the overlay; it does not launch a
+   - **Single process.** Focusing a workspace swaps the active workspace scope; it does not launch a
      second instance.
    - New items prompt for `save to: workspace | global`, with a configurable
      `default_scope`.

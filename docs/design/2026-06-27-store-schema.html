@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — store schema + attributive model (v2)</title>
+<style>
+  :root{
+    --bg:#161618; --panel:#1d1d20; --panel2:#232327; --ink:#dcdce0; --muted:#8a8a92;
+    --line:#2e2e34; --global:#5a9ad0; --global-bg:#16242f; --ws:#a98bd0; --ws-bg:#241d31;
+    --ok:#5fbf8f; --warn:#d0a85a; --accent:#c7c7cd; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:26px 20px 60px}
+  h1{font-size:19px;margin:0 0 4px;font-weight:650}h1 .gl{color:var(--global)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 auto 20px;max-width:1080px}
+  .panel h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 4px;font-weight:600}
+  .panel .lead{color:var(--muted);font-size:12.5px;margin:0 0 16px}
+  .tag{font-size:10.5px;border-radius:10px;padding:1px 8px;border:1px solid var(--line);color:var(--muted)}
+  .tag.g{border-color:var(--global);color:var(--global);background:var(--global-bg)}
+  .tag.w{border-color:var(--ws);color:var(--ws);background:var(--ws-bg)}
+  .tag.ok{border-color:var(--ok);color:var(--ok)}
+  .mono{font-family:var(--mono)}
+
+  .cols{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+  .src{flex:1;min-width:200px;border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+  .src.g{border-color:var(--global);background:linear-gradient(180deg,var(--global-bg),transparent)}
+  .src.w{border-color:var(--ws);background:linear-gradient(180deg,var(--ws-bg),transparent)}
+  .src .hd{font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .src .loc{font:10.5px var(--mono);color:var(--muted)}
+  .row{display:flex;align-items:center;gap:8px;padding:4px 7px;border-radius:6px;background:#ffffff06;margin-bottom:5px;font-size:13px}
+  .row.hidden{opacity:.32}
+  .badge{font-size:9px;border-radius:8px;padding:0 6px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.g{border-color:var(--global);color:var(--global)}.badge.w{border-color:var(--ws);color:var(--ws)}
+  .note{font-size:11.5px;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  .note .k{color:var(--ws)}
+  .checks{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .check{flex:1;min-width:230px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:12px;color:var(--muted)}
+  .check .box{display:inline-flex;align-items:center;gap:7px;color:var(--ink);font-weight:600;margin-bottom:3px}
+  .box .b{width:15px;height:15px;border:1px solid var(--line);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:10px}
+  .box .b.on{background:var(--ok);border-color:var(--ok);color:#0c1410}
+  .defaultpill{font-size:9.5px;border:1px solid var(--ok);color:var(--ok);border-radius:8px;padding:0 6px;margin-left:6px}
+
+  .store{border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px;background:var(--panel2)}
+  .store > .hd{display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap}
+  .store > .hd .nm{font:12.5px var(--mono);font-weight:600}
+  .store > .desc{font-size:12px;color:var(--muted);margin-bottom:12px}
+  .tbl{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:10px}
+  .tbl .tname{background:#ffffff08;padding:6px 11px;font:11.5px var(--mono);color:var(--accent);border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:0}
+  .kv > div{padding:6px 11px;border-bottom:1px solid var(--line);font:11px var(--mono)}
+  .kv .k{color:var(--global);border-right:1px solid var(--line)}
+  .kv .v{color:#cbb89a}
+  .kv > div:nth-last-child(-n+2){border-bottom:0}
+  .hint{font-size:11px;color:var(--muted);margin-top:2px}
+  pre{margin:0;background:#0e0e10;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:auto;font:11.5px/1.6 var(--mono);color:#cdd2d8}
+  pre .c{color:#6b7280}
+  .filerow{font:11px var(--mono);color:var(--muted);margin-bottom:6px}
+  .enc{display:flex;gap:12px;flex-wrap:wrap;margin-top:4px}
+  .enc .e{flex:1;min-width:260px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-size:12px;color:var(--muted)}
+  .enc .e b{color:var(--ink)}
+  .enc .e.pick{border-color:var(--ok)}
+</style>
+</head>
+<body>
+  <h1><span class="gl">✦</span> sid — store schema &amp; attributive model <span class="tag">v2 · 2026-06-27</span></h1>
+  <div class="sub">storage never overrides &amp; never loses · the <i>view</i> is filtered by simple checkboxes · default = collapse dupes, workspace wins</div>
+
+  <!-- A -->
+  <div class="panel">
+    <h2>1 · Lossless storage, smart default view</h2>
+    <p class="lead">Both layers always store everything, each tagged by origin. The <b>view</b> applies two checkboxes on top — it never changes what's stored.</p>
+    <div class="cols">
+      <div class="src g" style="max-width:230px">
+        <div class="hd"><span class="tag g">⌂ global</span></div>
+        <div class="loc">redb</div>
+        <div class="row">home-server <span class="badge g">⌂</span></div>
+        <div class="row">vps-1 <span class="badge g">⌂</span></div>
+      </div>
+      <div class="src w" style="max-width:230px">
+        <div class="hd"><span class="tag w">acme-api</span></div>
+        <div class="loc">.sid/config.toml</div>
+        <div class="row">staging <span class="badge w">acme-api</span></div>
+        <div class="row">prod <span class="badge w">acme-api</span></div>
+        <div class="row">vps-1 <span class="badge w">acme-api</span></div>
+      </div>
+      <div class="src" style="flex:1.2">
+        <div class="hd">default view <span class="tag ok">what you see when focused on acme-api</span></div>
+        <div class="row">home-server <span class="badge g">⌂</span></div>
+        <div class="row hidden">vps-1 <span class="badge g">⌂</span> <span class="badge">hidden · duplicate</span></div>
+        <div class="row">vps-1 <span class="badge w">acme-api</span> <span class="badge">workspace wins</span></div>
+        <div class="row">staging <span class="badge w">acme-api</span></div>
+        <div class="row">prod <span class="badge w">acme-api</span></div>
+        <div class="checks">
+          <div class="check"><span class="box"><span class="b on">✓</span>Collapse duplicates<span class="defaultpill">default ON</span></span><br>same alias/id in both layers → show the <b>workspace</b> one, hide the global one. Uncheck to see both.</div>
+          <div class="check"><span class="box"><span class="b"></span>Hide global<span class="tag" style="margin-left:6px">default off</span></span><br>workspace-only mode — hides every ⌂ row, dup or not.</div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      "Duplicate" = same identity (alias for hosts, id for connections). <span class="k">Both records always remain in storage</span> — the global vps-1 isn't deleted, just not drawn while the checkbox is on. Flip either checkbox and the view recomposes; the bytes never move.
+    </div>
+  </div>
+
+  <!-- B -->
+  <div class="panel">
+    <h2>2 · What's actually stored</h2>
+    <p class="lead">Values are drawn expanded for readability — <b>on disk they're <span class="mono">postcard</span></b> (compact binary serde; native fields in/out, no JSON parsing). The committed workspace file is TOML so it stays git-diffable.</p>
+
+    <div class="store">
+      <div class="hd"><span class="tag g">⌂</span><span class="nm">~/.local/share/sid/sid.redb</span><span class="tag">global DB · machine-local · postcard values</span></div>
+      <div class="desc">Global items, the workspace registry, and live sessions. Never committed.</div>
+      <div class="tbl"><div class="tname">table: workspaces <span class="tag">one entry per workspace (the registry)</span></div>
+        <div class="kv">
+          <div class="k">"a3f…/acme-api"</div><div class="v">{ root:"~/code/acme/acme-api", name:"acme-api", last_focused:"2026-06-27T21:00Z" }</div>
+          <div class="k">"7c1…/payments"</div><div class="v">{ root:"~/code/acme/payments-svc", name:"payments-svc", … }</div>
+        </div>
+      </div>
+      <div class="hint">↑ metadata + where the repo lives. The workspace's <b>config</b> rides in its repo file (below), so it travels with git.</div>
+      <div class="tbl" style="margin-top:10px"><div class="tname">table: global_config</div>
+        <div class="kv">
+          <div class="k">"hosts"</div><div class="v">[ {alias:"home-server", user:"you", host:"192.168.1.10", port:22}, {alias:"vps-1", secret_ref:"ssh.vps1.key"} ]</div>
+          <div class="k">"connections"</div><div class="v">[ … ]</div>
+          <div class="k">"quick_actions"</div><div class="v">[ … ]</div>
+        </div>
+      </div>
+      <div class="tbl" style="margin-top:10px"><div class="tname">table: sessions <span class="tag">attributed by a scope field</span></div>
+        <div class="kv">
+          <div class="k">"sess-01"</div><div class="v">{ scope:"a3f…/acme-api", kind:"ssh", host:"prod", opened:"…" }</div>
+          <div class="k">"sess-02"</div><div class="v">{ scope:"global", kind:"db-query", conn:"acme-pg" }</div>
+        </div>
+      </div>
+      <div class="hint">↑ each session's <b>scope</b> field is the "this session belongs to this workspace" tag — a plain value, no precedence.</div>
+    </div>
+
+    <div class="store">
+      <div class="hd"><span class="tag w">workspace</span><span class="nm">&lt;repo&gt;/.sid/config.toml</span><span class="tag">git-committed · travels with the repo · TOML</span></div>
+      <div class="desc">One file = one workspace's config. The structured "entry + value" you pictured, stored in the repo so cloning brings it along.</div>
+      <div class="filerow">📄 ~/code/acme/acme-api/.sid/config.toml</div>
+<pre>version = 1
+[[ssh.host]]
+alias = "prod"
+user  = "deploy"
+host  = "prod.acme-api.internal"
+port  = 22
+secret_ref = "ssh.prod.key"   <span class="c"># keyring ref only</span>
+
+[[db.connection]]
+id  = "acme-pg"
+dsn = "postgres://acme@db.acme.internal/acme"
+secret_ref = "db.acme-pg.pw"</pre>
+    </div>
+
+    <div class="store">
+      <div class="hd"><span class="tag">🔑</span><span class="nm">OS keyring</span><span class="tag">machine-local · never committed, never in redb</span></div>
+      <div class="tbl"><div class="tname">secrets (behind the SecretStore trait)</div>
+        <div class="kv">
+          <div class="k">"ssh.prod.key"</div><div class="v">&lt;private key bytes&gt;</div>
+          <div class="k">"db.acme-pg.pw"</div><div class="v">&lt;password&gt;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- C: decisions locked -->
+  <div class="panel">
+    <h2>3 · Decisions locked</h2>
+    <div class="enc">
+      <div class="e pick"><b>Layout:</b> git-centric — global items + registry + sessions in <span class="mono">redb</span>; each workspace's config in its committed <span class="mono">.sid/config.toml</span>. One <span class="mono">Store</span> API hides the two read paths.</div>
+      <div class="e pick"><b>Composition:</b> attributive union, never override. Default view collapses true dupes (workspace primary); "hide global" is a separate opt-in. Both via checkboxes; storage stays lossless.</div>
+      <div class="e pick"><b>Encoding:</b> <span class="mono">postcard</span> for redb (fast binary, native fields); <span class="mono">TOML</span> for the committed file (git-diffable). Secrets in the OS keyring via <span class="mono">secret_ref</span>.</div>
+    </div>
+    <p class="lead" style="margin-top:14px;margin-bottom:0">Next: turn this into the test-first build plan for the <span class="mono">sid-store</span> crate.</p>
+  </div>
+</body>
+</html>
