@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — desktop GUI wireframe</title>
+<style>
+  :root{
+    --bg:#eceef0; --panel:#fafbfc; --panel2:#f1f3f5; --ink:#23272c; --muted:#7b828b;
+    --line:#d3d7dc; --line2:#e3e6ea; --accent:#356a8a; --accent-soft:#dce8ef;
+    --ws:#6a4a86; --ws-soft:#e7ddf1; --good:#2f7d4f; --warn:#9a5a1e; --danger:#9a3434;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);
+       display:flex;align-items:center;justify-content:center;padding:20px}
+  .wireframe-tag{position:fixed;top:9px;left:13px;font:11px var(--mono);color:var(--muted);letter-spacing:.06em}
+
+  .window{width:1320px;max-width:100%;height:828px;background:var(--panel);border:1px solid var(--line);
+          border-radius:11px;box-shadow:0 18px 50px rgba(20,30,40,.18);overflow:hidden;display:flex;flex-direction:column}
+
+  /* ---- row 0: titlebar (context axis) ---- */
+  .titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .lights{display:flex;gap:7px}.lights i{width:12px;height:12px;border-radius:50%;background:#d6dade}
+  .brand{font-weight:650;display:flex;align-items:center;gap:6px}.brand .gl{color:var(--accent)}
+  .vsep{width:1px;height:20px;background:var(--line)}
+  .scope-lbl{font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .scope{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:3px;gap:2px}
+  .scope button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--muted);padding:4px 13px;border-radius:16px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .scope button .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+  .scope button.global .dot{border-radius:2px}
+  .scope button[aria-selected="true"]{background:var(--accent);color:#fff}
+  .scope button[aria-selected="true"].ws{background:var(--ws)}
+  .scope button[aria-selected="true"] .dot{background:#fff}
+  .scope .add{color:var(--muted);font-size:15px;padding:4px 10px}
+  .spacer{flex:1}
+  .ico-btn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer;background:var(--panel)}
+  .ico-btn kbd{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;margin-left:5px}
+
+  /* ---- row 1: tab strip (function axis) ---- */
+  .tabstrip{height:42px;flex:0 0 42px;display:flex;align-items:stretch;gap:2px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{display:flex;align-items:center;gap:8px;padding:0 16px;cursor:pointer;color:var(--muted);font-size:13.5px;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
+  .tab .ic{opacity:.75}.tab .ct{font:11px var(--mono);color:var(--muted)}
+  .tabstrip .grow{flex:1}
+  .tab.right{color:var(--muted)}
+
+  /* ---- content (full width) ---- */
+  .content{flex:1;min-height:0;display:flex;flex-direction:column}
+  .view{display:none;flex:1;min-height:0;flex-direction:column}
+  .view.active{display:flex}
+  .vhead{padding:11px 18px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  .vhead h2{margin:0;font-size:15px;font-weight:650}
+  .vhead .sub{font-size:12px;color:var(--muted)}
+  .vhead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:var(--panel);border-radius:7px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn:hover{filter:brightness(.98)}
+  .dropdown{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;font-size:12.5px;cursor:pointer;background:var(--panel)}
+  .dropdown .cv{color:var(--ws);font-weight:600}.dropdown .ar{color:var(--muted);font-size:10px}
+
+  /* ssh */
+  .split{flex:1;display:flex;min-height:0}
+  .hostcol{width:262px;flex:0 0 262px;border-right:1px solid var(--line2);display:flex;flex-direction:column;min-height:0;transition:width .12s}
+  .split.collapsed .hostcol{width:0;flex-basis:0;overflow:hidden;border:0}
+  .hostcol-h{display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted)}
+  .hostcol-h .collapse{margin-left:auto;cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:0 6px;color:var(--muted)}
+  .search{margin:8px 10px;padding:6px 10px;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:12.5px;background:var(--panel2)}
+  .hostlist{overflow:auto;flex:1}
+  .host{padding:8px 12px;border-bottom:1px solid var(--line2);cursor:pointer;display:flex;flex-direction:column;gap:3px}
+  .host:hover{background:var(--panel2)}
+  .host[aria-selected="true"]{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+  .host .r1{display:flex;align-items:center;gap:8px}
+  .host .alias{font-weight:600}.host .conn{font:11.5px var(--mono);color:var(--muted)}
+  .host .last{margin-left:auto;font-size:11px;color:var(--muted)}
+  .badge{font-size:10px;border-radius:10px;padding:1px 7px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.g{border-color:var(--accent);color:var(--accent)}
+  .badge.w{border-color:var(--ws);color:var(--ws);background:var(--ws-soft)}
+  .badge.ov{border-style:dashed}
+  .reopen{display:none;align-items:center;writing-mode:vertical-rl;padding:8px 3px;border-right:1px solid var(--line2);cursor:pointer;color:var(--muted);font-size:11px}
+  .split.collapsed .reopen{display:flex}
+
+  .hostmain{flex:1;display:flex;flex-direction:column;min-width:0}
+  .tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--line2)}
+  .tabs button{font:inherit;font-size:12.5px;border:1px solid transparent;border-bottom:none;background:transparent;color:var(--muted);padding:7px 13px;border-radius:7px 7px 0 0;cursor:pointer}
+  .tabs button[aria-selected="true"]{background:var(--panel);border-color:var(--line2);color:var(--ink);font-weight:600}
+  .pane{flex:1;overflow:auto;display:none}.pane.active{display:block}
+  .term{background:#1c2024;color:#cfd6dd;font:12.5px/1.6 var(--mono);padding:14px 16px;height:100%;white-space:pre-wrap}
+  .term .p{color:#6fae8e}.term .d{color:#7fa8c9}.term .m{color:#8b93a0}
+  .sftprow{display:flex;align-items:center;gap:10px;padding:7px 16px;border-bottom:1px solid var(--line2);font-size:13px}
+  .sftprow .ic{width:16px;opacity:.6}.sftprow .sz{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+  .det{padding:16px 18px;display:grid;grid-template-columns:130px 1fr;gap:9px 14px;font-size:13px}
+  .det .k{color:var(--muted)}.det .v{font-family:var(--mono);font-size:12.5px}
+
+  /* db */
+  .editor{margin:12px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);font:12.5px/1.6 var(--mono);padding:11px 13px;color:var(--ink)}
+  .editor .kw{color:var(--accent);font-weight:600}
+  .resbar{padding:4px 16px;font-size:12px;color:var(--muted);display:flex;gap:14px;align-items:center}
+  table.res{width:calc(100% - 32px);margin:4px 16px 16px;border-collapse:collapse;font-size:12.5px}
+  table.res th,table.res td{border:1px solid var(--line2);padding:5px 9px;text-align:left}
+  table.res th{background:var(--panel2);font-weight:600;color:var(--muted);font-size:11.5px}
+  table.res td{font-family:var(--mono);font-size:12px}
+
+  /* generic tables (net / system) */
+  table.tbl{width:calc(100% - 32px);margin:14px 16px;border-collapse:collapse;font-size:12.5px}
+  table.tbl th,table.tbl td{border-bottom:1px solid var(--line2);padding:7px 10px;text-align:left}
+  table.tbl th{color:var(--muted);font-size:11.5px;cursor:pointer}
+  table.tbl td{font-family:var(--mono);font-size:12px}
+  .pill{font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--line)}
+  .pill.ok{border-color:var(--good);color:var(--good)}.pill.off{color:var(--muted)}
+  .mini{font-size:11px;border:1px solid var(--line);color:var(--ink);background:transparent;border-radius:6px;padding:2px 8px;cursor:pointer}
+  .mini.danger{border-color:var(--danger);color:var(--danger)}
+
+  /* workspaces */
+  .wsgrid{padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:12px;overflow:auto}
+  .wscard{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel2);display:flex;flex-direction:column;gap:7px}
+  .wscard .nm{font-weight:650;display:flex;align-items:center;gap:8px}
+  .wscard .pth{font:11.5px var(--mono);color:var(--muted)}
+  .wscard .meta{display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .wscard .meta b{color:var(--ink);font-weight:600}
+  .wscard .foot{display:flex;gap:8px;margin-top:4px}
+
+  /* system 2-col */
+  .syscols{flex:1;display:flex;min-height:0}
+  .syscol{flex:1;display:flex;flex-direction:column;min-width:0}
+  .syscol+.syscol{border-left:1px solid var(--line2)}
+  .syscol h4{margin:0;padding:10px 16px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line2);text-transform:uppercase;letter-spacing:.06em}
+  .cfgrow{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--line2);font-size:13px}
+  .cfgrow .pth{font:11.5px var(--mono);color:var(--muted);margin-left:auto}
+
+  /* settings */
+  .settings-body{padding:16px 18px;overflow:auto;max-width:760px}
+  .sgroup{margin-bottom:22px}
+  .sgroup h4{margin:0 0 10px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .srow{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line2);font-size:13px}
+  .srow .lbl{width:200px}.srow .desc{color:var(--muted);font-size:12px}
+  .srow .ctl{margin-left:auto}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg span{padding:5px 11px;font-size:12px;color:var(--muted);cursor:pointer}
+  .seg span.on{background:var(--accent);color:#fff}
+  .swatch{display:inline-flex;gap:6px}.swatch i{width:18px;height:18px;border-radius:4px;border:1px solid var(--line);display:block}
+  .toggle{width:38px;height:21px;border-radius:11px;background:var(--line);position:relative;cursor:pointer}
+  .toggle.on{background:var(--accent)}.toggle i{position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;background:#fff;transition:left .12s}.toggle.on i{left:19px}
+
+  /* statusbar */
+  .statusbar{height:26px;flex:0 0 26px;background:var(--panel2);border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12px;color:var(--muted)}
+  .statusbar .sc{color:var(--ink)}.statusbar .gl{color:var(--accent)}.statusbar .right{margin-left:auto;display:flex;gap:16px}
+
+  /* overlays */
+  .overlay{position:fixed;inset:0;background:rgba(20,26,32,.32);display:none;align-items:flex-start;justify-content:center;padding-top:110px;z-index:10}
+  .overlay.open{display:flex}
+  .palette{width:560px;background:var(--panel);border:1px solid var(--line);border-radius:11px;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden}
+  .palette input{width:100%;border:0;border-bottom:1px solid var(--line2);padding:14px 16px;font:14px ui-sans-serif,system-ui;outline:none}
+  .palette .row{padding:9px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line2);cursor:pointer}
+  .palette .row:hover{background:var(--panel2)}.palette .row .ic{width:18px;opacity:.6}
+  .palette .row .chip{margin-left:auto;font-size:10px;border-radius:10px;padding:1px 8px;border:1px solid var(--line);color:var(--muted)}
+  .palette .row .chip.g{border-color:var(--accent);color:var(--accent)}.palette .row .chip.w{border-color:var(--ws);color:var(--ws)}
+  .dialog{width:440px;background:var(--panel);border:1px solid var(--line);border-radius:11px;box-shadow:0 20px 60px rgba(0,0,0,.3);padding:20px}
+  .dialog h3{margin:0 0 14px;font-size:15px}
+  .dialog label{display:block;font-size:12px;color:var(--muted);margin:11px 0 4px}
+  .dialog input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px;font:13px var(--mono)}
+  .saveto{margin:16px 0 6px;border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--panel2)}
+  .saveto .lbl{font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px}
+  .saveto .opt{display:flex;align-items:center;gap:9px;padding:6px 4px;cursor:pointer;font-size:13px}
+  .saveto .opt .ring{width:15px;height:15px;border-radius:50%;border:2px solid var(--line)}
+  .saveto .opt[aria-selected="true"] .ring{border-color:var(--ws);box-shadow:inset 0 0 0 3px var(--ws)}
+  .saveto .opt.gl[aria-selected="true"] .ring{border-color:var(--accent);box-shadow:inset 0 0 0 3px var(--accent)}
+  .saveto .hint{font-size:11px;color:var(--muted);margin-top:6px}
+  .dialog .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wireframe-tag">WIREFRAME · layout &amp; flow only · theming comes later</div>
+
+<div class="window">
+  <!-- titlebar: context axis -->
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand"><span class="gl">✦</span> sid</div>
+    <div class="vsep"></div>
+    <span class="scope-lbl">scope</span>
+    <div class="scope" id="scope">
+      <button class="global" data-scope="global" aria-selected="true"><span class="dot"></span>Global</button>
+      <button class="ws" data-scope="acme-api"><span class="dot"></span>acme-api</button>
+      <button class="ws" data-scope="payments-svc"><span class="dot"></span>payments-svc</button>
+      <button class="add" title="Add workspace">＋</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="ico-btn" id="paletteOpen">Search actions<kbd>⌘K</kbd></div>
+  </div>
+
+  <!-- tab strip: function axis -->
+  <div class="tabstrip" id="tabs">
+    <div class="tab" data-view="ssh" aria-selected="true"><span class="ic">⌁</span>SSH / SFTP<span class="ct" id="ct-ssh">4</span></div>
+    <div class="tab" data-view="db"><span class="ic">▤</span>Database<span class="ct">1</span></div>
+    <div class="tab" data-view="net"><span class="ic">⇅</span>Network<span class="ct">7</span></div>
+    <div class="tab" data-view="ws"><span class="ic">▢</span>Workspaces<span class="ct">3</span></div>
+    <div class="tab" data-view="sys"><span class="ic">⚙</span>System</div>
+    <div class="grow"></div>
+    <div class="tab right" data-view="settings"><span class="ic">◐</span>Settings</div>
+  </div>
+
+  <div class="content">
+
+    <!-- SSH -->
+    <section class="view active" id="view-ssh">
+      <div class="vhead">
+        <h2>SSH / SFTP</h2><span class="sub" id="sshSub">global ∪ workspace · hosts compose by layer</span>
+        <div class="right">
+          <button class="btn" onclick="openDialog()">＋ Add host</button>
+          <button class="btn primary">Connect</button>
+        </div>
+      </div>
+      <div class="split" id="sshSplit">
+        <div class="reopen" id="reopenHosts">Hosts ›</div>
+        <div class="hostcol">
+          <div class="hostcol-h">Hosts<span class="collapse" id="collapseHosts">‹</span></div>
+          <div class="search">⌕ filter hosts…</div>
+          <div class="hostlist" id="hostlist"></div>
+        </div>
+        <div class="hostmain">
+          <div class="tabs" id="hostTabs">
+            <button data-pane="term" aria-selected="true">Terminal</button>
+            <button data-pane="sftp">SFTP</button>
+            <button data-pane="det">Details</button>
+          </div>
+          <div class="pane active" id="pane-term">
+            <div class="term"><span class="m"># interactive PTY — the centerpiece (and the hard-in-GPUI piece)</span>
+<span class="p">deploy@prod.acme.io</span>:<span class="d">~</span>$ systemctl status acme-api
+<span class="m">●</span> acme-api.service — Acme API
+     Loaded: loaded (/etc/systemd/system/acme-api.service; enabled)
+     Active: <span class="p">active (running)</span> since Thu 2026-06-27 09:14:02 UTC
+   Main PID: 4471 (acme-api)
+     Memory: 312.8M
+<span class="p">deploy@prod.acme.io</span>:<span class="d">~</span>$ ▏</div>
+          </div>
+          <div class="pane" id="pane-sftp">
+            <div class="sftprow"><span class="ic">📁</span> ..</div>
+            <div class="sftprow"><span class="ic">📁</span> releases <span class="sz">—</span></div>
+            <div class="sftprow"><span class="ic">📁</span> shared <span class="sz">—</span></div>
+            <div class="sftprow"><span class="ic">📄</span> .env <span class="sz">1.2 KB</span></div>
+            <div class="sftprow"><span class="ic">📄</span> docker-compose.yml <span class="sz">3.4 KB</span></div>
+            <div class="sftprow"><span class="ic">📄</span> nginx.conf <span class="sz">2.1 KB</span></div>
+          </div>
+          <div class="pane" id="pane-det">
+            <div class="det">
+              <div class="k">Alias</div><div class="v" id="dAlias">prod</div>
+              <div class="k">Connection</div><div class="v" id="dConn">deploy@prod.acme.io:22</div>
+              <div class="k">Lives in</div><div class="v" id="dLayer">acme-api/.sid/hosts.toml</div>
+              <div class="k">Auth</div><div class="v">key · secret_ref: ssh.prod.key</div>
+              <div class="k">Secret</div><div class="v">OS keyring (machine-local, never committed)</div>
+              <div class="k">Last connected</div><div class="v" id="dLast">1d ago</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DB -->
+    <section class="view" id="view-db">
+      <div class="vhead"><h2>Database</h2>
+        <div class="dropdown">conn: <span class="cv">acme-pg</span> <span class="badge w">acme-api</span><span class="ar">▾</span></div>
+        <span class="sub">data grids get the full width</span>
+        <div class="right"><button class="btn">＋ Add connection</button><button class="btn primary">▶ Run</button></div></div>
+      <div style="padding:10px 16px 0;font-size:12px;color:var(--muted)">postgres://acme@db.acme.internal/acme &nbsp;·&nbsp; secret in keyring</div>
+      <div class="editor"><span class="kw">select</span> id, email, plan, created_at <span class="kw">from</span> users <span class="kw">where</span> plan = 'pro' <span class="kw">order by</span> created_at <span class="kw">desc</span> <span class="kw">limit</span> 6;</div>
+      <div class="resbar">✓ 6 rows · 12 ms <span style="margin-left:auto">⎘ copy cell &nbsp; ⭳ export CSV &nbsp; ⟲ history</span></div>
+      <table class="res">
+        <tr><th>id</th><th>email</th><th>plan</th><th>created_at</th></tr>
+        <tr><td>8841</td><td>mara@acme.io</td><td>pro</td><td>2026-06-26 22:10</td></tr>
+        <tr><td>8839</td><td>to@northwind.dev</td><td>pro</td><td>2026-06-26 18:02</td></tr>
+        <tr><td>8835</td><td>lee@hd.systems</td><td>pro</td><td>2026-06-25 11:44</td></tr>
+        <tr><td>8830</td><td>q@orbit.sh</td><td>pro</td><td>2026-06-24 09:30</td></tr>
+        <tr><td>8829</td><td>sid@home.lan</td><td>pro</td><td>2026-06-24 08:15</td></tr>
+        <tr><td>8820</td><td>ren@vela.io</td><td>pro</td><td>2026-06-23 19:55</td></tr>
+      </table>
+    </section>
+
+    <!-- Network -->
+    <section class="view" id="view-net">
+      <div class="vhead"><h2>Network</h2><span class="sub">glanceable · sortable · kill-by-pid / kill-by-port</span>
+        <div class="right"><button class="btn">⌕ filter</button></div></div>
+      <table class="tbl">
+        <tr><th>proto ▾</th><th>port</th><th>pid</th><th>process</th><th>cpu</th><th>mem</th><th></th></tr>
+        <tr><td>tcp</td><td>3000</td><td>4471</td><td>next dev</td><td>2.1%</td><td>312 MB</td><td><button class="mini danger">kill</button></td></tr>
+        <tr><td>tcp</td><td>5432</td><td>1180</td><td>postgres</td><td>0.4%</td><td>88 MB</td><td><button class="mini danger">kill</button></td></tr>
+        <tr><td>tcp</td><td>6379</td><td>1200</td><td>redis-server</td><td>0.1%</td><td>12 MB</td><td><button class="mini danger">kill</button></td></tr>
+        <tr><td>tcp</td><td>8080</td><td>9931</td><td>java -jar gw</td><td>5.7%</td><td>640 MB</td><td><button class="mini danger">kill</button></td></tr>
+        <tr><td>udp</td><td>53</td><td>743</td><td>systemd-resolve</td><td>0.0%</td><td>9 MB</td><td><button class="mini danger">kill</button></td></tr>
+      </table>
+    </section>
+
+    <!-- Workspaces -->
+    <section class="view" id="view-ws">
+      <div class="vhead"><h2>Workspaces</h2><span class="sub">register roots · focus one to scope the whole app to it</span>
+        <div class="right"><button class="btn">＋ Add root</button></div></div>
+      <div class="wsgrid">
+        <div class="wscard"><div class="nm">acme-api <span class="badge w">.sid/</span></div>
+          <div class="pth">~/code/acme/acme-api</div>
+          <div class="meta"><span>branch <b>main</b></span><span><b>2</b> ahead</span><span><b>5</b> hosts</span><span><b>1</b> db</span></div>
+          <div class="foot"><button class="btn primary" onclick="setScope('acme-api')">Focus</button><button class="btn">Open in editor</button></div></div>
+        <div class="wscard"><div class="nm">payments-svc <span class="badge w">.sid/</span></div>
+          <div class="pth">~/code/acme/payments-svc</div>
+          <div class="meta"><span>branch <b>release/2.4</b></span><span class="pill ok">clean</span><span><b>2</b> hosts</span></div>
+          <div class="foot"><button class="btn primary" onclick="setScope('payments-svc')">Focus</button><button class="btn">Open in editor</button></div></div>
+        <div class="wscard"><div class="nm">dotfiles</div>
+          <div class="pth">~/dotfiles</div>
+          <div class="meta"><span>branch <b>main</b></span><span class="pill ok">clean</span><span class="badge">no .sid/ yet</span></div>
+          <div class="foot"><button class="btn">Focus</button><button class="btn">Init .sid/</button></div></div>
+      </div>
+    </section>
+
+    <!-- System -->
+    <section class="view" id="view-sys">
+      <div class="vhead"><h2>System</h2><span class="sub">pinned configs · services · journal</span></div>
+      <div class="syscols">
+        <div class="syscol">
+          <h4>Pinned configs</h4>
+          <div class="cfgrow"><span>nginx</span><span class="pth">/etc/nginx/nginx.conf</span><button class="mini">open</button></div>
+          <div class="cfgrow"><span>sshd</span><span class="pth">/etc/ssh/sshd_config</span><button class="mini">open</button></div>
+          <div class="cfgrow"><span>hosts</span><span class="pth">/etc/hosts</span><button class="mini">open</button></div>
+          <div class="cfgrow"><span>fish</span><span class="pth">~/.config/fish/config.fish</span><button class="mini">open</button></div>
+        </div>
+        <div class="syscol">
+          <h4>Services</h4>
+          <table class="tbl" style="margin:0;width:100%">
+            <tr><th>service</th><th>state</th><th></th></tr>
+            <tr><td>docker</td><td><span class="pill ok">running</span></td><td><button class="mini">restart</button></td></tr>
+            <tr><td>postgresql</td><td><span class="pill ok">running</span></td><td><button class="mini">restart</button></td></tr>
+            <tr><td>nginx</td><td><span class="pill off">stopped</span></td><td><button class="mini">start</button></td></tr>
+            <tr><td>tailscaled</td><td><span class="pill ok">running</span></td><td><button class="mini">restart</button></td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section class="view" id="view-settings">
+      <div class="vhead"><h2>Settings</h2><span class="sub">identity-level — always Global, never layered</span></div>
+      <div class="settings-body">
+        <div class="sgroup"><h4>Appearance</h4>
+          <div class="srow"><span class="lbl">Theme</span><span class="desc">cosmos (default) — full theming is a later pass</span>
+            <span class="ctl swatch"><i style="background:#1c2024"></i><i style="background:#356a8a"></i><i style="background:#6a4a86"></i><i style="background:#cfd6dd"></i></span></div>
+          <div class="srow"><span class="lbl">Animated background</span><span class="desc">galaxy / starfield</span><span class="ctl toggle on"><i></i></span></div>
+        </div>
+        <div class="sgroup"><h4>Behavior</h4>
+          <div class="srow"><span class="lbl">Default save scope</span><span class="desc">where new hosts/connections land</span>
+            <span class="ctl seg"><span class="on">ask</span><span>workspace</span><span>global</span></span></div>
+          <div class="srow"><span class="lbl">Restore on launch</span><span class="desc">reopen last scope &amp; tab</span><span class="ctl toggle on"><i></i></span></div>
+          <div class="srow"><span class="lbl">Confirm kills</span><span class="desc">prompt before SIGKILL</span><span class="ctl toggle"><i></i></span></div>
+        </div>
+        <div class="sgroup"><h4>Keybinds</h4>
+          <div class="srow"><span class="lbl">Command palette</span><span class="ctl"><kbd style="font:11px var(--mono)">⌘K</kbd></span></div>
+          <div class="srow"><span class="lbl">Switch scope</span><span class="ctl"><kbd style="font:11px var(--mono)">⌘1 / ⌘2 …</kbd></span></div>
+          <div class="srow"><span class="lbl">Next / prev tab</span><span class="ctl"><kbd style="font:11px var(--mono)">⌘⇧] / ⌘⇧[</kbd></span></div>
+        </div>
+        <div class="sgroup"><h4>Storage</h4>
+          <div class="srow"><span class="lbl">Global store</span><span class="ctl" style="font:11.5px var(--mono);color:var(--muted)">~/.local/share/sid/sid.redb</span></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="statusbar">
+    <span>scope: <span class="sc" id="stScope"><span class="gl">⌂</span> Global</span></span>
+    <span id="stCount">2 hosts · 0 workspace overrides</span>
+    <div class="right"><span>⌁ no active session</span><span class="gl">✦ cosmos</span></div>
+  </div>
+</div>
+
+<!-- command palette -->
+<div class="overlay" id="paletteOverlay">
+  <div class="palette">
+    <input placeholder="Type a command…  (one bus, scope-aware)">
+    <div class="row"><span class="ic">⌁</span> Connect to host…<span class="chip w">acme-api</span></div>
+    <div class="row"><span class="ic">＋</span> New SSH host…<span class="chip">asks: ws / global</span></div>
+    <div class="row"><span class="ic">▶</span> Run query on acme-pg<span class="chip w">acme-api</span></div>
+    <div class="row"><span class="ic">✲</span> Kill port…<span class="chip g">Global</span></div>
+    <div class="row"><span class="ic">⇄</span> Switch workspace…<span class="chip g">Global</span></div>
+  </div>
+</div>
+
+<!-- add-host dialog -->
+<div class="overlay" id="dialogOverlay">
+  <div class="dialog">
+    <h3>Add SSH host</h3>
+    <label>Alias</label><input value="db-bastion">
+    <label>Connection</label><input value="jump@bastion.acme.io:22">
+    <div class="saveto" id="saveto">
+      <div class="lbl">Save to</div>
+      <div class="opt" data-target="ws" aria-selected="true"><span class="ring"></span>acme-api &nbsp;<span class="badge w">.sid/ · travels with git</span></div>
+      <div class="opt gl" data-target="global"><span class="ring"></span>Global &nbsp;<span class="badge g">everywhere · never lost</span></div>
+      <div class="hint">Pre-selected = your configurable default (<code>default_scope</code>). Set it once, stop being asked.</div>
+    </div>
+    <div class="actions"><button class="btn" onclick="closeDialog()">Cancel</button><button class="btn primary" onclick="closeDialog()">Add host</button></div>
+  </div>
+</div>
+
+<script>
+  const HOSTS = {
+    global:[{alias:'home-server',conn:'you@192.168.1.10:22',last:'2h ago'},{alias:'vps-1',conn:'root@5.5.5.5:22',last:'yesterday'}],
+    'acme-api':[{alias:'staging',conn:'deploy@staging.acme.io:22',last:'10m ago'},{alias:'prod',conn:'deploy@prod.acme.io:22',last:'1d ago'},{alias:'vps-1',conn:'admin@5.5.5.5:22',last:'3d ago',override:true}],
+    'payments-svc':[{alias:'pay-prod',conn:'ops@pay.internal:22',last:'5m ago'},{alias:'bastion',conn:'jump@bastion.pay:22',last:'1h ago'}],
+  };
+  const DESC={global:'global only — your everywhere shelf','acme-api':'global ∪ workspace · hosts compose by layer','payments-svc':'global ∪ workspace · hosts compose by layer'};
+  let scope='global';
+  function composed(s){
+    if(s==='global') return HOSTS.global.map(h=>({...h,layer:'global'}));
+    const ws=new Set(HOSTS[s].map(h=>h.alias));
+    return [...HOSTS.global.filter(h=>!ws.has(h.alias)).map(h=>({...h,layer:'global'})), ...HOSTS[s].map(h=>({...h,layer:'ws'}))];
+  }
+  function renderHosts(){
+    const list=composed(scope), el=document.getElementById('hostlist');
+    el.innerHTML=list.map((h,i)=>{
+      const b=h.layer==='global'?'<span class="badge g">⌂ Global</span>':`<span class="badge w">${scope}</span>`+(h.override?' <span class="badge ov">overrides ⌂</span>':'');
+      return `<div class="host" ${i===0?'aria-selected="true"':''} data-alias="${h.alias}" data-conn="${h.conn}" data-last="${h.last}" data-layer="${h.layer}">
+        <div class="r1"><span class="alias">${h.alias}</span>${b}<span class="last">${h.last}</span></div><div class="conn">${h.conn}</div></div>`;
+    }).join('');
+    el.querySelectorAll('.host').forEach(h=>h.onclick=()=>{
+      el.querySelectorAll('.host').forEach(x=>x.removeAttribute('aria-selected'));h.setAttribute('aria-selected','true');
+      dAlias.textContent=h.dataset.alias;dConn.textContent=h.dataset.conn;dLast.textContent=h.dataset.last;
+      dLayer.textContent=h.dataset.layer==='global'?'~/.local/share/sid (global)':scope+'/.sid/hosts.toml';
+    });
+    const ov=scope==='global'?0:HOSTS[scope].filter(h=>h.override).length;
+    document.getElementById('stCount').textContent=`${list.length} hosts · ${ov} workspace override${ov===1?'':'s'}`;
+    document.getElementById('ct-ssh').textContent=list.length;
+  }
+  function setScope(s){
+    scope=s;
+    document.querySelectorAll('#scope button[data-scope]').forEach(b=>b.setAttribute('aria-selected',b.dataset.scope===s));
+    document.getElementById('stScope').innerHTML=s==='global'?'<span class="gl">⌂</span> Global':s;
+    document.getElementById('sshSub').textContent=DESC[s];
+    renderHosts();
+  }
+  window.setScope=setScope;
+  document.querySelectorAll('#scope button[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
+  document.querySelectorAll('#tabs .tab').forEach(t=>t.onclick=()=>{
+    document.querySelectorAll('#tabs .tab').forEach(x=>x.removeAttribute('aria-selected'));t.setAttribute('aria-selected','true');
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-'+t.dataset.view).classList.add('active');
+  });
+  document.querySelectorAll('#hostTabs button').forEach(t=>t.onclick=()=>{
+    document.querySelectorAll('#hostTabs button').forEach(x=>x.removeAttribute('aria-selected'));t.setAttribute('aria-selected','true');
+    document.querySelectorAll('.hostmain .pane').forEach(p=>p.classList.remove('active'));document.getElementById('pane-'+t.dataset.pane).classList.add('active');
+  });
+  const split=document.getElementById('sshSplit');
+  document.getElementById('collapseHosts').onclick=()=>split.classList.add('collapsed');
+  document.getElementById('reopenHosts').onclick=()=>split.classList.remove('collapsed');
+  document.querySelectorAll('#saveto .opt').forEach(o=>o.onclick=()=>{document.querySelectorAll('#saveto .opt').forEach(x=>x.removeAttribute('aria-selected'));o.setAttribute('aria-selected','true');});
+  const pal=document.getElementById('paletteOverlay'),dlg=document.getElementById('dialogOverlay');
+  document.getElementById('paletteOpen').onclick=()=>pal.classList.add('open');
+  window.openDialog=()=>dlg.classList.add('open');window.closeDialog=()=>dlg.classList.remove('open');
+  [pal,dlg].forEach(o=>o.onclick=e=>{if(e.target===o)o.classList.remove('open')});
+  document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();pal.classList.toggle('open');}if(e.key==='Escape'){pal.classList.remove('open');dlg.classList.remove('open');}});
+  setScope('global');
+</script>
+</body>
+</html>

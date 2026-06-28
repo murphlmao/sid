@@ -1,0 +1,9 @@
+[package]
+name = "sid"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
