@@ -40,13 +40,18 @@ Modeled on Claude Code's `~/.claude` + repo `.claude`:
 
 - **Global layer** — `~/.local/share/sid` (redb). Always loaded. The "everything forever,
   one place, never lost" registry (MobaXterm's strength).
-- **Workspace layer** — a repo's `.sid/`, **committed text** files (TOML/JSON — *never*
-  redb, which is un-diffable/un-mergeable). Travels with the clone (Bruno's strength).
-  **Overlays** global when that workspace is focused; **workspace shadows global** on key
-  collision.
+- **Workspace layer** — a repo's committed `.sid/config.toml` (TOML — *never* redb, which
+  is un-diffable). Travels with the clone (Bruno's strength).
+- **Composition is attributive — never override.** A read returns the *union* of global +
+  workspace items, each tagged by origin; nothing is shadowed, nothing is lost. The
+  *default view* collapses true duplicates (same alias/id) with the **workspace** copy
+  winning, plus an opt-in "hide global" filter — both are user checkboxes over a lossless
+  store, not storage rules.
+- **Encoding:** redb values are `postcard` (compact binary, native fields, fast); the
+  committed file is TOML.
 - **Secrets** — never committed. Kept in the OS keyring, referenced by an opaque id from
   the committed config (the existing `SecretStore`/`SecretId` already fits).
-- **Single process.** "Focus a workspace" swaps the active overlay — it does **not** spawn
+- **Single process.** "Focus a workspace" swaps the active workspace scope — it does **not** spawn
   a second instance. (This supersedes the POC's detach/IPC primitive.)
 - **New-item default home:** prompt `save to: workspace | global`, with a configurable
   `default_scope` (`ask | workspace | global`); promote/demote between layers is one action.
