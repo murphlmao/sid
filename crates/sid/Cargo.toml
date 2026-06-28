@@ -7,3 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# App-shell spike. gpui is published on crates.io since Oct 2025; 0.2.x is
+# self-contained (no `gpui_platform` split — that lives only on git `main`) and
+# uses the monolithic `Application::new().run(...)` entry point. Pre-1.0: expect
+# breaking changes between 0.2.x and later. Linux default features pull in
+# font-kit + wayland + x11 automatically.
+gpui = "0.2"
