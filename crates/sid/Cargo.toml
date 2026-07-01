@@ -15,6 +15,19 @@ repository.workspace = true
 gpui = "0.2"
 sid-store = { path = "../sid-store" }
 sid-secrets = { path = "../sid-secrets" }
+# Adapter crates for Plan 3C (SSH terminal view + connect flow). `crates/sid` only ever
+# names the `sid_core` trait seam (`SshClient`/`SshShell`/`TerminalScreen`) plus the two
+# concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/
+# `vt100` themselves.
+sid-core.workspace = true
+sid-ssh.workspace = true
+sid-term.workspace = true
 # Grapheme/word segmentation for the TextInput element (cursor movement, masking).
 # Already in the tree transitively via gpui; pinned here as a direct dep.
 unicode-segmentation = "1"
+# Dedicated runtime for the SSH connect/shell actor task (Plan 3C C2): the concrete
+# `RusshClient`/`RusshShell` impls assume an ambient Tokio runtime (`tokio::spawn`,
+# `tokio::sync::Mutex`) — gpui's own executor is smol-based and provides none. All
+# `sid_core::ssh` calls run on this runtime; gpui's executors only bridge status/output
+# back to the entity via channels.
+tokio.workspace = true

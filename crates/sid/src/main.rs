@@ -4,6 +4,7 @@
 //! backend, then open the window over the single [`app::AppState`] entity.
 
 mod app;
+mod ssh_connect;
 mod ui;
 
 use gpui::{Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
