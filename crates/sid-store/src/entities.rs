@@ -9,6 +9,7 @@
 //! [`Attributed`]: crate::scope::Attributed
 
 use serde::{Deserialize, Serialize};
+use sid_core::db::DbKind;
 
 /// The value used to decide whether two entries (in different layers) are the same thing.
 pub trait Identity {
@@ -93,6 +94,12 @@ impl From<HostV1> for Host {
 }
 
 /// A saved database connection.
+///
+/// Stored in redb under codec version 2 (see [`CONNECTION_VERSION`]). Version-1 values
+/// (the pre-`kind`/`name` shape) migrate on read via [`DbConnectionV1`] → `kind: Postgres`,
+/// `name: id.clone()`.
+///
+/// [`CONNECTION_VERSION`]: crate::global::CONNECTION_VERSION
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbConnection {
     /// Stable id; the identity used for dedup.
@@ -102,11 +109,44 @@ pub struct DbConnection {
     /// Opaque keyring reference for the password.
     #[serde(default)]
     pub secret_ref: Option<String>,
+    /// Which database engine this connection targets. Absent in v1 stores / older
+    /// TOML — defaults to [`DbKind::Postgres`].
+    #[serde(default)]
+    pub kind: DbKind,
+    /// Display label. Absent in v1 stores / older TOML — defaults to `id`.
+    #[serde(default)]
+    pub name: String,
 }
 
 impl Identity for DbConnection {
     fn identity(&self) -> &str {
         &self.id
+    }
+}
+
+/// The version-1 on-disk shape of [`DbConnection`] (before `kind`/`name`). Retained only
+/// to decode legacy redb values; `From<DbConnectionV1>` migrates it forward with
+/// `kind: Postgres`, `name: id.clone()`.
+///
+/// postcard is positional, so a v1 value must be decoded against this exact 3-field
+/// layout — decoding it as the current [`DbConnection`] would misread the trailing bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DbConnectionV1 {
+    pub id: String,
+    pub dsn: String,
+    #[serde(default)]
+    pub secret_ref: Option<String>,
+}
+
+impl From<DbConnectionV1> for DbConnection {
+    fn from(v: DbConnectionV1) -> Self {
+        DbConnection {
+            name: v.id.clone(),
+            id: v.id,
+            dsn: v.dsn,
+            secret_ref: v.secret_ref,
+            kind: DbKind::Postgres,
+        }
     }
 }
 

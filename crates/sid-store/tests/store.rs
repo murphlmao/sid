@@ -1,7 +1,9 @@
 //! P2.5 (critical path) — the Store facade: scoped writes, composition, promote/demote.
 
+use sid_core::db::DbKind;
 use sid_store::{
-    AuthMethod, Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta,
+    AuthMethod, DbConnection, Host, Scope, Store, StoreError, ViewFilters, WorkspaceId,
+    WorkspaceMeta,
 };
 
 fn setup() -> (tempfile::TempDir, Store, WorkspaceId) {
@@ -28,6 +30,16 @@ fn host(alias: &str, user: &str) -> Host {
         port: 22,
         secret_ref: None,
         auth: AuthMethod::default(),
+    }
+}
+
+fn connection(id: &str, name: &str) -> DbConnection {
+    DbConnection {
+        id: id.into(),
+        dsn: "postgres://x".into(),
+        secret_ref: None,
+        kind: DbKind::Postgres,
+        name: name.into(),
     }
 }
 
@@ -239,4 +251,166 @@ fn delete_from_unregistered_workspace_errors() {
     let s = Store::open(&dir.path().join("sid.redb")).unwrap();
     let ghost = WorkspaceId("/nonexistent".into());
     assert!(s.delete_host("x", &Scope::Workspace(ghost)).is_err());
+}
+
+// ---- connections (structural mirror of the host facade above) ----
+
+#[test]
+fn connection_write_lands_in_the_named_layer_only() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("g1", "Global One"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("w1", "Workspace One"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    let g = s
+        .read_connections(&Scope::Global, ViewFilters::default())
+        .unwrap();
+    assert_eq!(g.len(), 1, "global scope sees only the global connection");
+    assert_eq!(g[0].item.id, "g1");
+
+    let w = s
+        .read_connections(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    assert_eq!(w.len(), 2, "workspace scope sees the union");
+}
+
+#[test]
+fn connection_read_composes_with_dedup_default() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("dup", "Global"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("dup", "Workspace"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    let w = s
+        .read_connections(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    assert_eq!(w.iter().filter(|a| a.item.id == "dup").count(), 1);
+    let d = w.iter().find(|a| a.item.id == "dup").unwrap();
+    assert_eq!(
+        d.item.name, "Workspace",
+        "workspace copy wins the default view"
+    );
+}
+
+#[test]
+fn connection_delete_from_workspace_leaves_global_intact_and_unshadows_it() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("dup", "Global"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("dup", "Workspace"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    assert!(
+        s.delete_connection("dup", &Scope::Workspace(id.clone()))
+            .unwrap(),
+        "deleting the workspace copy reports it was present"
+    );
+
+    let w = s
+        .read_connections(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    let d = w.iter().find(|a| a.item.id == "dup").unwrap();
+    assert_eq!(d.origin, Scope::Global, "only the global copy remains");
+    assert_eq!(d.item.name, "Global");
+}
+
+#[test]
+fn connection_promote_moves_workspace_to_global() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("c", "Mine"), &Scope::Workspace(id.clone()))
+        .unwrap();
+    s.promote_connection("c", &id).unwrap();
+
+    assert!(
+        s.global().get_connection("c").unwrap().is_some(),
+        "now global"
+    );
+    let w = s
+        .read_connections(
+            &Scope::Workspace(id),
+            ViewFilters {
+                collapse_duplicates: false,
+                hide_global: false,
+            },
+        )
+        .unwrap();
+    let cs: Vec<_> = w.iter().filter(|a| a.item.id == "c").collect();
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].origin, Scope::Global);
+}
+
+#[test]
+fn connection_demote_moves_global_to_workspace() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("c", "Mine"), &Scope::Global)
+        .unwrap();
+    s.demote_connection("c", &id).unwrap();
+
+    assert!(
+        s.global().get_connection("c").unwrap().is_none(),
+        "gone from global"
+    );
+    let w = s
+        .read_connections(&Scope::Workspace(id.clone()), ViewFilters::default())
+        .unwrap();
+    let cc = w.iter().find(|a| a.item.id == "c").unwrap();
+    assert_eq!(cc.origin, Scope::Workspace(id));
+}
+
+#[test]
+fn connection_promote_refuses_when_global_already_has_the_id() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("prod", "Global"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("prod", "Workspace"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        s.promote_connection("prod", &id),
+        Err(StoreError::Conflict(_))
+    ));
+
+    assert_eq!(
+        s.global().get_connection("prod").unwrap().unwrap().name,
+        "Global"
+    );
+}
+
+#[test]
+fn connection_demote_refuses_when_workspace_already_has_the_id() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("prod", "Global"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("prod", "Workspace"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        s.demote_connection("prod", &id),
+        Err(StoreError::Conflict(_))
+    ));
+
+    let w = s
+        .read_connections(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    assert_eq!(
+        w.iter().find(|a| a.item.id == "prod").unwrap().item.name,
+        "Workspace"
+    );
 }

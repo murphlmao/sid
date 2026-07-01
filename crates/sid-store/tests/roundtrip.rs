@@ -1,5 +1,6 @@
 //! P2.1 — serde/postcard round-trips for every entity and for `Scope`.
 
+use sid_core::db::DbKind;
 use sid_store::codec::{decode_versioned, encode_versioned};
 use sid_store::{AuthMethod, DbConnection, Host, QuickAction, Scope, WorkspaceId};
 
@@ -65,9 +66,30 @@ fn db_connection_roundtrip() {
         id: "acme-pg".into(),
         dsn: "postgres://acme@db.acme.internal/acme".into(),
         secret_ref: Some("db.acme-pg.pw".into()),
+        kind: DbKind::Postgres,
+        name: "Acme PG".into(),
     };
     let (_, got): (u8, DbConnection) = decode_versioned(&encode_versioned(3, &c).unwrap()).unwrap();
     assert_eq!(got, c);
+}
+
+#[test]
+fn db_connection_v2_roundtrips_all_kinds() {
+    for kind in [DbKind::Postgres, DbKind::Sqlite, DbKind::Redb] {
+        let c = DbConnection {
+            id: "acme-db".into(),
+            dsn: "acme-db-dsn".into(),
+            secret_ref: None,
+            kind,
+            name: "Acme DB".into(),
+        };
+        let bytes = encode_versioned(2, &c).unwrap();
+        assert_eq!(bytes[0], 2, "leading byte is the v2 version");
+        let (version, got): (u8, DbConnection) = decode_versioned(&bytes).unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(got, c);
+        assert_eq!(got.kind, kind);
+    }
 }
 
 #[test]
