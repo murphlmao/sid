@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 sid-core.workspace = true
+sid-store.workspace = true
 tokio.workspace = true
 tokio-postgres.workspace = true
 rusqlite.workspace = true
