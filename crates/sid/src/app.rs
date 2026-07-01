@@ -370,6 +370,16 @@ pub fn open_store() -> Store {
     store
 }
 
+/// Open the default secret backend: the OS keyring if a startup durability probe
+/// passes, otherwise an in-memory fallback plus a human-readable warning.
+///
+/// The warning (`Some(..)`) means the fallback is in use — secrets entered this session
+/// will not survive a restart. The app does not yet surface this in the UI; for now the
+/// caller is expected to log it or wire it into the header error line once that exists.
+pub fn open_secrets() -> (Box<dyn sid_secrets::SecretStore>, Option<String>) {
+    sid_secrets::open_default_secrets()
+}
+
 fn seed_if_empty(store: &Store, dir: &std::path::Path) {
     let no_hosts = store.global().list_hosts().map(|h| h.is_empty()).unwrap_or(false);
     let no_ws = store
