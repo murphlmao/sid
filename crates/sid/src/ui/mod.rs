@@ -9,7 +9,7 @@ pub mod host_form;
 pub mod terminal;
 mod text_input;
 
-pub use terminal::TerminalSession;
+pub use terminal::{SessionStatus, TerminalSession};
 pub use text_input::TextInput;
 
 use gpui::{App, KeyBinding, actions};
