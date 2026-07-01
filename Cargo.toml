@@ -5,6 +5,7 @@ members = [
     "crates/sid-secrets",
     "crates/sid-store",
     "crates/sid-core",
+    "crates/sid-term",
 ]
 
 [workspace.package]
