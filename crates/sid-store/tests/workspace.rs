@@ -1,5 +1,6 @@
 //! P2.3 — WorkspaceStore (`.sid/config.toml`): round-trip, missing = empty, malformed = error.
 
+use sid_core::db::DbKind;
 use sid_store::entities::{AuthMethod, DbConnection, Host, QuickAction};
 use sid_store::workspace::{WorkspaceConfig, WorkspaceStore};
 
@@ -36,6 +37,8 @@ fn save_then_load_roundtrips_everything() {
         id: "acme-pg".into(),
         dsn: "postgres://acme@db.acme.internal/acme".into(),
         secret_ref: Some("db.acme-pg.pw".into()),
+        kind: DbKind::Postgres,
+        name: "Acme PG".into(),
     });
     cfg.quick_action.push(QuickAction {
         label: "tail app log".into(),
@@ -141,6 +144,31 @@ fn toml_without_auth_key_defaults_to_agent() {
         cfg.ssh.host[0].auth,
         AuthMethod::Agent,
         "missing auth key defaults to Agent"
+    );
+}
+
+#[test]
+fn toml_without_kind_or_name_defaults_to_postgres_and_empty_name() {
+    // A pre-`kind`/`name` committed config (no such keys on the connection) must still parse.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".sid")).unwrap();
+    std::fs::write(
+        dir.path().join(".sid").join("config.toml"),
+        "version = 1\n\n[[db.connection]]\nid = \"legacy-pg\"\ndsn = \"postgres://x\"\n",
+    )
+    .unwrap();
+    let ws = WorkspaceStore::new(dir.path());
+    let cfg = ws.load().unwrap();
+    assert_eq!(cfg.db.connection.len(), 1);
+    assert_eq!(cfg.db.connection[0].id, "legacy-pg");
+    assert_eq!(
+        cfg.db.connection[0].kind,
+        DbKind::Postgres,
+        "missing kind key defaults to Postgres"
+    );
+    assert_eq!(
+        cfg.db.connection[0].name, "",
+        "missing name key defaults to empty string (not id)"
     );
 }
 
