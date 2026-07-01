@@ -4786,6 +4786,7 @@ dependencies = [
  "gpui",
  "sid-secrets",
  "sid-store",
+ "unicode-segmentation",
 ]
 
 [[package]]
