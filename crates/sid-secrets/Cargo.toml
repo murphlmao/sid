@@ -8,3 +8,26 @@ repository.workspace = true
 
 [dependencies]
 thiserror = "2"
+
+# Keyring / OS secret service.
+# keyring v4 split the library into `keyring-core` (the API) plus per-platform backend
+# STORE crates that are registered at RUNTIME (the v3 compile-time `features` model is
+# gone). The `keyring` crate itself is now only sample/CLI code — we depend on
+# `keyring-core` directly. CRITICAL: a backend store MUST be registered at startup
+# (`sid_secrets::keyring::install_default_backend`) or keyring-core has no default store
+# and every secret op fails — the runtime equivalent of the v3 mock-backend data-loss
+# trap. The backend store crate is declared per-target below:
+#   Linux → zbus-secret-service-keyring-store (pure-Rust zbus, no libdbus C dependency)
+# Other platforms are an intentional empty slot (CLAUDE.md: keep the seams; don't write
+# Mac/Windows code yet).
+keyring-core = "1"
+
+# Platform backend store crate — registered at runtime by install_default_backend().
+[target.'cfg(target_os = "linux")'.dependencies]
+# LOAD-BEARING FEATURE (same class of trap as keyring v3's mock backend): this store
+# crate ships NO default features and fails to build without an explicit selection.
+# `rt-async-io-crypto-rust` picks the async-io runtime + pure-Rust crypto. async-io (NOT
+# tokio) is deliberate: the sync keyring API is called from inside a runtime, and a
+# tokio-based blocking wrapper would panic "runtime within a runtime"; async-io's
+# block_on is runtime-independent. crypto-rust avoids an OpenSSL C dependency.
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }

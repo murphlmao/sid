@@ -14,3 +14,4 @@ repository.workspace = true
 # font-kit + wayland + x11 automatically.
 gpui = "0.2"
 sid-store = { path = "../sid-store" }
+sid-secrets = { path = "../sid-secrets" }
