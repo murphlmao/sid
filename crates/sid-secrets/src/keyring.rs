@@ -458,9 +458,13 @@ mod tests {
     fn open_default_secrets_falls_back_to_memory_without_a_daemon() {
         let (store, warning) = open_default_secrets();
         // Whichever path was taken, the returned store must be minimally functional.
-        let id = SecretId::new("smoke");
+        // Clean up afterwards: on a dev box this may be the REAL keyring, and leaving
+        // the entry behind would deposit test residue in the user's Secret Service.
+        let id = SecretId::new("sid.test-smoke");
         store.put(&id, b"v").unwrap();
         assert_eq!(store.get(&id).unwrap().unwrap(), b"v".to_vec());
+        store.delete(&id).unwrap();
+        assert!(store.get(&id).unwrap().is_none());
 
         // If no real keyring daemon is reachable in this environment (the common case
         // for CI and sandboxes), a warning must be present so the app can surface it.
