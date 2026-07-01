@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod known_hosts;
 pub mod sftp;
 pub mod shell;
 
