@@ -15,9 +15,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, Font, FontStyle, FontWeight, Hsla, IntoElement, Pixels,
-    Render, ShapedLine, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px,
-    rgb,
+    App, AppContext as _, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight,
+    Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine, TextRun,
+    UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, rgb,
 };
 use sid_core::ssh::{SshClient, SshError, SshShell};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -46,6 +46,11 @@ pub struct TerminalSession {
     status: SessionStatus,
     rows: u16,
     cols: u16,
+    focus_handle: FocusHandle,
+    /// Set once, the render after a successful connect, to pull keyboard focus onto the
+    /// terminal without re-stealing it on every later re-render (e.g. output arriving while
+    /// the user is focused elsewhere).
+    needs_focus: bool,
 }
 
 /// How often the read-loop hops onto the Tokio runtime to drain the shell's output buffer.
@@ -108,6 +113,8 @@ impl TerminalSession {
                 status: SessionStatus::Connecting,
                 rows: DEFAULT_ROWS,
                 cols: DEFAULT_COLS,
+                focus_handle: cx.focus_handle(),
+                needs_focus: false,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -155,6 +162,7 @@ impl TerminalSession {
                     Ok(shell) => {
                         session.shell = Some(Arc::new(AsyncMutex::new(shell)));
                         session.status = SessionStatus::Connected;
+                        session.needs_focus = true;
                         session.start_read_loop(cx);
                     }
                     Err(err) => session.status = SessionStatus::Failed(err),
@@ -242,16 +250,19 @@ impl TerminalSession {
 
     /// Paint the grid: one `shape_line` call per row (gpui shapes a whole multi-run line at
     /// once, so the row — not the cell — is the unit of work), then `paint_background` +
-    /// `paint` per shaped row inside a `canvas`. Fixed at `self.rows`x`self.cols` for now; C4
-    /// recomputes those from the real viewport and this just follows along.
-    fn render_grid(&self, window: &mut Window) -> impl IntoElement {
+    /// `paint` per shaped row inside a `canvas`. The canvas fills whatever space the parent
+    /// layout gives it; C4's resize detection (below) reads that real size back out of the
+    /// canvas's own paint bounds and reconciles `self.rows`/`self.cols` against it.
+    fn render_grid(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cells = self.screen.cells();
         let (cursor_row, cursor_col) = self.screen.cursor_position();
         let base_font = font(MONO);
         let default_fg: Hsla = rgb(TERM_FG).into();
         let default_bg: Hsla = rgb(TERM_BG).into();
 
-        // Measure one monospace glyph to size the pane to exactly `cols`x`rows` cells.
+        // Measure one monospace glyph — its width/the line height are the grid's cell size,
+        // used both to paint rows and (in the canvas below) to turn the pane's real pixel
+        // bounds back into a rows/cols count.
         let text_system = window.text_system().clone();
         let em = text_system.shape_line(
             "M".into(),
@@ -286,38 +297,109 @@ impl TerminalSession {
             })
             .collect();
 
-        let pane_width = cell_width * self.cols as f32;
-        let pane_height = line_height * self.rows as f32;
+        let current_size = (self.rows, self.cols);
+        let weak = cx.weak_entity();
 
-        div().w(pane_width).h(pane_height).bg(rgb(TERM_BG)).child(
-            canvas(
-                move |_bounds, _window, _cx| shaped_rows,
-                move |bounds, shaped_rows: Vec<ShapedLine>, window, cx| {
-                    let mut y = bounds.top();
-                    for line in &shaped_rows {
-                        let origin = point(bounds.left(), y);
-                        let _ = line.paint_background(origin, line_height, window, cx);
-                        let _ = line.paint(origin, line_height, window, cx);
-                        y += line_height;
-                    }
-                },
+        div()
+            .size_full()
+            .bg(rgb(TERM_BG))
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|session, event: &KeyDownEvent, window, _cx| {
+                if let Some(bytes) = key_to_bytes(&event.keystroke) {
+                    session.send_input(bytes);
+                    window.prevent_default();
+                }
+            }))
+            .child(
+                canvas(
+                    move |bounds, _window, cx| {
+                        // Reconcile the pane's real pixel size against the PTY's rows/cols —
+                        // deferred, since we're mid-paint of this very entity and cannot
+                        // `update` it from inside its own prepaint closure.
+                        let cols = ((bounds.size.width / cell_width).floor() as u16).max(1);
+                        let rows = ((bounds.size.height / line_height).floor() as u16).max(1);
+                        if (rows, cols) != current_size {
+                            let weak = weak.clone();
+                            cx.defer(move |cx| {
+                                let _ = weak.update(cx, |session, cx| {
+                                    session.resize(rows, cols);
+                                    cx.notify();
+                                });
+                            });
+                        }
+                        shaped_rows
+                    },
+                    move |bounds, shaped_rows: Vec<ShapedLine>, window, cx| {
+                        let mut y = bounds.top();
+                        for line in &shaped_rows {
+                            let origin = point(bounds.left(), y);
+                            let _ = line.paint_background(origin, line_height, window, cx);
+                            let _ = line.paint(origin, line_height, window, cx);
+                            y += line_height;
+                        }
+                    },
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
     }
 }
 
 impl Render for TerminalSession {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.needs_focus {
+            self.needs_focus = false;
+            window.focus(&self.focus_handle);
+        }
         match &self.status {
             SessionStatus::Connecting => message_pane("Connecting…").into_any_element(),
             SessionStatus::Failed(err) => {
                 message_pane(&format!("Connection failed: {err}")).into_any_element()
             }
             SessionStatus::Closed => message_pane("Session closed.").into_any_element(),
-            SessionStatus::Connected => self.render_grid(window).into_any_element(),
+            SessionStatus::Connected => self.render_grid(window, cx).into_any_element(),
         }
     }
+}
+
+impl Focusable for TerminalSession {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+/// Map one keystroke to the bytes sent to the remote shell. `key_char` (what the platform
+/// says was actually typed, after shift/IME/etc.) covers ordinary printable input; the
+/// control keys a terminal depends on are matched on the keystroke's named `key` — checked
+/// first, since e.g. a ctrl-chord's `key_char` (if any) is not what a shell expects to see.
+fn key_to_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    let key = keystroke.key.as_str();
+    let m = &keystroke.modifiers;
+
+    if m.control && !m.alt && !m.platform {
+        let mut chars = key.chars();
+        if let (Some(c), None) = (chars.next(), chars.next())
+            && c.is_ascii_alphabetic()
+        {
+            return Some(vec![(c.to_ascii_uppercase() as u8) & 0x1f]);
+        }
+    }
+
+    match key {
+        "enter" => return Some(b"\r".to_vec()),
+        "backspace" => return Some(vec![0x7f]),
+        "tab" => return Some(b"\t".to_vec()),
+        "escape" => return Some(vec![0x1b]),
+        "up" => return Some(b"\x1b[A".to_vec()),
+        "down" => return Some(b"\x1b[B".to_vec()),
+        "right" => return Some(b"\x1b[C".to_vec()),
+        "left" => return Some(b"\x1b[D".to_vec()),
+        "home" => return Some(b"\x1b[H".to_vec()),
+        "end" => return Some(b"\x1b[F".to_vec()),
+        "delete" => return Some(b"\x1b[3~".to_vec()),
+        _ => {}
+    }
+
+    keystroke.key_char.as_ref().map(|s| s.as_bytes().to_vec())
 }
 
 fn message_pane(text: &str) -> impl IntoElement {
@@ -459,5 +541,63 @@ fn xterm256_to_rgb(idx: u8) -> (u8, u8, u8) {
             let level = 8 + (idx - 232) * 10;
             (level, level, level)
         }
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use gpui::Modifiers;
+
+    use super::*;
+
+    fn key(key: &str) -> Keystroke {
+        Keystroke {
+            modifiers: Modifiers::default(),
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    fn ctrl(key: &str) -> Keystroke {
+        Keystroke {
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn enter_sends_cr() {
+        assert_eq!(key_to_bytes(&key("enter")), Some(b"\r".to_vec()));
+    }
+
+    #[test]
+    fn ctrl_c_sends_end_of_text() {
+        assert_eq!(key_to_bytes(&ctrl("c")), Some(vec![0x03]));
+    }
+
+    #[test]
+    fn arrows_send_csi_sequences() {
+        assert_eq!(key_to_bytes(&key("up")), Some(b"\x1b[A".to_vec()));
+        assert_eq!(key_to_bytes(&key("down")), Some(b"\x1b[B".to_vec()));
+        assert_eq!(key_to_bytes(&key("left")), Some(b"\x1b[D".to_vec()));
+        assert_eq!(key_to_bytes(&key("right")), Some(b"\x1b[C".to_vec()));
+    }
+
+    #[test]
+    fn printable_char_uses_key_char() {
+        let mut k = key("a");
+        k.key_char = Some("a".to_string());
+        assert_eq!(key_to_bytes(&k), Some(b"a".to_vec()));
+    }
+
+    #[test]
+    fn bare_modifier_with_no_key_char_is_unhandled() {
+        let mut k = key("shift");
+        k.modifiers.shift = true;
+        assert_eq!(key_to_bytes(&k), None);
     }
 }
