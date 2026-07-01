@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-01 — 37 tests green, working tree clean, `main` @ P3.1._
+_Last verified: 2026-07-01 — 150 tests green, working tree clean, `main` @ f967696 (P3.2 complete + P3.3 SSH adapters landed)._
 
 ---
 
@@ -30,11 +30,14 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 | Plan | Scope | State |
 |:--|:--|:--|
 | **Plan 1** — [bootstrap & de-risk](superpowers/plans/2026-06-27-gpui-bootstrap-and-derisk.md) | GPUI window on Wayland, render primitives | ✅ green ([spike findings](design/SPIKE-FINDINGS.md)) |
-| **Plan 2** — [layered store](superpowers/plans/2026-06-27-layered-store-plan.md) | `sid-store` P2.1–P2.7: global(redb)+workspace(TOML), Composer, scoped writes, secret boundary | ✅ green, 37 tests |
-| **Plan 3** — SSH slice | P3.1 host list wired to store | 🚧 P3.1 done; P3.2–P3.4 open (below) |
+| **Plan 2** — [layered store](superpowers/plans/2026-06-27-layered-store-plan.md) | `sid-store` P2.1–P2.7: global(redb)+workspace(TOML), Composer, scoped writes, secret boundary | ✅ green, 49 tests |
+| **Plan 3A** — [editable hosts (P3.2)](superpowers/plans/2026-07-01-p32-editable-hosts.md) | `delete_host`, `Settings`/`default_scope`, `Host` auth v2 migration, keyring (`KeyringStore`+probe), `TextInput`, host form + save-to dialog + row actions (edit/delete/promote/demote) | ✅ green, 150 tests total |
+| **Plan 3B** — [SSH adapter port (P3.3 groundwork)](superpowers/plans/2026-07-01-p33-ssh-adapter-port.md) | `sid-core` trait seam, `sid-term` styled vt100 cells, `sid-ssh` russh client/shell/SFTP + **fail-closed known-hosts**, shell `split()` (no writer deadlock) | ✅ merged; ⚠ B5 live-sshd smoke still needs one manual run |
+| **Plan 3C** — terminal view + connect flow | wire the merged `sid-ssh`/`sid-term` adapters into a GPUI terminal grid; map `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth`; resolve `secret_ref` via `sid-secrets` | ⏳ not written yet — the next design pass |
 
 **Crates:** `sid` (GPUI frontend — the only place GPUI may be named), `sid-store`
-(layered store), `sid-secrets` (keyring boundary).
+(layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal trait seam —
+no concrete deps), `sid-ssh` (russh impl), `sid-term` (vt100 styled screen).
 
 **Key files:**
 - `crates/sid/src/app.rs` — the single `AppState` entity. Renders from a cache; events call `refresh()` then `cx.notify()`. No I/O in `render`.
@@ -43,21 +46,27 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 
 ## Next work — Plan 3 (SSH slice), remaining
 
-Do these **in order**; each is a shippable increment. P3.2 is buildable on what exists today.
+Do these **in order**; each is a shippable increment.
 
-### P3.2 — Editable host list  *(start here)*
-Add/edit host form + the **`save to: workspace | global`** dialog (with configurable
-`default_scope`), plus **promote/demote** buttons on rows. Wires the store's *write*
-side end-to-end (`write_host` / `promote_host` / `demote_host` already exist and are
-tested). Pure GPUI + existing store API — no new external deps.
+### P3.2 — Editable host list  ✅ DONE (merged f967696)
+Add/edit host form + the **`save to: workspace | global`** dialog (configurable
+`default_scope`), auth fields (agent/key/password → keyring), and per-row
+**edit/delete/promote/demote**. Wires the store's *write* side end-to-end.
+**Open gate item (needs human eyes):** the A8 observation checklist in
+[the plan](superpowers/plans/2026-07-01-p32-editable-hosts.md) — run the app and exercise
+add (both layers, all 3 auth methods), edit, two-click delete, the `vps-1` promote
+conflict, and `default_scope` preselection.
 
 ### P3.3 — Connect + embedded terminal
-The riskiest step. Needs two things that were **researched but not yet done**:
-1. **Salvage survey** of `sid-poc`'s SSH adapter (russh + russh-sftp + portable-pty) — per
-   the design doc these carry over near-verbatim behind the existing trait seam.
-2. **gpui-terminal research** — how to render a PTY grid inside GPUI (Zed's own terminal
-   is the reference implementation to crib from).
-Keep russh/PTY behind the adapter trait; GPUI stays out of `sid-store`/adapters.
+**Adapter groundwork ✅ DONE** (Plan 3B, merged): `sid-ssh` (russh client/shell/SFTP,
+fail-closed known-hosts, deadlock-free shell) + `sid-term` (styled vt100 cells) +
+`sid-core` trait seam, 45 tests. ⚠ the `#[ignore]`d live-sshd smoke still needs one manual
+run: `cargo test -p sid-ssh --test live_sshd_smoke -- --ignored --nocapture`.
+**Remaining = Plan 3C (not yet written):** render the PTY grid inside GPUI (crib Zed's
+terminal), map `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth`, resolve `secret_ref` via
+`sid-secrets`, and (deferred from 3B) set `config.preferred.key` per-connect from recorded
+known-hosts algorithms (OpenSSH `order_hostkeyalgs`) so imported `~/.ssh/known_hosts`
+entries under a non-preferred algorithm don't spuriously fail.
 
 ### P3.4 — SFTP browser
 Download / upload / edit-in-place, per-host command history. Builds on P3.3's connection.
