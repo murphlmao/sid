@@ -13,12 +13,14 @@
 //! Design source of truth: `docs/design/2026-06-27-store-schema.html`.
 
 pub mod codec;
+pub mod composer;
 pub mod entities;
 pub mod error;
 pub mod global;
 pub mod scope;
 pub mod workspace;
 
+pub use composer::{ViewFilters, compose};
 pub use entities::{DbConnection, Host, Identity, QuickAction};
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;
