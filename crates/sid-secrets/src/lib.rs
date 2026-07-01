@@ -11,6 +11,10 @@ use std::sync::Mutex;
 
 use thiserror::Error;
 
+pub mod keyring;
+
+pub use keyring::open_default_secrets;
+
 /// An opaque reference to a secret, e.g. `"ssh.prod.key"`. This is all that ever appears
 /// in committed config.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
