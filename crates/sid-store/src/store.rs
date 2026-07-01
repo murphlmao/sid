@@ -69,6 +69,18 @@ impl Store {
         }
     }
 
+    /// Delete a host from **exactly** the named layer, returning whether one was present.
+    ///
+    /// This removes only the record in `scope`; a same-alias copy in the other layer is
+    /// untouched. Deleting a workspace copy therefore un-shadows the global copy in the
+    /// collapsed view — that is attributive behaviour, not loss.
+    pub fn delete_host(&self, alias: &str, scope: &Scope) -> Result<bool> {
+        match scope {
+            Scope::Global => self.global.remove_host(alias),
+            Scope::Workspace(id) => self.workspace_store(id)?.remove_host(alias),
+        }
+    }
+
     /// Move a host from a workspace up to global (removing it from the workspace).
     pub fn promote_host(&self, alias: &str, from: &WorkspaceId) -> Result<()> {
         let ws = self.workspace_store(from)?;
