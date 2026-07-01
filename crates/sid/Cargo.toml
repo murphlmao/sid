@@ -15,3 +15,6 @@ repository.workspace = true
 gpui = "0.2"
 sid-store = { path = "../sid-store" }
 sid-secrets = { path = "../sid-secrets" }
+# Grapheme/word segmentation for the TextInput element (cursor movement, masking).
+# Already in the tree transitively via gpui; pinned here as a direct dep.
+unicode-segmentation = "1"
