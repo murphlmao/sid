@@ -84,9 +84,14 @@ tested functions; rendering and input are observation-gated (rendering-spike rul
   (Default→theme fg/bg, Indexed→xterm-256 palette fn, Rgb→direct), bold/italic/underline/inverse
   applied, block cursor at `cursor_position()`. Fixed cell size from a measured monospace glyph;
   compute `rows/cols` from `window.viewport_size()` and the terminal pane bounds.
-- **Reference (allowed):** crib GPUI text-grid patterns from dbflux (`gpui = 0.2.2`, compatible)
-  and its `gpui-component` usage — read for how they lay out a dense character grid; do not block
-  on it. This is a rendering spike: **gate by observation**, no unit tests.
+- **Reference (allowed — researched 2026-07-01):** No drop-in gpui-0.2 terminal widget exists
+  (every polished one is on Zed's incompatible *git* gpui). The prime reference is **`arbor`**
+  (github.com/penso/arbor, MIT, pins crates.io `gpui = "0.2.2"` — same as sid): study
+  `crates/arbor-gui/src/terminal_rendering.rs` (~2,200 lines) for how to structure the GPUI
+  `Element`/paint/layout, cursor, and styled-line runs. Also glance at `gpui-component`. **Keep
+  sid's own `sid-term` (`vt100`) as the screen model — do NOT switch to `alacritty_terminal`;**
+  our styled `cells()` snapshot is already merged and tested. This is a rendering spike:
+  **gate by observation**, no unit tests.
 - **Deliverable:** remote shell output visibly rendered with color/attributes and a cursor.
 
 ### C4 — Keyboard input + resize
