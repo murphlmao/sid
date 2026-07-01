@@ -15,6 +15,16 @@ fn host(alias: &str, secret: Option<&str>) -> Host {
     }
 }
 
+fn connection(id: &str) -> DbConnection {
+    DbConnection {
+        id: id.into(),
+        dsn: "postgres://x".into(),
+        secret_ref: None,
+        kind: DbKind::Postgres,
+        name: id.into(),
+    }
+}
+
 #[test]
 fn missing_file_is_empty_default_not_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -96,6 +106,19 @@ fn remove_host_reports_presence() {
         "removing an absent host is Ok(false)"
     );
     assert!(ws.load().unwrap().ssh.host.is_empty());
+}
+
+#[test]
+fn remove_connection_reports_presence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceStore::new(dir.path());
+    ws.upsert_connection(&connection("acme-pg")).unwrap();
+    assert!(ws.remove_connection("acme-pg").unwrap());
+    assert!(
+        !ws.remove_connection("acme-pg").unwrap(),
+        "removing an absent connection is Ok(false)"
+    );
+    assert!(ws.load().unwrap().db.connection.is_empty());
 }
 
 #[test]

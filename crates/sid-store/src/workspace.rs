@@ -129,6 +129,18 @@ impl WorkspaceStore {
         upsert_by_identity(&mut cfg.db.connection, c.clone());
         self.save(&cfg)
     }
+
+    /// Remove a connection by id. Returns whether one was present.
+    pub fn remove_connection(&self, id: &str) -> Result<bool> {
+        let mut cfg = self.load()?;
+        let before = cfg.db.connection.len();
+        cfg.db.connection.retain(|c| c.identity() != id);
+        let changed = cfg.db.connection.len() != before;
+        if changed {
+            self.save(&cfg)?;
+        }
+        Ok(changed)
+    }
 }
 
 /// Replace the element with the same [`Identity`] as `item`, or push `item` if none.
