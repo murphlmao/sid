@@ -371,7 +371,11 @@ pub fn open_store() -> Store {
 }
 
 fn seed_if_empty(store: &Store, dir: &std::path::Path) {
-    let no_hosts = store.global().list_hosts().map(|h| h.is_empty()).unwrap_or(false);
+    let no_hosts = store
+        .global()
+        .list_hosts()
+        .map(|h| h.is_empty())
+        .unwrap_or(false);
     let no_ws = store
         .global()
         .list_workspaces()
@@ -388,7 +392,10 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         port: 22,
         secret_ref: None,
     };
-    let _ = store.write_host(&global("home-server", "you", "192.168.1.10"), &Scope::Global);
+    let _ = store.write_host(
+        &global("home-server", "you", "192.168.1.10"),
+        &Scope::Global,
+    );
     let _ = store.write_host(&global("vps-1", "root", "5.5.5.5"), &Scope::Global);
 
     // A demo workspace under the data dir, with a duplicate (`vps-1`) to show composition.
@@ -401,7 +408,10 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         name: "acme-api (demo)".into(),
     });
     let ws = Scope::Workspace(id);
-    let _ = store.write_host(&global("staging", "deploy", "staging.acme-api.internal"), &ws);
+    let _ = store.write_host(
+        &global("staging", "deploy", "staging.acme-api.internal"),
+        &ws,
+    );
     let _ = store.write_host(&global("prod", "deploy", "prod.acme-api.internal"), &ws);
     let _ = store.write_host(&global("vps-1", "admin", "5.5.5.5"), &ws); // duplicates global vps-1
 }
