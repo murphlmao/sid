@@ -1,9 +1,11 @@
 //! Reusable GPUI UI elements for sid.
 //!
-//! Currently just the single-line [`TextInput`] (P3.2 spearhead). The input's actions
-//! are declared here and bound once via [`init`], scoped to the `TextInput` key context
-//! so they never collide with future app-level bindings.
+//! The single-line [`TextInput`] (P3.2 spearhead) and the [`host_form::HostForm`]
+//! modal built on it. The input's actions are declared here and bound once via
+//! [`init`], scoped to the `TextInput` key context so they never collide with other
+//! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
+pub mod host_form;
 mod text_input;
 
 pub use text_input::TextInput;
@@ -70,5 +72,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
         KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some(CONTEXT)),
+        // Host-form bindings, scoped to its own key context. They sit on an ancestor of
+        // the focused TextInput, so they fire from any field inside the form.
+        KeyBinding::new("escape", host_form::FormCancel, Some("HostForm")),
+        KeyBinding::new("enter", host_form::FormSubmit, Some("HostForm")),
     ]);
 }

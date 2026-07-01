@@ -87,18 +87,14 @@ impl TextInput {
         }
     }
 
-    // ---- public form API ---------------------------------------------------
-    // Consumed by the host form in A6; the `#[allow]` keeps `-D warnings` green until
-    // then. Remove the attribute once A6 wires these up.
+    // ---- public form API (consumed by the host form) ------------------------
 
     /// The current real content (never masked).
-    #[allow(dead_code)]
     pub fn content(&self) -> &str {
         &self.content
     }
 
     /// Replace the entire content, clamping the selection to the new end.
-    #[allow(dead_code)]
     pub fn set_content(&mut self, content: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.content = content.into();
         let end = self.content.len();
@@ -109,15 +105,8 @@ impl TextInput {
     }
 
     /// Whether the content is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
-    }
-
-    /// Whether this input masks its content on render.
-    #[allow(dead_code)]
-    pub fn is_masked(&self) -> bool {
-        self.masked
     }
 
     /// Move keyboard focus to this input.
@@ -126,7 +115,6 @@ impl TextInput {
     }
 
     /// Clear all state (content, selection, IME marks, cached layout).
-    #[allow(dead_code)]
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.content = SharedString::default();
         self.selected_range = 0..0;
