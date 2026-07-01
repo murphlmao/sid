@@ -5906,6 +5906,7 @@ dependencies = [
  "postcard",
  "redb",
  "serde",
+ "sid-core",
  "sid-secrets",
  "tempfile",
  "thiserror 2.0.18",
