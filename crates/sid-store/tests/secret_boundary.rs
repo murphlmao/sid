@@ -32,7 +32,9 @@ fn committed_config_holds_ref_never_secret() {
 
     // Real key material goes to the secret store, keyed by an opaque ref.
     let secret_ref = "ssh.prod.key";
-    secrets.put(&SecretId::new(secret_ref), KEY_MATERIAL).unwrap();
+    secrets
+        .put(&SecretId::new(secret_ref), KEY_MATERIAL)
+        .unwrap();
 
     // The host config carries only the ref.
     let host = Host {
@@ -42,21 +44,36 @@ fn committed_config_holds_ref_never_secret() {
         port: 22,
         secret_ref: Some(secret_ref.into()),
     };
-    store.write_host(&host, &Scope::Workspace(id.clone())).unwrap();
+    store
+        .write_host(&host, &Scope::Workspace(id.clone()))
+        .unwrap();
 
     // The committed TOML contains the ref but NONE of the key material.
-    let root = store.global().get_workspace(id.as_str()).unwrap().unwrap().root;
+    let root = store
+        .global()
+        .get_workspace(id.as_str())
+        .unwrap()
+        .unwrap()
+        .root;
     let toml = std::fs::read_to_string(root.join(".sid").join("config.toml")).unwrap();
     assert!(toml.contains("ssh.prod.key"), "the ref is committed");
-    assert!(!toml.contains("BEGIN OPENSSH"), "the secret must NOT be committed");
-    assert!(!toml.contains("abc123"), "no secret material anywhere in the file");
+    assert!(
+        !toml.contains("BEGIN OPENSSH"),
+        "the secret must NOT be committed"
+    );
+    assert!(
+        !toml.contains("abc123"),
+        "no secret material anywhere in the file"
+    );
 }
 
 #[test]
 fn ref_resolves_to_material_only_via_secret_store() {
     let (_d, store, id) = setup();
     let secrets = MemorySecretStore::new();
-    secrets.put(&SecretId::new("ssh.prod.key"), KEY_MATERIAL).unwrap();
+    secrets
+        .put(&SecretId::new("ssh.prod.key"), KEY_MATERIAL)
+        .unwrap();
 
     store
         .write_host(
@@ -84,8 +101,18 @@ fn ref_resolves_to_material_only_via_secret_store() {
 fn secret_store_keys_are_refs_not_config() {
     // The secret store is oblivious to config: it only ever holds refs → bytes.
     let secrets = MemorySecretStore::new();
-    secrets.put(&SecretId::new("db.acme-pg.pw"), b"hunter2").unwrap();
-    assert_eq!(secrets.list_ids().unwrap(), vec![SecretId::new("db.acme-pg.pw")]);
+    secrets
+        .put(&SecretId::new("db.acme-pg.pw"), b"hunter2")
+        .unwrap();
+    assert_eq!(
+        secrets.list_ids().unwrap(),
+        vec![SecretId::new("db.acme-pg.pw")]
+    );
     secrets.delete(&SecretId::new("db.acme-pg.pw")).unwrap();
-    assert!(secrets.get(&SecretId::new("db.acme-pg.pw")).unwrap().is_none());
+    assert!(
+        secrets
+            .get(&SecretId::new("db.acme-pg.pw"))
+            .unwrap()
+            .is_none()
+    );
 }

@@ -51,7 +51,11 @@ fn dedup_default_keeps_workspace_copy() {
         "exactly one B survives"
     );
     let b = view.iter().find(|a| a.item.alias == "B").unwrap();
-    assert_eq!(b.origin, Scope::Workspace(id.clone()), "workspace copy wins");
+    assert_eq!(
+        b.origin,
+        Scope::Workspace(id.clone()),
+        "workspace copy wins"
+    );
     assert_eq!(b.item.user, "w");
     assert!(b.duplicate, "surviving copy still flagged, for badging");
 }
@@ -93,7 +97,10 @@ fn global_scope_read_shows_global_only() {
     let global = vec![h("A", "g"), h("B", "g")];
     let view = compose(&global, None, ViewFilters::default());
     assert_eq!(view.len(), 2);
-    assert!(view.iter().all(|a| a.origin == Scope::Global && !a.duplicate));
+    assert!(
+        view.iter()
+            .all(|a| a.origin == Scope::Global && !a.duplicate)
+    );
 }
 
 #[test]

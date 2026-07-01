@@ -58,7 +58,10 @@ fn secret_ref_is_written_and_preserved() {
 
     let text = std::fs::read_to_string(ws.config_path()).unwrap();
     assert!(text.contains("secret_ref"), "the ref key is written");
-    assert!(text.contains("ssh.prod.key"), "the opaque ref value is written");
+    assert!(
+        text.contains("ssh.prod.key"),
+        "the opaque ref value is written"
+    );
 
     let got = ws.load().unwrap();
     assert_eq!(got.ssh.host[0].secret_ref.as_deref(), Some("ssh.prod.key"));
@@ -84,7 +87,10 @@ fn remove_host_reports_presence() {
     let ws = WorkspaceStore::new(dir.path());
     ws.upsert_host(&host("prod", None)).unwrap();
     assert!(ws.remove_host("prod").unwrap());
-    assert!(!ws.remove_host("prod").unwrap(), "removing an absent host is Ok(false)");
+    assert!(
+        !ws.remove_host("prod").unwrap(),
+        "removing an absent host is Ok(false)"
+    );
     assert!(ws.load().unwrap().ssh.host.is_empty());
 }
 
@@ -92,7 +98,11 @@ fn remove_host_reports_presence() {
 fn malformed_file_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".sid")).unwrap();
-    std::fs::write(dir.path().join(".sid").join("config.toml"), "this is [ not valid").unwrap();
+    std::fs::write(
+        dir.path().join(".sid").join("config.toml"),
+        "this is [ not valid",
+    )
+    .unwrap();
     let ws = WorkspaceStore::new(dir.path());
     assert!(ws.load().is_err());
 }

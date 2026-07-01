@@ -35,7 +35,9 @@ fn write_lands_in_the_named_layer_only() {
     s.write_host(&host("w1", "u"), &Scope::Workspace(id.clone()))
         .unwrap();
 
-    let g = s.read_hosts(&Scope::Global, ViewFilters::default()).unwrap();
+    let g = s
+        .read_hosts(&Scope::Global, ViewFilters::default())
+        .unwrap();
     assert_eq!(g.len(), 1, "global scope sees only the global host");
     assert_eq!(g[0].item.alias, "g1");
 
@@ -48,7 +50,8 @@ fn write_lands_in_the_named_layer_only() {
 #[test]
 fn read_composes_with_dedup_default() {
     let (_d, s, id) = setup();
-    s.write_host(&host("dup", "global"), &Scope::Global).unwrap();
+    s.write_host(&host("dup", "global"), &Scope::Global)
+        .unwrap();
     s.write_host(&host("dup", "workspace"), &Scope::Workspace(id.clone()))
         .unwrap();
 
@@ -89,7 +92,10 @@ fn demote_moves_global_host_to_workspace() {
     s.write_host(&host("h", "u"), &Scope::Global).unwrap();
     s.demote_host("h", &id).unwrap();
 
-    assert!(s.global().get_host("h").unwrap().is_none(), "gone from global");
+    assert!(
+        s.global().get_host("h").unwrap().is_none(),
+        "gone from global"
+    );
     let w = s
         .read_hosts(&Scope::Workspace(id.clone()), ViewFilters::default())
         .unwrap();
@@ -102,5 +108,8 @@ fn writing_to_an_unregistered_workspace_errors() {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("sid.redb")).unwrap();
     let ghost = WorkspaceId("/nonexistent".into());
-    assert!(s.write_host(&host("x", "u"), &Scope::Workspace(ghost)).is_err());
+    assert!(
+        s.write_host(&host("x", "u"), &Scope::Workspace(ghost))
+            .is_err()
+    );
 }

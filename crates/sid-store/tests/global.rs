@@ -35,7 +35,10 @@ fn host_write_read_list_delete() {
 fn missing_key_is_none_and_remove_absent_is_false() {
     let (_d, s) = open();
     assert!(s.get_host("nope").unwrap().is_none());
-    assert!(!s.remove_host("nope").unwrap(), "removing an absent key is Ok(false), not an error");
+    assert!(
+        !s.remove_host("nope").unwrap(),
+        "removing an absent key is Ok(false), not an error"
+    );
 }
 
 #[test]
@@ -45,7 +48,11 @@ fn upsert_overwrites_same_identity() {
     let mut updated = host("prod");
     updated.user = "root".into();
     s.upsert_host(&updated).unwrap();
-    assert_eq!(s.list_hosts().unwrap().len(), 1, "same alias overwrites, not duplicates");
+    assert_eq!(
+        s.list_hosts().unwrap().len(),
+        1,
+        "same alias overwrites, not duplicates"
+    );
     assert_eq!(s.get_host("prod").unwrap().unwrap().user, "root");
 }
 

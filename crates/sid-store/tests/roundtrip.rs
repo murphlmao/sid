@@ -44,8 +44,7 @@ fn db_connection_roundtrip() {
         dsn: "postgres://acme@db.acme.internal/acme".into(),
         secret_ref: Some("db.acme-pg.pw".into()),
     };
-    let (_, got): (u8, DbConnection) =
-        decode_versioned(&encode_versioned(3, &c).unwrap()).unwrap();
+    let (_, got): (u8, DbConnection) = decode_versioned(&encode_versioned(3, &c).unwrap()).unwrap();
     assert_eq!(got, c);
 }
 
@@ -55,8 +54,7 @@ fn quick_action_roundtrip() {
         label: "tail app log".into(),
         cmd: "journalctl -u acme-api -f".into(),
     };
-    let (_, got): (u8, QuickAction) =
-        decode_versioned(&encode_versioned(1, &q).unwrap()).unwrap();
+    let (_, got): (u8, QuickAction) = decode_versioned(&encode_versioned(1, &q).unwrap()).unwrap();
     assert_eq!(got, q);
 }
 
