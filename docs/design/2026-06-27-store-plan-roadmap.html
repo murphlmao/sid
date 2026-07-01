@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — sid-store build plan (Plan 2)</title>
+<style>
+  :root{
+    --bg:#161618; --panel:#1d1d20; --panel2:#232327; --ink:#dcdce0; --muted:#8a8a92;
+    --line:#2e2e34; --global:#5a9ad0; --ws:#a98bd0; --ok:#5fbf8f; --ok-bg:#15251c;
+    --new:#c98a5a; --new-bg:#2a1f14; --crit:#a98bd0; --accent:#c7c7cd; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:26px 20px 60px}
+  h1{font-size:19px;margin:0 0 4px;font-weight:650}h1 .gl{color:var(--global)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 auto 20px;max-width:1080px}
+  .panel h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 14px;font-weight:600}
+  .tag{font-size:10px;border-radius:10px;padding:1px 8px;border:1px solid var(--line);color:var(--muted)}
+  .tag.ok{border-color:var(--ok);color:var(--ok)}.tag.new{border-color:var(--new);color:var(--new)}.tag.crit{border-color:var(--crit);color:var(--crit)}
+  .mono{font-family:var(--mono)}
+
+  /* lift vs build */
+  .two{display:flex;gap:14px;flex-wrap:wrap}
+  .box{flex:1;min-width:300px;border:1px solid var(--line);border-radius:10px;padding:14px}
+  .box.lift{border-color:var(--ok);background:linear-gradient(180deg,var(--ok-bg),transparent)}
+  .box.build{border-color:var(--new);background:linear-gradient(180deg,var(--new-bg),transparent)}
+  .box h3{margin:0 0 4px;font-size:14px;display:flex;align-items:center;gap:8px}
+  .box .cap{font-size:11.5px;color:var(--muted);margin-bottom:12px}
+  .li{display:flex;gap:9px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+  .li:last-child{border-bottom:0}
+  .li .ic{flex:0 0 16px;text-align:center}
+  .li .t b{color:var(--ink)}.li .t span{color:var(--muted);font:11px var(--mono)}
+
+  /* pipeline */
+  .step{display:flex;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+  .step:last-child{border-bottom:0}
+  .step.crit{border-left:2px solid var(--crit);padding-left:12px;margin-left:-14px}
+  .step .n{flex:0 0 48px;font:12px var(--mono);color:var(--accent);font-weight:700;padding-top:2px}
+  .step .body{flex:1}
+  .step .t{font-weight:600;font-size:13.5px;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+  .step .meta{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .chip{font-size:10.5px;border-radius:8px;padding:1px 8px;border:1px solid var(--line);color:var(--muted)}
+  .chip.lift{border-color:var(--ok);color:var(--ok)}.chip.new{border-color:var(--new);color:var(--new)}
+  .step .test{font-size:11.5px;color:var(--muted)}
+  .step .test::before{content:"✓ test: ";color:var(--ok)}
+
+  pre{margin:10px 0 0;background:#0e0e10;border:1px solid var(--line);border-radius:8px;padding:13px 15px;overflow:auto;font:11.5px/1.65 var(--mono);color:#cdd2d8}
+  pre .k{color:var(--global)} pre .c{color:#6b7280} pre .ty{color:#7fb38a}
+</style>
+</head>
+<body>
+  <h1><span class="gl">✦</span> sid-store — the build plan <span class="tag">Plan 2 · 2026-06-27</span></h1>
+  <div class="sub">headless crate · test-first · most of the hard plumbing is lifted from the POC (already gate-tested), so the real work is just the attributive layer</div>
+
+  <!-- 1: lift vs build -->
+  <div class="panel">
+    <h2>1 · What's reused vs what's new</h2>
+    <div class="two">
+      <div class="box lift">
+        <h3>⬆ Lift from sid-poc <span class="tag ok">proven · already tested</span></h3>
+        <div class="cap">Copied near-verbatim. This is where the POC's weeks are banked.</div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>postcard codec</b> — <span>encode_versioned / decode_versioned</span></span></div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>redb txn helpers</b> — <span>with_read / with_write / list_versioned / upsert_versioned</span></span></div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>redb table setup</b> — <span>TableDefinition&lt;&amp;str,&amp;[u8]&gt;</span></span></div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>SecretStore</b> — <span>KeyringStore + PlainStore + FakeKeyring + durability guard</span></span></div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>test scaffolding</b> — <span>tempdir + open + builders + proptest + corruption</span></span></div>
+        <div class="li"><span class="ic">✓</span><span class="t"><b>versioned-migration pattern</b> — <span>vN wire structs + From, for schema evolution</span></span></div>
+      </div>
+      <div class="box build">
+        <h3>✦ Build new <span class="tag new">the actual work</span></h3>
+        <div class="cap">The git-centric, attributive model — what the POC never had.</div>
+        <div class="li"><span class="ic">✦</span><span class="t"><b>Scope · Provenance</b> — <span>Global | Workspace(id); origin tag</span></span></div>
+        <div class="li"><span class="ic">✦</span><span class="t"><b>WorkspaceStore</b> — <span>read/write .sid/config.toml (TOML)</span></span></div>
+        <div class="li"><span class="ic">✦</span><span class="t"><b>Composer</b> — <span>attributive union + provenance + dedup-default (ws wins) + hide-global</span></span></div>
+        <div class="li"><span class="ic">✦</span><span class="t"><b>Store API</b> — <span>read(scope)→view, write(item,scope), promote/demote</span></span></div>
+        <div class="li"><span class="ic">✦</span><span class="t"><b>new schema</b> — <span>workspaces registry · global_config · sessions(scope)</span></span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2: the API contract -->
+  <div class="panel">
+    <h2>2 · The contract every tab touches (illustrative)</h2>
+<pre><span class="k">enum</span> <span class="ty">Scope</span> { Global, Workspace(WorkspaceId) }
+<span class="k">struct</span> <span class="ty">Attributed</span>&lt;T&gt; { item: T, origin: Scope, duplicate: <span class="ty">bool</span> }   <span class="c">// provenance + dup flag</span>
+
+<span class="k">trait</span> <span class="ty">Store</span> {
+    <span class="k">fn</span> read&lt;T&gt;(&amp;self, scope: Scope, filters: ViewFilters) -&gt; Result&lt;Vec&lt;<span class="ty">Attributed</span>&lt;T&gt;&gt;&gt;;  <span class="c">// composed union</span>
+    <span class="k">fn</span> write&lt;T&gt;(&amp;self, item: T, scope: Scope) -&gt; Result&lt;()&gt;;                       <span class="c">// save to layer</span>
+    <span class="k">fn</span> promote&lt;T&gt;(&amp;self, id: &amp;str, from: Scope) -&gt; Result&lt;()&gt;;  <span class="c">// ws → global</span>
+    <span class="k">fn</span> demote&lt;T&gt;(&amp;self, id: &amp;str, to: WorkspaceId) -&gt; Result&lt;()&gt;; <span class="c">// global → ws</span>
+}
+<span class="c">// ViewFilters { collapse_duplicates: bool = true, hide_global: bool = false }  — your two checkboxes</span></pre>
+  </div>
+
+  <!-- 3: pipeline -->
+  <div class="panel">
+    <h2>3 · Steps — bottom-up, test-first</h2>
+    <div class="step"><div class="n">P2.1</div><div class="body"><div class="t">Crate + core types</div>
+      <div class="meta"><span class="chip new">new: Scope, Provenance</span><span class="chip lift">lift: entity structs</span></div>
+      <div class="test">serde round-trips for every entity + Scope</div></div></div>
+    <div class="step"><div class="n">P2.2</div><div class="body"><div class="t">GlobalStore (redb)</div>
+      <div class="meta"><span class="chip lift">lift: codec + txn helpers + table setup</span></div>
+      <div class="test">write→read→delete on a temp db · restart-persistence</div></div></div>
+    <div class="step"><div class="n">P2.3</div><div class="body"><div class="t">WorkspaceStore (TOML)</div>
+      <div class="meta"><span class="chip new">all new</span></div>
+      <div class="test">toml round-trip · missing file = empty layer · secret_ref preserved</div></div></div>
+    <div class="step crit"><div class="n">P2.4</div><div class="body"><div class="t">Composer <span class="tag crit">critical path</span></div>
+      <div class="meta"><span class="chip new">all new</span></div>
+      <div class="test">union keeps both · provenance correct · dedup-default (ws wins) · hide-global · storage never mutated</div></div></div>
+    <div class="step crit"><div class="n">P2.5</div><div class="body"><div class="t">Store API + scoped writes <span class="tag crit">critical path</span></div>
+      <div class="meta"><span class="chip new">new: read/write/promote/demote</span></div>
+      <div class="test">write lands in the right layer · promote ws→global · demote global→ws · read composes</div></div></div>
+    <div class="step crit"><div class="n">P2.6</div><div class="body"><div class="t">Secret boundary <span class="tag crit">critical path</span></div>
+      <div class="meta"><span class="chip lift">lift: KeyringStore + PlainStore + FakeKeyring</span></div>
+      <div class="test">config holds only secret_ref · secret in keyring · the two never cross</div></div></div>
+    <div class="step"><div class="n">P2.7</div><div class="body"><div class="t">Gate</div>
+      <div class="meta"><span class="chip">tests · clippy · fmt · docs</span></div>
+      <div class="test">a finished, green store the SSH slice can just consume</div></div></div>
+  </div>
+</body>
+</html>
