@@ -18,6 +18,7 @@ pub mod entities;
 pub mod error;
 pub mod global;
 pub mod scope;
+pub mod store;
 pub mod workspace;
 
 pub use composer::{ViewFilters, compose};
@@ -25,4 +26,5 @@ pub use entities::{DbConnection, Host, Identity, QuickAction};
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;
 pub use scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
+pub use store::Store;
 pub use workspace::{WorkspaceConfig, WorkspaceStore};
