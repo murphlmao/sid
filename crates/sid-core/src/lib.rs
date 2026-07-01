@@ -5,5 +5,6 @@
 //! never named in this crate — it is the pure adapter seam the frontend and the
 //! impl crates compile against.
 
+pub mod db;
 pub mod ssh;
 pub mod term;
