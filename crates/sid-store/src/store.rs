@@ -50,11 +50,7 @@ impl Store {
     }
 
     /// Read hosts composed for `scope`, applying the view `filters`.
-    pub fn read_hosts(
-        &self,
-        scope: &Scope,
-        filters: ViewFilters,
-    ) -> Result<Vec<Attributed<Host>>> {
+    pub fn read_hosts(&self, scope: &Scope, filters: ViewFilters) -> Result<Vec<Attributed<Host>>> {
         let global = self.global.list_hosts()?;
         match scope {
             Scope::Global => Ok(compose(&global, None, filters)),

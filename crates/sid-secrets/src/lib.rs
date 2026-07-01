@@ -71,7 +71,12 @@ impl SecretStore for MemorySecretStore {
     }
 
     fn get(&self, id: &SecretId) -> Result<Option<Vec<u8>>, SecretError> {
-        Ok(self.map.lock().expect("secret map poisoned").get(&id.0).cloned())
+        Ok(self
+            .map
+            .lock()
+            .expect("secret map poisoned")
+            .get(&id.0)
+            .cloned())
     }
 
     fn delete(&self, id: &SecretId) -> Result<(), SecretError> {
@@ -101,7 +106,10 @@ mod tests {
         let id = SecretId::new("ssh.prod.key");
         assert_eq!(s.get(&id).unwrap(), None);
         s.put(&id, b"PRIVATE-KEY-BYTES").unwrap();
-        assert_eq!(s.get(&id).unwrap().as_deref(), Some(&b"PRIVATE-KEY-BYTES"[..]));
+        assert_eq!(
+            s.get(&id).unwrap().as_deref(),
+            Some(&b"PRIVATE-KEY-BYTES"[..])
+        );
         assert_eq!(s.list_ids().unwrap(), vec![id.clone()]);
         s.delete(&id).unwrap();
         assert_eq!(s.get(&id).unwrap(), None);

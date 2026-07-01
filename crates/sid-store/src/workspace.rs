@@ -93,7 +93,8 @@ impl WorkspaceStore {
     pub fn save(&self, cfg: &WorkspaceConfig) -> Result<()> {
         let dir = self.root.join(".sid");
         std::fs::create_dir_all(&dir)?;
-        let text = toml::to_string_pretty(cfg).map_err(|e| StoreError::Encode(format!("toml: {e}")))?;
+        let text =
+            toml::to_string_pretty(cfg).map_err(|e| StoreError::Encode(format!("toml: {e}")))?;
         std::fs::write(dir.join("config.toml"), text)?;
         Ok(())
     }
