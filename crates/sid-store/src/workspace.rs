@@ -95,7 +95,10 @@ impl WorkspaceStore {
         std::fs::create_dir_all(&dir)?;
         let text =
             toml::to_string_pretty(cfg).map_err(|e| StoreError::Encode(format!("toml: {e}")))?;
-        std::fs::write(dir.join("config.toml"), text)?;
+        // Atomic write: a crash or I/O error must never truncate the committed file.
+        let tmp = dir.join("config.toml.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, dir.join("config.toml"))?;
         Ok(())
     }
 

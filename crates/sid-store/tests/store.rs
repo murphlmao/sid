@@ -1,6 +1,6 @@
 //! P2.5 (critical path) — the Store facade: scoped writes, composition, promote/demote.
 
-use sid_store::{Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta};
+use sid_store::{Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta};
 
 fn setup() -> (tempfile::TempDir, Store, WorkspaceId) {
     let dir = tempfile::tempdir().unwrap();
@@ -111,5 +111,57 @@ fn writing_to_an_unregistered_workspace_errors() {
     assert!(
         s.write_host(&host("x", "u"), &Scope::Workspace(ghost))
             .is_err()
+    );
+}
+
+#[test]
+fn promote_refuses_when_global_already_has_the_alias() {
+    let (_d, s, id) = setup();
+    // A legitimate cross-layer duplicate: same alias in both layers, different values.
+    s.write_host(&host("prod", "global"), &Scope::Global)
+        .unwrap();
+    s.write_host(&host("prod", "workspace"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    // Promote must refuse rather than destroy the global copy.
+    assert!(matches!(
+        s.promote_host("prod", &id),
+        Err(StoreError::Conflict(_))
+    ));
+
+    // Nothing lost: both copies still exist.
+    assert_eq!(s.global().get_host("prod").unwrap().unwrap().user, "global");
+    let w = s
+        .read_hosts(
+            &Scope::Workspace(id),
+            ViewFilters {
+                collapse_duplicates: false,
+                hide_global: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(w.iter().filter(|a| a.item.alias == "prod").count(), 2);
+}
+
+#[test]
+fn demote_refuses_when_workspace_already_has_the_alias() {
+    let (_d, s, id) = setup();
+    s.write_host(&host("prod", "global"), &Scope::Global)
+        .unwrap();
+    s.write_host(&host("prod", "workspace"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    assert!(matches!(
+        s.demote_host("prod", &id),
+        Err(StoreError::Conflict(_))
+    ));
+
+    // Workspace copy is intact (the "workspace wins" values are preserved).
+    let w = s
+        .read_hosts(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    assert_eq!(
+        w.iter().find(|a| a.item.alias == "prod").unwrap().item.user,
+        "workspace"
     );
 }

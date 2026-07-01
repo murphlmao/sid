@@ -17,6 +17,10 @@ pub enum StoreError {
     /// A stored value carries a version this build does not understand.
     #[error("unsupported version {0}")]
     UnsupportedVersion(u8),
+    /// A move (promote/demote) would overwrite a same-identity item already in the
+    /// destination layer — refused, to keep the store lossless.
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// An underlying I/O error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
