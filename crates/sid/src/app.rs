@@ -6,13 +6,21 @@
 //! reads return `Result` and touch redb + the filesystem, so they run on events only).
 //!
 //! P3.1 wires the SSH tab's host list to `Store::read_hosts` — the first time the store and
-//! the GUI meet on screen. Other tabs are placeholders for later slices.
+//! the GUI meet on screen. P3.2 adds the write side: the [`HostForm`] modal (add/edit with
+//! the `save to:` dialog) and the secret lifecycle against the [`SecretStore`]. Other tabs
+//! are placeholders for later slices.
 
 use gpui::{
-    ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list,
+    ClickEvent, Context, Entity, FontWeight, SharedString, Subscription, Window, anchored,
+    deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
+use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
+};
+
+use crate::ui::host_form::{
+    HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
@@ -70,28 +78,49 @@ struct ScopeChoice {
 /// The single application entity.
 pub struct AppState {
     store: Store,
+    /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
+    /// through here; the store only ever sees opaque `secret_ref` ids.
+    secrets: Box<dyn SecretStore>,
     scope: Scope,
     active_tab: Tab,
     filters: ViewFilters,
     scopes: Vec<ScopeChoice>,
     hosts: Vec<Attributed<Host>>,
     error: Option<String>,
+    /// The open host add/edit modal, if any.
+    form: Option<Entity<HostForm>>,
+    /// Keeps the form's event subscription alive exactly as long as the form is open.
+    _form_subscription: Option<Subscription>,
 }
 
 impl AppState {
-    /// Build the app state over an open store and load the initial (Global) view.
-    pub fn new(store: Store) -> Self {
+    /// Build the app state over an open store + secret backend and load the initial
+    /// (Global) view. A `startup_warning` (the keyring fallback notice) is surfaced
+    /// through the same error line store errors use.
+    pub fn new(
+        store: Store,
+        secrets: Box<dyn SecretStore>,
+        startup_warning: Option<String>,
+    ) -> Self {
         let mut state = Self {
             store,
+            secrets,
             scope: Scope::Global,
             active_tab: Tab::Ssh,
             filters: ViewFilters::default(),
             scopes: Vec::new(),
             hosts: Vec::new(),
             error: None,
+            form: None,
+            _form_subscription: None,
         };
         state.reload_scopes();
         state.refresh();
+        // Set after the initial refresh so it isn't wiped by the successful read; it
+        // stays visible until the next store event replaces it.
+        if startup_warning.is_some() {
+            state.error = startup_warning;
+        }
         state
     }
 
@@ -132,6 +161,149 @@ impl AppState {
     fn set_scope(&mut self, scope: Scope) {
         self.scope = scope;
         self.refresh();
+    }
+
+    // ---- host form (A6) ------------------------------------------------------
+
+    /// The active workspace scope + its switcher label, if a workspace is focused.
+    /// Feeds the form's `save to: workspace` option.
+    fn active_workspace(&self) -> Option<(Scope, SharedString)> {
+        match &self.scope {
+            Scope::Global => None,
+            Scope::Workspace(_) => {
+                let label = self
+                    .scopes
+                    .iter()
+                    .find(|c| c.scope == self.scope)
+                    .map(|c| c.label.clone())
+                    .unwrap_or_else(|| "workspace".into());
+                Some((self.scope.clone(), label))
+            }
+        }
+    }
+
+    /// Open the empty add form, preselecting `save to:` from the persisted
+    /// [`sid_store::Settings::default_scope`].
+    fn open_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_scope = self
+            .store
+            .settings()
+            .map(|s| s.default_scope)
+            .unwrap_or_default();
+        let workspace = self.active_workspace();
+        let form = cx.new(|cx| HostForm::new_add(cx, workspace, default_scope));
+        self.open_form(form, window, cx);
+    }
+
+    fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
+        form.read(cx).focus_first(window, cx);
+        self._form_subscription = Some(cx.subscribe(&form, Self::on_form_event));
+        self.form = Some(form);
+        cx.notify();
+    }
+
+    fn close_form(&mut self, cx: &mut Context<Self>) {
+        self.form = None;
+        self._form_subscription = None;
+        cx.notify();
+    }
+
+    fn on_form_event(
+        &mut self,
+        form: Entity<HostForm>,
+        event: &HostFormEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            HostFormEvent::Cancel => self.close_form(cx),
+            HostFormEvent::Submit(submission) => match self.perform_submit(submission) {
+                Ok(post_warning) => {
+                    self.close_form(cx);
+                    self.refresh();
+                    if post_warning.is_some() {
+                        self.error = post_warning;
+                    }
+                    cx.notify();
+                }
+                // Guard/secret/store failures land in the form's error line; the form
+                // stays open so nothing typed is lost.
+                Err(msg) => form.update(cx, |f, cx| f.set_error(msg, cx)),
+            },
+        }
+    }
+
+    /// Run a submission end-to-end: add-mode guard → stage the secret plan → write the
+    /// host → delete any superseded secret. Returns a non-fatal warning to surface
+    /// after success (e.g. the old secret could not be deleted).
+    fn perform_submit(&self, submission: &Submission) -> Result<Option<String>, String> {
+        let is_edit = submission.old.is_some();
+        let target_holds = self
+            .layer_holds_alias(&submission.target, &submission.host.alias)
+            .map_err(|e| e.to_string())?;
+        add_guard(is_edit, target_holds, &self.layer_label(&submission.target))?;
+
+        let plan = plan_secret(
+            submission.old.as_ref(),
+            &submission.host.auth,
+            submission.secret.is_some(),
+        );
+        let staged = stage_secret(
+            self.secrets.as_ref(),
+            &plan,
+            &submission.host.alias,
+            submission.secret.as_deref(),
+        )?;
+
+        let mut host = submission.host.clone();
+        host.secret_ref = staged.secret_ref.clone();
+        if let Err(e) = self.store.write_host(&host, &submission.target) {
+            // Roll back a freshly minted secret so a failed write never orphans one.
+            if staged.minted
+                && let Some(id) = &staged.secret_ref
+            {
+                let _ = self.secrets.delete(&SecretId::new(id.clone()));
+            }
+            return Err(e.to_string());
+        }
+
+        // Only after the write is durable is the superseded secret deleted.
+        let mut post_warning = None;
+        if let Some(old_id) = &staged.delete_after_write
+            && let Err(e) = self.secrets.delete(&SecretId::new(old_id.clone()))
+        {
+            post_warning = Some(format!("saved, but deleting the old secret failed: {e}"));
+        }
+        Ok(post_warning)
+    }
+
+    /// Whether `target`'s **own layer** already holds `alias` (the add-mode guard's
+    /// question). Reads the layer directly — the composed default view collapses
+    /// duplicates, which would hide exactly the record the guard must see.
+    fn layer_holds_alias(&self, target: &Scope, alias: &str) -> sid_store::Result<bool> {
+        match target {
+            Scope::Global => Ok(self.store.global().get_host(alias)?.is_some()),
+            Scope::Workspace(_) => {
+                let filters = ViewFilters {
+                    collapse_duplicates: false,
+                    hide_global: true,
+                };
+                let hosts = self.store.read_hosts(target, filters)?;
+                Ok(hosts.iter().any(|a| a.item.alias == alias))
+            }
+        }
+    }
+
+    /// Human name for a layer, matching the origin badges (`⌂ global` / workspace name).
+    fn layer_label(&self, target: &Scope) -> String {
+        match target {
+            Scope::Global => "⌂ global".into(),
+            Scope::Workspace(_) => self
+                .scopes
+                .iter()
+                .find(|c| c.scope == *target)
+                .map(|c| c.label.to_string())
+                .unwrap_or_else(|| "workspace".into()),
+        }
     }
 
     /// Badge label + color for an item's origin layer.
@@ -253,13 +425,30 @@ impl AppState {
             .flex_1()
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
                     .px_4()
                     .py_2()
-                    .text_sm()
-                    .text_color(rgb(FG_DIM))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(sub),
+                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub))
+                    .child(
+                        div()
+                            .id("add-host")
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(rgb(ACTIVE_BG))
+                            .text_color(rgb(ACTIVE_FG))
+                            .child("＋ Add host")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_form(window, cx);
+                            })),
+                    ),
             )
             .child(
                 uniform_list(
@@ -327,11 +516,31 @@ impl AppState {
 }
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
             other => self.placeholder(other).into_any_element(),
         };
+
+        // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
+        // window origin; `deferred` paints it above everything else.
+        let overlay = self.form.clone().map(|form| {
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(form),
+                ),
+            )
+            .with_priority(1)
+        });
 
         div()
             .flex()
@@ -342,6 +551,7 @@ impl Render for AppState {
             .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
+            .children(overlay)
     }
 }
 
