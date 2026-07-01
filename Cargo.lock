@@ -6033,6 +6033,7 @@ dependencies = [
  "async-trait",
  "rusqlite",
  "sid-core",
+ "sid-store",
  "tempfile",
  "tokio",
  "tokio-postgres",
