@@ -1,6 +1,9 @@
 //! P2.2 — GlobalStore (redb) CRUD, persistence, and missing-key behaviour.
 
-use sid_store::{DbConnection, GlobalStore, Host, QuickAction, WorkspaceId, WorkspaceMeta};
+use sid_store::{
+    DbConnection, DefaultScope, GlobalStore, Host, QuickAction, Settings, Store, WorkspaceId,
+    WorkspaceMeta,
+};
 
 fn open() -> (tempfile::TempDir, GlobalStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -100,4 +103,59 @@ fn workspace_registry_roundtrip() {
     s.upsert_workspace(&w).unwrap();
     assert_eq!(s.get_workspace("/x/acme").unwrap().unwrap(), w);
     assert_eq!(s.list_workspaces().unwrap().len(), 1);
+}
+
+#[test]
+fn settings_missing_key_is_default_ask() {
+    let (_d, s) = open();
+    assert_eq!(
+        s.get_settings().unwrap(),
+        Settings::default(),
+        "an unset SETTINGS table yields the default"
+    );
+    assert_eq!(s.get_settings().unwrap().default_scope, DefaultScope::Ask);
+}
+
+#[test]
+fn settings_roundtrip() {
+    let (_d, s) = open();
+    let want = Settings {
+        default_scope: DefaultScope::Workspace,
+    };
+    s.set_settings(&want).unwrap();
+    assert_eq!(s.get_settings().unwrap(), want);
+}
+
+#[test]
+fn settings_persist_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sid.redb");
+    {
+        let s = GlobalStore::open(&path).unwrap();
+        s.set_settings(&Settings {
+            default_scope: DefaultScope::Global,
+        })
+        .unwrap();
+    }
+    let reopened = GlobalStore::open(&path).unwrap();
+    assert_eq!(
+        reopened.get_settings().unwrap().default_scope,
+        DefaultScope::Global
+    );
+}
+
+#[test]
+fn facade_settings_passthrough() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("sid.redb")).unwrap();
+    assert_eq!(store.settings().unwrap(), Settings::default());
+    store
+        .set_settings(&Settings {
+            default_scope: DefaultScope::Global,
+        })
+        .unwrap();
+    assert_eq!(
+        store.settings().unwrap().default_scope,
+        DefaultScope::Global
+    );
 }

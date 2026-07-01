@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
-use crate::entities::{DbConnection, Host, Identity, QuickAction};
+use crate::entities::{DbConnection, Host, Identity, QuickAction, Settings};
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
 
@@ -23,6 +23,10 @@ const HOSTS: TableDefinition<&str, &[u8]> = TableDefinition::new("hosts");
 const CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("connections");
 const QUICK_ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("quick_actions");
 const WORKSPACES: TableDefinition<&str, &[u8]> = TableDefinition::new("workspaces");
+const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
+
+/// The single key under which [`Settings`] lives in the [`SETTINGS`] table.
+const SETTINGS_KEY: &str = "settings";
 
 /// Codec version for all global entities (bump per-entity when a layout changes).
 const V1: u8 = 1;
@@ -44,6 +48,7 @@ impl GlobalStore {
         write_table(&txn, CONNECTIONS, "open connections")?;
         write_table(&txn, QUICK_ACTIONS, "open quick_actions")?;
         write_table(&txn, WORKSPACES, "open workspaces")?;
+        write_table(&txn, SETTINGS, "open settings")?;
         txn.commit()
             .map_err(|e| StoreError::Storage(format!("commit: {e}")))?;
         Ok(Self { db })
@@ -182,6 +187,18 @@ impl GlobalStore {
     }
     pub fn remove_workspace(&self, id: &str) -> Result<bool> {
         self.remove(WORKSPACES, id)
+    }
+
+    // ---- settings (single-key, identity-level; a missing value is the default) ----
+
+    /// Read the machine-local [`Settings`]; a never-written table yields the default.
+    pub fn get_settings(&self) -> Result<Settings> {
+        Ok(self.get(SETTINGS, SETTINGS_KEY)?.unwrap_or_default())
+    }
+
+    /// Persist the machine-local [`Settings`].
+    pub fn set_settings(&self, s: &Settings) -> Result<()> {
+        self.upsert(SETTINGS, SETTINGS_KEY, s)
     }
 }
 
