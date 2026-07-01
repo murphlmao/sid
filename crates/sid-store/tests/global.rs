@@ -1,8 +1,8 @@
 //! P2.2 — GlobalStore (redb) CRUD, persistence, and missing-key behaviour.
 
 use sid_store::{
-    DbConnection, DefaultScope, GlobalStore, Host, QuickAction, Settings, Store, WorkspaceId,
-    WorkspaceMeta,
+    AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, QuickAction, Settings, Store,
+    WorkspaceId, WorkspaceMeta,
 };
 
 fn open() -> (tempfile::TempDir, GlobalStore) {
@@ -18,6 +18,7 @@ fn host(alias: &str) -> Host {
         host: "h".into(),
         port: 22,
         secret_ref: None,
+        auth: AuthMethod::default(),
     }
 }
 

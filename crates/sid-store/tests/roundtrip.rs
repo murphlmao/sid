@@ -1,7 +1,7 @@
 //! P2.1 — serde/postcard round-trips for every entity and for `Scope`.
 
 use sid_store::codec::{decode_versioned, encode_versioned};
-use sid_store::{DbConnection, Host, QuickAction, Scope, WorkspaceId};
+use sid_store::{AuthMethod, DbConnection, Host, QuickAction, Scope, WorkspaceId};
 
 fn sample_host() -> Host {
     Host {
@@ -10,6 +10,7 @@ fn sample_host() -> Host {
         host: "prod.acme-api.internal".into(),
         port: 22,
         secret_ref: Some("ssh.prod.key".into()),
+        auth: AuthMethod::default(),
     }
 }
 
@@ -31,10 +32,31 @@ fn host_secret_ref_is_optional() {
         host: "h".into(),
         port: 2222,
         secret_ref: None,
+        auth: AuthMethod::default(),
     };
     let (_, got): (u8, Host) = decode_versioned(&encode_versioned(1, &h).unwrap()).unwrap();
     assert_eq!(got.secret_ref, None);
     assert_eq!(got, h);
+}
+
+#[test]
+fn host_v2_roundtrips_all_auth_variants() {
+    for auth in [
+        AuthMethod::Agent,
+        AuthMethod::Password,
+        AuthMethod::Key {
+            path: "/home/u/.ssh/id_ed25519".into(),
+        },
+    ] {
+        let mut h = sample_host();
+        h.auth = auth.clone();
+        let bytes = encode_versioned(2, &h).unwrap();
+        assert_eq!(bytes[0], 2, "leading byte is the v2 version");
+        let (version, got): (u8, Host) = decode_versioned(&bytes).unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(got, h);
+        assert_eq!(got.auth, auth);
+    }
 }
 
 #[test]
