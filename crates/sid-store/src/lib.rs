@@ -15,8 +15,10 @@
 pub mod codec;
 pub mod entities;
 pub mod error;
+pub mod global;
 pub mod scope;
 
 pub use entities::{DbConnection, Host, Identity, QuickAction};
 pub use error::{Result, StoreError};
-pub use scope::{Attributed, Scope, WorkspaceId};
+pub use global::GlobalStore;
+pub use scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
