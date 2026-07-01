@@ -1,6 +1,8 @@
 //! P2.5 (critical path) — the Store facade: scoped writes, composition, promote/demote.
 
-use sid_store::{Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta};
+use sid_store::{
+    AuthMethod, Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta,
+};
 
 fn setup() -> (tempfile::TempDir, Store, WorkspaceId) {
     let dir = tempfile::tempdir().unwrap();
@@ -25,6 +27,7 @@ fn host(alias: &str, user: &str) -> Host {
         host: "h".into(),
         port: 22,
         secret_ref: None,
+        auth: AuthMethod::default(),
     }
 }
 

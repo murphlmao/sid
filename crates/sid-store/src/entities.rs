@@ -16,7 +16,29 @@ pub trait Identity {
     fn identity(&self) -> &str;
 }
 
+/// How a host authenticates. Secrets themselves never live here — a password or key
+/// passphrase is stored in the OS keyring and referenced by [`Host::secret_ref`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AuthMethod {
+    /// Use the running SSH agent (no stored secret).
+    #[default]
+    Agent,
+    /// Password auth; the password bytes live in the keyring under `secret_ref`.
+    Password,
+    /// Public-key auth; `path` (committed) points at the private key, an optional
+    /// passphrase lives in the keyring under `secret_ref`.
+    Key {
+        /// Filesystem path to the private key.
+        path: String,
+    },
+}
+
 /// An SSH host / SFTP target.
+///
+/// Stored in redb under codec version 2 (see [`HOST_VERSION`]). Version-1 values (the
+/// pre-`auth` shape) migrate on read via [`HostV1`] → `auth: Agent`.
+///
+/// [`HOST_VERSION`]: crate::global::HOST_VERSION
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Host {
     /// Short name; the identity used for dedup.
@@ -30,11 +52,43 @@ pub struct Host {
     /// Opaque keyring reference for the key/password (never the secret itself).
     #[serde(default)]
     pub secret_ref: Option<String>,
+    /// How this host authenticates. Absent in v1 stores / older TOML — defaults to
+    /// [`AuthMethod::Agent`].
+    #[serde(default)]
+    pub auth: AuthMethod,
 }
 
 impl Identity for Host {
     fn identity(&self) -> &str {
         &self.alias
+    }
+}
+
+/// The version-1 on-disk shape of [`Host`] (before `auth`). Retained only to decode
+/// legacy redb values; `From<HostV1>` migrates it forward with `auth: Agent`.
+///
+/// postcard is positional, so a v1 value must be decoded against this exact 5-field
+/// layout — decoding it as the current [`Host`] would misread the trailing bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HostV1 {
+    pub alias: String,
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub secret_ref: Option<String>,
+}
+
+impl From<HostV1> for Host {
+    fn from(v: HostV1) -> Self {
+        Host {
+            alias: v.alias,
+            user: v.user,
+            host: v.host,
+            port: v.port,
+            secret_ref: v.secret_ref,
+            auth: AuthMethod::Agent,
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 //! provenance, and the invariant that composing never mutates its inputs.
 
 use sid_store::composer::{ViewFilters, compose};
-use sid_store::{Host, Scope, WorkspaceId};
+use sid_store::{AuthMethod, Host, Scope, WorkspaceId};
 
 fn h(alias: &str, user: &str) -> Host {
     Host {
@@ -11,6 +11,7 @@ fn h(alias: &str, user: &str) -> Host {
         host: "h".into(),
         port: 22,
         secret_ref: None,
+        auth: AuthMethod::default(),
     }
 }
 
