@@ -15,7 +15,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
-use crate::entities::{DbConnection, Host, HostV1, Identity, QuickAction, Settings};
+use crate::entities::{
+    DbConnection, DbConnectionV1, Host, HostV1, Identity, QuickAction, Settings,
+};
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
 
@@ -34,6 +36,11 @@ const V1: u8 = 1;
 /// Current codec version for [`Host`] values. Bumped to 2 when `auth` was added; reads
 /// branch on the leading version byte and migrate v1 values forward (see [`decode_host`]).
 pub(crate) const HOST_VERSION: u8 = 2;
+
+/// Current codec version for [`DbConnection`] values. Bumped to 2 when `kind`/`name` were
+/// added; reads branch on the leading version byte and migrate v1 values forward (see
+/// [`decode_connection`]).
+pub(crate) const CONNECTION_VERSION: u8 = 2;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -184,15 +191,15 @@ impl GlobalStore {
         self.remove(HOSTS, alias)
     }
 
-    // ---- connections ----
+    // ---- connections (versioned: writes V2, reads migrate V1 forward) ----
     pub fn list_connections(&self) -> Result<Vec<DbConnection>> {
-        self.list(CONNECTIONS)
+        self.list_with(CONNECTIONS, decode_connection)
     }
     pub fn get_connection(&self, id: &str) -> Result<Option<DbConnection>> {
-        self.get(CONNECTIONS, id)
+        self.get_with(CONNECTIONS, id, decode_connection)
     }
     pub fn upsert_connection(&self, c: &DbConnection) -> Result<()> {
-        self.upsert(CONNECTIONS, c.identity(), c)
+        self.upsert_versioned(CONNECTIONS, c.identity(), CONNECTION_VERSION, c)
     }
     pub fn remove_connection(&self, id: &str) -> Result<bool> {
         self.remove(CONNECTIONS, id)
@@ -247,6 +254,22 @@ fn decode_host(bytes: &[u8]) -> Result<Host> {
     match version {
         1 => Ok(decode_versioned::<HostV1>(bytes)?.1.into()),
         HOST_VERSION => Ok(decode_versioned::<Host>(bytes)?.1),
+        other => Err(StoreError::UnsupportedVersion(other)),
+    }
+}
+
+/// Decode a stored [`DbConnection`] value, branching on the leading codec version byte:
+/// `1` → the pre-`kind`/`name` [`DbConnectionV1`] shape, migrated forward
+/// (`kind: Postgres`, `name: id.clone()`); `2` → the current [`DbConnection`] shape. Any
+/// other version is rejected.
+fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
+    let &version = bytes.first().ok_or_else(|| StoreError::Decode {
+        version: 0,
+        msg: "empty connection payload".into(),
+    })?;
+    match version {
+        1 => Ok(decode_versioned::<DbConnectionV1>(bytes)?.1.into()),
+        CONNECTION_VERSION => Ok(decode_versioned::<DbConnection>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
 }
@@ -349,5 +372,80 @@ mod tests {
             store.get_host("new").unwrap().unwrap().auth,
             AuthMethod::Key { path: "/k".into() }
         );
+    }
+
+    fn connection_v1(id: &str) -> DbConnectionV1 {
+        DbConnectionV1 {
+            id: id.into(),
+            dsn: "postgres://x".into(),
+            secret_ref: None,
+        }
+    }
+
+    /// A crafted v1 connection payload decodes into a `DbConnection` with `kind ==
+    /// Postgres` and `name == id`.
+    #[test]
+    fn v1_connection_payload_migrates_to_postgres_and_name() {
+        let bytes = encode_versioned(1, &connection_v1("legacy-pg")).unwrap();
+        assert_eq!(bytes[0], 1, "leading byte is the v1 version");
+        let conn = decode_connection(&bytes).unwrap();
+        assert_eq!(conn.id, "legacy-pg");
+        assert_eq!(conn.name, "legacy-pg");
+        assert_eq!(conn.kind, sid_core::db::DbKind::Postgres);
+    }
+
+    /// A store seeded with raw v1 connection bytes reopens and lists cleanly, migrating
+    /// on read.
+    #[test]
+    fn seeded_v1_connection_store_reopens_and_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            let bytes = encode_versioned(1, &connection_v1("legacy-pg")).unwrap();
+            store
+                .with_write("seed v1", |txn| {
+                    let mut tbl = write_table(txn, CONNECTIONS, "open connections")?;
+                    tbl.insert("legacy-pg", &bytes[..])
+                        .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        let conns = reopened.list_connections().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].id, "legacy-pg");
+        assert_eq!(conns[0].name, "legacy-pg");
+        assert_eq!(conns[0].kind, sid_core::db::DbKind::Postgres);
+        // get_connection takes the same migrating path.
+        assert_eq!(
+            reopened.get_connection("legacy-pg").unwrap().unwrap().kind,
+            sid_core::db::DbKind::Postgres
+        );
+    }
+
+    /// Connections written now carry version 2 (the migration only fires for old values).
+    #[test]
+    fn connections_are_written_at_version_2() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        store
+            .upsert_connection(&DbConnection {
+                id: "new-pg".into(),
+                dsn: "postgres://x".into(),
+                secret_ref: None,
+                kind: sid_core::db::DbKind::Sqlite,
+                name: "New PG".into(),
+            })
+            .unwrap();
+        let raw = store
+            .get_with(CONNECTIONS, "new-pg", |b| Ok(b[0]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw, CONNECTION_VERSION, "new connections are stamped V2");
+        let got = store.get_connection("new-pg").unwrap().unwrap();
+        assert_eq!(got.kind, sid_core::db::DbKind::Sqlite);
+        assert_eq!(got.name, "New PG");
     }
 }

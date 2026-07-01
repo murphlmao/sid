@@ -1,5 +1,6 @@
 //! P2.2 — GlobalStore (redb) CRUD, persistence, and missing-key behaviour.
 
+use sid_core::db::DbKind;
 use sid_store::{
     AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, QuickAction, Settings, Store,
     WorkspaceId, WorkspaceMeta,
@@ -79,11 +80,15 @@ fn connections_and_quick_actions_crud() {
         id: "pg".into(),
         dsn: "postgres://x".into(),
         secret_ref: Some("db.pg.pw".into()),
+        kind: DbKind::Postgres,
+        name: "PG".into(),
     })
     .unwrap();
     let got = s.get_connection("pg").unwrap().unwrap();
     assert_eq!(got.dsn, "postgres://x");
     assert_eq!(got.secret_ref.as_deref(), Some("db.pg.pw"));
+    assert_eq!(got.kind, DbKind::Postgres);
+    assert_eq!(got.name, "PG");
 
     s.upsert_quick_action(&QuickAction {
         label: "build".into(),
