@@ -31,6 +31,14 @@ pub(crate) enum Verdict {
 ///
 /// `user_known_hosts` is optional and only ever read. `app_known_hosts` is the
 /// file that will be appended to on TOFU (by [`learn`]).
+///
+// ponytail: Algorithm-ordering (OpenSSH order_hostkeyalgs) deferred to Plan
+// 3C — a host recorded only under a non-preferred algorithm on a multi-key
+// server will hard-fail as Mismatch rather than negotiating the recorded
+// algorithm. Only affects hosts imported from the user's ~/.ssh/known_hosts;
+// sid-learned hosts always record russh's negotiated algorithm. Upgrade
+// path: set config.preferred.key per-connect from recorded_algorithms(host)
+// in connect().
 pub(crate) fn verify(
     host: &str,
     port: u16,
@@ -38,27 +46,40 @@ pub(crate) fn verify(
     user_known_hosts: Option<&Path>,
     app_known_hosts: &Path,
 ) -> Result<Verdict, SshError> {
-    let mut seen = false;
+    let mut host_present = false;
     for path in [user_known_hosts, Some(app_known_hosts)]
         .into_iter()
         .flatten()
     {
         match russh::keys::known_hosts::check_known_hosts_path(host, port, pubkey, path) {
             Ok(true) => return Ok(Verdict::Match),
-            // `false` = the host is either absent from this file or present with
-            // a *different-algorithm* key (not a conflict). Keep looking.
+            // `false` = the host is either absent from this file or present
+            // with a *different-algorithm* key. Either way this file alone
+            // doesn't confirm `pubkey`; probe presence below so a
+            // different-algorithm entry still fails closed as `Mismatch`
+            // instead of falling through to `Unknown` (which would TOFU-learn
+            // an attacker's key for an already-trusted host).
             Ok(false) => {}
             Err(KeysError::KeyChanged { .. }) => return Ok(Verdict::Mismatch),
             Err(e) => {
                 return Err(SshError::Other(format!("known_hosts read {path:?}: {e}")));
             }
         }
-        // A file that exists (readable) but had no match still counts as "seen"
-        // for diagnostics; `Unknown` is returned regardless.
-        seen = true;
+        // A missing/unreadable file returns an empty vec here (never an
+        // error) — the hard-error case for a genuinely unreadable file was
+        // already handled by the `check_known_hosts_path` match above.
+        if russh::keys::known_hosts::known_host_keys_path(host, port, path)
+            .map(|keys| !keys.is_empty())
+            .unwrap_or(false)
+        {
+            host_present = true;
+        }
     }
-    let _ = seen;
-    Ok(Verdict::Unknown)
+    if host_present {
+        Ok(Verdict::Mismatch)
+    } else {
+        Ok(Verdict::Unknown)
+    }
 }
 
 /// TOFU-learn: append `[host]:port key` to the app file, creating it `0600`.
@@ -103,6 +124,10 @@ mod tests {
     // second, distinct key for the mismatch case.
     const KEY_A: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     const KEY_B: &str = "AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+    // A second *algorithm* (RSA) for the algorithm-swap regression test, from
+    // ssh-key's own test fixtures (`tests/examples/id_rsa_4096.pub`) — not a
+    // real service key.
+    const KEY_RSA: &str = "AAAAB3NzaC1yc2EAAAADAQABAAACAQC0WRHtxuxefSJhpIxGq4ibGFgwYnESPm8C3JFM88A1JJLoprenklrd7VJ+VH3Ov/bQwZwLyRU5dRmfR/SWTtIPWs7tToJVayKKDB+/qoXmM5ui/0CU2U4rCdQ6PdaCJdC7yFgpPL8WexjWN06+eSIKYz1AAXbx9rRv1iasslK/KUqtsqzVliagI6jl7FPO2GhRZMcso6LsZGgSxuYf/Lp0D/FcBU8GkeOo1Sx5xEt8H8bJcErtCe4Blb8JxcW6EXO3sReb4z+zcR07gumPgFITZ6hDA8sSNuvo/AlWg0IKTeZSwHHVknWdQqDJ0uczE837caBxyTZllDNIGkBjCIIOFzuTT76HfYc/7CTTGk07uaNkUFXKN79xDiFOX8JQ1ZZMZvGOTwWjuT9CqgdTvQRORbRWwOYv3MH8re9ykw3Ip6lrPifY7s6hOaAKry/nkGPMt40m1TdiW98MTIpooE7W+WXu96ax2l2OJvxX8QR7l+LFlKnkIEEJd/ItF1G22UmOjkVwNASTwza/hlY+8DoVvEmwum/nMgH2TwQT3bTQzF9s9DOJkH4d8p4Mw4gEDjNx0EgUFA91ysCAeUMQQyIvuR8HXXa+VcvhOOO5mmBcVhxJ3qUOJTyDBsT0932Zb4mNtkxdigoVxu+iiwk0vwtvKwGVDYdyMP5EAQeEIP1t0w==";
 
     fn pubkey(b64: &str) -> PublicKey {
         russh::keys::parse_public_key_base64(b64).unwrap()
@@ -159,6 +184,20 @@ mod tests {
         write_file(&fx.app, &openssh_line("localhost", KEY_A));
         // Same host, different key ⇒ Mismatch (KeyChanged).
         let v = verify("localhost", 22, &pubkey(KEY_B), Some(&fx.user), &fx.app).unwrap();
+        assert_eq!(v, Verdict::Mismatch);
+    }
+
+    #[test]
+    fn known_host_different_algorithm_is_mismatch() {
+        let fx = fixture();
+        // Record an ed25519 key for `localhost`...
+        write_file(&fx.app, &openssh_line("localhost", KEY_A));
+        // ...then present an *RSA* key for the same host. `check_known_hosts_path`
+        // reports this as `Ok(false)` (different algorithm — not a `KeyChanged`
+        // conflict by its own logic), which before this fix fell through to
+        // `Unknown` and would have silently TOFU-relearned an attacker's key for
+        // an already-trusted host. It must instead fail closed as `Mismatch`.
+        let v = verify("localhost", 22, &pubkey(KEY_RSA), Some(&fx.user), &fx.app).unwrap();
         assert_eq!(v, Verdict::Mismatch);
     }
 
