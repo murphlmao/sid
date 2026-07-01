@@ -56,6 +56,28 @@ impl Identity for DbConnection {
     }
 }
 
+/// Machine-local, identity-level preferences. Always global — never layered per workspace.
+///
+/// Stored in its own single-key redb table; a missing value reads as [`Settings::default`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Which layer the "save to" dialog preselects for new items.
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+}
+
+/// The layer a new item is saved to by default (the "save to" dialog's preselection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DefaultScope {
+    /// No preselection — always prompt.
+    #[default]
+    Ask,
+    /// Preselect the active workspace layer.
+    Workspace,
+    /// Preselect the global layer.
+    Global,
+}
+
 /// A pinned quick action (label + shell command).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuickAction {
