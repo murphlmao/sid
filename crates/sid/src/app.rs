@@ -11,7 +11,9 @@
 use gpui::{
     ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list,
 };
-use sid_store::{Attributed, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta};
+use sid_store::{
+    Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
+};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
 const BG: u32 = 0x161618;
@@ -401,6 +403,7 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         host: host.into(),
         port: 22,
         secret_ref: None,
+        auth: AuthMethod::default(),
     };
     let _ = store.write_host(
         &global("home-server", "you", "192.168.1.10"),
