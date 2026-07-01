@@ -4,7 +4,7 @@
 //! [`Attributed`] tags where a read found it. Duplicate handling is a *view* concern
 //! (see the composer), never a storage rule.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,19 @@ impl WorkspaceId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Registry entry for a known workspace — metadata only. The workspace's actual
+/// config lives in its committed `.sid/config.toml`, not here; this just records that
+/// the workspace exists and where its repo is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMeta {
+    /// Stable id (derived from the root path).
+    pub id: WorkspaceId,
+    /// Absolute path to the workspace root.
+    pub root: PathBuf,
+    /// Display name.
+    pub name: String,
 }
 
 /// Which layer an item lives in, or which layer a read is scoped to.
