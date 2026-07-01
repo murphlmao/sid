@@ -10,6 +10,7 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 redb = "4.1"
+toml = "0.8"
 thiserror = "2"
 
 [dev-dependencies]

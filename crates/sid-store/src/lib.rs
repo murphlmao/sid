@@ -17,8 +17,10 @@ pub mod entities;
 pub mod error;
 pub mod global;
 pub mod scope;
+pub mod workspace;
 
 pub use entities::{DbConnection, Host, Identity, QuickAction};
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;
 pub use scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
+pub use workspace::{WorkspaceConfig, WorkspaceStore};
