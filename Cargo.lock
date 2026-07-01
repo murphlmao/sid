@@ -5869,6 +5869,7 @@ dependencies = [
  "russh",
  "russh-sftp",
  "sid-core",
+ "sid-term",
  "tempfile",
  "tokio",
 ]

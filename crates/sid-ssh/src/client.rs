@@ -1,6 +1,10 @@
 //! `RusshClient` core — connect/disconnect/exec/open_shell/open_sftp.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use russh::{
@@ -10,29 +14,37 @@ use russh::{
 use sid_core::ssh::{ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell};
 
 use crate::auth::authenticate;
+use crate::known_hosts::{self, Verdict};
 
-/// Stateless factory; per-host clients are produced by `new_client`.
+/// Factory carrying the app-level known_hosts path; per-host clients are
+/// produced by `new_client`. The caller supplies `<data_dir>/known_hosts` —
+/// the adapter contains no XDG logic.
 ///
 /// # Examples
 ///
 /// ```
+/// use std::path::PathBuf;
 /// use sid_ssh::RusshClientFactory;
-/// let f = RusshClientFactory::new();
+/// let f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"));
 /// let _c = f.new_client();
 /// ```
-pub struct RusshClientFactory;
+pub struct RusshClientFactory {
+    app_known_hosts: PathBuf,
+}
 
 impl RusshClientFactory {
-    /// Construct a new factory. Cheap; no I/O.
+    /// Construct a factory. Cheap; no I/O. `app_known_hosts` is sid's own
+    /// known_hosts file (created `0600` on first TOFU write).
     ///
     /// # Examples
     ///
     /// ```
+    /// use std::path::PathBuf;
     /// use sid_ssh::RusshClientFactory;
-    /// let _f = RusshClientFactory::new();
+    /// let _f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"));
     /// ```
-    pub fn new() -> Self {
-        Self
+    pub fn new(app_known_hosts: PathBuf) -> Self {
+        Self { app_known_hosts }
     }
 
     /// Construct a fresh per-host client. Not yet connected.
@@ -40,18 +52,16 @@ impl RusshClientFactory {
     /// # Examples
     ///
     /// ```
+    /// use std::path::PathBuf;
     /// use sid_ssh::RusshClientFactory;
-    /// let f = RusshClientFactory::new();
+    /// let f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"));
     /// let _c = f.new_client();
     /// ```
     pub fn new_client(&self) -> RusshClient {
-        RusshClient { handle: None }
-    }
-}
-
-impl Default for RusshClientFactory {
-    fn default() -> Self {
-        Self::new()
+        RusshClient {
+            handle: None,
+            app_known_hosts: self.app_known_hosts.clone(),
+        }
     }
 }
 
@@ -60,26 +70,82 @@ impl Default for RusshClientFactory {
 /// # Examples
 ///
 /// ```no_run
+/// use std::path::PathBuf;
 /// use sid_ssh::RusshClientFactory;
-/// let f = RusshClientFactory::new();
+/// let f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"));
 /// let _c = f.new_client();
 /// ```
 pub struct RusshClient {
     pub(crate) handle: Option<Handle<ClientHandler>>,
+    app_known_hosts: PathBuf,
 }
 
-/// Permissive handler: accept any server key.
-// B4 replaces this with TOFU known-hosts verification.
-pub struct ClientHandler;
+/// The user's read-only `~/.ssh/known_hosts`, if a home directory is known.
+fn user_known_hosts_path() -> Option<PathBuf> {
+    #[allow(deprecated)]
+    std::env::home_dir().map(|h| h.join(".ssh").join("known_hosts"))
+}
+
+/// TOFU host-key verifying handler. Checks the server key against the user's
+/// read-only `~/.ssh/known_hosts` and sid's app file; on first contact it
+/// learns the key into the app file. A changed key is recorded in `verdict` and
+/// the handshake is aborted so `connect` can surface `HostKeyMismatch`.
+pub struct ClientHandler {
+    host: String,
+    port: u16,
+    app_known_hosts: PathBuf,
+    user_known_hosts: Option<PathBuf>,
+    /// Set when verification fails, so `connect` can distinguish a host-key
+    /// problem from a generic transport error (the handler can only return a
+    /// `russh::Error`, which erases the reason).
+    verdict: Arc<Mutex<Option<SshError>>>,
+}
 
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let outcome = known_hosts::verify(
+            &self.host,
+            self.port,
+            server_public_key,
+            self.user_known_hosts.as_deref(),
+            &self.app_known_hosts,
+        );
+        match outcome {
+            Ok(Verdict::Match) => Ok(true),
+            Ok(Verdict::Unknown) => {
+                // First contact — trust and record.
+                match known_hosts::learn(
+                    &self.host,
+                    self.port,
+                    server_public_key,
+                    &self.app_known_hosts,
+                ) {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        *self.verdict.lock().unwrap() = Some(e);
+                        Ok(false) // abort the handshake
+                    }
+                }
+            }
+            Ok(Verdict::Mismatch) => {
+                let host_id = if self.port == 22 {
+                    self.host.clone()
+                } else {
+                    format!("[{}]:{}", self.host, self.port)
+                };
+                *self.verdict.lock().unwrap() = Some(SshError::HostKeyMismatch(host_id));
+                Ok(false) // abort the handshake
+            }
+            Err(e) => {
+                *self.verdict.lock().unwrap() = Some(e);
+                Ok(false) // abort the handshake
+            }
+        }
     }
 }
 
@@ -91,9 +157,26 @@ impl SshClient for RusshClient {
             ..Default::default()
         });
         let addr = format!("{}:{}", host.host, host.port);
-        let mut handle = russh::client::connect(config, addr.as_str(), ClientHandler)
-            .await
-            .map_err(|e| SshError::ConnectFailed(format!("{e}")))?;
+        let verdict = Arc::new(Mutex::new(None));
+        let handler = ClientHandler {
+            host: host.host.clone(),
+            port: host.port,
+            app_known_hosts: self.app_known_hosts.clone(),
+            user_known_hosts: user_known_hosts_path(),
+            verdict: verdict.clone(),
+        };
+        let mut handle = match russh::client::connect(config, addr.as_str(), handler).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                // If the handshake aborted because of host-key verification,
+                // surface that specific reason rather than a generic transport
+                // error (the handler could only signal by returning `Ok(false)`).
+                if let Some(verdict_err) = verdict.lock().unwrap().take() {
+                    return Err(verdict_err);
+                }
+                return Err(SshError::ConnectFailed(format!("{e}")));
+            }
+        };
         authenticate(&mut handle, &host.user, auth).await?;
         self.handle = Some(handle);
         Ok(())
@@ -200,7 +283,7 @@ mod tests {
 
     #[test]
     fn factory_new_client_is_disconnected() {
-        let f = RusshClientFactory::new();
+        let f = RusshClientFactory::new(std::path::PathBuf::from("/tmp/sid-test/known_hosts"));
         let c = f.new_client();
         assert!(!c.is_connected());
     }
