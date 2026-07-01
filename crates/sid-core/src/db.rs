@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Which database engine a saved connection targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DbKind {
     /// PostgreSQL (adapter uses `tokio-postgres`).
+    #[default]
     Postgres,
     /// SQLite (adapter uses bundled `rusqlite`).
     Sqlite,
