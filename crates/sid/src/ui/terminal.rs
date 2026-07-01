@@ -14,9 +14,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use gpui::{App, AppContext as _, Context, Entity};
+use gpui::{
+    App, AppContext as _, Context, Entity, Font, FontStyle, FontWeight, Hsla, IntoElement, Pixels,
+    Render, ShapedLine, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px,
+    rgb,
+};
 use sid_core::ssh::{SshClient, SshError, SshShell};
-use sid_core::term::TerminalScreen;
+use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use sid_secrets::SecretStore;
 use sid_ssh::RusshClientFactory;
 use sid_store::Host;
@@ -52,6 +56,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(33);
 /// Placeholder pane size until C4's viewport-driven resize computes the real one.
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
+
+// ---- rendering (C3): grid painted from `screen.cells()` ---------------------------------
+
+/// Matches `app.rs`'s neutral palette so the terminal pane blends with the rest of the app
+/// instead of announcing itself as a separate widget.
+const TERM_BG: u32 = 0x161618;
+const TERM_FG: u32 = 0xdcdce0;
+const TERM_FONT_SIZE: Pixels = px(14.);
+
+/// Monospace family; gpui falls back to a proportional font if it's missing locally.
+const MONO: &str = "DejaVu Sans Mono";
 
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
 /// first use and driven forever on its own thread — gpui's foreground executor only ever awaits
@@ -223,5 +238,226 @@ impl TerminalSession {
         ssh_runtime().spawn(async move {
             let _ = shell.lock().await.close().await;
         });
+    }
+
+    /// Paint the grid: one `shape_line` call per row (gpui shapes a whole multi-run line at
+    /// once, so the row — not the cell — is the unit of work), then `paint_background` +
+    /// `paint` per shaped row inside a `canvas`. Fixed at `self.rows`x`self.cols` for now; C4
+    /// recomputes those from the real viewport and this just follows along.
+    fn render_grid(&self, window: &mut Window) -> impl IntoElement {
+        let cells = self.screen.cells();
+        let (cursor_row, cursor_col) = self.screen.cursor_position();
+        let base_font = font(MONO);
+        let default_fg: Hsla = rgb(TERM_FG).into();
+        let default_bg: Hsla = rgb(TERM_BG).into();
+
+        // Measure one monospace glyph to size the pane to exactly `cols`x`rows` cells.
+        let text_system = window.text_system().clone();
+        let em = text_system.shape_line(
+            "M".into(),
+            TERM_FONT_SIZE,
+            &[TextRun {
+                len: 1,
+                font: base_font.clone(),
+                color: default_fg,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let cell_width = em.width;
+        let line_height = window.line_height();
+
+        let shaped_rows: Vec<ShapedLine> = cells
+            .iter()
+            .enumerate()
+            .map(|(row_ix, row)| {
+                let col = (row_ix as u16 == cursor_row).then_some(cursor_col as usize);
+                shape_row(
+                    &text_system,
+                    row,
+                    col,
+                    &base_font,
+                    TERM_FONT_SIZE,
+                    default_fg,
+                    default_bg,
+                )
+            })
+            .collect();
+
+        let pane_width = cell_width * self.cols as f32;
+        let pane_height = line_height * self.rows as f32;
+
+        div().w(pane_width).h(pane_height).bg(rgb(TERM_BG)).child(
+            canvas(
+                move |_bounds, _window, _cx| shaped_rows,
+                move |bounds, shaped_rows: Vec<ShapedLine>, window, cx| {
+                    let mut y = bounds.top();
+                    for line in &shaped_rows {
+                        let origin = point(bounds.left(), y);
+                        let _ = line.paint_background(origin, line_height, window, cx);
+                        let _ = line.paint(origin, line_height, window, cx);
+                        y += line_height;
+                    }
+                },
+            )
+            .size_full(),
+        )
+    }
+}
+
+impl Render for TerminalSession {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        match &self.status {
+            SessionStatus::Connecting => message_pane("Connecting…").into_any_element(),
+            SessionStatus::Failed(err) => {
+                message_pane(&format!("Connection failed: {err}")).into_any_element()
+            }
+            SessionStatus::Closed => message_pane("Session closed.").into_any_element(),
+            SessionStatus::Connected => self.render_grid(window).into_any_element(),
+        }
+    }
+}
+
+fn message_pane(text: &str) -> impl IntoElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgb(TERM_BG))
+        .text_color(rgb(TERM_FG))
+        .font_family(MONO)
+        .child(text.to_string())
+}
+
+/// Shape one terminal row into a single `ShapedLine`. Contiguous cells sharing the same
+/// fg/bg/bold/italic/underline coalesce into one `TextRun` — the row, not the cell, is what
+/// gets shaped, matching how `WindowTextSystem::shape_line` is meant to be driven.
+fn shape_row(
+    text_system: &gpui::WindowTextSystem,
+    row: &[TermCell],
+    cursor_col: Option<usize>,
+    base_font: &Font,
+    font_size: Pixels,
+    default_fg: Hsla,
+    default_bg: Hsla,
+) -> ShapedLine {
+    let mut text = String::new();
+    let mut runs: Vec<TextRun> = Vec::new();
+
+    for (col, cell) in row.iter().enumerate() {
+        // A blank cell still occupies a column — render it as a space, like `lines()` does,
+        // so run byte-offsets stay aligned with terminal columns.
+        let glyph: &str = if cell.text.is_empty() {
+            " "
+        } else {
+            &cell.text
+        };
+
+        let mut fg = term_color_to_hsla(cell.fg, default_fg);
+        let mut bg = term_color_to_hsla(cell.bg, default_bg);
+        if cell.inverse {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        if cursor_col == Some(col) {
+            // Block cursor: swap fg/bg on top of whatever the cell's own styling already is,
+            // rather than painting a separate overlay quad.
+            std::mem::swap(&mut fg, &mut bg);
+        }
+
+        let mut cell_font = base_font.clone();
+        if cell.bold {
+            cell_font.weight = FontWeight::BOLD;
+        }
+        if cell.italic {
+            cell_font.style = FontStyle::Italic;
+        }
+        let underline = cell.underline.then(|| UnderlineStyle {
+            color: Some(fg),
+            thickness: px(1.0),
+            wavy: false,
+        });
+
+        let byte_len = glyph.len();
+        text.push_str(glyph);
+
+        let extends_last = runs.last().is_some_and(|r: &TextRun| {
+            r.font == cell_font
+                && r.color == fg
+                && r.background_color == Some(bg)
+                && r.underline == underline
+        });
+        if extends_last {
+            runs.last_mut().unwrap().len += byte_len;
+        } else {
+            runs.push(TextRun {
+                len: byte_len,
+                font: cell_font,
+                color: fg,
+                background_color: Some(bg),
+                underline,
+                strikethrough: None,
+            });
+        }
+    }
+
+    text_system.shape_line(text.into(), font_size, &runs, None)
+}
+
+/// `TermColor::Default` takes the pane's own theme color; `Indexed`/`Rgb` convert to `Hsla`
+/// via a plain `0xRRGGBB` pack — gpui already gives us `Rgba: Into<Hsla>`.
+fn term_color_to_hsla(color: TermColor, default: Hsla) -> Hsla {
+    match color {
+        TermColor::Default => default,
+        TermColor::Indexed(idx) => {
+            let (r, g, b) = xterm256_to_rgb(idx);
+            rgb_to_hsla(r, g, b)
+        }
+        TermColor::Rgb(r, g, b) => rgb_to_hsla(r, g, b),
+    }
+}
+
+fn rgb_to_hsla(r: u8, g: u8, b: u8) -> Hsla {
+    rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
+}
+
+/// The standard xterm 256-color palette: 0-15 are the base 16 (xterm's own default RGBs,
+/// not the VGA ones), 16-231 are a 6x6x6 color cube, and 232-255 are a 24-step grayscale ramp.
+fn xterm256_to_rgb(idx: u8) -> (u8, u8, u8) {
+    const BASE16: [(u8, u8, u8); 16] = [
+        (0x00, 0x00, 0x00),
+        (0xcd, 0x00, 0x00),
+        (0x00, 0xcd, 0x00),
+        (0xcd, 0xcd, 0x00),
+        (0x00, 0x00, 0xee),
+        (0xcd, 0x00, 0xcd),
+        (0x00, 0xcd, 0xcd),
+        (0xe5, 0xe5, 0xe5),
+        (0x7f, 0x7f, 0x7f),
+        (0xff, 0x00, 0x00),
+        (0x00, 0xff, 0x00),
+        (0xff, 0xff, 0x00),
+        (0x5c, 0x5c, 0xff),
+        (0xff, 0x00, 0xff),
+        (0x00, 0xff, 0xff),
+        (0xff, 0xff, 0xff),
+    ];
+    const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match idx {
+        0..=15 => BASE16[idx as usize],
+        16..=231 => {
+            let n = idx - 16;
+            (
+                STEPS[(n / 36) as usize],
+                STEPS[((n / 6) % 6) as usize],
+                STEPS[(n % 6) as usize],
+            )
+        }
+        232..=255 => {
+            let level = 8 + (idx - 232) * 10;
+            (level, level, level)
+        }
     }
 }
