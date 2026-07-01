@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/sid", "crates/sid-secrets", "crates/sid-store"]
+members = [
+    "crates/sid",
+    "crates/sid-secrets",
+    "crates/sid-store",
+    "crates/sid-core",
+]
 
 [workspace.package]
 edition = "2024"
@@ -8,3 +13,30 @@ rust-version = "1.85"
 license = "GPL-3.0-only"
 authors = ["Murphy Malcolm"]
 repository = "https://github.com/murphlmao/sid"
+
+[workspace.dependencies]
+# Internal crates (versionless path deps; never published).
+sid-core = { path = "crates/sid-core" }
+sid-term = { path = "crates/sid-term" }
+sid-ssh = { path = "crates/sid-ssh" }
+
+# SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
+# is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154
+# (CryptoVec allocation hardening). russh-sftp is version-independent of russh.
+russh = "0.61"
+russh-sftp = "2.3"
+
+# Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
+# styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
+vt100 = "0.16"
+
+# Async
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# Errors / serialization shared by the adapter seam
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+# Test
+tempfile = "3"
