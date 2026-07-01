@@ -7,6 +7,7 @@ members = [
     "crates/sid-core",
     "crates/sid-term",
     "crates/sid-ssh",
+    "crates/sid-db",
 ]
 
 [workspace.package]
@@ -21,6 +22,7 @@ repository = "https://github.com/murphlmao/sid"
 sid-core = { path = "crates/sid-core" }
 sid-term = { path = "crates/sid-term" }
 sid-ssh = { path = "crates/sid-ssh" }
+sid-store = { path = "crates/sid-store" }
 
 # SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
 # is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154
@@ -31,6 +33,13 @@ russh-sftp = "2.3"
 # Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
 vt100 = "0.16"
+
+# Database clients (Track DA, `sid-db`) — tokio-postgres = "0.7", the standard
+# async Postgres driver; rusqlite = { features = ["bundled", "column_decltype"] },
+# embedded SQLite that ships its own C source (no system SQLite install needed),
+# with column_decltype exposing declared column types for the type mapping.
+tokio-postgres = "0.7"
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 
 # Async
 async-trait = "0.1"
