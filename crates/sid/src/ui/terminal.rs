@@ -125,10 +125,6 @@ impl TerminalSession {
         &self.status
     }
 
-    pub fn screen(&self) -> &dyn TerminalScreen {
-        self.screen.as_ref()
-    }
-
     fn start_connect(
         &mut self,
         host: Host,
