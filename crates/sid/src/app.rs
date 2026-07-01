@@ -6,13 +6,21 @@
 //! reads return `Result` and touch redb + the filesystem, so they run on events only).
 //!
 //! P3.1 wires the SSH tab's host list to `Store::read_hosts` — the first time the store and
-//! the GUI meet on screen. Other tabs are placeholders for later slices.
+//! the GUI meet on screen. P3.2 adds the write side: the [`HostForm`] modal (add/edit with
+//! the `save to:` dialog) and the secret lifecycle against the [`SecretStore`]. Other tabs
+//! are placeholders for later slices.
 
 use gpui::{
-    ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*, px, rgb, uniform_list,
+    ClickEvent, Context, Entity, FontWeight, SharedString, Subscription, Window, anchored,
+    deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
+use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
+};
+
+use crate::ui::host_form::{
+    HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
@@ -27,6 +35,7 @@ const ACTIVE_FG: u32 = 0xffffff;
 const BRAND: u32 = 0x5a9ad0;
 const WS_FG: u32 = 0xa98bd0;
 const ROW_ALT: u32 = 0x1c1c20;
+const DANGER: u32 = 0xd08a8a;
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
@@ -70,28 +79,53 @@ struct ScopeChoice {
 /// The single application entity.
 pub struct AppState {
     store: Store,
+    /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
+    /// through here; the store only ever sees opaque `secret_ref` ids.
+    secrets: Box<dyn SecretStore>,
     scope: Scope,
     active_tab: Tab,
     filters: ViewFilters,
     scopes: Vec<ScopeChoice>,
     hosts: Vec<Attributed<Host>>,
     error: Option<String>,
+    /// The open host add/edit modal, if any.
+    form: Option<Entity<HostForm>>,
+    /// Keeps the form's event subscription alive exactly as long as the form is open.
+    _form_subscription: Option<Subscription>,
+    /// The row whose ✕ has been clicked once, keyed by (alias, origin) — the second
+    /// click on the same row executes the delete.
+    armed_delete: Option<(String, Scope)>,
 }
 
 impl AppState {
-    /// Build the app state over an open store and load the initial (Global) view.
-    pub fn new(store: Store) -> Self {
+    /// Build the app state over an open store + secret backend and load the initial
+    /// (Global) view. A `startup_warning` (the keyring fallback notice) is surfaced
+    /// through the same error line store errors use.
+    pub fn new(
+        store: Store,
+        secrets: Box<dyn SecretStore>,
+        startup_warning: Option<String>,
+    ) -> Self {
         let mut state = Self {
             store,
+            secrets,
             scope: Scope::Global,
             active_tab: Tab::Ssh,
             filters: ViewFilters::default(),
             scopes: Vec::new(),
             hosts: Vec::new(),
             error: None,
+            form: None,
+            _form_subscription: None,
+            armed_delete: None,
         };
         state.reload_scopes();
         state.refresh();
+        // Set after the initial refresh so it isn't wiped by the successful read; it
+        // stays visible until the next store event replaces it.
+        if startup_warning.is_some() {
+            state.error = startup_warning;
+        }
         state
     }
 
@@ -115,8 +149,10 @@ impl AppState {
         self.scopes = scopes;
     }
 
-    /// Re-query the composed host list for the current scope + filters.
+    /// Re-query the composed host list for the current scope + filters. Any refresh
+    /// changes the row set, so a pending delete confirmation is disarmed.
     fn refresh(&mut self) {
+        self.armed_delete = None;
         match self.store.read_hosts(&self.scope, self.filters) {
             Ok(hosts) => {
                 self.hosts = hosts;
@@ -132,6 +168,224 @@ impl AppState {
     fn set_scope(&mut self, scope: Scope) {
         self.scope = scope;
         self.refresh();
+    }
+
+    // ---- host form (A6) ------------------------------------------------------
+
+    /// The active workspace scope + its switcher label, if a workspace is focused.
+    /// Feeds the form's `save to: workspace` option.
+    fn active_workspace(&self) -> Option<(Scope, SharedString)> {
+        match &self.scope {
+            Scope::Global => None,
+            Scope::Workspace(_) => {
+                let label = self
+                    .scopes
+                    .iter()
+                    .find(|c| c.scope == self.scope)
+                    .map(|c| c.label.clone())
+                    .unwrap_or_else(|| "workspace".into());
+                Some((self.scope.clone(), label))
+            }
+        }
+    }
+
+    /// Open the empty add form, preselecting `save to:` from the persisted
+    /// [`sid_store::Settings::default_scope`].
+    fn open_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_scope = self
+            .store
+            .settings()
+            .map(|s| s.default_scope)
+            .unwrap_or_default();
+        let workspace = self.active_workspace();
+        let form = cx.new(|cx| HostForm::new_add(cx, workspace, default_scope));
+        self.open_form(form, window, cx);
+    }
+
+    // ---- row actions (A7) ----------------------------------------------------
+
+    /// ✎ Open the edit form prefilled with `host`, writing back into `origin` on save.
+    fn open_edit_form(
+        &mut self,
+        host: Host,
+        origin: Scope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.armed_delete = None;
+        let workspace = self.active_workspace();
+        let form = cx.new(|cx| HostForm::new_edit(cx, host, origin, workspace));
+        self.open_form(form, window, cx);
+    }
+
+    /// ✕ (second click) Remove the record from **its origin layer**, then its secret
+    /// from the keyring. Deleting a workspace copy un-shadows a global duplicate — that
+    /// is attributive behavior, not loss.
+    fn delete_row(
+        &mut self,
+        alias: &str,
+        origin: &Scope,
+        secret_ref: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        self.armed_delete = None;
+        match self.store.delete_host(alias, origin) {
+            Ok(_removed) => {
+                let mut post_warning = None;
+                if let Some(id) = secret_ref
+                    && let Err(e) = self.secrets.delete(&SecretId::new(id))
+                {
+                    post_warning =
+                        Some(format!("host deleted, but deleting its secret failed: {e}"));
+                }
+                self.refresh();
+                if post_warning.is_some() {
+                    self.error = post_warning;
+                }
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// ⤒ Move a workspace-origin record up to global. A store-side conflict (the global
+    /// layer already holds the alias — e.g. the demo seed's duplicate `vps-1`) surfaces
+    /// verbatim in the header error line; nothing is overwritten.
+    fn promote_row(&mut self, alias: &str, origin: &Scope, cx: &mut Context<Self>) {
+        self.armed_delete = None;
+        let Scope::Workspace(id) = origin else {
+            return;
+        };
+        match self.store.promote_host(alias, id) {
+            Ok(()) => self.refresh(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// ⤓ Move a global-origin record down into the active workspace. Conflicts surface
+    /// verbatim, exactly like promote.
+    fn demote_row(&mut self, alias: &str, cx: &mut Context<Self>) {
+        self.armed_delete = None;
+        let Scope::Workspace(id) = self.scope.clone() else {
+            return;
+        };
+        match self.store.demote_host(alias, &id) {
+            Ok(()) => self.refresh(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
+        form.read(cx).focus_first(window, cx);
+        self._form_subscription = Some(cx.subscribe(&form, Self::on_form_event));
+        self.form = Some(form);
+        cx.notify();
+    }
+
+    fn close_form(&mut self, cx: &mut Context<Self>) {
+        self.form = None;
+        self._form_subscription = None;
+        cx.notify();
+    }
+
+    fn on_form_event(
+        &mut self,
+        form: Entity<HostForm>,
+        event: &HostFormEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            HostFormEvent::Cancel => self.close_form(cx),
+            HostFormEvent::Submit(submission) => match self.perform_submit(submission) {
+                Ok(post_warning) => {
+                    self.close_form(cx);
+                    self.refresh();
+                    if post_warning.is_some() {
+                        self.error = post_warning;
+                    }
+                    cx.notify();
+                }
+                // Guard/secret/store failures land in the form's error line; the form
+                // stays open so nothing typed is lost.
+                Err(msg) => form.update(cx, |f, cx| f.set_error(msg, cx)),
+            },
+        }
+    }
+
+    /// Run a submission end-to-end: add-mode guard → stage the secret plan → write the
+    /// host → delete any superseded secret. Returns a non-fatal warning to surface
+    /// after success (e.g. the old secret could not be deleted).
+    fn perform_submit(&self, submission: &Submission) -> Result<Option<String>, String> {
+        let is_edit = submission.old.is_some();
+        let target_holds = self
+            .layer_holds_alias(&submission.target, &submission.host.alias)
+            .map_err(|e| e.to_string())?;
+        add_guard(is_edit, target_holds, &self.layer_label(&submission.target))?;
+
+        let plan = plan_secret(
+            submission.old.as_ref(),
+            &submission.host.auth,
+            submission.secret.is_some(),
+        );
+        let staged = stage_secret(
+            self.secrets.as_ref(),
+            &plan,
+            &submission.host.alias,
+            submission.secret.as_deref(),
+        )?;
+
+        let mut host = submission.host.clone();
+        host.secret_ref = staged.secret_ref.clone();
+        if let Err(e) = self.store.write_host(&host, &submission.target) {
+            // Roll back a freshly minted secret so a failed write never orphans one.
+            if staged.minted
+                && let Some(id) = &staged.secret_ref
+            {
+                let _ = self.secrets.delete(&SecretId::new(id.clone()));
+            }
+            return Err(e.to_string());
+        }
+
+        // Only after the write is durable is the superseded secret deleted.
+        let mut post_warning = None;
+        if let Some(old_id) = &staged.delete_after_write
+            && let Err(e) = self.secrets.delete(&SecretId::new(old_id.clone()))
+        {
+            post_warning = Some(format!("saved, but deleting the old secret failed: {e}"));
+        }
+        Ok(post_warning)
+    }
+
+    /// Whether `target`'s **own layer** already holds `alias` (the add-mode guard's
+    /// question). Reads the layer directly — the composed default view collapses
+    /// duplicates, which would hide exactly the record the guard must see.
+    fn layer_holds_alias(&self, target: &Scope, alias: &str) -> sid_store::Result<bool> {
+        match target {
+            Scope::Global => Ok(self.store.global().get_host(alias)?.is_some()),
+            Scope::Workspace(_) => {
+                let filters = ViewFilters {
+                    collapse_duplicates: false,
+                    hide_global: true,
+                };
+                let hosts = self.store.read_hosts(target, filters)?;
+                Ok(hosts.iter().any(|a| a.item.alias == alias))
+            }
+        }
+    }
+
+    /// Human name for a layer, matching the origin badges (`⌂ global` / workspace name).
+    fn layer_label(&self, target: &Scope) -> String {
+        match target {
+            Scope::Global => "⌂ global".into(),
+            Scope::Workspace(_) => self
+                .scopes
+                .iter()
+                .find(|c| c.scope == *target)
+                .map(|c| c.label.to_string())
+                .unwrap_or_else(|| "workspace".into()),
+        }
     }
 
     /// Badge label + color for an item's origin layer.
@@ -253,33 +507,125 @@ impl AppState {
             .flex_1()
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
                     .px_4()
                     .py_2()
-                    .text_sm()
-                    .text_color(rgb(FG_DIM))
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(sub),
+                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub))
+                    .child(
+                        div()
+                            .id("add-host")
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(rgb(ACTIVE_BG))
+                            .text_color(rgb(ACTIVE_FG))
+                            .child("＋ Add host")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_form(window, cx);
+                            })),
+                    ),
             )
             .child(
                 uniform_list(
                     "hosts",
                     count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _win, _cx| {
-                        range.map(|ix| this.host_row(ix)).collect::<Vec<_>>()
+                    cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
+                        range.map(|ix| this.host_row(ix, cx)).collect::<Vec<_>>()
                     }),
                 )
                 .flex_1(),
             )
     }
 
-    fn host_row(&self, ix: usize) -> impl IntoElement + use<> {
+    fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let a = &self.hosts[ix];
-        let alias: SharedString = a.item.alias.clone().into();
-        let subtitle: SharedString =
-            format!("{}@{}:{}", a.item.user, a.item.host, a.item.port).into();
+        let host = a.item.clone();
+        let origin = a.origin.clone();
+        let alias: SharedString = host.alias.clone().into();
+        let subtitle: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
         let (badge, badge_color) = self.origin_badge(a);
         let alt = ix % 2 == 1;
+        let armed = delete_click_executes(
+            self.armed_delete.as_ref(),
+            &(host.alias.clone(), origin.clone()),
+        );
+
+        // Small text-button factory for the row's action strip.
+        let action = |id: (&'static str, usize), label: SharedString, color: u32| {
+            div()
+                .id(id)
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(color))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child(label)
+        };
+
+        // ⤒ promote: workspace-origin rows only.
+        let promote = can_promote(&origin).then(|| {
+            let alias = host.alias.clone();
+            let origin = origin.clone();
+            action(("promote", ix), "⤒".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    this.promote_row(&alias, &origin, cx);
+                },
+            ))
+        });
+
+        // ⤓ demote: global-origin rows while a workspace scope is active.
+        let demote = can_demote(&origin, &self.scope).then(|| {
+            let alias = host.alias.clone();
+            action(("demote", ix), "⤓".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    this.demote_row(&alias, cx);
+                },
+            ))
+        });
+
+        // ✎ edit: opens the form prefilled with this row's record.
+        let edit = {
+            let host = host.clone();
+            let origin = origin.clone();
+            action(("edit", ix), "✎".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, window, cx| {
+                    this.open_edit_form(host.clone(), origin.clone(), window, cx);
+                },
+            ))
+        };
+
+        // ✕ delete: two-click confirm — the first click arms this row, the second
+        // deletes from the row's origin layer (and its secret from the keyring).
+        let delete = {
+            let alias = host.alias.clone();
+            let origin = origin.clone();
+            let secret_ref = host.secret_ref.clone();
+            let (label, color) = if armed {
+                ("✕ confirm?", DANGER)
+            } else {
+                ("✕", FG_DIM)
+            };
+            action(("delete", ix), label.into(), color).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    let key = (alias.clone(), origin.clone());
+                    if delete_click_executes(this.armed_delete.as_ref(), &key) {
+                        this.delete_row(&alias, &origin, secret_ref.as_deref(), cx);
+                    } else {
+                        this.armed_delete = Some(key);
+                        cx.notify();
+                    }
+                },
+            ))
+        };
 
         div()
             .flex()
@@ -304,7 +650,19 @@ impl AppState {
                             .text_color(rgb(FG))
                             .child(alias),
                     )
-                    .child(div().text_xs().text_color(rgb(badge_color)).child(badge)),
+                    .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .children(promote)
+                            .children(demote)
+                            .child(edit)
+                            .child(delete),
+                    ),
             )
             .child(
                 div()
@@ -327,11 +685,31 @@ impl AppState {
 }
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
             other => self.placeholder(other).into_any_element(),
         };
+
+        // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
+        // window origin; `deferred` paints it above everything else.
+        let overlay = self.form.clone().map(|form| {
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(form),
+                ),
+            )
+            .with_priority(1)
+        });
 
         div()
             .flex()
@@ -342,6 +720,7 @@ impl Render for AppState {
             .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
+            .children(overlay)
     }
 }
 
@@ -427,4 +806,68 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
     );
     let _ = store.write_host(&global("prod", "deploy", "prod.acme-api.internal"), &ws);
     let _ = store.write_host(&global("vps-1", "admin", "5.5.5.5"), &ws); // duplicates global vps-1
+}
+
+// ---- row-action routing (pure, unit-tested) ---------------------------------
+
+/// Whether a row offers ⤒ promote: only records that live in a workspace layer.
+fn can_promote(origin: &Scope) -> bool {
+    matches!(origin, Scope::Workspace(_))
+}
+
+/// Whether a row offers ⤓ demote: only global-layer records, and only while a workspace
+/// scope is active to receive them.
+fn can_demote(origin: &Scope, current_scope: &Scope) -> bool {
+    matches!(origin, Scope::Global) && matches!(current_scope, Scope::Workspace(_))
+}
+
+/// Two-click delete: `true` when the clicked row is the one already armed. Keyed on
+/// (alias, origin) so the same alias in the *other* layer never inherits the confirm.
+fn delete_click_executes(armed: Option<&(String, Scope)>, clicked: &(String, Scope)) -> bool {
+    armed == Some(clicked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws(id: &str) -> Scope {
+        Scope::Workspace(WorkspaceId(id.to_string()))
+    }
+
+    #[test]
+    fn promote_offered_only_on_workspace_origin_rows() {
+        assert!(can_promote(&ws("/w")));
+        assert!(!can_promote(&Scope::Global));
+    }
+
+    #[test]
+    fn demote_offered_only_on_global_rows_in_a_workspace_scope() {
+        assert!(can_demote(&Scope::Global, &ws("/w")));
+        assert!(!can_demote(&Scope::Global, &Scope::Global));
+        assert!(!can_demote(&ws("/w"), &ws("/w")));
+        assert!(!can_demote(&ws("/w"), &Scope::Global));
+    }
+
+    #[test]
+    fn delete_needs_two_clicks_on_the_same_row() {
+        let row = ("vps-1".to_string(), Scope::Global);
+        // First click arms (nothing armed yet)…
+        assert!(!delete_click_executes(None, &row));
+        // …second click on the same row executes.
+        assert!(delete_click_executes(Some(&row), &row));
+    }
+
+    #[test]
+    fn delete_confirm_never_leaks_across_layers_of_a_duplicate_alias() {
+        // The demo seed holds `vps-1` in BOTH layers; arming one copy must not confirm
+        // the other (they are distinct records under the attributive invariant).
+        let global_row = ("vps-1".to_string(), Scope::Global);
+        let ws_row = ("vps-1".to_string(), ws("/w"));
+        assert!(!delete_click_executes(Some(&global_row), &ws_row));
+        assert!(!delete_click_executes(Some(&ws_row), &global_row));
+        // A different alias re-arms rather than confirming.
+        let other = ("prod".to_string(), Scope::Global);
+        assert!(!delete_click_executes(Some(&global_row), &other));
+    }
 }
