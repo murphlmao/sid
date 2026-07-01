@@ -1,0 +1,11 @@
+[package]
+name = "sid-term"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+vt100.workspace = true
