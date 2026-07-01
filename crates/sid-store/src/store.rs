@@ -5,13 +5,15 @@
 //! - [`Store::write_host`] saves into the named layer;
 //! - [`Store::promote_host`] / [`Store::demote_host`] move an item *between* layers.
 //!
-//! Hosts are the exemplar entity; connections and quick-actions follow the identical
-//! shape and are added as their tabs come online.
+//! Hosts are the exemplar entity; [`Store::read_connections`] / [`Store::write_connection`]
+//! / [`Store::delete_connection`] / [`Store::promote_connection`] / [`Store::demote_connection`]
+//! are a structural copy for `DbConnection`. Quick-actions follow the identical shape and
+//! are added as their tab comes online.
 
 use std::path::Path;
 
 use crate::composer::{ViewFilters, compose};
-use crate::entities::{Host, Settings};
+use crate::entities::{DbConnection, Host, Settings};
 use crate::error::{Result, StoreError};
 use crate::global::GlobalStore;
 use crate::scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
@@ -127,6 +129,85 @@ impl Store {
         }
         ws.upsert_host(&item)?;
         self.global.remove_host(alias)?;
+        Ok(())
+    }
+
+    /// Read connections composed for `scope`, applying the view `filters`.
+    pub fn read_connections(
+        &self,
+        scope: &Scope,
+        filters: ViewFilters,
+    ) -> Result<Vec<Attributed<DbConnection>>> {
+        let global = self.global.list_connections()?;
+        match scope {
+            Scope::Global => Ok(compose(&global, None, filters)),
+            Scope::Workspace(id) => {
+                let items = self.workspace_store(id)?.load()?.db.connection;
+                Ok(compose(&global, Some((id, &items)), filters))
+            }
+        }
+    }
+
+    /// Write a connection into the named layer.
+    pub fn write_connection(&self, c: &DbConnection, scope: &Scope) -> Result<()> {
+        match scope {
+            Scope::Global => self.global.upsert_connection(c),
+            Scope::Workspace(id) => self.workspace_store(id)?.upsert_connection(c),
+        }
+    }
+
+    /// Delete a connection from **exactly** the named layer, returning whether one was
+    /// present.
+    ///
+    /// This removes only the record in `scope`; a same-id copy in the other layer is
+    /// untouched. Deleting a workspace copy therefore un-shadows the global copy in the
+    /// collapsed view — that is attributive behaviour, not loss.
+    pub fn delete_connection(&self, id: &str, scope: &Scope) -> Result<bool> {
+        match scope {
+            Scope::Global => self.global.remove_connection(id),
+            Scope::Workspace(ws_id) => self.workspace_store(ws_id)?.remove_connection(id),
+        }
+    }
+
+    /// Move a connection from a workspace up to global (removing it from the workspace).
+    pub fn promote_connection(&self, id: &str, from: &WorkspaceId) -> Result<()> {
+        let ws = self.workspace_store(from)?;
+        let item = ws
+            .load()?
+            .db
+            .connection
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| {
+                StoreError::Storage(format!(
+                    "connection {id} not in workspace {}",
+                    from.as_str()
+                ))
+            })?;
+        if self.global.get_connection(id)?.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "global already has a connection {id:?}; resolve before promoting"
+            )));
+        }
+        self.global.upsert_connection(&item)?;
+        ws.remove_connection(id)?;
+        Ok(())
+    }
+
+    /// Move a connection from global down into a workspace (removing it from global).
+    pub fn demote_connection(&self, id: &str, to: &WorkspaceId) -> Result<()> {
+        let item = self
+            .global
+            .get_connection(id)?
+            .ok_or_else(|| StoreError::Storage(format!("connection {id} not in global")))?;
+        let ws = self.workspace_store(to)?;
+        if ws.load()?.db.connection.iter().any(|c| c.id == id) {
+            return Err(StoreError::Conflict(format!(
+                "workspace already has a connection {id:?}; resolve before demoting"
+            )));
+        }
+        ws.upsert_connection(&item)?;
+        self.global.remove_connection(id)?;
         Ok(())
     }
 }
