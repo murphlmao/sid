@@ -81,6 +81,11 @@ impl Store {
             .ok_or_else(|| {
                 StoreError::Storage(format!("host {alias} not in workspace {}", from.as_str()))
             })?;
+        if self.global.get_host(alias)?.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "global already has a host {alias:?}; resolve before promoting"
+            )));
+        }
         self.global.upsert_host(&item)?;
         ws.remove_host(alias)?;
         Ok(())
@@ -92,7 +97,13 @@ impl Store {
             .global
             .get_host(alias)?
             .ok_or_else(|| StoreError::Storage(format!("host {alias} not in global")))?;
-        self.workspace_store(to)?.upsert_host(&item)?;
+        let ws = self.workspace_store(to)?;
+        if ws.load()?.ssh.host.iter().any(|h| h.alias == alias) {
+            return Err(StoreError::Conflict(format!(
+                "workspace already has a host {alias:?}; resolve before demoting"
+            )));
+        }
+        ws.upsert_host(&item)?;
         self.global.remove_host(alias)?;
         Ok(())
     }

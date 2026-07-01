@@ -114,3 +114,19 @@ fn compose_never_mutates_inputs() {
     assert_eq!(global[1].user, "g");
     assert_eq!(ws.len(), 1);
 }
+
+#[test]
+fn hide_global_is_a_noop_at_global_scope() {
+    let global = vec![h("A", "g"), h("B", "g")];
+    // No workspace focused: hide_global has nothing to hide *toward*, so it's ignored
+    // rather than yielding a confusing empty view.
+    let view = compose(
+        &global,
+        None,
+        ViewFilters {
+            collapse_duplicates: true,
+            hide_global: true,
+        },
+    );
+    assert_eq!(view.len(), 2);
+}

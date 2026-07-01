@@ -49,7 +49,9 @@ pub fn compose<T: Identity + Clone>(
 
     let mut out = Vec::new();
 
-    if !filters.hide_global {
+    // `hide_global` is a workspace-mode filter; at Global scope there is nothing else to
+    // show, so ignore it there rather than yielding an empty view.
+    if !(filters.hide_global && workspace.is_some()) {
         for g in global {
             let duplicate = ws_ids.contains(g.identity());
             if duplicate && filters.collapse_duplicates {
