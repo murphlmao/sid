@@ -14,3 +14,6 @@ repository.workspace = true
 # font-kit + wayland + x11 automatically.
 gpui = "0.2"
 sid-store = { path = "../sid-store" }
+# Grapheme/word segmentation for the TextInput element (cursor movement, masking).
+# Already in the tree transitively via gpui; pinned here as a direct dep.
+unicode-segmentation = "1"
