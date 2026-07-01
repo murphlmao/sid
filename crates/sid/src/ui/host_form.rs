@@ -138,7 +138,6 @@ impl HostForm {
 
     /// An edit form prefilled from `original`, writing back into `origin` on save.
     /// The alias is locked (rename is out of scope for P3.2).
-    #[allow(dead_code)] // wired up by the row actions in A7
     pub fn new_edit(
         cx: &mut Context<Self>,
         original: Host,
