@@ -1,6 +1,8 @@
 //! P2.5 (critical path) — the Store facade: scoped writes, composition, promote/demote.
 
-use sid_store::{Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta};
+use sid_store::{
+    AuthMethod, Host, Scope, Store, StoreError, ViewFilters, WorkspaceId, WorkspaceMeta,
+};
 
 fn setup() -> (tempfile::TempDir, Store, WorkspaceId) {
     let dir = tempfile::tempdir().unwrap();
@@ -25,6 +27,7 @@ fn host(alias: &str, user: &str) -> Host {
         host: "h".into(),
         port: 22,
         secret_ref: None,
+        auth: AuthMethod::default(),
     }
 }
 
@@ -164,4 +167,76 @@ fn demote_refuses_when_workspace_already_has_the_alias() {
         w.iter().find(|a| a.item.alias == "prod").unwrap().item.user,
         "workspace"
     );
+}
+
+#[test]
+fn delete_from_workspace_leaves_global_intact_and_unshadows_it() {
+    let (_d, s, id) = setup();
+    // A legitimate cross-layer duplicate: workspace shadows global in the collapsed view.
+    s.write_host(&host("dup", "global"), &Scope::Global)
+        .unwrap();
+    s.write_host(&host("dup", "workspace"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    assert!(
+        s.delete_host("dup", &Scope::Workspace(id.clone())).unwrap(),
+        "deleting the workspace copy reports it was present"
+    );
+
+    // Global copy untouched; deleting the workspace copy un-shadows it in the view.
+    assert_eq!(s.global().get_host("dup").unwrap().unwrap().user, "global");
+    let w = s
+        .read_hosts(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    let d = w.iter().find(|a| a.item.alias == "dup").unwrap();
+    assert_eq!(d.origin, Scope::Global, "only the global copy remains");
+    assert_eq!(d.item.user, "global");
+}
+
+#[test]
+fn delete_from_global_leaves_workspace_intact() {
+    let (_d, s, id) = setup();
+    s.write_host(&host("dup", "global"), &Scope::Global)
+        .unwrap();
+    s.write_host(&host("dup", "workspace"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    assert!(s.delete_host("dup", &Scope::Global).unwrap());
+
+    // Global copy gone; workspace copy intact.
+    assert!(s.global().get_host("dup").unwrap().is_none());
+    let w = s
+        .read_hosts(
+            &Scope::Workspace(id.clone()),
+            ViewFilters {
+                collapse_duplicates: false,
+                hide_global: false,
+            },
+        )
+        .unwrap();
+    let hs: Vec<_> = w.iter().filter(|a| a.item.alias == "dup").collect();
+    assert_eq!(hs.len(), 1);
+    assert_eq!(hs[0].origin, Scope::Workspace(id));
+    assert_eq!(hs[0].item.user, "workspace");
+}
+
+#[test]
+fn delete_missing_alias_is_ok_false() {
+    let (_d, s, id) = setup();
+    assert!(
+        !s.delete_host("nope", &Scope::Global).unwrap(),
+        "deleting an absent global host is Ok(false)"
+    );
+    assert!(
+        !s.delete_host("nope", &Scope::Workspace(id)).unwrap(),
+        "deleting an absent workspace host is Ok(false)"
+    );
+}
+
+#[test]
+fn delete_from_unregistered_workspace_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("sid.redb")).unwrap();
+    let ghost = WorkspaceId("/nonexistent".into());
+    assert!(s.delete_host("x", &Scope::Workspace(ghost)).is_err());
 }

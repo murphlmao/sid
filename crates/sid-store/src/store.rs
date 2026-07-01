@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use crate::composer::{ViewFilters, compose};
-use crate::entities::Host;
+use crate::entities::{Host, Settings};
 use crate::error::{Result, StoreError};
 use crate::global::GlobalStore;
 use crate::scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
@@ -33,6 +33,16 @@ impl Store {
     /// Direct access to the global layer (registry + global-only operations).
     pub fn global(&self) -> &GlobalStore {
         &self.global
+    }
+
+    /// Read the machine-local [`Settings`] (identity-level; always global, never layered).
+    pub fn settings(&self) -> Result<Settings> {
+        self.global.get_settings()
+    }
+
+    /// Persist the machine-local [`Settings`].
+    pub fn set_settings(&self, s: &Settings) -> Result<()> {
+        self.global.set_settings(s)
     }
 
     /// Register (or update) a workspace so scoped reads/writes can resolve its file.
@@ -66,6 +76,18 @@ impl Store {
         match scope {
             Scope::Global => self.global.upsert_host(host),
             Scope::Workspace(id) => self.workspace_store(id)?.upsert_host(host),
+        }
+    }
+
+    /// Delete a host from **exactly** the named layer, returning whether one was present.
+    ///
+    /// This removes only the record in `scope`; a same-alias copy in the other layer is
+    /// untouched. Deleting a workspace copy therefore un-shadows the global copy in the
+    /// collapsed view — that is attributive behaviour, not loss.
+    pub fn delete_host(&self, alias: &str, scope: &Scope) -> Result<bool> {
+        match scope {
+            Scope::Global => self.global.remove_host(alias),
+            Scope::Workspace(id) => self.workspace_store(id)?.remove_host(alias),
         }
     }
 

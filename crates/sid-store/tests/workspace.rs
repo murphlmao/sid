@@ -1,6 +1,6 @@
 //! P2.3 — WorkspaceStore (`.sid/config.toml`): round-trip, missing = empty, malformed = error.
 
-use sid_store::entities::{DbConnection, Host, QuickAction};
+use sid_store::entities::{AuthMethod, DbConnection, Host, QuickAction};
 use sid_store::workspace::{WorkspaceConfig, WorkspaceStore};
 
 fn host(alias: &str, secret: Option<&str>) -> Host {
@@ -10,6 +10,7 @@ fn host(alias: &str, secret: Option<&str>) -> Host {
         host: "prod.acme-api.internal".into(),
         port: 22,
         secret_ref: secret.map(Into::into),
+        auth: AuthMethod::default(),
     }
 }
 
@@ -92,6 +93,55 @@ fn remove_host_reports_presence() {
         "removing an absent host is Ok(false)"
     );
     assert!(ws.load().unwrap().ssh.host.is_empty());
+}
+
+#[test]
+fn auth_method_toml_roundtrips_all_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceStore::new(dir.path());
+    let mut cfg = WorkspaceConfig::default();
+    for (alias, auth) in [
+        ("agent-host", AuthMethod::Agent),
+        ("pw-host", AuthMethod::Password),
+        (
+            "key-host",
+            AuthMethod::Key {
+                path: "/home/u/.ssh/id_ed25519".into(),
+            },
+        ),
+    ] {
+        let mut h = host(alias, None);
+        h.auth = auth;
+        cfg.ssh.host.push(h);
+    }
+    ws.save(&cfg).unwrap();
+
+    let got = ws.load().unwrap();
+    assert_eq!(
+        got.ssh.host, cfg.ssh.host,
+        "all three auth variants survive"
+    );
+}
+
+#[test]
+fn toml_without_auth_key_defaults_to_agent() {
+    // A pre-`auth` committed config (no `auth` on the host) must still parse.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".sid")).unwrap();
+    std::fs::write(
+        dir.path().join(".sid").join("config.toml"),
+        "version = 1\n\n[[ssh.host]]\nalias = \"legacy\"\nuser = \"deploy\"\nhost = \"h\"\nport = 22\n",
+    )
+    .unwrap();
+    let ws = WorkspaceStore::new(dir.path());
+    let cfg = ws.load().unwrap();
+    assert_eq!(cfg.ssh.host.len(), 1);
+    assert_eq!(cfg.ssh.host[0].alias, "legacy");
+    assert_eq!(
+        cfg.ssh.host[0].auth,
+        AuthMethod::Agent,
+        "missing auth key defaults to Agent"
+    );
 }
 
 #[test]

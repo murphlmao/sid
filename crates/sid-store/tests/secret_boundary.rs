@@ -5,7 +5,7 @@
 //! resolves back to the material only through the secret store.
 
 use sid_secrets::{MemorySecretStore, SecretId, SecretStore};
-use sid_store::{Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta};
+use sid_store::{AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta};
 
 fn setup() -> (tempfile::TempDir, Store, WorkspaceId) {
     let dir = tempfile::tempdir().unwrap();
@@ -43,6 +43,7 @@ fn committed_config_holds_ref_never_secret() {
         host: "prod.acme-api.internal".into(),
         port: 22,
         secret_ref: Some(secret_ref.into()),
+        auth: AuthMethod::default(),
     };
     store
         .write_host(&host, &Scope::Workspace(id.clone()))
@@ -83,6 +84,7 @@ fn ref_resolves_to_material_only_via_secret_store() {
                 host: "h".into(),
                 port: 22,
                 secret_ref: Some("ssh.prod.key".into()),
+                auth: AuthMethod::default(),
             },
             &Scope::Workspace(id.clone()),
         )
