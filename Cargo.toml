@@ -7,6 +7,7 @@ members = [
     "crates/sid-core",
     "crates/sid-term",
     "crates/sid-ssh",
+    "crates/sid-db",
 ]
 
 [workspace.package]
@@ -31,6 +32,13 @@ russh-sftp = "2.3"
 # Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
 vt100 = "0.16"
+
+# Database clients (Track DA, `sid-db`) — tokio-postgres = "0.7", the standard
+# async Postgres driver; rusqlite = { features = ["bundled", "column_decltype"] },
+# embedded SQLite that ships its own C source (no system SQLite install needed),
+# with column_decltype exposing declared column types for the type mapping.
+tokio-postgres = "0.7"
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 
 # Async
 async-trait = "0.1"
