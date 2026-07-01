@@ -4759,12 +4759,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sid-secrets"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sid-store"
 version = "0.0.1"
 dependencies = [
  "postcard",
  "redb",
  "serde",
+ "sid-secrets",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
