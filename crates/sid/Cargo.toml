@@ -13,3 +13,4 @@ repository.workspace = true
 # breaking changes between 0.2.x and later. Linux default features pull in
 # font-kit + wayland + x11 automatically.
 gpui = "0.2"
+sid-store = { path = "../sid-store" }
