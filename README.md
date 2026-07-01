@@ -96,12 +96,12 @@ Every dependency in this list is behind an internal trait, so any of them can be
 
 The app is named after my dog — a fat little black shih tzu terrier who passed away in 2016. He was *the* sweetest, the funniest, and the most loving dog.
 
-When he passed, I wanted to name something I'd touch every day after him. Creating a custom tool that made my life easier is reflective of who Sid was to me every single day during the darkest period of my life. Every launch is a small hello, and a small reminder of what he continues to do for me every day. 
+When he passed, I wanted to name something I'd touch every day after him. Creating a custom tool that made my life easier is reflective of who Sid was to me every single day during the darkest period of my life. Every launch is a small hello, and a small reminder of what he continues to do for me every day.
 
 ---
 
 <div align="center">
 
-`✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;&nbsp;*for sid, who liked all of the snow, hotdogs, and cake. *&nbsp;&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
+`✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;&nbsp;*for sid, who liked all of the snow, hotdogs, cake, and running into fireworks on the 4th of July for some reason. *&nbsp;&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
 
 </div>
