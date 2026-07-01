@@ -245,6 +245,8 @@ mod tests {
                 id: "conn1".into(),
                 dsn: "postgres://x@y/z".into(),
                 secret_ref: None,
+                kind: sid_core::db::DbKind::Postgres,
+                name: "conn1".into(),
             })
             .unwrap();
         (dir, Arc::new(store))
