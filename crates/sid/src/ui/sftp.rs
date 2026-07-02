@@ -18,6 +18,7 @@ use sid_store::Host;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssh_connect::{connect_params, resolve_secret};
+use crate::ui::TextInput;
 use crate::ui::terminal::ssh_runtime;
 
 // ---- neutral grayscale palette, matches app.rs/terminal.rs -----------------------------
@@ -26,7 +27,9 @@ const BORDER: u32 = 0x2c2c30;
 const FG: u32 = 0xdcdce0;
 const FG_DIM: u32 = 0x8a8a90;
 const ACTIVE_BG: u32 = 0x33343a;
+const ACTIVE_FG: u32 = 0xffffff;
 const ROW_ALT: u32 = 0x1c1c20;
+const BRAND: u32 = 0x5a9ad0;
 
 /// Monospace family for the breadcrumb/entry list, matching the rest of the app.
 const MONO: &str = "DejaVu Sans Mono";
@@ -43,7 +46,7 @@ pub enum SftpStatus {
 type SharedSftp = Arc<AsyncMutex<Box<dyn SftpSession>>>;
 
 /// A live (or connecting/failed) SFTP browser: an adapter-backed session plus the current
-/// directory's cached listing. S3 adds navigation/render; S4 adds download/upload.
+/// directory's cached listing.
 pub struct SftpBrowser {
     session: Option<SharedSftp>,
     status: SftpStatus,
@@ -52,6 +55,12 @@ pub struct SftpBrowser {
     /// The last list/download/upload operation's status or error message. Distinct from a
     /// connect failure, which lives in `status` instead.
     error: Option<String>,
+    /// The `⭱ upload` prompt's local-path field (S4). A text-path prompt until a native
+    /// file dialog adapter exists.
+    // ponytail: text-path upload until a native file dialog adapter exists.
+    upload_input: Entity<TextInput>,
+    /// Whether the upload prompt row is showing.
+    show_upload: bool,
 }
 
 impl SftpBrowser {
@@ -74,6 +83,8 @@ impl SftpBrowser {
                 path: "/".to_string(),
                 entries: Vec::new(),
                 error: None,
+                upload_input: cx.new(|cx| TextInput::new(cx, "/remote/upload/path")),
+                show_upload: false,
             };
             browser.start_connect(host, secret, known_hosts_path, cx);
             browser
@@ -194,6 +205,113 @@ impl SftpBrowser {
         let path = self.path.clone();
         self.navigate(path, cx);
     }
+
+    // ---- download / upload (S4) ----------------------------------------------------------
+
+    /// `⭳ download`: fetch `name` (a file in the current directory) and write it to
+    /// `$HOME/Downloads/<name>`. Surfaces success or failure in `error` — reused as a
+    /// general status line, not just for failures.
+    fn download(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let remote_path = join_path(&self.path, &name);
+        self.error = None;
+        cx.spawn(async move |this, cx| {
+            let result: Result<PathBuf, String> = async {
+                let bytes = ssh_runtime()
+                    .spawn(async move { session.lock().await.get(&remote_path).await })
+                    .await
+                    .map_err(|e| format!("download task panicked: {e}"))?
+                    .map_err(|e| e.to_string())?;
+                let dir = downloads_dir();
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("create {}: {e}", dir.display()))?;
+                let dest = dir.join(&name);
+                std::fs::write(&dest, &bytes)
+                    .map_err(|e| format!("write {}: {e}", dest.display()))?;
+                Ok(dest)
+            }
+            .await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.error = Some(match result {
+                    Ok(dest) => format!("downloaded to {}", dest.display()),
+                    Err(e) => e,
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `⭱ upload`: show/hide the local-path prompt, focusing the field when it opens.
+    fn toggle_upload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_upload = !self.show_upload;
+        if self.show_upload {
+            self.upload_input.read(cx).focus(window);
+        }
+        cx.notify();
+    }
+
+    /// Read the local path from the upload prompt, `put` it under the current remote
+    /// directory (keeping the local file's own name), then refresh the listing.
+    fn upload(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let local_path = self.upload_input.read(cx).content().to_string();
+        if local_path.trim().is_empty() {
+            self.error = Some("enter a local file path to upload".to_string());
+            cx.notify();
+            return;
+        }
+        let remote_dir = self.path.clone();
+        self.error = None;
+        cx.spawn(async move |this, cx| {
+            let result: Result<String, String> = async {
+                let local = PathBuf::from(local_path.trim());
+                let name = local
+                    .file_name()
+                    .ok_or_else(|| format!("{}: no file name", local.display()))?
+                    .to_string_lossy()
+                    .into_owned();
+                let remote_path = join_path(&remote_dir, &name);
+                let bytes = std::fs::read(&local)
+                    .map_err(|e| format!("read {}: {e}", local.display()))?;
+                ssh_runtime()
+                    .spawn(async move { session.lock().await.put(&remote_path, &bytes).await })
+                    .await
+                    .map_err(|e| format!("upload task panicked: {e}"))?
+                    .map_err(|e| e.to_string())?;
+                Ok(name)
+            }
+            .await;
+            let _ = this.update(cx, |browser, cx| {
+                match result {
+                    Ok(name) => {
+                        browser.error = Some(format!("uploaded {name}"));
+                        browser.show_upload = false;
+                        browser.upload_input.update(cx, |i, cx| i.reset(cx));
+                        let path = browser.path.clone();
+                        browser.navigate(path, cx);
+                    }
+                    Err(e) => browser.error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+/// The user's `Downloads` directory: `$HOME/Downloads`. No XDG `user-dirs.dirs` parsing —
+/// matches the plan's "or `$HOME/Downloads`" fallback rather than pulling in a `dirs` crate
+/// for one path.
+fn downloads_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join("Downloads")
 }
 
 // ---- pure path logic + entry ordering (S2) ---------------------------------------------
@@ -299,6 +417,7 @@ impl SftpBrowser {
             .flex_col()
             .flex_1()
             .child(self.toolbar(cx))
+            .when(self.show_upload, |el| el.child(self.upload_row(cx)))
             .when_some(self.error.clone(), |el, msg| el.child(status_line(&msg)))
             .child(
                 uniform_list(
@@ -333,6 +452,14 @@ impl SftpBrowser {
         let refresh = button(("sftp-refresh", 0), "⟳".into(), FG_DIM).on_click(cx.listener(
             |this, _ev: &ClickEvent, _window, cx| this.refresh(cx),
         ));
+        let upload_label: SharedString = if self.show_upload {
+            "✕ upload".into()
+        } else {
+            "⭱ upload".into()
+        };
+        let upload_toggle = button(("sftp-upload-toggle", 0), upload_label, BRAND).on_click(
+            cx.listener(|this, _ev: &ClickEvent, window, cx| this.toggle_upload(window, cx)),
+        );
 
         div()
             .flex()
@@ -346,6 +473,41 @@ impl SftpBrowser {
             .child(up)
             .child(refresh)
             .child(self.breadcrumb(cx))
+            .child(upload_toggle)
+    }
+
+    /// The `⭱ upload` prompt: a local-path [`TextInput`] + confirm button. `// ponytail:
+    /// text-path upload until a native file dialog adapter exists.`
+    fn upload_row(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child("local file to upload:"),
+            )
+            .child(div().flex_1().child(self.upload_input.clone()))
+            .child(
+                div()
+                    .id("sftp-upload-confirm")
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .bg(rgb(BRAND))
+                    .text_color(rgb(ACTIVE_FG))
+                    .child("Upload")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.upload(cx))),
+            )
     }
 
     /// Clickable breadcrumb of the current path's segments — root first, then each
@@ -405,6 +567,25 @@ impl SftpBrowser {
         };
         let mtime = format_mtime(entry.mtime_secs);
         let alt = ix % 2 == 1;
+        let enter_name = name.clone();
+        let download_name = name.clone();
+
+        // Files get a `⭳ download` action; dirs don't (nothing to fetch).
+        let download_button = (!is_dir).then(|| {
+            div()
+                .id(("sftp-download", ix))
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(BRAND))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child("⭳")
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.download(download_name.clone(), cx);
+                }))
+        });
 
         div()
             .id(("sftp-entry", ix))
@@ -428,9 +609,10 @@ impl SftpBrowser {
             )
             .child(div().w(px(80.)).text_xs().text_color(rgb(FG_DIM)).child(size))
             .child(div().w(px(140.)).text_xs().text_color(rgb(FG_DIM)).child(mtime))
+            .children(download_button)
             .when(is_dir, |el| {
                 el.cursor_pointer().hover(|s| s.bg(rgb(ACTIVE_BG))).on_click(cx.listener(
-                    move |this, _ev: &ClickEvent, _window, cx| this.enter_dir(&name, cx),
+                    move |this, _ev: &ClickEvent, _window, cx| this.enter_dir(&enter_name, cx),
                 ))
             })
     }
