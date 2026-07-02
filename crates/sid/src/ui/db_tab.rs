@@ -23,14 +23,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, FontWeight, IntoElement,
-    SharedString, Subscription, WeakEntity, Window, anchored, deferred, div, point, prelude::*, px,
-    rgb, rgba, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Entity, FontWeight, IntoElement,
+    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    anchored, deferred, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::{Root, Theme, ThemeMode};
 use sid_core::db::{
-    DbClient, DbError, OpenParams, PageCursor, QueryPage, Row, SchemaInfo, TableInfo,
+    DbClient, DbError, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
@@ -40,6 +41,7 @@ use crate::db_registry::DbRegistry;
 use crate::ui::db_conn_form::{
     DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
+use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
 
 // DANGER matches app.rs's palette (used by the delete action's armed state).
@@ -136,6 +138,12 @@ pub struct DbTabState {
     /// Cached schema for whichever connection `client_for` names. `None` before the
     /// first successful fetch (or after switching to a connection with none yet).
     schema: Option<SchemaInfo>,
+    /// Relationship metadata (FK edges + primary keys) for the same connection as
+    /// `schema` — fetched alongside it in [`fetch_schema`] and cleared on the same
+    /// triggers (connection switch, re-fetch). Feeds the "⧉ diagram" pop-out window
+    /// (`db_diagram::DiagramView`); `None` before the first successful fetch, same as
+    /// `schema`.
+    schema_graph: Option<SchemaGraph>,
     /// True while a `schema_introspect` task is in flight — guards re-entrant
     /// selection/⟳ clicks the same way `running` guards Run.
     schema_loading: bool,
@@ -343,7 +351,12 @@ fn schema_tree_rows(schema: &SchemaInfo, expanded: &HashSet<String>) -> Vec<Sche
 /// `schema.table` for Postgres (non-empty schema), or the bare table name for SQLite
 /// and the redb browse engine (no schema namespace). Doubles as the tree row's expanded
 /// key and the identifier `SELECT * FROM <table_display_name>` inserts.
-fn table_display_name(table: &TableInfo) -> String {
+///
+/// `pub(crate)` — `db_diagram::DiagramView` joins [`sid_core::db::ForeignKey`]/
+/// `primary_keys` edges (qualified the same way, per that type's doc comment) to table
+/// boxes by this exact key, so the diagram reuses this helper rather than recomputing
+/// the rule.
+pub(crate) fn table_display_name(table: &TableInfo) -> String {
     match table.schema.as_deref() {
         Some(s) if !s.is_empty() => format!("{s}.{}", table.name),
         _ => table.name.clone(),
@@ -374,6 +387,7 @@ impl DbTabState {
             next_cursor: None,
             last_page: None,
             schema: None,
+            schema_graph: None,
             schema_loading: false,
             schema_error: None,
             schema_expanded: HashSet::new(),
@@ -780,16 +794,24 @@ impl AppState {
             .child(div().text_xs().text_color(rgb(FG_DIM)).child("schema"))
             .child(
                 div()
-                    .id("db-schema-refresh")
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_color(rgb(BRAND))
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                    .child(if self.db.schema_loading { "…" } else { "⟳" })
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                        this.refresh_schema(cx);
-                    })),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(self.diagram_button(cx))
+                    .child(
+                        div()
+                            .id("db-schema-refresh")
+                            .px_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_color(rgb(BRAND))
+                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .child(if self.db.schema_loading { "…" } else { "⟳" })
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.refresh_schema(cx);
+                            })),
+                    ),
             );
 
         let body: AnyElement = if self.db.schema_loading && self.db.schema.is_none() {
@@ -844,6 +866,80 @@ impl AppState {
             .bg(rgb(FIELD_BG))
             .child(header)
             .child(body)
+    }
+
+    /// "⧉ diagram" — opens the Access-style relationships pop-out window (see
+    /// [`Self::open_diagram_window`]). Enabled (brand-colored, clickable) only once a
+    /// schema is cached for the active connection; otherwise rendered dim and inert
+    /// rather than hidden, matching this tab's convention of always-present, sometimes
+    /// no-op controls (see `query_pane`'s doc comment on Run/next-page).
+    fn diagram_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.db.schema.is_some();
+        let button = div()
+            .id("db-diagram-open")
+            .px_1()
+            .rounded_sm()
+            .text_color(rgb(if enabled { BRAND } else { FG_DIM }))
+            .child("⧉ diagram");
+        if enabled {
+            button
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    this.open_diagram_window(cx);
+                }))
+                .into_any_element()
+        } else {
+            button.into_any_element()
+        }
+    }
+
+    /// Open the relationships diagram in its own OS window — a snapshot of the cached
+    /// [`SchemaInfo`] + [`SchemaGraph`] handed to a fresh [`DiagramView`] entity.
+    /// Synchronous: sid is a single [`gpui::Application`] and `Context` derefs to
+    /// `App`, so `cx.open_window` opens a second top-level window in the same process
+    /// (no second instance, no subprocess) right here in the click handler. Cribs the
+    /// window-bootstrap shape from `main.rs` exactly — `Root::new` must be the window's
+    /// first layer and `Theme::change` must run before anything paints, or
+    /// gpui-component's widgets panic reaching for a `Root` ancestor. A snapshot means
+    /// the pop-out goes stale if the schema changes later; re-opening it re-reads
+    /// whatever is cached then (acceptable for v1 — noted in the module's plan).
+    fn open_diagram_window(&mut self, cx: &mut Context<Self>) {
+        let Some(schema) = self.db.schema.clone() else {
+            return;
+        };
+        let graph = self.db.schema_graph.clone().unwrap_or_default();
+        let connection_label = self
+            .db
+            .active_id
+            .as_deref()
+            .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
+            .map(|a| {
+                if a.item.name.is_empty() {
+                    a.item.id.clone()
+                } else {
+                    a.item.name.clone()
+                }
+            })
+            .unwrap_or_else(|| "connection".to_string());
+        let title = format!("sid — relationships · {connection_label}");
+
+        let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);
+        let _ = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(title.into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            move |window, cx| {
+                Theme::change(ThemeMode::Dark, Some(window), cx);
+                let view = cx.new(|_cx| DiagramView::new(schema, graph));
+                cx.new(|cx| Root::new(view, window, cx))
+            },
+        );
     }
 
     /// One [`SchemaRow`]'s rendering — a table header (chevron toggles expand, name
@@ -1082,6 +1178,7 @@ impl AppState {
                     // resolves) so the tree never shows a stale, wrong-connection
                     // schema mid-load — D1's "on connect" trigger.
                     this.db.schema = None;
+                    this.db.schema_graph = None;
                     this.db.schema_error = None;
                     this.db.schema_expanded.clear();
                 }
@@ -1527,10 +1624,11 @@ impl AppState {
             let _ = this.update(cx, |this, cx| {
                 this.db.schema_loading = false;
                 match outcome {
-                    Ok((client, schema)) => {
+                    Ok((client, schema, graph)) => {
                         this.db.client = Some(client);
                         this.db.client_for = Some(id);
                         this.db.schema = Some(schema);
+                        this.db.schema_graph = Some(graph);
                     }
                     Err(e) => this.db.schema_error = Some(e),
                 }
@@ -1606,12 +1704,16 @@ impl AppState {
 
 /// The connect-or-reuse-then-schema body of [`AppState::refresh_schema`] — the D1
 /// counterpart of [`run_first_page`], split out for the same readability reason.
+///
+/// Also fetches [`SchemaGraph`] (FK edges + primary keys) in the same round trip — the
+/// diagram view's data contract — since both calls need the identical open-or-reuse
+/// client and there is no reason to connect twice for one schema refresh.
 async fn fetch_schema(
     factory: Arc<dyn DbClient>,
     conn: DbConnection,
     secret: Option<String>,
     cached: Option<Arc<dyn DbClient>>,
-) -> Result<(Arc<dyn DbClient>, SchemaInfo), String> {
+) -> Result<(Arc<dyn DbClient>, SchemaInfo, SchemaGraph), String> {
     let handle = ssh_runtime().spawn(async move {
         let client = match cached {
             Some(c) => c,
@@ -1626,10 +1728,11 @@ async fn fetch_schema(
             }
         };
         let schema = client.schema_introspect().await?;
-        Ok::<_, DbError>((client, schema))
+        let graph = client.schema_graph().await?;
+        Ok::<_, DbError>((client, schema, graph))
     });
     match handle.await {
-        Ok(Ok(pair)) => Ok(pair),
+        Ok(Ok(triple)) => Ok(triple),
         Ok(Err(e)) => Err(e.to_string()),
         Err(join_err) => Err(format!("schema task panicked: {join_err}")),
     }
