@@ -6,12 +6,10 @@
 //! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
 pub mod host_form;
-pub mod sftp;
-pub mod terminal;
+pub mod session;
 mod text_input;
 
-pub use sftp::{SftpBrowser, SftpStatus};
-pub use terminal::{SessionStatus, TerminalSession};
+pub use session::{SessionStatus, SshSession};
 pub use text_input::TextInput;
 
 use gpui::{App, KeyBinding, actions};

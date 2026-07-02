@@ -1,14 +1,23 @@
-//! Terminal session entity (Plan 3C, C2) — connects an SSH shell and pumps its output into
-//! a [`TerminalScreen`]. Rendering (C3) and keyboard input/resize (C4) build on this.
+//! SSH split session entity (Plan 3.5) — MobaXterm-style: **one** [`SshClient`] connection
+//! backing both a live shell (terminal) and a live SFTP browser, side by side. Subsumes
+//! Plan 3C's `TerminalSession` and Plan 3.4's `SftpBrowser`, which this module folds
+//! together — their reader-pump/render/input and list/nav/download logic is carried over
+//! near-verbatim (see git history for their standalone forms), not rewritten.
 //!
 //! GPUI's own executor is single-threaded/foreground and knows nothing about Tokio, but the
 //! `sid-ssh` adapter (russh) is Tokio-native end to end: connecting spawns a background
-//! connection-driver task, and the shell's reader task is `tokio::spawn`ed too (see
-//! `sid_ssh::shell::RusshShell::new`). So this module keeps one dedicated, process-lifetime
-//! Tokio runtime (`ssh_runtime`) and only ever crosses into it for the span of a single
-//! `.spawn(..).await` — the gpui-side task stays on gpui's own foreground executor throughout,
-//! which is what makes the "no blocking SSH/PTY calls inline in render" rule hold structurally:
-//! the only thing gpui's executor ever awaits here is a `JoinHandle`.
+//! connection-driver task, and the shell's reader task is `tokio::spawn`ed too. So this
+//! module keeps one dedicated, process-lifetime Tokio runtime (`ssh_runtime`) and only ever
+//! crosses into it for the span of a single `.spawn(..).await` — the gpui-side task stays on
+//! gpui's own foreground executor throughout, which is what makes the "no blocking SSH/SFTP
+//! calls inline in render" rule hold structurally: the only thing gpui's executor ever awaits
+//! here is a `JoinHandle`.
+//!
+//! **One connection:** [`SshSession::open`] connects the [`SshClient`] exactly once, then
+//! calls `open_shell` *and* `open_sftp` on that same client — never a second `connect`/auth.
+//! The client is kept alive (`client: Arc<AsyncMutex<Box<dyn SshClient>>>`) for the session's
+//! whole lifetime because the shell/SFTP channels are multiplexed over its connection; if the
+//! client were dropped, both channels would go with it.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -17,9 +26,9 @@ use std::time::Duration;
 use gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight,
     Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine, TextRun,
-    UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, rgb,
+    UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, rgb, uniform_list,
 };
-use sid_core::ssh::{SshClient, SshError, SshShell};
+use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShell};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use sid_secrets::SecretStore;
 use sid_ssh::RusshClientFactory;
@@ -29,49 +38,27 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssh_connect::{connect_params, resolve_secret};
 
-/// Lifecycle status of a [`TerminalSession`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionStatus {
-    Connecting,
-    Connected,
-    Failed(String),
-    Closed,
-}
+// ---- neutral grayscale palette, matches app.rs's/terminal.rs's/sftp.rs's -----------------
+const BG: u32 = 0x161618;
+const BORDER: u32 = 0x2c2c30;
+const FG: u32 = 0xdcdce0;
+const FG_DIM: u32 = 0x8a8a90;
 
-/// A live (or connecting/failed) SSH terminal: an adapter-backed shell feeding a
-/// [`TerminalScreen`] snapshot that C3 paints and C4 drives with keyboard input.
-pub struct TerminalSession {
-    screen: Box<dyn TerminalScreen>,
-    shell: Option<Arc<AsyncMutex<Box<dyn SshShell>>>>,
-    status: SessionStatus,
-    rows: u16,
-    cols: u16,
-    focus_handle: FocusHandle,
-    /// Set once, the render after a successful connect, to pull keyboard focus onto the
-    /// terminal without re-stealing it on every later re-render (e.g. output arriving while
-    /// the user is focused elsewhere).
-    needs_focus: bool,
-}
+/// Monospace family; gpui falls back to a proportional font if it's missing locally.
+const MONO: &str = "DejaVu Sans Mono";
+const TERM_FONT_SIZE: Pixels = px(14.);
+
+/// The file sidebar's fixed width (plan: "~320px").
+const SIDEBAR_WIDTH: Pixels = px(320.);
 
 /// How often the read-loop hops onto the Tokio runtime to drain the shell's output buffer.
 // ponytail: fixed-interval poll, not event-driven — fine at ~30Hz for a terminal; revisit only
 // if `SshShell` grows a readable-notify.
 const POLL_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Placeholder pane size until C4's viewport-driven resize computes the real one.
+/// Placeholder pane size until the viewport-driven resize computes the real one.
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
-
-// ---- rendering (C3): grid painted from `screen.cells()` ---------------------------------
-
-/// Matches `app.rs`'s neutral palette so the terminal pane blends with the rest of the app
-/// instead of announcing itself as a separate widget.
-const TERM_BG: u32 = 0x161618;
-const TERM_FG: u32 = 0xdcdce0;
-const TERM_FONT_SIZE: Pixels = px(14.);
-
-/// Monospace family; gpui falls back to a proportional font if it's missing locally.
-const MONO: &str = "DejaVu Sans Mono";
 
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
 /// first use and driven forever on its own thread — gpui's foreground executor only ever awaits
@@ -92,29 +79,81 @@ pub(crate) fn ssh_runtime() -> &'static tokio::runtime::Handle {
     })
 }
 
-impl TerminalSession {
-    /// Resolve the host's secret, then spawn the connect: build params (C1) → open a client →
-    /// `connect` → `open_shell` → store the shell and start the read-loop; any failure lands in
-    /// `status` as `Failed`.
-    pub fn connect(
+/// Lifecycle status of an [`SshSession`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionStatus {
+    Connecting,
+    Connected,
+    Failed(String),
+    Closed,
+}
+
+type SharedShell = Arc<AsyncMutex<Box<dyn SshShell>>>;
+type SharedSftp = Arc<AsyncMutex<Box<dyn SftpSession>>>;
+type SharedClient = Arc<AsyncMutex<Box<dyn SshClient>>>;
+
+/// A live (or connecting/failed/closed) SSH session: one adapter-backed client with a shell
+/// channel feeding a [`TerminalScreen`] (the terminal pane) and an SFTP channel feeding a
+/// cached directory listing (the file panel) — MobaXterm-style, over the same connection.
+pub struct SshSession {
+    // ---- the one shared connection ------------------------------------------------------
+    client: Option<SharedClient>,
+    status: SessionStatus,
+
+    // ---- shell / terminal (Plan 3C) -----------------------------------------------------
+    screen: Box<dyn TerminalScreen>,
+    shell: Option<SharedShell>,
+    rows: u16,
+    cols: u16,
+    focus_handle: FocusHandle,
+    /// Set once, on the render after a successful connect, to pull keyboard focus onto the
+    /// terminal without re-stealing it on every later re-render (e.g. output arriving while
+    /// the user is focused elsewhere).
+    needs_focus: bool,
+
+    // ---- sftp / files (Plan 3.4) ---------------------------------------------------------
+    sftp: Option<SharedSftp>,
+    /// The current directory's absolute path, as resolved by the server (never a bare `"."`).
+    path: String,
+    entries: Vec<SftpEntry>,
+    /// The last file-panel operation's status or error — distinct from `status`, which is
+    /// the connection's own lifecycle. A listing failure here does not fail the session:
+    /// the terminal keeps working even if e.g. the home directory can't be read.
+    file_error: Option<String>,
+}
+
+impl SshSession {
+    /// Resolve the host's secret, then spawn the connect: build params (3C's `connect_params`)
+    /// → open a client → `connect` **once** → `open_shell` + `open_sftp` on that same client →
+    /// store both, start the shell's read-loop, and resolve+list the home directory. Any
+    /// connect/shell/sftp-open failure lands in `status` as `Failed`; a failure to resolve or
+    /// list the home directory is softer — it only sets `file_error`, since the terminal is
+    /// still perfectly usable without it.
+    pub fn open(
         host: Host,
         secrets: &dyn SecretStore,
         known_hosts_path: PathBuf,
         cx: &mut App,
     ) -> Entity<Self> {
-        // `secrets` is a borrowed trait object — not `'static`/`Send` — so it cannot cross into
-        // the spawned task. Resolve it synchronously here and carry only the owned bytes over;
-        // this is the only point the secret exists as plain bytes, and it is never logged.
+        // `secrets` is a borrowed trait object — not `'static`/`Send` — so it cannot cross
+        // into the spawned task. Resolve it synchronously here and carry only the owned
+        // bytes over; this is the only point the secret exists as plain bytes, and it is
+        // never logged.
         let secret = resolve_secret(secrets, &host);
         cx.new(|cx| {
-            let mut session = TerminalSession {
+            let mut session = SshSession {
+                client: None,
+                status: SessionStatus::Connecting,
                 screen: Box::new(Vt100Screen::new(DEFAULT_ROWS, DEFAULT_COLS)),
                 shell: None,
-                status: SessionStatus::Connecting,
                 rows: DEFAULT_ROWS,
                 cols: DEFAULT_COLS,
                 focus_handle: cx.focus_handle(),
                 needs_focus: false,
+                sftp: None,
+                path: "/".to_string(),
+                entries: Vec::new(),
+                file_error: None,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -135,33 +174,81 @@ impl TerminalSession {
         let rows = self.rows;
         let cols = self.cols;
         cx.spawn(async move |this, cx| {
-            let outcome: Result<Box<dyn SshShell>, String> = async {
+            type Triple = (Box<dyn SshClient>, Box<dyn SshShell>, Box<dyn SftpSession>);
+            let connect_outcome: Result<Triple, String> = async {
                 let secret = secret?;
                 let (spec, auth) = connect_params(&host, secret)?;
                 let factory = RusshClientFactory::new(known_hosts_path);
-                let mut client = factory.new_client();
+                let mut client: Box<dyn SshClient> = Box::new(factory.new_client());
                 let handle = ssh_runtime().spawn(async move {
                     client.connect(&spec, &auth).await?;
+                    // Both channels open on the *same* client — one connection, one auth.
                     let shell = client.open_shell("xterm-256color", rows, cols).await?;
-                    Ok::<_, SshError>(shell)
+                    let sftp = client.open_sftp().await?;
+                    Ok::<_, SshError>((client, shell, sftp))
                 });
                 match handle.await {
-                    Ok(Ok(shell)) => Ok(shell),
+                    Ok(Ok(triple)) => Ok(triple),
                     Ok(Err(e)) => Err(e.to_string()),
                     Err(join_err) => Err(format!("connect task panicked: {join_err}")),
                 }
             }
             .await;
 
+            let (client, shell, sftp) = match connect_outcome {
+                Ok(triple) => triple,
+                Err(err) => {
+                    let _ = this.update(cx, |session, cx| {
+                        session.status = SessionStatus::Failed(err);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            // The shell/sftp channels are live; mark the session Connected before the
+            // (best-effort) initial listing, so a slow or failing `list` never blocks the
+            // terminal from being usable.
             let _ = this.update(cx, |session, cx| {
-                match outcome {
-                    Ok(shell) => {
-                        session.shell = Some(Arc::new(AsyncMutex::new(shell)));
-                        session.status = SessionStatus::Connected;
-                        session.needs_focus = true;
-                        session.start_read_loop(cx);
+                session.client = Some(Arc::new(AsyncMutex::new(client)));
+                session.shell = Some(Arc::new(AsyncMutex::new(shell)));
+                session.status = SessionStatus::Connected;
+                session.needs_focus = true;
+                session.start_read_loop(cx);
+                cx.notify();
+            });
+
+            // Resolve `"."` to the real home directory (SFTP servers resolve it per-user —
+            // never assume a literal path), then list it. Failure here only sets
+            // `file_error`; it never re-fails `status`.
+            let mut sftp = sftp;
+            let listing = ssh_runtime()
+                .spawn(async move {
+                    let home = sftp
+                        .canonicalize(".")
+                        .await
+                        .unwrap_or_else(|_| "/".to_string());
+                    let entries = sftp.list(&home).await;
+                    (sftp, home, entries)
+                })
+                .await;
+
+            let _ = this.update(cx, |session, cx| {
+                match listing {
+                    Ok((sftp, home, Ok(mut entries))) => {
+                        sort_entries(&mut entries);
+                        session.sftp = Some(Arc::new(AsyncMutex::new(sftp)));
+                        session.path = home;
+                        session.entries = entries;
                     }
-                    Err(err) => session.status = SessionStatus::Failed(err),
+                    Ok((sftp, home, Err(e))) => {
+                        session.sftp = Some(Arc::new(AsyncMutex::new(sftp)));
+                        session.path = home;
+                        session.file_error = Some(e.to_string());
+                    }
+                    Err(join_err) => {
+                        session.file_error = Some(format!("sftp init task panicked: {join_err}"));
+                    }
                 }
                 cx.notify();
             });
@@ -176,12 +263,12 @@ impl TerminalSession {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
-                // `RusshShell::try_read` always returns `Ok` (it just drains a buffer —
-                // it never learns the channel closed), so `disconnect()` setting `status`
-                // is the only signal this loop gets; check it before every read rather
-                // than relying on the read ever erroring out. Without this, disconnecting
-                // while some other strong `Entity<TerminalSession>` handle keeps the
-                // session alive would leak this task polling forever.
+                // `RusshShell::try_read` always returns `Ok` (it just drains a buffer — it
+                // never learns the channel closed), so `disconnect()` setting `status` is the
+                // only signal this loop gets; check it before every read rather than relying
+                // on the read ever erroring out. Without this, disconnecting while some other
+                // strong `Entity<SshSession>` handle keeps the session alive would leak this
+                // task polling forever.
                 let still_connected = this
                     .update(cx, |session, _cx| {
                         session.status == SessionStatus::Connected
@@ -219,7 +306,7 @@ impl TerminalSession {
         .detach();
     }
 
-    /// Send raw bytes to the remote shell (C4 turns keystrokes into these). Fire-and-forget: a
+    /// Send raw bytes to the remote shell (keystrokes turn into these). Fire-and-forget: a
     /// write failure surfaces on the next read-loop tick as a closed session.
     pub fn send_input(&self, bytes: Vec<u8>) {
         let Some(shell) = self.shell.clone() else {
@@ -230,7 +317,7 @@ impl TerminalSession {
         });
     }
 
-    /// Recompute the pane size (C4, on viewport change) and push it to both the PTY and the
+    /// Recompute the pane size (on viewport change) and push it to both the PTY and the
     /// local screen model.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         if (rows, cols) == (self.rows, self.cols) {
@@ -247,28 +334,122 @@ impl TerminalSession {
         });
     }
 
-    /// Gracefully close the remote shell (C5's back/disconnect control).
+    /// Gracefully close everything this session opened, in one shot: the shell, the SFTP
+    /// channel, then the client itself (the connection they were multiplexed over). The
+    /// session's `← disconnect` control.
     pub fn disconnect(&mut self) {
         self.status = SessionStatus::Closed;
-        let Some(shell) = self.shell.take() else {
-            return;
-        };
+        let shell = self.shell.take();
+        let sftp = self.sftp.take();
+        let client = self.client.take();
         ssh_runtime().spawn(async move {
-            let _ = shell.lock().await.close().await;
+            if let Some(shell) = shell {
+                let _ = shell.lock().await.close().await;
+            }
+            if let Some(sftp) = sftp {
+                let _ = sftp.lock().await.close().await;
+            }
+            if let Some(client) = client {
+                let _ = client.lock().await.disconnect().await;
+            }
         });
     }
+}
 
-    /// Paint the grid: one `shape_line` call per row (gpui shapes a whole multi-run line at
-    /// once, so the row — not the cell — is the unit of work), then `paint_background` +
-    /// `paint` per shaped row inside a `canvas`. The canvas fills whatever space the parent
-    /// layout gives it; C4's resize detection (below) reads that real size back out of the
-    /// canvas's own paint bounds and reconciles `self.rows`/`self.cols` against it.
+// ---- pure path logic + entry ordering (reused/adapted from Plan 3.4's sftp.rs) -----------
+
+/// Sort directory listings dirs-first, then alphabetically (case-insensitive) within
+/// each group — called after every `list`.
+fn sort_entries(entries: &mut [SftpEntry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir.cmp(&a.is_dir).then_with(|| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        })
+    });
+}
+
+// ---- rendering: split layout (file sidebar + terminal) -----------------------------------
+
+impl SshSession {
+    /// The `Connected` view: file sidebar (fixed `SIDEBAR_WIDTH`) beside the terminal grid,
+    /// filling whatever space the parent gives it — the MobaXterm-style split.
+    fn render_split(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .size_full()
+            .child(self.file_sidebar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .size_full()
+                    .child(self.render_grid(window, cx)),
+            )
+    }
+
+    /// The file panel: a status line (current path + entry count, or the last file error)
+    /// above a scrollable, read-only listing. Painted purely from `self.entries`/`self.path`
+    /// — every SFTP call that could change them already ran, off gpui's executor, before
+    /// `cx.notify()` scheduled this render.
+    fn file_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let count = self.entries.len();
+        let summary = format!("{} · {count} entries", self.path);
+        div()
+            .w(SIDEBAR_WIDTH)
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(BG))
+            .border_r_1()
+            .border_color(rgb(BORDER))
+            .child(status_line(&summary))
+            .when_some(self.file_error.clone(), |el, msg| {
+                el.child(status_line(&format!("file panel: {msg}")))
+            })
+            .child(
+                uniform_list(
+                    "session-sftp-entries",
+                    count,
+                    cx.processor(|this, range: std::ops::Range<usize>, _win, _cx| {
+                        range.map(|ix| this.entry_row(ix)).collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1(),
+            )
+    }
+
+    /// One (still non-interactive) row of the entry list: dir/file glyph + name.
+    fn entry_row(&self, ix: usize) -> impl IntoElement + use<> {
+        let entry = &self.entries[ix];
+        let glyph = if entry.is_dir { "▸" } else { "·" };
+        div()
+            .id(("session-entry", ix))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .px_3()
+            .py_1()
+            .text_sm()
+            .child(div().w(px(14.)).text_color(rgb(FG_DIM)).child(glyph))
+            .child(div().flex_1().text_color(rgb(FG)).child(entry.name.clone()))
+    }
+
+    /// Paint the terminal grid: one `shape_line` call per row (gpui shapes a whole
+    /// multi-run line at once, so the row — not the cell — is the unit of work), then
+    /// `paint_background` + `paint` per shaped row inside a `canvas`. The canvas fills
+    /// whatever space the parent layout gives it; the resize detection below reads that
+    /// real size back out of the canvas's own paint bounds and reconciles
+    /// `self.rows`/`self.cols` against it.
     fn render_grid(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cells = self.screen.cells();
         let (cursor_row, cursor_col) = self.screen.cursor_position();
         let base_font = font(MONO);
-        let default_fg: Hsla = rgb(TERM_FG).into();
-        let default_bg: Hsla = rgb(TERM_BG).into();
+        let default_fg: Hsla = rgb(FG).into();
+        let default_bg: Hsla = rgb(BG).into();
 
         // Measure one monospace glyph — its width/the line height are the grid's cell size,
         // used both to paint rows and (in the canvas below) to turn the pane's real pixel
@@ -312,7 +493,7 @@ impl TerminalSession {
 
         div()
             .size_full()
-            .bg(rgb(TERM_BG))
+            .bg(rgb(BG))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|session, event: &KeyDownEvent, window, _cx| {
                 if let Some(bytes) = key_to_bytes(&event.keystroke) {
@@ -354,7 +535,7 @@ impl TerminalSession {
     }
 }
 
-impl Render for TerminalSession {
+impl Render for SshSession {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.needs_focus {
             self.needs_focus = false;
@@ -366,12 +547,12 @@ impl Render for TerminalSession {
                 message_pane(&format!("Connection failed: {err}")).into_any_element()
             }
             SessionStatus::Closed => message_pane("Session closed.").into_any_element(),
-            SessionStatus::Connected => self.render_grid(window, cx).into_any_element(),
+            SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
         }
     }
 }
 
-impl Focusable for TerminalSession {
+impl Focusable for SshSession {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -418,9 +599,18 @@ fn message_pane(text: &str) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgb(TERM_BG))
-        .text_color(rgb(TERM_FG))
+        .bg(rgb(BG))
+        .text_color(rgb(FG_DIM))
         .font_family(MONO)
+        .child(text.to_string())
+}
+
+fn status_line(text: &str) -> impl IntoElement {
+    div()
+        .px_3()
+        .py_1()
+        .text_xs()
+        .text_color(rgb(FG_DIM))
         .child(text.to_string())
 }
 
@@ -609,5 +799,33 @@ mod key_tests {
         let mut k = key("shift");
         k.modifiers.shift = true;
         assert_eq!(key_to_bytes(&k), None);
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> SftpEntry {
+        SftpEntry {
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            mtime_secs: 0,
+            mode: 0,
+        }
+    }
+
+    #[test]
+    fn sort_entries_puts_dirs_before_files_then_alphabetical() {
+        let mut entries = vec![
+            entry("zeta.txt", false),
+            entry("Banana", true),
+            entry("apple.txt", false),
+            entry("alpha", true),
+        ];
+        sort_entries(&mut entries);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
     }
 }
