@@ -27,6 +27,90 @@ struct PostgresInner {
     conn_task: tokio::task::JoinHandle<()>,
     /// Used by `cancel` to send the cancel-request frame on a side channel.
     cancel_token: tokio_postgres::CancelToken,
+    /// Which transport this connection was opened with — `cancel` must reuse
+    /// the same choice (a cancel request over `NoTls` to a TLS-only server,
+    /// or vice versa, fails).
+    tls: PgTls,
+}
+
+/// The transport a [`PostgresInner`] was actually opened with. Carries the
+/// live rustls connector (rather than recomputing one) so `cancel` reuses the
+/// exact trust store the connection was established with.
+enum PgTls {
+    Plain,
+    Tls(tokio_postgres_rustls::MakeRustlsConnect),
+}
+
+/// Pure TLS/plaintext decision. No I/O, no globals — a straight function of
+/// the parsed connection config, so it's unit-testable without a network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TlsChoice {
+    /// Cleartext connection. Only for a locally-trusted target.
+    Plain,
+    /// rustls-encrypted connection, platform trust store, full certificate +
+    /// hostname verification (i.e. libpq's `verify-full`).
+    Tls,
+}
+
+/// Decide `Plain` vs `Tls` for a parsed `tokio_postgres::Config`.
+///
+/// Policy (fails closed — ambiguous or remote defaults to `Tls`):
+/// - `sslmode=disable` → `Plain` (explicit opt-out).
+/// - every host is `localhost` / `127.0.0.1` / `::1` / a Unix socket → `Plain`
+///   (local, trusted transport; no network to eavesdrop).
+/// - otherwise (any remote TCP host, including the driver's own `prefer`
+///   default and an explicit `require`) → `Tls`.
+pub(crate) fn tls_choice(config: &tokio_postgres::Config) -> TlsChoice {
+    if config.get_ssl_mode() == tokio_postgres::config::SslMode::Disable {
+        return TlsChoice::Plain;
+    }
+    if config.get_hosts().iter().all(is_local_host) {
+        TlsChoice::Plain
+    } else {
+        TlsChoice::Tls
+    }
+}
+
+fn is_local_host(host: &tokio_postgres::config::Host) -> bool {
+    match host {
+        tokio_postgres::config::Host::Tcp(h) => {
+            matches!(h.as_str(), "localhost" | "127.0.0.1" | "::1")
+        }
+        #[cfg(unix)]
+        tokio_postgres::config::Host::Unix(_) => true,
+    }
+}
+
+/// Install rustls's `ring` crypto provider as the process default, if none is
+/// installed yet. Idempotent: `install_default` errors if a provider is
+/// already present (e.g. another `sid-db` client beat us to it, or a future
+/// non-Postgres TLS consumer installed one first) — that's fine, we only
+/// need *a* provider in place, not necessarily ours.
+fn ensure_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Build a rustls connector trusting the platform's native certificate store
+/// (verify-full: full chain + hostname validation, rustls's only mode).
+///
+/// // ponytail: verify-full only; self-signed/cert-pinning + explicit
+/// // sslmode=require (encrypt-no-verify) deferred — a remote self-signed
+/// // cert currently fails closed, which is the safe default. Users with a
+/// // trusted self-signed setup use sslmode=disable on a trusted network for
+/// // now.
+fn build_rustls_connector() -> tokio_postgres_rustls::MakeRustlsConnect {
+    ensure_crypto_provider();
+    let mut roots = rustls::RootCertStore::empty();
+    let loaded = rustls_native_certs::load_native_certs();
+    for cert in loaded.certs {
+        // Best-effort: a handful of unparsable platform certs shouldn't
+        // block the rest of the trust store from loading.
+        let _ = roots.add(cert);
+    }
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    tokio_postgres_rustls::MakeRustlsConnect::new(config)
 }
 
 impl Drop for PostgresInner {
@@ -68,28 +152,52 @@ impl DbClient for PostgresClient {
         } else {
             p.dsn.clone()
         };
-        // SECURITY (tracked in docs/superpowers/plans/2026-07-01-db-slice.md, task DU-TLS —
-        // MUST land before the DB tab connects to remote hosts): `NoTls` sends credentials
-        // and query data in cleartext. Acceptable only for localhost/unix-socket. A remote
-        // connection needs a rustls/native-tls connector honoring the DSN's `sslmode`
-        // (require/verify-full) with platform trust-store cert validation.
-        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
-            .await
-            .map_err(|e| DbError::Connect(e.to_string()))?;
-        let cancel_token = client.cancel_token();
-        let conn_task = tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                // Best-effort diagnostic only; the connection task ending is
-                // not itself actionable by the caller (the client Arc has
-                // already been handed back).
-                eprintln!("postgres connection task ended with error: {e}");
+        // TLS (DU-TLS, docs/superpowers/plans/2026-07-01-db-slice.md): the transport is
+        // chosen by `tls_choice` from the parsed DSN's `sslmode` + host — `NoTls` only for
+        // an explicit `sslmode=disable` or a localhost/unix-socket target; every remote host
+        // gets a rustls connection with platform trust-store verify-full. See
+        // `build_rustls_connector`'s ponytail note for the one deferred case (self-signed).
+        let config: tokio_postgres::Config = dsn
+            .parse()
+            .map_err(|e: tokio_postgres::Error| DbError::Connect(e.to_string()))?;
+        let (client, conn_task, cancel_token, tls) = match tls_choice(&config) {
+            TlsChoice::Plain => {
+                let (client, connection) = config
+                    .connect(tokio_postgres::NoTls)
+                    .await
+                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                let cancel_token = client.cancel_token();
+                let conn_task = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        // Best-effort diagnostic only; the connection task ending is
+                        // not itself actionable by the caller (the client Arc has
+                        // already been handed back).
+                        eprintln!("postgres connection task ended with error: {e}");
+                    }
+                });
+                (client, conn_task, cancel_token, PgTls::Plain)
             }
-        });
+            TlsChoice::Tls => {
+                let connector = build_rustls_connector();
+                let (client, connection) = config
+                    .connect(connector.clone())
+                    .await
+                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                let cancel_token = client.cancel_token();
+                let conn_task = tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("postgres connection task ended with error: {e}");
+                    }
+                });
+                (client, conn_task, cancel_token, PgTls::Tls(connector))
+            }
+        };
         Ok(Arc::new(PostgresClient {
             inner: Some(Arc::new(Mutex::new(PostgresInner {
                 client,
                 conn_task,
                 cancel_token,
+                tls,
             }))),
         }))
     }
@@ -221,11 +329,11 @@ impl DbClient for PostgresClient {
     async fn cancel(&self) -> Result<(), DbError> {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let guard = inner.lock().await;
-        guard
-            .cancel_token
-            .cancel_query(tokio_postgres::NoTls)
-            .await
-            .map_err(|e| DbError::Other(e.to_string()))
+        match &guard.tls {
+            PgTls::Plain => guard.cancel_token.cancel_query(tokio_postgres::NoTls).await,
+            PgTls::Tls(connector) => guard.cancel_token.cancel_query(connector.clone()).await,
+        }
+        .map_err(|e| DbError::Other(e.to_string()))
     }
 
     fn kind(&self) -> DbKind {
@@ -363,6 +471,41 @@ mod tests {
     #[test]
     fn url_encode_password_escapes_special_chars() {
         assert_eq!(url_encode_password("a:b@c"), "a%3Ab%40c");
+    }
+
+    #[test]
+    fn tls_choice_disable_is_plain() {
+        let config: tokio_postgres::Config =
+            "host=example.com sslmode=disable".parse().expect("parse");
+        assert_eq!(tls_choice(&config), TlsChoice::Plain);
+    }
+
+    #[test]
+    fn tls_choice_local_targets_are_plain() {
+        for dsn in [
+            "host=localhost",
+            "host=127.0.0.1",
+            "host=::1",
+            "host=/var/run/postgresql",
+        ] {
+            let config: tokio_postgres::Config = dsn.parse().expect("parse");
+            assert_eq!(tls_choice(&config), TlsChoice::Plain, "dsn: {dsn}");
+        }
+    }
+
+    #[test]
+    fn tls_choice_remote_default_is_tls() {
+        // No `sslmode` given — tokio-postgres defaults to `Prefer`, which
+        // this policy still upgrades to `Tls` for a non-local host.
+        let config: tokio_postgres::Config = "host=example.com".parse().expect("parse");
+        assert_eq!(tls_choice(&config), TlsChoice::Tls);
+    }
+
+    #[test]
+    fn tls_choice_remote_require_is_tls() {
+        let config: tokio_postgres::Config =
+            "host=example.com sslmode=require".parse().expect("parse");
+        assert_eq!(tls_choice(&config), TlsChoice::Tls);
     }
 
     /// Live-network path; `#[ignore]`d because it requires a reachable
