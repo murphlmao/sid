@@ -50,8 +50,10 @@ const ACTIVE_FG: u32 = 0xffffff;
 const ROW_ALT: u32 = 0x1c1c20;
 const BRAND: u32 = 0x5a9ad0;
 
-/// Monospace family; gpui falls back to a proportional font if it's missing locally.
-const MONO: &str = "DejaVu Sans Mono";
+/// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
+/// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
+/// is also what fixes nerd-font ASCII-art rendering in the terminal pane.
+const MONO: &str = "CaskaydiaCove Nerd Font Mono";
 const TERM_FONT_SIZE: Pixels = px(14.);
 
 /// The file sidebar's fixed width (plan: "~320px").
@@ -151,6 +153,11 @@ pub struct SshSession {
     /// collapse control instead, letting the terminal reclaim the full pane when browsing
     /// files isn't needed.
     sidebar_collapsed: bool,
+    /// Hidden-files toggle: when `false`, dotfile entries (`.config`, `.cache`, …) are
+    /// filtered out of the rendered listing by [`filter_hidden`]. Session-local UI state only
+    /// — not persisted, not part of the layered store. Defaults `true` (show hidden) to
+    /// preserve the listing's prior behavior for anyone who hasn't touched the toggle.
+    show_hidden: bool,
     /// The "go to path" toolbar field (P5.3) — navigates the whole remote filesystem, not
     /// just child directories.
     goto_input: Entity<TextInput>,
@@ -191,6 +198,7 @@ impl SshSession {
                 entries: Vec::new(),
                 file_error: None,
                 sidebar_collapsed: false,
+                show_hidden: true,
                 goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
                 preview: None,
             };
@@ -561,6 +569,14 @@ impl SshSession {
         self.preview = None;
         cx.notify();
     }
+
+    /// The entries actually rendered in the listing: `self.entries` filtered through
+    /// [`filter_hidden`] by the hidden-files toggle. Recomputed on demand rather than cached —
+    /// the source list is one directory's worth of entries, cheap to re-filter, and this way
+    /// `show_hidden` needs no separate invalidation path.
+    fn visible_entries(&self) -> Vec<&SftpEntry> {
+        filter_hidden(&self.entries, self.show_hidden)
+    }
 }
 
 // ---- pure path logic + entry ordering (reused/adapted from Plan 3.4's sftp.rs) -----------
@@ -600,6 +616,19 @@ fn sort_entries(entries: &mut [SftpEntry]) {
                 .cmp(&b.name.to_ascii_lowercase())
         })
     });
+}
+
+/// Filter a directory listing for display: when `show_hidden` is `false`, drop entries whose
+/// name starts with `.` (dotfiles, e.g. `.config`/`.cache`). `.` and `..` get no special-case
+/// exemption — they're just entries whose name happens to start with `.`, so the same rule
+/// hides (or shows) them as any other dotfile. When `show_hidden` is `true`, every entry
+/// passes through unchanged. Pure and non-owning: this borrows from the already-cached
+/// `entries`, never triggers a fresh SFTP call.
+fn filter_hidden(entries: &[SftpEntry], show_hidden: bool) -> Vec<&SftpEntry> {
+    entries
+        .iter()
+        .filter(|e| show_hidden || !e.name.starts_with('.'))
+        .collect()
 }
 
 /// Reduce an untrusted remote filename (an `SftpEntry.name`, as returned by whatever server
@@ -644,15 +673,16 @@ fn human_size(bytes: u64) -> String {
     format!("{size:.1} {}", UNITS[unit])
 }
 
-/// Format a Unix `mtime_secs` as `YYYY-MM-DD HH:MM` (UTC; no timezone/locale support — good
-/// enough for a browse view). Display-only, same as `human_size`.
+/// Format a Unix `mtime_secs` as a bare `YYYY-MM-DD` (UTC; no timezone/locale support — good
+/// enough for a browse view). Date-only rather than `YYYY-MM-DD HH:MM`: at the file sidebar's
+/// fixed `SIDEBAR_WIDTH`, a full timestamp doesn't fit cleanly next to the name/size columns
+/// and the per-row action buttons — it either clips mid-glyph or crushes the name column to
+/// nothing — so the modified column trades the time-of-day for a width that always fits.
+/// Display-only, same as `human_size`.
 fn format_mtime(epoch_secs: i64) -> String {
     let days = epoch_secs.div_euclid(86_400);
-    let secs_of_day = epoch_secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
-    let hh = secs_of_day / 3600;
-    let mm = (secs_of_day % 3600) / 60;
-    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Howard Hinnant's `civil_from_days`: days-since-epoch (1970-01-01) -> (year, month, day). A
@@ -690,10 +720,11 @@ impl SshSession {
             )
     }
 
-    /// The file panel: a status line (current path + entry count, or the last file error)
-    /// above a scrollable, read-only listing. Painted purely from `self.entries`/`self.path`
-    /// — every SFTP call that could change them already ran, off gpui's executor, before
-    /// `cx.notify()` scheduled this render.
+    /// The file panel: the [`toolbar`](Self::toolbar) above a scrollable, read-only listing
+    /// (filtered by the hidden-files toggle), with the last file-panel error (if any) between
+    /// them. Painted purely from `self.entries`/`self.path`/`self.show_hidden` — every SFTP
+    /// call that could change them already ran, off gpui's executor, before `cx.notify()`
+    /// scheduled this render.
     fn file_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         if self.sidebar_collapsed {
             return div()
@@ -716,7 +747,8 @@ impl SshSession {
                 .into_any_element();
         }
 
-        let count = self.entries.len();
+        let visible = self.visible_entries();
+        let count = visible.len();
         div()
             .w(SIDEBAR_WIDTH)
             .h_full()
@@ -725,26 +757,7 @@ impl SshSession {
             .bg(rgb(BG))
             .border_r_1()
             .border_color(rgb(BORDER))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(div().flex_1().child(self.toolbar(cx)))
-                    .child(
-                        div()
-                            .id("session-sidebar-collapse")
-                            .px_2()
-                            .cursor_pointer()
-                            .text_color(rgb(FG_DIM))
-                            .child("«")
-                            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
-                                session.sidebar_collapsed = true;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(status_line(&format!("{} · {count} entries", self.path)))
+            .child(self.toolbar(cx))
             .when_some(self.file_error.clone(), |el, msg| {
                 el.child(status_line(&format!("file panel: {msg}")))
             })
@@ -753,7 +766,10 @@ impl SshSession {
                     "session-sftp-entries",
                     count,
                     cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
-                        range.map(|ix| this.entry_row(ix, cx)).collect::<Vec<_>>()
+                        let visible = this.visible_entries();
+                        range
+                            .map(|ix| this.entry_row(visible[ix], ix, cx))
+                            .collect::<Vec<_>>()
                     }),
                 )
                 .flex_1(),
@@ -761,11 +777,17 @@ impl SshSession {
             .into_any_element()
     }
 
-    /// Toolbar: breadcrumb on its own row (it can wrap), `↑ up`/`⟳ refresh`/go-to-path field
-    /// below — the sidebar is only [`SIDEBAR_WIDTH`] wide, too narrow to fit everything on
-    /// one line.
+    /// Toolbar: three stacked rows, each of which fits [`SIDEBAR_WIDTH`] on its own with no
+    /// overlap — cramming the breadcrumb, path field, nav icons, and entry count onto fewer,
+    /// wider rows is what caused them to pile on top of each other at 320px.
+    ///
+    /// - Row 1: the breadcrumb (flexes, wraps onto multiple lines if long) plus the `«`
+    ///   collapse control (fixed).
+    /// - Row 2: the go-to-path field (flexes) plus `Go` (fixed).
+    /// - Row 3: `↑ up` / `⟳ refresh` / the hidden-files toggle on the left, the entry count
+    ///   right-aligned.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let icon_button = |id: (&'static str, usize), label: &'static str| {
+        let icon_button = |id: (&'static str, usize), label: String| {
             div()
                 .id(id)
                 .px_2()
@@ -777,10 +799,19 @@ impl SshSession {
                 .hover(|s| s.bg(rgb(ACTIVE_BG)))
                 .child(label)
         };
-        let up = icon_button(("session-up", 0), "↑")
+        let up = icon_button(("session-up", 0), "↑".to_string())
             .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.go_up(cx)));
-        let refresh = icon_button(("session-refresh", 0), "⟳")
+        let refresh = icon_button(("session-refresh", 0), "⟳".to_string())
             .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.refresh(cx)));
+        let hidden_mark = if self.show_hidden { "☑" } else { "☐" };
+        let hidden_toggle = icon_button(
+            ("session-hidden-toggle", 0),
+            format!("{hidden_mark} hidden"),
+        )
+        .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+            session.show_hidden = !session.show_hidden;
+            cx.notify();
+        }));
         let go = div()
             .id("session-goto-go")
             .px_2()
@@ -794,25 +825,72 @@ impl SshSession {
             .on_click(
                 cx.listener(|session, _ev: &ClickEvent, _window, cx| session.goto_submit(cx)),
             );
+        let collapse = div()
+            .id("session-sidebar-collapse")
+            .px_2()
+            .cursor_pointer()
+            .text_color(rgb(FG_DIM))
+            .child("«")
+            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                session.sidebar_collapsed = true;
+                cx.notify();
+            }));
+        let count = self.visible_entries().len();
 
         div()
             .flex()
             .flex_col()
             .border_b_1()
             .border_color(rgb(BORDER))
-            .child(div().px_2().pt_1().child(self.breadcrumb(cx)))
             .child(
+                // Row 1: breadcrumb + collapse.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .pt_1()
+                    .child(div().flex_1().child(self.breadcrumb(cx)))
+                    .child(collapse),
+            )
+            .child(
+                // Row 2: go-to-path field + Go.
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_1()
                     .px_1()
-                    .pb_1()
-                    .child(up)
-                    .child(refresh)
+                    .py_1()
                     .child(div().flex_1().child(self.goto_input.clone()))
                     .child(go),
+            )
+            .child(
+                // Row 3: up / refresh / hidden toggle (left) — entry count (right).
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_1()
+                    .pb_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .child(up)
+                            .child(refresh)
+                            .child(hidden_toggle),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(FG_DIM))
+                            .child(format!("{count} entries")),
+                    ),
             )
     }
 
@@ -864,13 +942,20 @@ impl SshSession {
             }))
     }
 
-    /// One row of the entry list: glyph, name, size, mtime, and per-row actions. Directories
-    /// are entered by clicking their *name* specifically — not the whole row — so that click
+    /// One row of the entry list: glyph, name, size, mtime, and per-row actions. `entry` comes
+    /// from [`Self::visible_entries`] — already filtered by the hidden-files toggle — and `ix`
+    /// is that filtered list's position, used only to keep each row's element ids unique and
+    /// to alternate row shading; it is not an index into `self.entries`. Directories are
+    /// entered by clicking their *name* specifically — not the whole row — so that click
     /// target sits as a sibling next to the action buttons rather than an ancestor around
     /// them; each button keeps its own independent hitbox and there is no nested-click
     /// ambiguity to resolve.
-    fn entry_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let entry = &self.entries[ix];
+    fn entry_row(
+        &self,
+        entry: &SftpEntry,
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
         let glyph = if is_dir { "▸" } else { "·" };
@@ -964,15 +1049,18 @@ impl SshSession {
             .child(name_el)
             .child(
                 div()
-                    .w(px(42.))
+                    .w(px(60.))
+                    .truncate()
+                    .font_family(MONO)
                     .text_xs()
                     .text_color(rgb(FG_DIM))
                     .child(size),
             )
             .child(
                 div()
-                    .w(px(88.))
+                    .w(px(84.))
                     .truncate()
+                    .font_family(MONO)
                     .text_xs()
                     .text_color(rgb(FG_DIM))
                     .child(mtime),
@@ -1465,6 +1553,36 @@ mod path_tests {
         sort_entries(&mut entries);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
+    }
+
+    // filter_hidden: the hidden-files toggle backing the sidebar checkbox. `.` and `..` get no
+    // special-case exemption — this pins that down, so a future edit that carves out an
+    // exception for them fails this test rather than silently changing behavior.
+
+    #[test]
+    fn filter_hidden_drops_dotfiles_when_off_and_keeps_them_when_on() {
+        let entries = vec![
+            entry("normal.txt", false),
+            entry(".hidden", false),
+            entry(".", true),
+            entry("..", true),
+            entry("visible_dir", true),
+        ];
+
+        let shown: Vec<&str> = filter_hidden(&entries, false)
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(shown, vec!["normal.txt", "visible_dir"]);
+
+        let shown: Vec<&str> = filter_hidden(&entries, true)
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(
+            shown,
+            vec!["normal.txt", ".hidden", ".", "..", "visible_dir"]
+        );
     }
 
     #[test]
