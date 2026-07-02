@@ -8,6 +8,7 @@
 pub mod db_conn_form;
 pub mod db_tab;
 pub mod host_form;
+pub mod network_tab;
 pub mod session;
 mod text_input;
 
