@@ -8,8 +8,9 @@ use std::{
 
 use async_trait::async_trait;
 use russh::{
+    Preferred,
     client::{Config, Handle, Handler},
-    keys::PublicKey,
+    keys::{Algorithm, PublicKey},
 };
 use sid_core::ssh::{ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell};
 
@@ -86,6 +87,24 @@ fn user_known_hosts_path() -> Option<PathBuf> {
     std::env::home_dir().map(|h| h.join(".ssh").join("known_hosts"))
 }
 
+/// OpenSSH's `order_hostkeyalgs`: `recorded` algorithms first, in their
+/// recorded order, then the remaining `defaults` in their original order.
+/// An algorithm recorded for the host that the client doesn't itself
+/// support/offer is dropped rather than force-added.
+fn order_hostkeyalgs(recorded: &[Algorithm], defaults: &[Algorithm]) -> Vec<Algorithm> {
+    let mut ordered: Vec<Algorithm> = recorded
+        .iter()
+        .filter(|algo| defaults.contains(algo))
+        .cloned()
+        .collect();
+    for algo in defaults {
+        if !ordered.contains(algo) {
+            ordered.push(algo.clone());
+        }
+    }
+    ordered
+}
+
 /// TOFU host-key verifying handler. Checks the server key against the user's
 /// read-only `~/.ssh/known_hosts` and sid's app file; on first contact it
 /// learns the key into the app file. A changed key is recorded in `verdict` and
@@ -152,8 +171,27 @@ impl Handler for ClientHandler {
 #[async_trait]
 impl SshClient for RusshClient {
     async fn connect(&mut self, host: &SshHostSpec, auth: &SshAuth) -> Result<(), SshError> {
+        // A host recorded only under a non-preferred algorithm (e.g. imported
+        // from ~/.ssh/known_hosts) must negotiate *that* algorithm, or the 3B
+        // fail-closed check below sees a same-host, different-algorithm entry
+        // and hard-fails as a Mismatch (see `known_hosts::verify`'s doc comment).
+        let recorded = known_hosts::recorded_algorithms(
+            &host.host,
+            host.port,
+            user_known_hosts_path().as_deref(),
+            &self.app_known_hosts,
+        );
+        let preferred = if recorded.is_empty() {
+            Preferred::DEFAULT
+        } else {
+            Preferred {
+                key: order_hostkeyalgs(&recorded, &Preferred::DEFAULT.key).into(),
+                ..Preferred::DEFAULT
+            }
+        };
         let config = Arc::new(Config {
             inactivity_timeout: Some(Duration::from_secs(300)),
+            preferred,
             ..Default::default()
         });
         let addr = format!("{}:{}", host.host, host.port);
@@ -303,5 +341,33 @@ mod tests {
             map_russh_error(russh::Error::RequestDenied),
             SshError::Other(_)
         ));
+    }
+
+    #[test]
+    fn order_hostkeyalgs_moves_recorded_first() {
+        let defaults = vec![
+            Algorithm::Ed25519,
+            Algorithm::Ecdsa {
+                curve: russh::keys::EcdsaCurve::NistP256,
+            },
+            Algorithm::Rsa { hash: None },
+        ];
+        // Recorded under the algorithm that's last in the default order —
+        // the exact "multi-key server, non-preferred algorithm" case this
+        // fixes (Plan 3C).
+        let recorded = vec![Algorithm::Rsa { hash: None }];
+        let ordered = order_hostkeyalgs(&recorded, &defaults);
+        assert_eq!(ordered[0], Algorithm::Rsa { hash: None });
+        assert_eq!(ordered.len(), defaults.len(), "no algorithm gained or lost");
+    }
+
+    #[test]
+    fn order_hostkeyalgs_ignores_unsupported_recorded_algorithm() {
+        // A recorded algorithm the client doesn't offer at all (not in
+        // `defaults`) must not be force-added — only reordered among what's
+        // already supported.
+        let defaults = vec![Algorithm::Ed25519, Algorithm::Rsa { hash: None }];
+        let recorded = vec![Algorithm::Dsa];
+        assert_eq!(order_hostkeyalgs(&recorded, &defaults), defaults);
     }
 }
