@@ -24,13 +24,14 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Window, actions, div, prelude::*, px, rgb,
+    KeyDownEvent, SharedString, Window, actions, div, prelude::*, px, rgb,
 };
 use sid_core::db::{ConnField, ConnFieldKind, DbKind};
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{DbConnection, DefaultScope, Scope};
 
 use super::TextInput;
+use super::text_input::next_focus_index;
 use crate::db_registry::DbRegistry;
 
 // Dark-theme palette, aligned with `app.rs`/`host_form.rs`. Kept local so `ui` stays
@@ -278,6 +279,56 @@ impl DbConnForm {
         self.kind = kind;
         self.fields = Self::build_fields(&self.registry, kind, cx, None);
         cx.notify();
+    }
+
+    /// The text fields currently on screen, in render order: the name field, then
+    /// each `FieldWidget::Text` the current engine's descriptor rendered. Tracks
+    /// `set_kind`'s field-list rebuild automatically since it reads `self.fields`
+    /// fresh each call. `Choice`/`Bool` pill rows, the engine selector, the save-to
+    /// picker, and the buttons aren't text inputs and are excluded from v1's cycle.
+    fn focusable_fields(&self) -> Vec<Entity<TextInput>> {
+        let mut fields = Vec::with_capacity(self.fields.len() + 1);
+        fields.push(self.name.clone());
+        for (_, widget) in &self.fields {
+            if let FieldWidget::Text(input) = widget {
+                fields.push(input.clone());
+            }
+        }
+        fields
+    }
+
+    /// Move focus to the next (or, `backwards`, previous) currently-rendered text
+    /// field, wrapping around at either end. Mirrors `HostForm::cycle_focus`.
+    fn cycle_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let fields = self.focusable_fields();
+        if fields.is_empty() {
+            return;
+        }
+        let current = fields
+            .iter()
+            .position(|field| field.read(cx).focus_handle(cx).is_focused(window));
+        let target = match current {
+            Some(ix) => next_focus_index(ix, fields.len(), backwards),
+            None if backwards => fields.len() - 1,
+            None => 0,
+        };
+        fields[target].read(cx).focus(window);
+    }
+
+    /// Intercept Tab/Shift+Tab before it can reach the focused field's IME/text-
+    /// insertion path. Mirrors `HostForm::handle_key_down`.
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "tab" {
+            return;
+        }
+        let backwards = event.keystroke.modifiers.shift;
+        cx.stop_propagation();
+        self.cycle_focus(backwards, window, cx);
     }
 
     /// The concrete layer a save would write into. Edits always target their origin;
@@ -658,6 +709,7 @@ impl Render for DbConnForm {
                 cx.emit(DbConnFormEvent::Cancel);
             }))
             .on_action(cx.listener(|this, _: &DbFormSubmit, _window, cx| this.submit(cx)))
+            .on_key_down(cx.listener(Self::handle_key_down))
             .flex()
             .flex_col()
             .gap_3()

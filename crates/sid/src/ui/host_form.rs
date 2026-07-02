@@ -14,13 +14,14 @@
 //! unit-tested without gpui; rendering is observation-gated.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, actions, div,
-    prelude::*, px, rgb,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, SharedString, Window,
+    actions, div, prelude::*, px, rgb,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
 use super::TextInput;
+use super::text_input::next_focus_index;
 
 // Dark-theme palette, aligned with `app.rs`. Kept local so `ui` stays self-contained.
 const PANEL_BG: u32 = 0x1d1d20;
@@ -254,6 +255,68 @@ impl HostForm {
             AuthChoice::Password => self.passphrase.update(cx, |i, cx| i.reset(cx)),
         }
         cx.notify();
+    }
+
+    /// The text fields currently on screen, in render order. Tracks the auth-method
+    /// switch (`set_auth`) and the add-vs-edit alias row so Tab/Shift+Tab only ever
+    /// visits what's actually rendered. Segmented selectors, the save-to picker, and
+    /// the buttons are not text inputs and are excluded from v1's cycle.
+    fn focusable_fields(&self) -> Vec<Entity<TextInput>> {
+        let mut fields = Vec::with_capacity(6);
+        if matches!(self.mode, FormMode::Add) {
+            fields.push(self.alias.clone());
+        }
+        fields.push(self.user.clone());
+        fields.push(self.host.clone());
+        fields.push(self.port.clone());
+        match self.auth {
+            AuthChoice::Agent => {}
+            AuthChoice::Key => {
+                fields.push(self.key_path.clone());
+                fields.push(self.passphrase.clone());
+            }
+            AuthChoice::Password => fields.push(self.password.clone()),
+        }
+        fields
+    }
+
+    /// Move focus to the next (or, `backwards`, previous) currently-rendered text
+    /// field, wrapping around at either end. Called from the Tab/Shift+Tab key
+    /// handler below; a field with no focus (e.g. the form container itself right
+    /// after opening) lands on the first field going forward, or the last going
+    /// backward, rather than skipping one.
+    fn cycle_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let fields = self.focusable_fields();
+        if fields.is_empty() {
+            return;
+        }
+        let current = fields
+            .iter()
+            .position(|field| field.read(cx).focus_handle(cx).is_focused(window));
+        let target = match current {
+            Some(ix) => next_focus_index(ix, fields.len(), backwards),
+            None if backwards => fields.len() - 1,
+            None => 0,
+        };
+        fields[target].read(cx).focus(window);
+    }
+
+    /// Intercept Tab/Shift+Tab on the bubble phase before it can reach the focused
+    /// field's IME/text-insertion path — `stop_propagation` here is what keeps a
+    /// literal tab character from ever landing in the input (see `TextInput`'s doc
+    /// comment on why typed content only ever arrives via the input-method protocol).
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "tab" {
+            return;
+        }
+        let backwards = event.keystroke.modifiers.shift;
+        cx.stop_propagation();
+        self.cycle_focus(backwards, window, cx);
     }
 
     /// The concrete layer a save would write into. Edits always target their origin;
@@ -540,6 +603,7 @@ impl Render for HostForm {
                 cx.emit(HostFormEvent::Cancel);
             }))
             .on_action(cx.listener(|this, _: &FormSubmit, _window, cx| this.submit(cx)))
+            .on_key_down(cx.listener(Self::handle_key_down))
             .flex()
             .flex_col()
             .gap_3()
