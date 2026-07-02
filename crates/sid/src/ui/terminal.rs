@@ -176,6 +176,20 @@ impl TerminalSession {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
+                // `RusshShell::try_read` always returns `Ok` (it just drains a buffer —
+                // it never learns the channel closed), so `disconnect()` setting `status`
+                // is the only signal this loop gets; check it before every read rather
+                // than relying on the read ever erroring out. Without this, disconnecting
+                // while some other strong `Entity<TerminalSession>` handle keeps the
+                // session alive would leak this task polling forever.
+                let still_connected = this
+                    .update(cx, |session, _cx| {
+                        session.status == SessionStatus::Connected
+                    })
+                    .unwrap_or(false);
+                if !still_connected {
+                    return;
+                }
                 let shell = shell.clone();
                 let read = ssh_runtime().spawn(async move { shell.lock().await.try_read().await });
                 let bytes = match read.await {
