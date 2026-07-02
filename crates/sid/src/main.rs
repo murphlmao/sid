@@ -4,6 +4,10 @@
 //! backend, then open the window over the single [`app::AppState`] entity.
 
 mod app;
+// W2: DbKind -> client/descriptor wiring. Not constructed yet — W3 wires it
+// into app init, per Plan Wave 2's task split.
+#[allow(dead_code)]
+mod db_registry;
 mod ssh_connect;
 mod ui;
 
