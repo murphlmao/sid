@@ -16,16 +16,22 @@
 //! this tab would be pure duplication. `session::ssh_runtime` is `pub(crate)`, so no
 //! visibility change to `session.rs` (off-limits this slice) was needed.
 
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString,
-    Subscription, Window, div, prelude::*, px, rgb, uniform_list,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, FontWeight, IntoElement,
+    SharedString, Subscription, WeakEntity, Window, anchored, deferred, div, point, prelude::*, px,
+    rgb, rgba, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
-use sid_core::db::{DbClient, DbError, OpenParams, PageCursor, QueryPage, Row};
+use sid_core::db::{
+    DbClient, DbError, OpenParams, PageCursor, QueryPage, Row, SchemaInfo, TableInfo,
+};
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 
@@ -66,6 +72,15 @@ const DEMO_SQL: &str = "select 1;";
 /// Rows per `query_paged` call. Small enough to make the "⭳ next page" control
 /// exercisable by hand against the demo seed without a huge fixture table.
 const PAGE_SIZE: u32 = 100;
+
+// ---- increment 2: schema tree / cell copy-view / CSV export / history --------------------
+
+/// A result cell longer than this (in `char`s) gets a `👁 view` affordance opening the
+/// read-only popover, rather than relying on the grid's truncated inline text (D2).
+const CELL_VIEW_THRESHOLD: usize = 48;
+
+/// D4's in-memory query-history ring cap. No persistence (ponytail) — cleared on restart.
+const HISTORY_CAP: usize = 50;
 
 /// Database tab state: the composed connection list for the active scope, the row
 /// currently selected as "active", and (once armed) a pending two-click delete.
@@ -111,6 +126,46 @@ pub struct DbTabState {
     last_sql: Option<String>,
     /// The cursor `query_paged` returned for the next page, if any.
     next_cursor: Option<PageCursor>,
+    /// The most recently completed [`QueryPage`] — the source [`export_csv`] writes
+    /// from. Kept as the raw domain type (not derived back out of `results`'s
+    /// `gpui-component` delegate) so CSV export stays a pure function over data sid
+    /// already owns, independent of the table widget's internal representation.
+    last_page: Option<QueryPage>,
+
+    // ---- D1: schema tree -----------------------------------------------------------
+    /// Cached schema for whichever connection `client_for` names. `None` before the
+    /// first successful fetch (or after switching to a connection with none yet).
+    schema: Option<SchemaInfo>,
+    /// True while a `schema_introspect` task is in flight — guards re-entrant
+    /// selection/⟳ clicks the same way `running` guards Run.
+    schema_loading: bool,
+    schema_error: Option<String>,
+    /// Which tables are expanded (columns visible), keyed by [`table_display_name`].
+    /// Cleared whenever the active connection changes or the schema is re-fetched.
+    schema_expanded: HashSet<String>,
+
+    // ---- D2: cell copy / view -------------------------------------------------------
+    /// The `👁 view` popover's contents, if open.
+    cell_view: Option<CellView>,
+    /// Transient one-line feedback for cell-copy and CSV-export actions (D2/D3) —
+    /// shown under the query status line. Not cleared automatically; the next action
+    /// (or query run) overwrites or clears it.
+    notice: Option<String>,
+
+    // ---- D4: query history -----------------------------------------------------------
+    /// Most-recent-first ring of run queries, capped at [`HISTORY_CAP`] with
+    /// consecutive-duplicate suppression — see [`push_history`].
+    history: Vec<String>,
+}
+
+/// The `👁 view` popover's contents (D2) — the column a long cell came from, and its
+/// full (untruncated) text. Read-only; mirrors `session.rs`'s `Preview`/`PreviewContent`
+/// shape but simpler (no oversize/binary cases — grid cells are always the display
+/// strings `DbClient` already rendered to text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CellView {
+    column: String,
+    text: String,
 }
 
 /// Outcome of the last query run, driving the query pane's status line.
@@ -130,6 +185,14 @@ enum QueryStatus {
 struct ResultDelegate {
     columns: Vec<Column>,
     rows: Vec<Row>,
+    /// Handle back to the owning [`AppState`], used only by D2's `👁 view` click (open
+    /// the popover on `AppState.db.cell_view`) and copy-notice (`AppState.db.notice`).
+    /// A raw `div().on_click` inside `render_td` only ever gets `&mut App` at click
+    /// time (see `gpui::div::InteractiveElement::on_click`), not `AppState` — this weak
+    /// handle is what lets the cell reach back into it. `None` only in the brief window
+    /// before `ensure_query_widgets` sets it (never observed mid-render — the table is
+    /// built and given a handle in the same call).
+    app: Option<WeakEntity<AppState>>,
 }
 
 impl ResultDelegate {
@@ -137,6 +200,7 @@ impl ResultDelegate {
         Self {
             columns: Vec::new(),
             rows: Vec::new(),
+            app: None,
         }
     }
 
@@ -163,6 +227,11 @@ impl TableDelegate for ResultDelegate {
         &self.columns[col_ix]
     }
 
+    /// D2: the whole cell copies its text to the clipboard on click; a cell over
+    /// [`CELL_VIEW_THRESHOLD`] chars also gets a `👁` button opening the read-only view
+    /// popover. The `👁` click sits inside the cell's own click area, so it fires the
+    /// copy handler too (harmless — the same convention `app.rs`'s row action buttons
+    /// use: "a click here also fires the row's on_click... which is harmless").
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -175,7 +244,109 @@ impl TableDelegate for ResultDelegate {
             .get(col_ix)
             .cloned()
             .unwrap_or_default();
-        div().px_2().text_xs().text_color(rgb(FG)).child(text)
+        let column_name = self
+            .columns
+            .get(col_ix)
+            .map(|c| c.name.to_string())
+            .unwrap_or_default();
+        let cell_ix = row_ix * 4096 + col_ix;
+
+        let copy_text = text.clone();
+        let copy_app = self.app.clone();
+        let view_button = (text.chars().count() > CELL_VIEW_THRESHOLD).then(|| {
+            let view_app = self.app.clone();
+            let view_text = text.clone();
+            let view_column = column_name.clone();
+            div()
+                .id(("db-cell-view", cell_ix))
+                .px_1()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_color(rgb(BRAND))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child("👁")
+                .on_click(move |_ev, _window, cx| {
+                    let Some(app) = &view_app else { return };
+                    let _ = app.update(cx, |state, cx| {
+                        state.db.cell_view = Some(CellView {
+                            column: view_column.clone(),
+                            text: view_text.clone(),
+                        });
+                        cx.notify();
+                    });
+                })
+        });
+
+        div()
+            .id(("db-cell", cell_ix))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .child(div().flex_1().text_xs().text_color(rgb(FG)).child(text))
+            .children(view_button)
+            .on_click(move |_ev, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                if let Some(app) = &copy_app {
+                    let _ = app.update(cx, |state, cx| {
+                        state.db.notice = Some("copied cell to clipboard".to_string());
+                        cx.notify();
+                    });
+                }
+            })
+    }
+}
+
+// ---- D1: schema tree (pure `SchemaInfo -> tree-rows` transform) --------------------------
+
+/// One renderable row of the schema tree — either a table header (expand/collapse +
+/// click-to-insert-SQL) or one of its columns (only present while that table is
+/// expanded). Pure data, no rendering — `schema_tree_rows` below is the one place
+/// `SchemaInfo` becomes a flat, orderable list the tree view can `uniform_list`/`Vec`
+/// over; kept separate from rendering so it's unit-testable without a `Window` (D1's
+/// TDD requirement).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SchemaRow {
+    Table {
+        display_name: String,
+        expanded: bool,
+    },
+    Column {
+        name: String,
+    },
+}
+
+/// `schema` flattened into `SchemaRow`s, in table order, expanding each table present
+/// in `expanded` (keyed by [`table_display_name`]) into its columns immediately after
+/// its header row.
+fn schema_tree_rows(schema: &SchemaInfo, expanded: &HashSet<String>) -> Vec<SchemaRow> {
+    let mut rows = Vec::with_capacity(schema.tables.len());
+    for table in &schema.tables {
+        let display_name = table_display_name(table);
+        let is_expanded = expanded.contains(&display_name);
+        rows.push(SchemaRow::Table {
+            display_name,
+            expanded: is_expanded,
+        });
+        if is_expanded {
+            rows.extend(table.columns.iter().map(|c| SchemaRow::Column {
+                name: c.name.clone(),
+            }));
+        }
+    }
+    rows
+}
+
+/// `schema.table` for Postgres (non-empty schema), or the bare table name for SQLite
+/// and the redb browse engine (no schema namespace). Doubles as the tree row's expanded
+/// key and the identifier `SELECT * FROM <table_display_name>` inserts.
+fn table_display_name(table: &TableInfo) -> String {
+    match table.schema.as_deref() {
+        Some(s) if !s.is_empty() => format!("{s}.{}", table.name),
+        _ => table.name.clone(),
     }
 }
 
@@ -201,6 +372,14 @@ impl DbTabState {
             status: QueryStatus::Idle,
             last_sql: None,
             next_cursor: None,
+            last_page: None,
+            schema: None,
+            schema_loading: false,
+            schema_error: None,
+            schema_expanded: HashSet::new(),
+            cell_view: None,
+            notice: None,
+            history: Vec::new(),
         };
         let _ = state.refresh(store, scope, filters);
         state
@@ -287,7 +466,98 @@ impl AppState {
                 .h(px(220.)),
             )
             .child(self.query_pane(cx))
+            .children(self.cell_view_overlay(window, cx))
             .into_any_element()
+    }
+
+    /// D2's `👁 view` popover — `None` when nothing is being viewed. Mirrors
+    /// `session.rs`'s `preview_overlay` (`anchored`/`deferred` pin a viewport-sized,
+    /// occluding backdrop at the window origin, painted above everything else). Built
+    /// here — inside the DB tab's own returned tree — rather than composited in
+    /// `app.rs` (like `AppState.form`/`AppState.db.form`) so this slice's `app.rs`
+    /// footprint stays at zero: `Anchored`'s `position_mode` defaults to `Window`, so
+    /// `.position(point(px(0.), px(0.)))` still pins to the window origin regardless of
+    /// how deep in the tree this element sits, and `deferred` defers its paint until
+    /// after all ancestors — nesting depth doesn't affect the result.
+    fn cell_view_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let cell = self.db.cell_view.clone()?;
+        let viewport = window.viewport_size();
+
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(
+                            div()
+                                .w(px(640.))
+                                .h(px(400.))
+                                .flex()
+                                .flex_col()
+                                .bg(rgb(BG))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .rounded_md()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_3()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(rgb(BORDER))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(rgb(FG))
+                                                .child(cell.column.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("db-cell-view-close")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .text_color(rgb(FG_DIM))
+                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .child("✕ close")
+                                                .on_click(cx.listener(
+                                                    |this, _ev: &ClickEvent, _window, cx| {
+                                                        this.db.cell_view = None;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("db-cell-view-body")
+                                        .flex_1()
+                                        .overflow_y_scroll()
+                                        .p_3()
+                                        .text_sm()
+                                        .font_family(MONO)
+                                        .text_color(rgb(FG))
+                                        .child(cell.text.clone()),
+                                ),
+                        ),
+                ),
+            )
+            .with_priority(1),
+        )
     }
 
     /// Lazily build the SQL editor + results table on first paint of the DB tab.
@@ -307,7 +577,20 @@ impl AppState {
         });
         self.db._sql_subscription = Some(cx.subscribe(&sql, Self::on_sql_event));
         self.db.sql = Some(sql);
-        self.db.results = Some(cx.new(|cx| TableState::new(ResultDelegate::empty(), window, cx)));
+        // D2: hand the results table's delegate a weak handle back to `AppState` so a
+        // cell's `👁 view` click (which only sees `&mut App`, not `AppState` — see
+        // `ResultDelegate::app`'s doc comment) can open the view popover.
+        let app = cx.weak_entity();
+        self.db.results = Some(cx.new(|cx| {
+            TableState::new(
+                ResultDelegate {
+                    app: Some(app),
+                    ..ResultDelegate::empty()
+                },
+                window,
+                cx,
+            )
+        }));
     }
 
     /// Ctrl/Cmd-Enter in the SQL editor runs the query. Plain Enter inserts a newline
@@ -387,14 +670,17 @@ impl AppState {
             .clone()
             .map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true)));
 
-        div()
+        let notice = self
+            .db
+            .notice
+            .clone()
+            .map(|n| div().text_xs().text_color(rgb(FG_DIM)).child(n));
+
+        let editor_and_results = div()
             .flex()
             .flex_col()
             .flex_1()
             .gap_2()
-            .p_3()
-            .border_t_1()
-            .border_color(rgb(BORDER))
             .child(
                 div()
                     .flex()
@@ -409,6 +695,21 @@ impl AppState {
                             .child(active_label),
                     )
                     .children(next_page)
+                    .child(
+                        div()
+                            .id("db-export-csv")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(rgb(BRAND))
+                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .child("⭳ CSV")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.export_csv(cx);
+                            })),
+                    )
                     .child(
                         div()
                             .id("db-run")
@@ -433,7 +734,235 @@ impl AppState {
                     .text_color(rgb(status_color))
                     .child(status_text),
             )
-            .children(results_table)
+            .children(notice)
+            .children(results_table);
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .child(self.left_sidebar(cx))
+            .child(editor_and_results)
+    }
+
+    /// D1 + D4's left sidebar: the schema tree (claims most of the vertical space) atop
+    /// a fixed-height query-history panel — both live beside the editor/results per the
+    /// plan, sharing one column since a third side-by-side column would crowd the tab.
+    fn left_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .w(px(220.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.schema_tree_panel(cx))
+            .child(self.history_panel(cx))
+    }
+
+    /// D1: the schema tree panel — a `⟳` refresh header over a flat, indented list of
+    /// tables (click name -> insert `SELECT * FROM <table>`; click chevron -> expand to
+    /// show columns). Pure-from-cache: reads `self.db.schema`/`schema_expanded` only,
+    /// never touches the runtime itself (that's `refresh_schema`'s job).
+    fn schema_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(div().text_xs().text_color(rgb(FG_DIM)).child("schema"))
+            .child(
+                div()
+                    .id("db-schema-refresh")
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_color(rgb(BRAND))
+                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .child(if self.db.schema_loading { "…" } else { "⟳" })
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.refresh_schema(cx);
+                    })),
+            );
+
+        let body: AnyElement = if self.db.schema_loading && self.db.schema.is_none() {
+            div()
+                .p_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child("loading schema…")
+                .into_any_element()
+        } else if let Some(err) = &self.db.schema_error {
+            div()
+                .p_2()
+                .text_xs()
+                .text_color(rgb(DANGER))
+                .child(format!("✗ {err}"))
+                .into_any_element()
+        } else {
+            let rows = match &self.db.schema {
+                Some(schema) => schema_tree_rows(schema, &self.db.schema_expanded),
+                None => Vec::new(),
+            };
+            if rows.is_empty() {
+                div()
+                    .p_2()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child("no schema loaded — select a connection")
+                    .into_any_element()
+            } else {
+                div()
+                    .id("db-schema-tree-body")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(
+                        rows.into_iter()
+                            .enumerate()
+                            .map(|(ix, row)| self.schema_tree_row(ix, row, cx)),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(FIELD_BORDER))
+            .bg(rgb(FIELD_BG))
+            .child(header)
+            .child(body)
+    }
+
+    /// One [`SchemaRow`]'s rendering — a table header (chevron toggles expand, name
+    /// inserts `SELECT * FROM <table>`) or an indented column leaf.
+    fn schema_tree_row(&self, ix: usize, row: SchemaRow, cx: &mut Context<Self>) -> AnyElement {
+        match row {
+            SchemaRow::Table {
+                display_name,
+                expanded,
+            } => {
+                let chevron_name = display_name.clone();
+                let insert_name = display_name.clone();
+                div()
+                    .id(("db-schema-table", ix))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .id(("db-schema-toggle", ix))
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(FG_DIM))
+                            .child(if expanded { "▾" } else { "▸" })
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                this.toggle_schema_table(&chevron_name, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("db-schema-name", ix))
+                            .flex_1()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(rgb(FG))
+                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .child(display_name.clone())
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.insert_select_star(&insert_name, window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            }
+            SchemaRow::Column { name } => div()
+                .id(("db-schema-col", ix))
+                .pl_6()
+                .pr_2()
+                .py_1()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(name)
+                .into_any_element(),
+        }
+    }
+
+    /// D4: the query-history panel — most-recent-first, click an entry to reload it
+    /// (unmodified) into the SQL editor.
+    fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let entries = self.db.history.clone();
+        let header = div()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .text_xs()
+            .text_color(rgb(FG_DIM))
+            .child("history");
+
+        let body: AnyElement = if entries.is_empty() {
+            div()
+                .p_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child("no queries run yet")
+                .into_any_element()
+        } else {
+            div()
+                .id("db-history-body")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .overflow_y_scroll()
+                .children(entries.into_iter().enumerate().map(|(ix, sql)| {
+                    let full = sql.clone();
+                    let label: SharedString = if sql.chars().count() > 34 {
+                        let head: String = sql.chars().take(34).collect();
+                        format!("{head}…").into()
+                    } else {
+                        sql.clone().into()
+                    };
+                    div()
+                        .id(("db-history", ix))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(FG))
+                        .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                            this.reload_history_entry(&full, window, cx);
+                        }))
+                }))
+                .into_any_element()
+        };
+
+        div()
+            .h(px(160.))
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(FIELD_BORDER))
+            .bg(rgb(FIELD_BG))
+            .child(header)
+            .child(body)
     }
 
     fn db_connection_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -547,7 +1076,17 @@ impl AppState {
             .border_b_1()
             .border_color(rgb(BORDER))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                if this.db.active_id.as_deref() != Some(click_id.as_str()) {
+                    // Switching connections: drop the previous connection's schema
+                    // immediately (rather than leaving it up until the new fetch
+                    // resolves) so the tree never shows a stale, wrong-connection
+                    // schema mid-load — D1's "on connect" trigger.
+                    this.db.schema = None;
+                    this.db.schema_error = None;
+                    this.db.schema_expanded.clear();
+                }
                 this.db.active_id = Some(click_id.clone());
+                this.refresh_schema(cx);
                 cx.notify();
             }))
             .child(
@@ -867,6 +1406,7 @@ impl AppState {
         self.db.running = true;
         self.db.next_cursor = None;
         self.db.last_sql = Some(sql.clone());
+        push_history(&mut self.db.history, sql.clone(), HISTORY_CAP);
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -933,6 +1473,10 @@ impl AppState {
             has_more: page.next_cursor.is_some(),
         };
         self.db.next_cursor = page.next_cursor;
+        // D3 (CSV export) exports whatever page is currently on screen — cache it here,
+        // the one place a page becomes "current", rather than re-deriving it from the
+        // table delegate at export time.
+        self.db.last_page = Some(page.clone());
         if let Some(results) = self.db.results.clone() {
             results.update(cx, |state, cx| {
                 state.delegate_mut().set_page(page.clone());
@@ -940,6 +1484,154 @@ impl AppState {
                 cx.notify();
             });
         }
+    }
+
+    /// D1: kick off a schema refresh for the active connection on the shared runtime
+    /// (never inline in render). Reuses the already-open client the same way
+    /// `run_query` does — connecting twice for one connection would be wasteful and
+    /// could surprise a single-connection-limited engine (e.g. a locked SQLite file).
+    fn refresh_schema(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.db.active_id.clone() else {
+            return;
+        };
+        let Some(conn) = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| a.item.clone())
+        else {
+            return;
+        };
+        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.db.schema_error = Some(e);
+                cx.notify();
+                return;
+            }
+        };
+        let cached = if self.db.client_for.as_deref() == Some(id.as_str()) {
+            self.db.client.clone()
+        } else {
+            None
+        };
+        let factory = self.db.registry.client(conn.kind);
+
+        self.db.schema_loading = true;
+        self.db.schema_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = fetch_schema(factory, conn, secret, cached).await;
+            let _ = this.update(cx, |this, cx| {
+                this.db.schema_loading = false;
+                match outcome {
+                    Ok((client, schema)) => {
+                        this.db.client = Some(client);
+                        this.db.client_for = Some(id);
+                        this.db.schema = Some(schema);
+                    }
+                    Err(e) => this.db.schema_error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// D1: chevron-click — toggle one table's expanded state (shows/hides its columns).
+    fn toggle_schema_table(&mut self, display_name: &str, cx: &mut Context<Self>) {
+        if !self.db.schema_expanded.remove(display_name) {
+            self.db.schema_expanded.insert(display_name.to_string());
+        }
+        cx.notify();
+    }
+
+    /// D1: name-click — replace the editor contents with `SELECT * FROM <table>`.
+    fn insert_select_star(
+        &mut self,
+        display_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        let stmt = format!("SELECT * FROM {display_name}");
+        sql_entity.update(cx, |state, cx| {
+            state.set_value(stmt, window, cx);
+        });
+        cx.notify();
+    }
+
+    /// D4: history-entry click — reload that exact SQL text into the editor
+    /// (unmodified; doesn't re-run it).
+    fn reload_history_entry(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        sql_entity.update(cx, |state, cx| {
+            state.set_value(sql.to_string(), window, cx);
+        });
+        cx.notify();
+    }
+
+    /// D3: export the currently-displayed page to `~/Downloads/<conn>-<n>.csv`, guarding
+    /// CSV formula injection (see [`csv_escape_field`]'s doc comment — this is the
+    /// security-load-bearing piece of this increment). Reports success/failure as a
+    /// transient `db.notice`, mirroring how `db.status` reports query results.
+    fn export_csv(&mut self, cx: &mut Context<Self>) {
+        let Some(page) = self.db.last_page.clone() else {
+            self.db.notice = Some("nothing to export — run a query first".to_string());
+            cx.notify();
+            return;
+        };
+        let conn_label = self
+            .db
+            .active_id
+            .as_deref()
+            .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
+            .map(|a| a.item.name.clone())
+            .unwrap_or_else(|| "query".to_string());
+
+        let csv = page_to_csv(&page);
+        self.db.notice = Some(match write_csv_export(&conn_label, &csv) {
+            Ok(path) => format!("✓ exported to {}", path.display()),
+            Err(e) => format!("✗ export failed: {e}"),
+        });
+        cx.notify();
+    }
+}
+
+/// The connect-or-reuse-then-schema body of [`AppState::refresh_schema`] — the D1
+/// counterpart of [`run_first_page`], split out for the same readability reason.
+async fn fetch_schema(
+    factory: Arc<dyn DbClient>,
+    conn: DbConnection,
+    secret: Option<String>,
+    cached: Option<Arc<dyn DbClient>>,
+) -> Result<(Arc<dyn DbClient>, SchemaInfo), String> {
+    let handle = ssh_runtime().spawn(async move {
+        let client = match cached {
+            Some(c) => c,
+            None => {
+                let params = OpenParams {
+                    kind: conn.kind,
+                    dsn: conn.dsn.clone(),
+                    password: secret,
+                    sqlite_mode: None,
+                };
+                factory.open(params).await?
+            }
+        };
+        let schema = client.schema_introspect().await?;
+        Ok::<_, DbError>((client, schema))
+    });
+    match handle.await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(join_err) => Err(format!("schema task panicked: {join_err}")),
     }
 }
 
@@ -1008,6 +1700,130 @@ fn resolve_db_secret(
     }
 }
 
+// ---- D4: query history (ring cap + consecutive dedup) -------------------------------------
+
+/// Push `sql` onto `history` (most-recent-last), capping length at `cap` by dropping the
+/// oldest entry, and skipping the push entirely if `sql` is identical to the current
+/// most-recent entry (consecutive-dedup — re-running the same query shouldn't spam the
+/// list). Pure logic, no `AppState`/GPUI — D4's TDD target.
+fn push_history(history: &mut Vec<String>, sql: String, cap: usize) {
+    if history.last() == Some(&sql) {
+        return;
+    }
+    history.push(sql);
+    if history.len() > cap {
+        history.remove(0);
+    }
+}
+
+// ---- D3: CSV export (security-load-bearing) ------------------------------------------------
+
+/// Escape one CSV field against both RFC-4180 structural characters *and* formula
+/// injection (CWE-1236 / OWASP "CSV Injection"): if a spreadsheet app opens this file and
+/// a field's first character is `=`, `+`, `-`, `@`, a tab, or a CR, that app may parse the
+/// field as a formula and execute it (e.g. an attacker-controlled row value like
+/// `=cmd|'/C calc'!A1` launching a program on open). Any such field gets a leading `'`
+/// prefix first — spreadsheet apps render a leading apostrophe as "force text" and never
+/// execute what follows — *then* the (possibly now-prefixed) field is RFC-4180 quoted if
+/// it contains a `"`, `,`, or newline.
+fn csv_escape_field(field: &str) -> String {
+    let needs_formula_guard = matches!(
+        field.chars().next(),
+        Some('=' | '+' | '-' | '@' | '\t' | '\r')
+    );
+    let guarded = if needs_formula_guard {
+        format!("'{field}")
+    } else {
+        field.to_string()
+    };
+    let needs_quoting = guarded.contains(['"', ',', '\n', '\r']);
+    if needs_quoting {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    } else {
+        guarded
+    }
+}
+
+/// Render a whole [`QueryPage`] (header row of column names + data rows) as CSV text,
+/// `\r\n`-terminated per RFC 4180, escaping every field via [`csv_escape_field`].
+fn page_to_csv(page: &QueryPage) -> String {
+    let mut out = String::new();
+    let header = page
+        .columns
+        .iter()
+        .map(|c| csv_escape_field(&c.name))
+        .collect::<Vec<_>>()
+        .join(",");
+    out.push_str(&header);
+    out.push_str("\r\n");
+    for row in &page.rows {
+        let line = row
+            .values
+            .iter()
+            .map(|v| csv_escape_field(v))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&line);
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// `$HOME/Downloads` — a local duplicate of `session.rs`'s private `downloads_dir()` (that
+/// module is off-limits for edits this slice, so its helper can't be reused directly; both
+/// intentionally avoid the `dirs` crate for one env-var read).
+fn downloads_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join("Downloads")
+}
+
+/// Strip everything but alphanumerics/`-`/`_` from a connection name before it becomes
+/// part of a filename — the same path-traversal-defense shape as `session.rs`'s
+/// `safe_local_name`, applied here to keep a connection named e.g. `prod/../../etc` (or
+/// containing spaces/slashes) from producing a path that escapes `~/Downloads` or breaks
+/// the shell when the user later opens it.
+fn sanitize_filename_component(label: &str) -> String {
+    let cleaned: String = label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "query".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// The first `~/Downloads/<conn>-<n>.csv` (n = 1, 2, 3, …) that doesn't already exist —
+/// so repeated exports for the same connection accumulate rather than clobber.
+fn next_csv_export_path(dir: &Path, conn_label: &str) -> PathBuf {
+    let stem = sanitize_filename_component(conn_label);
+    let mut n = 1u32;
+    loop {
+        let candidate = dir.join(format!("{stem}-{n}.csv"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Write `csv` to the next free export path for `conn_label` under `~/Downloads`,
+/// creating the directory if needed. Returns the path written on success.
+fn write_csv_export(conn_label: &str, csv: &str) -> Result<PathBuf, String> {
+    let dir = downloads_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+    let path = next_csv_export_path(&dir, conn_label);
+    fs::write(&path, csv).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod query_secret_tests {
     use sid_secrets::MemorySecretStore;
@@ -1034,5 +1850,253 @@ mod query_secret_tests {
     fn dangling_ref_is_an_error() {
         let secrets = MemorySecretStore::default();
         assert!(resolve_db_secret(&secrets, Some("db-missing")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod csv_export_tests {
+    use sid_core::db::{Column as DbColumn, ColumnType};
+
+    use super::*;
+
+    /// D3's load-bearing test: a cell value crafted to launch a program if a
+    /// spreadsheet app naively opens the export (CVE-class CSV/formula injection) must
+    /// round-trip as inert, quoted, apostrophe-prefixed text — never a bare formula.
+    #[test]
+    fn formula_injection_payload_is_neutralized() {
+        let payload = "=cmd|'/C calc'!A1";
+        let escaped = csv_escape_field(payload);
+        assert!(
+            !escaped.starts_with('='),
+            "escaped field must not start with '=': {escaped:?}"
+        );
+        // A leading apostrophe is enough on its own to force every mainstream
+        // spreadsheet app to treat the cell as text rather than evaluate it — the
+        // payload has no `"`/`,`/newline, so RFC-4180 quoting doesn't additionally
+        // kick in. The whole thing must decode back to exactly `'` + payload.
+        assert_eq!(escaped, format!("'{payload}"));
+    }
+
+    #[test]
+    fn each_formula_lead_character_is_guarded() {
+        for lead in ['=', '+', '-', '@', '\t', '\r'] {
+            let field = format!("{lead}rest");
+            let escaped = csv_escape_field(&field);
+            let unquoted = escaped.trim_matches('"');
+            assert!(
+                unquoted.starts_with('\''),
+                "lead {lead:?} not guarded: {escaped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_field_is_untouched() {
+        assert_eq!(csv_escape_field("hello"), "hello");
+        assert_eq!(csv_escape_field(""), "");
+    }
+
+    #[test]
+    fn comma_and_quote_and_newline_trigger_rfc4180_quoting() {
+        assert_eq!(csv_escape_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape_field("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape_field("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn page_to_csv_renders_header_and_rows_crlf_terminated() {
+        let page = QueryPage {
+            columns: vec![
+                DbColumn {
+                    name: "id".into(),
+                    ty: ColumnType::Integer,
+                },
+                DbColumn {
+                    name: "note".into(),
+                    ty: ColumnType::Text,
+                },
+            ],
+            rows: vec![Row {
+                values: vec!["1".into(), "=evil()".into()],
+            }],
+            next_cursor: None,
+            duration_ms: 0,
+        };
+        let csv = page_to_csv(&page);
+        assert_eq!(csv, "id,note\r\n1,'=evil()\r\n");
+    }
+
+    #[test]
+    fn sanitize_filename_component_strips_traversal_and_separators() {
+        assert_eq!(sanitize_filename_component("prod"), "prod");
+        // `.` and `/` both fall outside the alnum/-/_ allowlist, so `..`/`/` collapse to
+        // underscores too — no traversal-meaningful character survives at all, which is
+        // stricter (and simpler to reason about) than merely blocking `..` sequences.
+        assert_eq!(
+            sanitize_filename_component("../../etc/passwd"),
+            "______etc_passwd"
+        );
+        assert_eq!(sanitize_filename_component("my db 1"), "my_db_1");
+        assert_eq!(sanitize_filename_component(""), "query");
+    }
+
+    #[test]
+    fn next_csv_export_path_increments_past_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sid-db-csv-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("demo-1.csv"), "x").unwrap();
+        fs::write(dir.join("demo-2.csv"), "x").unwrap();
+        let next = next_csv_export_path(&dir, "demo");
+        assert_eq!(next, dir.join("demo-3.csv"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn pushes_grow_the_list_in_order() {
+        let mut history = Vec::new();
+        push_history(&mut history, "select 1".to_string(), 50);
+        push_history(&mut history, "select 2".to_string(), 50);
+        assert_eq!(
+            history,
+            vec!["select 1".to_string(), "select 2".to_string()]
+        );
+    }
+
+    #[test]
+    fn consecutive_duplicate_is_not_pushed_again() {
+        let mut history = Vec::new();
+        push_history(&mut history, "select 1".to_string(), 50);
+        push_history(&mut history, "select 1".to_string(), 50);
+        assert_eq!(history, vec!["select 1".to_string()]);
+    }
+
+    #[test]
+    fn non_consecutive_duplicate_is_pushed_again() {
+        let mut history = Vec::new();
+        push_history(&mut history, "select 1".to_string(), 50);
+        push_history(&mut history, "select 2".to_string(), 50);
+        push_history(&mut history, "select 1".to_string(), 50);
+        assert_eq!(
+            history,
+            vec![
+                "select 1".to_string(),
+                "select 2".to_string(),
+                "select 1".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn ring_caps_at_capacity_dropping_oldest() {
+        let mut history = Vec::new();
+        for i in 0..5 {
+            push_history(&mut history, format!("select {i}"), 3);
+        }
+        assert_eq!(
+            history,
+            vec![
+                "select 2".to_string(),
+                "select 3".to_string(),
+                "select 4".to_string(),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod schema_tree_tests {
+    use sid_core::db::{Column as DbColumn, ColumnType};
+
+    use super::*;
+
+    fn table(schema: Option<&str>, name: &str, cols: &[&str]) -> TableInfo {
+        TableInfo {
+            schema: schema.map(str::to_string),
+            name: name.to_string(),
+            columns: cols
+                .iter()
+                .map(|c| DbColumn {
+                    name: c.to_string(),
+                    ty: ColumnType::Text,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn collapsed_tables_render_as_headers_only() {
+        let schema = SchemaInfo {
+            tables: vec![
+                table(None, "users", &["id", "name"]),
+                table(None, "orders", &["id"]),
+            ],
+        };
+        let rows = schema_tree_rows(&schema, &HashSet::new());
+        assert_eq!(
+            rows,
+            vec![
+                SchemaRow::Table {
+                    display_name: "users".to_string(),
+                    expanded: false
+                },
+                SchemaRow::Table {
+                    display_name: "orders".to_string(),
+                    expanded: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn expanded_table_inserts_its_columns_right_after_its_header() {
+        let schema = SchemaInfo {
+            tables: vec![
+                table(None, "users", &["id", "name"]),
+                table(None, "orders", &["id"]),
+            ],
+        };
+        let mut expanded = HashSet::new();
+        expanded.insert("users".to_string());
+        let rows = schema_tree_rows(&schema, &expanded);
+        assert_eq!(
+            rows,
+            vec![
+                SchemaRow::Table {
+                    display_name: "users".to_string(),
+                    expanded: true
+                },
+                SchemaRow::Column {
+                    name: "id".to_string()
+                },
+                SchemaRow::Column {
+                    name: "name".to_string()
+                },
+                SchemaRow::Table {
+                    display_name: "orders".to_string(),
+                    expanded: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn postgres_schema_qualified_name_uses_schema_dot_table() {
+        let table = table(Some("public"), "users", &[]);
+        assert_eq!(table_display_name(&table), "public.users");
+    }
+
+    #[test]
+    fn sqlite_table_with_no_schema_uses_bare_name() {
+        let table = table(None, "users", &[]);
+        assert_eq!(table_display_name(&table), "users");
     }
 }
