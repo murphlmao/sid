@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use sid_core::db::{
     Column, ColumnType, DbClient, DbError, DbKind, ExecResult, OpenParams, PageCursor, QueryPage,
-    Row, SchemaInfo, TableInfo,
+    Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use sid_store::GlobalStore;
 
@@ -125,6 +125,22 @@ impl DbClient for RedbBrowseClient {
         Ok(SchemaInfo { tables })
     }
 
+    async fn schema_graph(&self) -> Result<SchemaGraph, DbError> {
+        // No foreign keys — the fixed store tables don't reference each other
+        // (and there is no join surface for this browse engine to expose).
+        let mut primary_keys = std::collections::BTreeMap::new();
+        for &name in TABLE_NAMES.iter() {
+            let pk = table_primary_key(name);
+            if !pk.is_empty() {
+                primary_keys.insert(name.to_string(), pk);
+            }
+        }
+        Ok(SchemaGraph {
+            foreign_keys: Vec::new(),
+            primary_keys,
+        })
+    }
+
     async fn cancel(&self) -> Result<(), DbError> {
         // Every query here is a synchronous, already-fast in-memory dump —
         // nothing to cancel.
@@ -134,6 +150,21 @@ impl DbClient for RedbBrowseClient {
     fn kind(&self) -> DbKind {
         DbKind::Redb
     }
+}
+
+/// The natural identity column for one of the fixed [`TABLE_NAMES`], per each
+/// entity's [`sid_store::Identity::identity`] (or, for `workspaces`, the `id`
+/// its store API keys lookups by). Empty for `settings` — a single global row
+/// with no per-record key to expose.
+fn table_primary_key(name: &str) -> Vec<String> {
+    let col: Option<&str> = match name {
+        "hosts" => Some("alias"),
+        "connections" => Some("id"),
+        "quick_actions" => Some("label"),
+        "workspaces" => Some("id"),
+        _ => None,
+    };
+    col.into_iter().map(str::to_string).collect()
 }
 
 /// Column names for one of the fixed [`TABLE_NAMES`]. Empty for anything else.
@@ -321,6 +352,32 @@ mod tests {
             Err(other) => panic!("expected DbError::Invalid, got {other:?}"),
             Ok(_) => panic!("wrong DbKind must not be accepted"),
         }
+    }
+
+    #[tokio::test]
+    async fn schema_graph_has_no_fks_and_maps_natural_key_columns() {
+        let (_dir, store) = seeded_store();
+        let client = RedbBrowseClient::wrap(store);
+        let graph = client.schema_graph().await.unwrap();
+        assert!(graph.foreign_keys.is_empty());
+        assert_eq!(
+            graph.primary_keys.get("hosts"),
+            Some(&vec!["alias".to_string()])
+        );
+        assert_eq!(
+            graph.primary_keys.get("connections"),
+            Some(&vec!["id".to_string()])
+        );
+        assert_eq!(
+            graph.primary_keys.get("quick_actions"),
+            Some(&vec!["label".to_string()])
+        );
+        assert_eq!(
+            graph.primary_keys.get("workspaces"),
+            Some(&vec!["id".to_string()])
+        );
+        // `settings` is a singleton row — no per-record key to expose.
+        assert!(!graph.primary_keys.contains_key("settings"));
     }
 
     #[tokio::test]
