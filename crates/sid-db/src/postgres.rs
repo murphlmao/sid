@@ -68,6 +68,11 @@ impl DbClient for PostgresClient {
         } else {
             p.dsn.clone()
         };
+        // SECURITY (tracked in docs/superpowers/plans/2026-07-01-db-slice.md, task DU-TLS —
+        // MUST land before the DB tab connects to remote hosts): `NoTls` sends credentials
+        // and query data in cleartext. Acceptable only for localhost/unix-socket. A remote
+        // connection needs a rustls/native-tls connector honoring the DSN's `sslmode`
+        // (require/verify-full) with platform trust-store cert validation.
         let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .map_err(|e| DbError::Connect(e.to_string()))?;
