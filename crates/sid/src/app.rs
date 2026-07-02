@@ -23,6 +23,7 @@ use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
+use crate::ui::network_tab::NetworkTabState;
 use crate::ui::{SessionStatus, SshSession};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
@@ -107,6 +108,9 @@ pub struct AppState {
     /// file's second `impl AppState` block for the render/mutation methods that operate
     /// on it via `pub(crate)` field access.
     pub(crate) db: DbTabState,
+    /// Network tab state (inc-1): live/ephemeral ports + interfaces view, no store/
+    /// scope/secrets. Lives in its own module (`ui::network_tab`), same shape as `db`.
+    pub(crate) network: NetworkTabState,
 }
 
 impl AppState {
@@ -119,6 +123,7 @@ impl AppState {
         startup_warning: Option<String>,
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
+        let network = NetworkTabState::new();
         let mut state = Self {
             store,
             secrets,
@@ -133,6 +138,7 @@ impl AppState {
             armed_delete: None,
             session: None,
             db,
+            network,
         };
         state.reload_scopes();
         state.refresh();
@@ -809,6 +815,8 @@ impl Render for AppState {
             // `db_tab` needs `window` (W5) to lazily build the SQL editor/results table
             // on first paint — `InputState::new`/`TableState::new` both require it.
             Tab::Database => self.db_tab(window, cx),
+            // `network_tab` needs `window` for the same reason (`TableState::new`).
+            Tab::Network => self.network_tab(window, cx),
             other => self.placeholder(other).into_any_element(),
         };
 
