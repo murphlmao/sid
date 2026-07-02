@@ -4,8 +4,9 @@
 //! backend, then open the window over the single [`app::AppState`] entity.
 
 mod app;
-// W2: DbKind -> client/descriptor wiring. Not constructed yet — W3 wires it
-// into app init, per Plan Wave 2's task split.
+// W2: DbKind -> client/descriptor wiring, constructed by `ui::db_tab::DbTabState` (W3).
+// `.client()`/`.descriptor()`/`.kinds()` are called starting W4 (add/edit form) and W5
+// (connect + query) — until then the lookups themselves are unused.
 #[allow(dead_code)]
 mod db_registry;
 mod ssh_connect;
