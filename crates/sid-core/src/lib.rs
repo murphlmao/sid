@@ -7,4 +7,5 @@
 
 pub mod db;
 pub mod ssh;
+pub mod sys;
 pub mod term;
