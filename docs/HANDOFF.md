@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-01 — 173 tests green, working tree clean, `main` @ aa8a841 (SSH slice functionally complete through the embedded terminal; DB backend foundation landed)._
+_Last verified: 2026-07-01 — 281 tests green, working tree clean, `main` @ c53bf5b (SSH/SFTP spearhead feature-complete: host list · editable hosts · terminal · SFTP browser. DB backend foundation + Postgres TLS landed; DB tab UI is next)._
 
 ---
 
@@ -69,8 +69,12 @@ terminal), map `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth`, resolve `secret_re
 known-hosts algorithms (OpenSSH `order_hostkeyalgs`) so imported `~/.ssh/known_hosts`
 entries under a non-preferred algorithm don't spuriously fail.
 
-### P3.4 — SFTP browser
-Download / upload / edit-in-place, per-host command history. Builds on P3.3's connection.
+### P3.4 — SFTP browser  ✅ DONE (merged c53bf5b)
+`⊞ files` on a host opens a navigable remote browser (breadcrumb, dir nav, download to
+`~/Downloads` with a path-traversal guard, text-path upload), mutually exclusive with the
+terminal. Plan: [2026-07-01-p34-sftp-browser.md](superpowers/plans/2026-07-01-p34-sftp-browser.md).
+Deferred: edit-in-place + per-host command history (nice-to-haves, not yet built).
+**Needs the human observation gate** (see the plan's S6 checklist).
 
 **After Plan 3:** write Plan 4 for the next slice (Database or Network) as a dated doc
 in `superpowers/plans/`, matching the Plan 1/2 format.
