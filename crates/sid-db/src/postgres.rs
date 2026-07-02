@@ -1,10 +1,11 @@
 //! PostgresClient — tokio-postgres-backed `DbClient` impl.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sid_core::db::{
-    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, OpenParams, PageCursor, QueryPage,
-    Row, SchemaInfo, TableInfo,
+    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ForeignKey, OpenParams, PageCursor,
+    QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use tokio::sync::Mutex;
 
@@ -340,6 +341,87 @@ impl DbClient for PostgresClient {
         })
     }
 
+    async fn schema_graph(&self) -> Result<SchemaGraph, DbError> {
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        let guard = inner.lock().await;
+
+        // One row per (constraint, column-position): `unnest(conkey, confkey)
+        // WITH ORDINALITY` walks the referencing/referenced key arrays in
+        // lockstep so a composite FK's columns keep their declared order
+        // (the `ord` column is that position). Namespaces are filtered the
+        // same way `schema_introspect` filters them.
+        let fk_sql = "
+            SELECT
+                ns.nspname, cl.relname,
+                refns.nspname, refcl.relname,
+                con.conname, u.ord,
+                att.attname, refatt.attname
+            FROM pg_constraint con
+            JOIN pg_class cl ON cl.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+            JOIN pg_class refcl ON refcl.oid = con.confrelid
+            JOIN pg_namespace refns ON refns.oid = refcl.relnamespace
+            JOIN LATERAL unnest(con.conkey, con.confkey)
+                WITH ORDINALITY AS u(conattnum, confattnum, ord) ON true
+            JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = u.conattnum
+            JOIN pg_attribute refatt
+                ON refatt.attrelid = con.confrelid AND refatt.attnum = u.confattnum
+            WHERE con.contype = 'f'
+              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY ns.nspname, cl.relname, con.conname, u.ord
+        ";
+        let fk_rows = guard
+            .client
+            .query(fk_sql, &[])
+            .await
+            .map_err(map_pg_error)?;
+        let fk_input: Vec<PgFkRow> = fk_rows
+            .iter()
+            .map(|r| PgFkRow {
+                schema: r.get(0),
+                table: r.get(1),
+                ref_schema: r.get(2),
+                ref_table: r.get(3),
+                conname: r.get(4),
+                ordinal: r.get(5),
+                from_col: r.get(6),
+                to_col: r.get(7),
+            })
+            .collect();
+
+        // Primary keys: same ordinality trick over `conkey` alone.
+        let pk_sql = "
+            SELECT ns.nspname, cl.relname, u.ord, att.attname
+            FROM pg_constraint con
+            JOIN pg_class cl ON cl.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+            JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS u(conattnum, ord) ON true
+            JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = u.conattnum
+            WHERE con.contype = 'p'
+              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY ns.nspname, cl.relname, u.ord
+        ";
+        let pk_rows = guard
+            .client
+            .query(pk_sql, &[])
+            .await
+            .map_err(map_pg_error)?;
+        let pk_input: Vec<PgPkRow> = pk_rows
+            .iter()
+            .map(|r| PgPkRow {
+                schema: r.get(0),
+                table: r.get(1),
+                ordinal: r.get(2),
+                column: r.get(3),
+            })
+            .collect();
+
+        Ok(SchemaGraph {
+            foreign_keys: assemble_foreign_keys(fk_input),
+            primary_keys: assemble_primary_keys(pk_input),
+        })
+    }
+
     async fn cancel(&self) -> Result<(), DbError> {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let guard = inner.lock().await;
@@ -353,6 +435,100 @@ impl DbClient for PostgresClient {
     fn kind(&self) -> DbKind {
         DbKind::Postgres
     }
+}
+
+/// One (table, referenced-table, column-position) row from the live FK query
+/// (`u.ord` = the `WITH ORDINALITY` position). Factored out to a plain struct
+/// so [`assemble_foreign_keys`] — the row→[`SchemaGraph`] assembly — is
+/// unit-testable without a live Postgres connection.
+#[derive(Debug, Clone)]
+struct PgFkRow {
+    schema: String,
+    table: String,
+    ref_schema: String,
+    ref_table: String,
+    conname: String,
+    ordinal: i64,
+    from_col: String,
+    to_col: String,
+}
+
+/// One (table, column-position) row from the live PK query.
+#[derive(Debug, Clone)]
+struct PgPkRow {
+    schema: String,
+    table: String,
+    ordinal: i64,
+    column: String,
+}
+
+/// Qualify a table name the same way [`TableInfo`] / `schema_introspect`
+/// displays Postgres tables: `"schema.name"`.
+fn pg_qualify(schema: &str, table: &str) -> String {
+    format!("{schema}.{table}")
+}
+
+/// `(from_schema, from_table, to_schema, to_table, constraint_name)` — the
+/// grouping key for one FK constraint's columns.
+type PgFkKey = (String, String, String, String, String);
+/// `(ordinal, from_column, to_column)` — one FK constraint's per-column data.
+type PgFkCols = Vec<(i64, String, String)>;
+
+/// Pure assembly: group flat per-column FK rows by constraint, order each
+/// group's columns by `ordinal`, then sort per the [`SchemaGraph`] contract —
+/// `(from_table, to_table, from_columns)`.
+fn assemble_foreign_keys(rows: Vec<PgFkRow>) -> Vec<ForeignKey> {
+    let mut groups: BTreeMap<PgFkKey, PgFkCols> = BTreeMap::new();
+    for r in rows {
+        groups
+            .entry((r.schema, r.table, r.ref_schema, r.ref_table, r.conname))
+            .or_default()
+            .push((r.ordinal, r.from_col, r.to_col));
+    }
+    let mut fks: Vec<ForeignKey> = groups
+        .into_iter()
+        .map(
+            |((schema, table, ref_schema, ref_table, _conname), mut cols)| {
+                cols.sort_by_key(|c| c.0);
+                ForeignKey {
+                    from_table: pg_qualify(&schema, &table),
+                    from_columns: cols.iter().map(|c| c.1.clone()).collect(),
+                    to_table: pg_qualify(&ref_schema, &ref_table),
+                    to_columns: cols.into_iter().map(|c| c.2).collect(),
+                }
+            },
+        )
+        .collect();
+    fks.sort_by(|a, b| {
+        (&a.from_table, &a.to_table, &a.from_columns).cmp(&(
+            &b.from_table,
+            &b.to_table,
+            &b.from_columns,
+        ))
+    });
+    fks
+}
+
+/// Pure assembly for primary keys, same ordinality-preserving shape as
+/// [`assemble_foreign_keys`].
+fn assemble_primary_keys(rows: Vec<PgPkRow>) -> BTreeMap<String, Vec<String>> {
+    let mut groups: BTreeMap<(String, String), Vec<(i64, String)>> = BTreeMap::new();
+    for r in rows {
+        groups
+            .entry((r.schema, r.table))
+            .or_default()
+            .push((r.ordinal, r.column));
+    }
+    groups
+        .into_iter()
+        .map(|((schema, table), mut cols)| {
+            cols.sort_by_key(|c| c.0);
+            (
+                pg_qualify(&schema, &table),
+                cols.into_iter().map(|c| c.1).collect(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
@@ -502,5 +678,118 @@ mod tests {
             .await
             .expect("query");
         assert_eq!(page.rows.len(), 1);
+    }
+
+    /// Live-network path; `#[ignore]`d for the same reason as
+    /// `open_and_query_against_real_postgres`.
+    #[tokio::test]
+    #[ignore]
+    async fn schema_graph_against_real_postgres() {
+        let factory = PostgresClient::factory();
+        let client = factory
+            .open(OpenParams {
+                kind: DbKind::Postgres,
+                dsn: "postgres://postgres@localhost:5432/postgres".into(),
+                password: None,
+                sqlite_mode: None,
+            })
+            .await
+            .expect("connect");
+        // Nothing asserted about content — this only proves the live query
+        // parses/executes against a real server; row→SchemaGraph assembly is
+        // covered by the fabricated-row unit tests below.
+        client.schema_graph().await.expect("schema_graph");
+    }
+
+    fn fk_row(
+        table: &str,
+        ref_table: &str,
+        conname: &str,
+        ordinal: i64,
+        from_col: &str,
+        to_col: &str,
+    ) -> PgFkRow {
+        PgFkRow {
+            schema: "public".into(),
+            table: table.into(),
+            ref_schema: "public".into(),
+            ref_table: ref_table.into(),
+            conname: conname.into(),
+            ordinal,
+            from_col: from_col.into(),
+            to_col: to_col.into(),
+        }
+    }
+
+    #[test]
+    fn assemble_foreign_keys_orders_composite_columns_by_ordinal_and_sorts_edges() {
+        let rows = vec![
+            // Single-column FK: orders.customer_id -> customers.id.
+            fk_row(
+                "orders",
+                "customers",
+                "orders_customer_fk",
+                1,
+                "customer_id",
+                "id",
+            ),
+            // Composite FK fed out of order to prove sort-by-ordinal, not row order.
+            fk_row("orders", "bins", "orders_bin_fk", 2, "bin_id", "bin_id"),
+            fk_row(
+                "orders",
+                "bins",
+                "orders_bin_fk",
+                1,
+                "warehouse_id",
+                "warehouse_id",
+            ),
+        ];
+        let fks = assemble_foreign_keys(rows);
+        assert_eq!(fks.len(), 2);
+        // Deterministic order is (from_table, to_table, from_columns); both share
+        // from_table "public.orders", so "public.bins" < "public.customers" sorts first.
+        assert_eq!(fks[0].from_table, "public.orders");
+        assert_eq!(fks[0].to_table, "public.bins");
+        assert_eq!(fks[0].from_columns, vec!["warehouse_id", "bin_id"]);
+        assert_eq!(fks[0].to_columns, vec!["warehouse_id", "bin_id"]);
+        assert_eq!(fks[1].from_table, "public.orders");
+        assert_eq!(fks[1].to_table, "public.customers");
+        assert_eq!(fks[1].from_columns, vec!["customer_id"]);
+        assert_eq!(fks[1].to_columns, vec!["id"]);
+    }
+
+    #[test]
+    fn assemble_primary_keys_orders_composite_columns_by_ordinal() {
+        let rows = vec![
+            PgPkRow {
+                schema: "public".into(),
+                table: "bins".into(),
+                ordinal: 2,
+                column: "bin_id".into(),
+            },
+            PgPkRow {
+                schema: "public".into(),
+                table: "bins".into(),
+                ordinal: 1,
+                column: "warehouse_id".into(),
+            },
+            PgPkRow {
+                schema: "public".into(),
+                table: "customers".into(),
+                ordinal: 1,
+                column: "id".into(),
+            },
+        ];
+        let pks = assemble_primary_keys(rows);
+        assert_eq!(
+            pks.get("public.bins"),
+            Some(&vec!["warehouse_id".to_string(), "bin_id".to_string()])
+        );
+        assert_eq!(pks.get("public.customers"), Some(&vec!["id".to_string()]));
+    }
+
+    #[test]
+    fn assemble_foreign_keys_of_empty_input_is_empty() {
+        assert!(assemble_foreign_keys(Vec::new()).is_empty());
     }
 }
