@@ -829,8 +829,25 @@ impl Render for AppState {
             )
             .with_priority(1)
         });
-        // W4 adds a second, analogous overlay for `self.db.form` (the DB connection
-        // add/edit modal) here.
+        // The DB connection add/edit modal (W4) — the exact mirror of `overlay` above,
+        // over `self.db.form` instead of `self.form`.
+        let db_overlay = self.db.form.clone().map(|form| {
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(form),
+                ),
+            )
+            .with_priority(1)
+        });
 
         div()
             .flex()
@@ -842,6 +859,7 @@ impl Render for AppState {
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
+            .children(db_overlay)
     }
 }
 

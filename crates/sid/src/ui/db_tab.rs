@@ -12,13 +12,20 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, IntoElement, SharedString, div, prelude::*, rgb,
-    uniform_list,
+    AnyElement, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString, Subscription,
+    Window, div, prelude::*, rgb, uniform_list,
 };
+use sid_secrets::SecretId;
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 
-use crate::app::AppState;
+use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::db_registry::DbRegistry;
+use crate::ui::db_conn_form::{
+    DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
+};
+
+// DANGER matches app.rs's palette (used by the delete action's armed state).
+const DANGER: u32 = 0xd08a8a;
 
 // Dark-theme palette, aligned with `app.rs`. Kept local so `ui` stays self-contained
 // (same convention as `host_form.rs`).
@@ -37,15 +44,20 @@ const MONO: &str = "DejaVu Sans Mono";
 /// Database tab state: the composed connection list for the active scope, the row
 /// currently selected as "active", and (once armed) a pending two-click delete.
 pub struct DbTabState {
-    // Read by the add/edit form (W4) and the connect/query path (W5); unused by W3's
-    // picker-only scope.
-    #[allow(dead_code)]
+    /// The client/descriptor factory, shared with every [`DbConnForm`] this tab opens
+    /// (W4) and the query session it will hold (W5).
     registry: Rc<DbRegistry>,
     connections: Vec<Attributed<DbConnection>>,
     /// The connection id last clicked — "selecting a connection sets the active
     /// connection" (W3). W5 runs queries against whichever connection this names.
     active_id: Option<String>,
     armed_delete: Option<(String, Scope)>,
+    /// The open connection add/edit modal (W4), if any. `pub(crate)` — `app.rs`'s
+    /// `Render for AppState` reads it directly to paint the overlay (the exact mirror
+    /// of `AppState.form`/`HostForm`).
+    pub(crate) form: Option<Entity<DbConnForm>>,
+    /// Keeps the form's event subscription alive exactly as long as the form is open.
+    _form_subscription: Option<Subscription>,
 }
 
 impl DbTabState {
@@ -59,6 +71,8 @@ impl DbTabState {
             connections: Vec::new(),
             active_id: None,
             armed_delete: None,
+            form: None,
+            _form_subscription: None,
         };
         let _ = state.refresh(store, scope, filters);
         state
@@ -111,7 +125,22 @@ impl AppState {
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub)),
+                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub))
+                    .child(
+                        div()
+                            .id("db-add")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .text_color(rgb(BRAND))
+                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .child("＋ Add connection")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_db_form(window, cx);
+                            })),
+                    ),
             )
             .child(
                 uniform_list(
@@ -141,6 +170,84 @@ impl AppState {
         let alt = ix % 2 == 1;
         let is_active = self.db.active_id.as_deref() == Some(conn.id.as_str());
         let click_id = conn.id.clone();
+        let origin = a.origin.clone();
+        let armed = delete_click_executes(
+            self.db.armed_delete.as_ref(),
+            &(conn.id.clone(), origin.clone()),
+        );
+
+        // Small text-button factory for the row's action strip. Mirrors `app.rs`'s
+        // `host_row::action` closure exactly. Note: these buttons sit inside the row's
+        // own click-to-select area — a click here also fires the row's `on_click`
+        // (selecting it), which is harmless (selection isn't destructive).
+        let action = |id: (&'static str, usize), label: SharedString, color: u32| {
+            div()
+                .id(id)
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(color))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child(label)
+        };
+
+        // ⤒ promote: workspace-origin rows only.
+        let promote = can_promote(&origin).then(|| {
+            let id = conn.id.clone();
+            let origin = origin.clone();
+            action(("db-promote", ix), "⤒".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    this.promote_db_row(&id, &origin, cx);
+                },
+            ))
+        });
+
+        // ⤓ demote: global-origin rows while a workspace scope is active.
+        let demote = can_demote(&origin, &self.scope).then(|| {
+            let id = conn.id.clone();
+            action(("db-demote", ix), "⤓".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    this.demote_db_row(&id, cx);
+                },
+            ))
+        });
+
+        // ✎ edit: opens the form prefilled with this row's record.
+        let edit = {
+            let conn = conn.clone();
+            let origin = origin.clone();
+            action(("db-edit", ix), "✎".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, window, cx| {
+                    this.open_edit_db_form(conn.clone(), origin.clone(), window, cx);
+                },
+            ))
+        };
+
+        // ✕ delete: two-click confirm — the first click arms this row, the second
+        // deletes from the row's origin layer (and its secret from the keyring).
+        let delete = {
+            let id = conn.id.clone();
+            let origin = origin.clone();
+            let secret_ref = conn.secret_ref.clone();
+            let (label, color) = if armed {
+                ("✕ confirm?", DANGER)
+            } else {
+                ("✕", FG_DIM)
+            };
+            action(("db-delete", ix), label.into(), color).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    let key = (id.clone(), origin.clone());
+                    if delete_click_executes(this.db.armed_delete.as_ref(), &key) {
+                        this.delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
+                    } else {
+                        this.db.armed_delete = Some(key);
+                        cx.notify();
+                    }
+                },
+            ))
+        };
 
         div()
             .id(("db-conn", ix))
@@ -181,7 +288,18 @@ impl AppState {
                     .child(div().flex_1())
                     .when(is_active, |el| {
                         el.child(div().text_xs().text_color(rgb(BRAND)).child("★ active"))
-                    }),
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .children(promote)
+                            .children(demote)
+                            .child(edit)
+                            .child(delete),
+                    ),
             )
             .child(
                 div()
@@ -211,5 +329,206 @@ impl AppState {
             label = format!("{label} · dup").into();
         }
         (label, color)
+    }
+
+    // ---- add/edit form (W4) ----------------------------------------------------------
+
+    /// Open the empty add form, preselecting `save to:` from the persisted
+    /// [`sid_store::Settings::default_scope`]. Mirrors `AppState::open_add_form`.
+    pub(crate) fn open_add_db_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default_scope = self
+            .store
+            .settings()
+            .map(|s| s.default_scope)
+            .unwrap_or_default();
+        let workspace = self.active_workspace();
+        let registry = self.db.registry.clone();
+        let form = cx.new(|cx| DbConnForm::new_add(cx, registry, workspace, default_scope));
+        self.open_db_form(form, window, cx);
+    }
+
+    /// ✎ Open the edit form prefilled with `conn`, writing back into `origin` on save.
+    pub(crate) fn open_edit_db_form(
+        &mut self,
+        conn: DbConnection,
+        origin: Scope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.db.armed_delete = None;
+        let workspace = self.active_workspace();
+        let registry = self.db.registry.clone();
+        let form = cx.new(|cx| DbConnForm::new_edit(cx, registry, conn, origin, workspace));
+        self.open_db_form(form, window, cx);
+    }
+
+    fn open_db_form(
+        &mut self,
+        form: Entity<DbConnForm>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        form.read(cx).focus_first(window, cx);
+        self.db._form_subscription = Some(cx.subscribe(&form, Self::on_db_form_event));
+        self.db.form = Some(form);
+        cx.notify();
+    }
+
+    pub(crate) fn close_db_form(&mut self, cx: &mut Context<Self>) {
+        self.db.form = None;
+        self.db._form_subscription = None;
+        cx.notify();
+    }
+
+    fn on_db_form_event(
+        &mut self,
+        form: Entity<DbConnForm>,
+        event: &DbConnFormEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DbConnFormEvent::Cancel => self.close_db_form(cx),
+            DbConnFormEvent::Submit(submission) => match self.perform_db_submit(submission) {
+                Ok(post_warning) => {
+                    self.close_db_form(cx);
+                    self.refresh_db();
+                    if post_warning.is_some() {
+                        self.error = post_warning;
+                    }
+                    cx.notify();
+                }
+                // Guard/secret/store failures land in the form's error line; the form
+                // stays open so nothing typed is lost.
+                Err(msg) => form.update(cx, |f, cx| f.set_error(msg, cx)),
+            },
+        }
+    }
+
+    /// Run a submission end-to-end: add-mode guard → stage the secret plan → write the
+    /// connection → delete any superseded secret. Returns a non-fatal warning to
+    /// surface after success. Mirrors `AppState::perform_submit` exactly.
+    fn perform_db_submit(&self, submission: &Submission) -> Result<Option<String>, String> {
+        let is_edit = submission.old.is_some();
+        let target_holds = self
+            .layer_holds_id(&submission.target, &submission.connection.id)
+            .map_err(|e| e.to_string())?;
+        add_guard(is_edit, target_holds, &self.layer_label(&submission.target))?;
+
+        let has_password_field = self
+            .db
+            .registry
+            .descriptor(submission.connection.kind)
+            .map(|d| {
+                d.connection_fields()
+                    .iter()
+                    .any(|f| matches!(f.kind, sid_core::db::ConnFieldKind::Password))
+            })
+            .unwrap_or(false);
+        let plan = plan_secret(
+            submission.old.as_ref(),
+            has_password_field,
+            submission.secret.is_some(),
+        );
+        let staged = stage_secret(
+            self.secrets.as_ref(),
+            &plan,
+            &submission.connection.name,
+            submission.secret.as_deref(),
+        )?;
+
+        let mut connection = submission.connection.clone();
+        connection.secret_ref = staged.secret_ref.clone();
+        if let Err(e) = self.store.write_connection(&connection, &submission.target) {
+            // Roll back a freshly minted secret so a failed write never orphans one.
+            if staged.minted
+                && let Some(id) = &staged.secret_ref
+            {
+                let _ = self.secrets.delete(&SecretId::new(id.clone()));
+            }
+            return Err(e.to_string());
+        }
+
+        // Only after the write is durable is the superseded secret deleted.
+        let mut post_warning = None;
+        if let Some(old_id) = &staged.delete_after_write
+            && let Err(e) = self.secrets.delete(&SecretId::new(old_id.clone()))
+        {
+            post_warning = Some(format!("saved, but deleting the old secret failed: {e}"));
+        }
+        Ok(post_warning)
+    }
+
+    /// Whether `target`'s **own layer** already holds `id` (the add-mode guard's
+    /// question). Reads the layer directly — mirrors `AppState::layer_holds_alias`.
+    fn layer_holds_id(&self, target: &Scope, id: &str) -> sid_store::Result<bool> {
+        match target {
+            Scope::Global => Ok(self.store.global().get_connection(id)?.is_some()),
+            Scope::Workspace(_) => {
+                let filters = ViewFilters {
+                    collapse_duplicates: false,
+                    hide_global: true,
+                };
+                let conns = self.store.read_connections(target, filters)?;
+                Ok(conns.iter().any(|a| a.item.id == id))
+            }
+        }
+    }
+
+    // ---- row actions (W4) -------------------------------------------------------------
+
+    /// ✕ (second click) Remove the record from **its origin layer**, then its secret
+    /// from the keyring.
+    fn delete_db_row(
+        &mut self,
+        id: &str,
+        origin: &Scope,
+        secret_ref: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        self.db.armed_delete = None;
+        match self.store.delete_connection(id, origin) {
+            Ok(_removed) => {
+                let mut post_warning = None;
+                if let Some(secret_id) = secret_ref
+                    && let Err(e) = self.secrets.delete(&SecretId::new(secret_id))
+                {
+                    post_warning = Some(format!(
+                        "connection deleted, but deleting its secret failed: {e}"
+                    ));
+                }
+                self.refresh_db();
+                if post_warning.is_some() {
+                    self.error = post_warning;
+                }
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// ⤒ Move a workspace-origin record up to global.
+    fn promote_db_row(&mut self, id: &str, origin: &Scope, cx: &mut Context<Self>) {
+        self.db.armed_delete = None;
+        let Scope::Workspace(ws_id) = origin else {
+            return;
+        };
+        match self.store.promote_connection(id, ws_id) {
+            Ok(()) => self.refresh_db(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// ⤓ Move a global-origin record down into the active workspace.
+    fn demote_db_row(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.db.armed_delete = None;
+        let Scope::Workspace(ws_id) = self.scope.clone() else {
+            return;
+        };
+        match self.store.demote_connection(id, &ws_id) {
+            Ok(()) => self.refresh_db(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
     }
 }
