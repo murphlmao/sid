@@ -6,6 +6,7 @@
 //! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
 pub mod db_conn_form;
+pub mod db_diagram;
 pub mod db_tab;
 pub mod host_form;
 pub mod network_tab;
