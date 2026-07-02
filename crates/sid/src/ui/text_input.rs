@@ -421,6 +421,21 @@ pub(crate) fn next_word_boundary(s: &str, offset: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Compute the next field index when Tab/Shift+Tab cycles through an ordered,
+/// wrapping list of `len` focusable fields. `backwards` selects Shift+Tab's
+/// direction. A degenerate `len == 0` returns `0` — callers own the "nothing to
+/// focus" no-op (see `HostForm`/`DbConnForm`'s `cycle_focus`).
+pub(crate) fn next_focus_index(current: usize, len: usize, backwards: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if backwards {
+        if current == 0 { len - 1 } else { current - 1 }
+    } else {
+        (current + 1) % len
+    }
+}
+
 /// Build the string actually shown on screen: bullets (one per grapheme) when
 /// `masked`, otherwise the content itself. Kept a free function so it is unit-testable.
 pub(crate) fn display_string(content: &str, masked: bool) -> String {
@@ -887,6 +902,21 @@ mod tests {
     #[test]
     fn masking_empty_is_empty() {
         assert_eq!(display_string("", true), "");
+    }
+
+    #[test]
+    fn next_focus_index_wraps_forward_and_backward() {
+        // forward: 0 -> 1 -> 2 -> 0 (wraps)
+        assert_eq!(next_focus_index(0, 3, false), 1);
+        assert_eq!(next_focus_index(1, 3, false), 2);
+        assert_eq!(next_focus_index(2, 3, false), 0);
+        // backward: 0 -> 2 (wraps) -> 1 -> 0
+        assert_eq!(next_focus_index(0, 3, true), 2);
+        assert_eq!(next_focus_index(2, 3, true), 1);
+        assert_eq!(next_focus_index(1, 3, true), 0);
+        // degenerate: no fields is a no-op index
+        assert_eq!(next_focus_index(0, 0, false), 0);
+        assert_eq!(next_focus_index(0, 0, true), 0);
     }
 
     #[test]
