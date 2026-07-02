@@ -11,6 +11,9 @@ sid-core.workspace = true
 sid-store.workspace = true
 tokio.workspace = true
 tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 rusqlite.workspace = true
 async-trait.workspace = true
 
