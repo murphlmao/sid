@@ -22,6 +22,7 @@ use sid_store::{
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
+use crate::ui::{SessionStatus, TerminalSession};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
 const BG: u32 = 0x161618;
@@ -95,6 +96,11 @@ pub struct AppState {
     /// The row whose ✕ has been clicked once, keyed by (alias, origin) — the second
     /// click on the same row executes the delete.
     armed_delete: Option<(String, Scope)>,
+    /// The connected (or connecting/failed) terminal, if a host's ⚡ connect has been
+    /// clicked — paired with a header label so the back-strip can show which host it is
+    /// without `TerminalSession` needing to expose that itself. `Some` swaps the SSH tab's
+    /// content from the host list to the terminal (C5).
+    terminal: Option<(SharedString, Entity<TerminalSession>)>,
 }
 
 impl AppState {
@@ -118,6 +124,7 @@ impl AppState {
             form: None,
             _form_subscription: None,
             armed_delete: None,
+            terminal: None,
         };
         state.reload_scopes();
         state.refresh();
@@ -273,6 +280,33 @@ impl AppState {
         match self.store.demote_host(alias, &id) {
             Ok(()) => self.refresh(),
             Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    // ---- terminal connect (C5) ------------------------------------------------
+
+    /// ⚡ connect: open a [`TerminalSession`] for `host` and swap the SSH tab over to it.
+    /// Only one terminal is live at a time — connecting a second host disconnects the
+    /// first rather than leaking its background read-loop.
+    fn connect_host(&mut self, host: Host, cx: &mut Context<Self>) {
+        if let Some((_, old)) = self.terminal.take() {
+            old.update(cx, |session, _cx| session.disconnect());
+        }
+        let label: SharedString =
+            format!("{} — {}@{}:{}", host.alias, host.user, host.host, host.port).into();
+        let known_hosts_path = data_dir().join("known_hosts");
+        let terminal = TerminalSession::connect(host, self.secrets.as_ref(), known_hosts_path, cx);
+        self.terminal = Some((label, terminal));
+        self.error = None;
+        cx.notify();
+    }
+
+    /// ← back: disconnect the shell (if still live) and return the SSH tab to the host
+    /// list, unchanged since the connect.
+    fn close_terminal(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, terminal)) = self.terminal.take() {
+            terminal.update(cx, |session, _cx| session.disconnect());
         }
         cx.notify();
     }
@@ -495,6 +529,10 @@ impl AppState {
     }
 
     fn ssh_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some((label, terminal)) = self.terminal.clone() {
+            return self.terminal_pane(label, terminal, cx).into_any_element();
+        }
+
         let count = self.hosts.len();
         let sub: SharedString = match &self.error {
             Some(e) => format!("error: {e}").into(),
@@ -542,6 +580,63 @@ impl AppState {
                 )
                 .flex_1(),
             )
+            .into_any_element()
+    }
+
+    /// The connected view: a back/disconnect strip above the [`TerminalSession`] entity,
+    /// which paints its own connecting/failed/closed/grid states (C2–C4).
+    fn terminal_pane(
+        &self,
+        label: SharedString,
+        terminal: Entity<TerminalSession>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let status = match terminal.read(cx).status() {
+            SessionStatus::Connecting => "connecting…",
+            SessionStatus::Connected => "connected",
+            SessionStatus::Failed(_) => "failed",
+            SessionStatus::Closed => "closed",
+        };
+        let header: SharedString = format!("{label} · {status}").into();
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .child(
+                        div()
+                            .id("terminal-back")
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .bg(rgb(ACTIVE_BG))
+                            .text_color(rgb(ACTIVE_FG))
+                            .child("← back")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.close_terminal(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(rgb(FG_DIM))
+                            .child(header),
+                    ),
+            )
+            .child(div().flex().flex_col().flex_1().child(terminal))
     }
 
     fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -591,6 +686,16 @@ impl AppState {
                 },
             ))
         });
+
+        // ⚡ connect: opens a TerminalSession over this row's host (C5).
+        let connect = {
+            let host = host.clone();
+            action(("connect", ix), "⚡ connect".into(), BRAND).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, _window, cx| {
+                    this.connect_host(host.clone(), cx);
+                },
+            ))
+        };
 
         // ✎ edit: opens the form prefilled with this row's record.
         let edit = {
@@ -660,6 +765,7 @@ impl AppState {
                             .gap_1()
                             .children(promote)
                             .children(demote)
+                            .child(connect)
                             .child(edit)
                             .child(delete),
                     ),

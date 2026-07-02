@@ -6011,8 +6011,12 @@ name = "sid"
 version = "0.0.1"
 dependencies = [
  "gpui",
+ "sid-core",
  "sid-secrets",
+ "sid-ssh",
  "sid-store",
+ "sid-term",
+ "tokio",
  "unicode-segmentation",
 ]
 
