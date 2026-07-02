@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use russh::keys::{Error as KeysError, PublicKey};
+use russh::keys::{Algorithm, Error as KeysError, PublicKey};
 use sid_core::ssh::SshError;
 
 /// Outcome of checking a server key against the known-hosts files.
@@ -32,13 +32,13 @@ pub(crate) enum Verdict {
 /// `user_known_hosts` is optional and only ever read. `app_known_hosts` is the
 /// file that will be appended to on TOFU (by [`learn`]).
 ///
-// ponytail: Algorithm-ordering (OpenSSH order_hostkeyalgs) deferred to Plan
-// 3C — a host recorded only under a non-preferred algorithm on a multi-key
-// server will hard-fail as Mismatch rather than negotiating the recorded
-// algorithm. Only affects hosts imported from the user's ~/.ssh/known_hosts;
-// sid-learned hosts always record russh's negotiated algorithm. Upgrade
-// path: set config.preferred.key per-connect from recorded_algorithms(host)
-// in connect().
+/// Algorithm-ordering (OpenSSH `order_hostkeyalgs`, Plan 3C): a host recorded
+/// only under a non-preferred algorithm on a multi-key server would otherwise
+/// negotiate a different algorithm and hard-fail here as `Mismatch`, even
+/// though the recorded key is trusted. [`recorded_algorithms`] lets the
+/// caller (`client.rs::SshClient::connect`) put the recorded algorithm(s)
+/// first in the negotiation preference *before* connecting, so this function
+/// sees the key under the algorithm it was actually recorded with.
 pub(crate) fn verify(
     host: &str,
     port: u16,
@@ -99,6 +99,38 @@ pub(crate) fn learn(
     Ok(())
 }
 
+/// Algorithms `host:port` is recorded under, across the user file (if given)
+/// then the app file, in file/line order, deduped. Empty if the host is
+/// absent from both — the caller's negotiation preference is then left at
+/// its default order.
+///
+/// Used to implement OpenSSH's `order_hostkeyalgs`: see [`verify`]'s doc
+/// comment above.
+pub(crate) fn recorded_algorithms(
+    host: &str,
+    port: u16,
+    user_known_hosts: Option<&Path>,
+    app_known_hosts: &Path,
+) -> Vec<Algorithm> {
+    let mut algorithms = Vec::new();
+    for path in [user_known_hosts, Some(app_known_hosts)]
+        .into_iter()
+        .flatten()
+    {
+        // A missing/unreadable file returns an empty vec here (never an
+        // error) — see the identical comment in `verify` above.
+        if let Ok(keys) = russh::keys::known_hosts::known_host_keys_path(host, port, path) {
+            for (_line, key) in keys {
+                let algo = key.algorithm();
+                if !algorithms.contains(&algo) {
+                    algorithms.push(algo);
+                }
+            }
+        }
+    }
+    algorithms
+}
+
 /// Set `0600` on the app known_hosts file (owner read/write only).
 #[cfg(unix)]
 fn tighten_mode(path: &Path) -> Result<(), SshError> {
@@ -135,6 +167,13 @@ mod tests {
 
     fn openssh_line(host_field: &str, b64: &str) -> String {
         format!("{host_field} ssh-ed25519 {b64}\n")
+    }
+
+    // The on-disk algorithm label is never parsed (`known_host_keys_path` gets
+    // the real algorithm from the key blob itself), but a distinct helper
+    // keeps the RSA fixture lines below honest to read.
+    fn openssh_rsa_line(host_field: &str, b64: &str) -> String {
+        format!("{host_field} ssh-rsa {b64}\n")
     }
 
     struct Fixture {
@@ -270,5 +309,53 @@ mod tests {
             contents.contains("[h.example]:2222 "),
             "expected port-qualified entry, got: {contents:?}"
         );
+    }
+
+    #[test]
+    fn recorded_algorithms_single_entry() {
+        let fx = fixture();
+        write_file(&fx.app, &openssh_line("localhost", KEY_A));
+        let algos = recorded_algorithms("localhost", 22, Some(&fx.user), &fx.app);
+        assert_eq!(algos, vec![pubkey(KEY_A).algorithm()]);
+    }
+
+    #[test]
+    fn recorded_algorithms_multiple_entries_are_file_ordered_and_deduped() {
+        let fx = fixture();
+        // Two algorithms recorded for the same host — as a real
+        // ~/.ssh/known_hosts often has for a server offering both an
+        // ed25519 and an RSA host key.
+        let contents = openssh_line("localhost", KEY_A) + &openssh_rsa_line("localhost", KEY_RSA);
+        write_file(&fx.app, &contents);
+        let algos = recorded_algorithms("localhost", 22, Some(&fx.user), &fx.app);
+        assert_eq!(
+            algos,
+            vec![pubkey(KEY_A).algorithm(), pubkey(KEY_RSA).algorithm()]
+        );
+    }
+
+    #[test]
+    fn recorded_algorithms_reads_hashed_entries() {
+        let fx = fixture();
+        // A `|1|salt|hmac` hashed host entry (HMAC-SHA1), verbatim from
+        // russh's own known_hosts test fixtures — proves the algorithm
+        // survives the hashed-match code path, not just the plain-host one.
+        write_file(
+            &fx.app,
+            "|1|O33ESRMWPVkMYIwJ1Uw+n877jTo=|nuuC5vEqXlEZ/8BXQR7m619W6Ak= ssh-ed25519 \
+             AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF\n",
+        );
+        let algos = recorded_algorithms("example.com", 22, Some(&fx.user), &fx.app);
+        assert_eq!(algos, vec![pubkey(KEY_B).algorithm()]);
+    }
+
+    #[test]
+    fn recorded_algorithms_empty_when_host_absent() {
+        let fx = fixture();
+        write_file(&fx.app, &openssh_line("otherhost", KEY_A));
+        assert!(recorded_algorithms("localhost", 22, Some(&fx.user), &fx.app).is_empty());
+        // Neither file existing at all is also fine — never an error.
+        let fx2 = fixture();
+        assert!(recorded_algorithms("localhost", 22, Some(&fx2.user), &fx2.app).is_empty());
     }
 }
