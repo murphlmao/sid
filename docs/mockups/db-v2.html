@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — Database v2 mockup</title>
+<style>
+  :root{
+    --bg:#08090c; --panel:#17181d; --panel2:#1e2027; --panel3:#101115;
+    --ink:#e6e8ec; --muted:#8c9099; --line:#2d3038; --line2:#25272e;
+    --accent:#5a9ad0; --accent-soft:rgba(90,154,208,.16);
+    --ws:#a98fe0; --ws-soft:rgba(169,143,224,.16);
+    --good:#52c78e; --warn:#e0a23e; --danger:#e2685f;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:24px;
+    background:
+      radial-gradient(1px 1px at 12% 22%, rgba(255,255,255,.55) 1px, transparent 0),
+      radial-gradient(1px 1px at 68% 8%,  rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1px 1px at 40% 60%, rgba(255,255,255,.35) 1px, transparent 0),
+      radial-gradient(1px 1px at 85% 45%, rgba(255,255,255,.5)  1px, transparent 0),
+      radial-gradient(1px 1px at 92% 80%, rgba(255,255,255,.3)  1px, transparent 0),
+      radial-gradient(1px 1px at 20% 88%, rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1200px 800px at 12% -8%, rgba(90,120,210,.28), transparent 60%),
+      radial-gradient(1000px 760px at 108% 112%, rgba(150,95,210,.22), transparent 55%),
+      var(--bg);
+    background-size: 240px 220px,240px 220px,240px 220px,240px 220px,240px 220px,240px 220px, auto,auto,auto;
+  }
+  .wireframe-tag{position:fixed;top:14px;left:16px;font:11px var(--mono);color:var(--muted);letter-spacing:.06em}
+
+  /* ---- fixed layout-variant toggle, top-right of the mockup ---- */
+  .layout-toggle{position:fixed;top:14px;right:16px;z-index:50;display:flex;align-items:center;gap:8px;
+                 background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:3px;
+                 box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .layout-toggle .lbl{font-size:10.5px;color:var(--muted);padding-left:9px;letter-spacing:.05em;text-transform:uppercase}
+  .layout-toggle button{border:0;background:transparent;font:inherit;font-size:12px;color:var(--muted);padding:5px 12px;
+                        border-radius:16px;cursor:pointer}
+  .layout-toggle button[aria-selected="true"]{background:var(--accent);color:#0b0d10;font-weight:600}
+
+  .window{width:1440px;max-width:100%;height:900px;background:var(--panel);border:1px solid var(--line);
+          border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;
+          position:relative}
+
+  /* ---- titlebar / tabstrip (shared chrome) ---- */
+  .titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .lights{display:flex;gap:7px}.lights i{width:12px;height:12px;border-radius:50%;background:#33353c}
+  .brand{font-weight:650;display:flex;align-items:center;gap:6px}.brand .gl{color:var(--accent)}
+  .vsep{width:1px;height:20px;background:var(--line)}
+  .scope-lbl{font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .scope{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:3px;gap:2px}
+  .scope button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--muted);padding:4px 13px;border-radius:16px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .scope button .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+  .scope button[aria-selected="true"]{background:var(--accent);color:#0b0d10}
+  .scope button[aria-selected="true"] .dot{background:#0b0d10}
+  .spacer{flex:1}
+  .ico-btn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer;background:var(--panel)}
+  .ico-btn kbd{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;margin-left:5px}
+
+  .tabstrip{height:42px;flex:0 0 42px;display:flex;align-items:stretch;gap:2px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{display:flex;align-items:center;gap:8px;padding:0 16px;cursor:default;color:var(--muted);font-size:13.5px;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
+  .tab .ic{opacity:.8}.tab .ct{font:11px var(--mono);color:var(--muted)}
+  .tabstrip .grow{flex:1}
+  .tab.right{color:var(--muted)}
+
+  .content{flex:1;min-height:0;display:flex;flex-direction:column}
+  .view{display:none;flex:1;min-height:0;flex-direction:column}
+  .view.active{display:flex}
+  .vhead{padding:11px 18px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  .vhead h2{margin:0;font-size:15px;font-weight:650}
+  .vhead .sub{font-size:12px;color:var(--muted)}
+  .vhead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:var(--panel2);border-radius:7px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0b0d10;font-weight:600}
+  .btn:hover{filter:brightness(1.12)}
+  .badge{font-size:10px;border-radius:10px;padding:1px 7px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.g{border-color:var(--accent);color:var(--accent)}
+  .badge.w{border-color:var(--ws);color:var(--ws);background:var(--ws-soft)}
+  .dropdown{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:7px;padding:5px 11px;font-size:12.5px;cursor:pointer;background:var(--panel2)}
+  .dropdown .cv{color:var(--ws);font-weight:600}.dropdown .ar{color:var(--muted);font-size:10px}
+
+  /* ================= DB view ================= */
+  .dbwrap{flex:1;display:flex;min-height:0}
+  .tree-panel{flex:0 0 262px;width:262px;border-right:1px solid var(--line2);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .theader{padding:9px 12px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
+           border-bottom:1px solid var(--line2);font-weight:650;display:flex;align-items:center}
+  .theader .right{margin-left:auto;color:var(--muted);cursor:pointer;font-size:13px}
+  .tree-scroll{flex:1;overflow:auto;padding:6px 0}
+
+  .tnode{display:flex;align-items:center;gap:6px;padding:4px 10px;padding-left:calc(10px + var(--depth)*15px);
+        cursor:pointer;border-radius:5px;font-size:12.3px;white-space:nowrap}
+  .tnode:hover{background:var(--panel2)}
+  .tnode.selected{background:var(--accent-soft)}
+  .tcaret{width:11px;text-align:center;color:var(--muted);flex:0 0 auto;font-size:9px}
+  .tcaret.leaf{visibility:hidden}
+  .tnode .ic{flex:0 0 auto;opacity:.9;font-size:12px}
+  .tnode .lbl{overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+  .tnode .colty{margin-left:auto;flex:0 0 auto;font:10px var(--mono);color:var(--muted)}
+  .tnode .pk{color:var(--warn)}
+  .tchildren.collapsed{display:none}
+  .dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;margin-left:2px}
+  .dot.on{background:var(--good);box-shadow:0 0 5px rgba(82,199,142,.7)}
+  .dot.off{background:var(--line)}
+  .tnode .wsb{font-size:8.5px;border:1px solid var(--ws);color:var(--ws);border-radius:8px;padding:0 5px;flex:0 0 auto}
+  .tnode .gb{font-size:8.5px;border:1px solid var(--accent);color:var(--accent);border-radius:8px;padding:0 5px;flex:0 0 auto}
+
+  .conn-rail{flex:0 0 250px;width:250px;border-left:1px solid var(--line2);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .connrow{display:flex;flex-direction:column;gap:4px;padding:9px 12px;border-bottom:1px solid var(--line2);cursor:pointer}
+  .connrow:hover{background:var(--panel2)}
+  .connrow.selected{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+  .connrow .r1{display:flex;align-items:center;gap:7px}
+  .connrow .nm{font-weight:650;font-size:12.8px}
+  .connrow .r2{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
+  .connrow .mini{margin-left:auto;font-size:10.5px;border:1px solid var(--line);background:transparent;color:var(--ink);
+                 border-radius:6px;padding:2px 7px;cursor:pointer}
+  .connrow .mini:hover{border-color:var(--accent);color:var(--accent)}
+  .connrow .mini.on{border-color:var(--danger);color:var(--danger)}
+
+  /* dbwrap variant switching */
+  .dbwrap.variant-a .schema-tree-panel,.dbwrap.variant-a .conn-rail{display:none}
+  .dbwrap.variant-b .unified-tree-panel{display:none}
+
+  .db-center{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+  .connline{padding:9px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted)}
+  .connline .pgstr{font-family:var(--mono);font-size:11.5px}
+
+  .edtoolbar{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line2);position:relative}
+  .edtoolbar .sepv{width:1px;height:18px;background:var(--line)}
+  .history-panel{position:absolute;top:calc(100% - 1px);right:16px;width:360px;background:var(--panel);
+                 border:1px solid var(--line);border-radius:9px;box-shadow:0 16px 40px rgba(0,0,0,.55);
+                 z-index:10;display:none;overflow:hidden}
+  .history-panel.open{display:block}
+  .history-panel .hrow{padding:9px 13px;border-bottom:1px solid var(--line2);cursor:pointer}
+  .history-panel .hrow:hover{background:var(--panel2)}
+  .history-panel .hrow:last-child{border-bottom:none}
+  .history-panel .hq{font:11.5px var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .history-panel .hmeta{font-size:10.5px;color:var(--muted);margin-top:3px}
+
+  .editor{margin:12px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel3);
+         font:12.5px/1.7 var(--mono);padding:12px 14px;color:var(--ink)}
+  .editor .kw{color:var(--accent);font-weight:600}
+  .editor .fn{color:#c9a6f0}
+  .editor .str{color:var(--good)}
+
+  .gridfilter{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line2);font-size:12.3px}
+  .gridfilter input{flex:0 0 260px;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);
+                    color:var(--ink);border-radius:6px;padding:5px 9px}
+  .gridfilter input:focus{outline:none;border-color:var(--accent)}
+  .gridfilter .fx{color:var(--muted);cursor:pointer;border-radius:5px;padding:2px 5px}
+  .gridfilter .fx:hover{color:var(--ink);background:var(--panel2)}
+  .gridfilter .matches{margin-left:auto;color:var(--muted)}
+
+  .gridwrap{flex:1;overflow:auto}
+  table.grid{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.grid th{text-align:left;padding:6px 14px;border-bottom:1px solid var(--line2);background:var(--panel);
+               position:sticky;top:0;z-index:1}
+  table.grid th .cn{font-weight:650;color:var(--ink);font-size:12px}
+  table.grid th .ct{font-size:10px;color:var(--muted);font-weight:400;margin-top:1px;font-family:var(--mono)}
+  table.grid th.num,table.grid td.num{text-align:right}
+  table.grid td{padding:6px 14px;border-bottom:1px solid var(--line2);font-family:var(--mono);color:var(--ink);white-space:nowrap}
+  table.grid tr:hover td{background:var(--panel2)}
+  table.grid td.status-paid{color:var(--good)}
+
+  .gridstatus{display:flex;align-items:center;gap:14px;padding:8px 16px;border-top:1px solid var(--line2);font-size:12px;color:var(--muted);flex:0 0 auto}
+  .gridstatus .ok{color:var(--good)}
+  .pagination{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pagination button{border:1px solid var(--line);background:var(--panel2);color:var(--ink);border-radius:6px;padding:3px 9px;font-size:11.5px;cursor:pointer}
+  .pagination button:disabled{opacity:.35;cursor:default}
+  .pagination select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:3px 6px;font-size:11.5px}
+
+  .statusbar{height:26px;flex:0 0 26px;background:var(--panel2);border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12px;color:var(--muted)}
+  .statusbar .sc{color:var(--ink)}.statusbar .gl{color:var(--accent)}.statusbar .right{margin-left:auto;display:flex;gap:16px}
+
+  /* ---- relationships diagram overlay ---- */
+  .overlay{position:fixed;inset:0;background:rgba(4,5,7,.6);display:none;align-items:center;justify-content:center;z-index:60}
+  .overlay.open{display:flex}
+  .erwindow{width:980px;max-width:96vw;background:var(--panel);border:1px solid var(--line);border-radius:11px;
+           box-shadow:0 30px 90px rgba(0,0,0,.65);overflow:hidden;display:flex;flex-direction:column}
+  .erwindow .pt{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .erwindow .pt .ttl{font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+  .erwindow .pt .close{margin-left:auto;color:var(--muted);cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12px}
+  .erwindow .pt .close:hover{color:var(--danger);border-color:var(--danger)}
+  .ercanvas-wrap{flex:1;overflow:auto;background:var(--panel3)}
+  .ercanvas{position:relative;width:920px;height:460px;
+           background-image:radial-gradient(circle, var(--line) 1px, transparent 1.4px);
+           background-size:18px 18px}
+  .ersvg{position:absolute;inset:0;width:920px;height:460px;pointer-events:none}
+  .ersvg path{fill:none;stroke:var(--accent);stroke-width:1.6}
+  .ersvg text{font:11px var(--mono);fill:var(--muted)}
+  .ertable{position:absolute;border:1px solid var(--line);border-radius:8px;background:var(--panel2);
+          box-shadow:0 12px 30px rgba(0,0,0,.45);overflow:hidden}
+  .ertable .erhead{height:28px;box-sizing:border-box;display:flex;align-items:center;padding:0 10px;
+                   background:var(--accent-soft);color:var(--ink);font-weight:650;font-size:12.3px;border-bottom:1px solid var(--line)}
+  .ertable .ercol{height:24px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 10px;
+                  font:11.3px var(--mono);border-bottom:1px solid var(--line2);color:var(--ink)}
+  .ertable .ercol:last-child{border-bottom:none}
+  .ertable .ercol .pk{color:var(--warn)}
+  .ertable .ercol .ty{margin-left:auto;color:var(--muted);font-size:10px}
+  .erfoot{padding:8px 14px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);display:flex;gap:16px;align-items:center}
+  .erfoot .lg{display:flex;align-items:center;gap:5px}
+  .erfoot .lg .swatch{width:16px;height:2px;background:var(--accent);display:inline-block}
+</style>
+</head>
+<body>
+<div class="wireframe-tag">DESIGN MOCKUP v2 · Database · DBeaver-inspired · static, no app code</div>
+
+<div class="layout-toggle">
+  <span class="lbl">Layout</span>
+  <button id="btnVariantA" aria-selected="true">Tree left</button>
+  <button id="btnVariantB" aria-selected="false">Selector right</button>
+</div>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand"><span class="gl">✦</span> sid</div>
+    <div class="vsep"></div>
+    <span class="scope-lbl">scope</span>
+    <div class="scope">
+      <button aria-selected="false"><span class="dot"></span>Global</button>
+      <button aria-selected="true"><span class="dot"></span>acme-api</button>
+      <button aria-selected="false"><span class="dot"></span>payments-svc</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="ico-btn">Search actions<kbd>⌘K</kbd></div>
+  </div>
+
+  <div class="tabstrip">
+    <div class="tab"><span class="ic">⌁</span>SSH / SFTP<span class="ct">3</span></div>
+    <div class="tab" aria-selected="true"><span class="ic">▤</span>Database<span class="ct">4</span></div>
+    <div class="tab"><span class="ic">⇅</span>Network<span class="ct">7</span></div>
+    <div class="tab"><span class="ic">▢</span>Workspaces<span class="ct">3</span></div>
+    <div class="tab"><span class="ic">⚙</span>System</div>
+    <div class="grow"></div>
+    <div class="tab right"><span class="ic">◐</span>Settings</div>
+  </div>
+
+  <div class="content">
+    <section class="view active" id="view-db">
+      <div class="vhead">
+        <h2>Database</h2>
+        <span class="sub">DBeaver-inspired · tree ⇄ editor ⇄ grid</span>
+        <div class="right"><button class="btn">＋ Add connection</button></div>
+      </div>
+
+      <div class="dbwrap variant-a" id="dbwrap">
+
+        <!-- Variant A: unified tree (connections → schemas → tables → columns) -->
+        <div class="tree-panel unified-tree-panel">
+          <div class="theader">Connections<span class="right">⟳</span></div>
+          <div class="tree-scroll" id="unifiedTree">
+
+            <div class="tnode" style="--depth:0"><span class="tcaret" data-t="ua-global">▾</span><span class="ic">⌂</span><span class="lbl">Global</span></div>
+            <div class="tchildren" id="ua-global">
+              <div class="tnode" style="--depth:1" data-conn="local-pg" data-badge='<span class="badge g">⌂ Global</span>'><span class="tcaret leaf">▸</span><span class="ic">🐘</span><span class="lbl">local-pg</span><span class="dot off"></span></div>
+            </div>
+
+            <div class="tnode" style="--depth:0"><span class="tcaret" data-t="ua-acme">▾</span><span class="ic">▢</span><span class="lbl">acme-api</span><span class="wsb">workspace</span></div>
+            <div class="tchildren" id="ua-acme">
+
+              <div class="tnode selected" style="--depth:1" data-conn="acme-pg" data-badge='<span class="badge w">acme-api</span>'><span class="tcaret" data-t="ua-acmepg">▾</span><span class="ic">🐘</span><span class="lbl">acme-pg</span><span class="dot on"></span></div>
+              <div class="tchildren" id="ua-acmepg">
+                <div class="tnode" style="--depth:2"><span class="tcaret" data-t="ua-public">▾</span><span class="ic">▤</span><span class="lbl">public</span></div>
+                <div class="tchildren" id="ua-public">
+                  <div class="tnode" style="--depth:3"><span class="tcaret" data-t="ua-users">▾</span><span class="ic">▦</span><span class="lbl">users</span></div>
+                  <div class="tchildren" id="ua-users">
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">email</span><span class="colty">text</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">plan</span><span class="colty">text</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">created_at</span><span class="colty">timestamptz</span></div>
+                  </div>
+                  <div class="tnode" style="--depth:3"><span class="tcaret" data-t="ua-orders">▸</span><span class="ic">▦</span><span class="lbl">orders</span></div>
+                  <div class="tchildren collapsed" id="ua-orders">
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">user_id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">status</span><span class="colty">text</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">total_cents</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">created_at</span><span class="colty">timestamptz</span></div>
+                  </div>
+                  <div class="tnode" style="--depth:3"><span class="tcaret" data-t="ua-lineitems">▸</span><span class="ic">▦</span><span class="lbl">line_items</span></div>
+                  <div class="tchildren collapsed" id="ua-lineitems">
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">order_id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">product_id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">qty</span><span class="colty">int4</span></div>
+                  </div>
+                  <div class="tnode" style="--depth:3"><span class="tcaret" data-t="ua-products">▸</span><span class="ic">▦</span><span class="lbl">products</span></div>
+                  <div class="tchildren collapsed" id="ua-products">
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">sku</span><span class="colty">text</span></div>
+                    <div class="tnode" style="--depth:4"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">name</span><span class="colty">text</span></div>
+                  </div>
+                </div>
+                <div class="tnode" style="--depth:2"><span class="tcaret" data-t="ua-analytics">▸</span><span class="ic">▤</span><span class="lbl">analytics</span></div>
+                <div class="tchildren collapsed" id="ua-analytics">
+                  <div class="tnode" style="--depth:3"><span class="tcaret leaf">▸</span><span class="ic">▦</span><span class="lbl">daily_revenue</span></div>
+                </div>
+              </div>
+
+              <div class="tnode" style="--depth:1" data-conn="acme-pg-replica" data-badge='<span class="badge w">acme-api</span>'><span class="tcaret leaf">▸</span><span class="ic">🐘</span><span class="lbl">acme-pg-replica</span><span class="dot on"></span></div>
+            </div>
+
+            <div class="tnode" style="--depth:0"><span class="tcaret" data-t="ua-pay">▾</span><span class="ic">▢</span><span class="lbl">payments-svc</span><span class="wsb">workspace</span></div>
+            <div class="tchildren" id="ua-pay">
+              <div class="tnode" style="--depth:1" data-conn="pay-pg" data-badge='<span class="badge w">payments-svc</span>'><span class="tcaret leaf">▸</span><span class="ic">🐘</span><span class="lbl">pay-pg</span><span class="dot off"></span></div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Variant B: schema-only tree, rooted at the active connection -->
+        <div class="tree-panel schema-tree-panel">
+          <div class="theader">Schema · <span id="schemaConnLbl" style="text-transform:none;font-weight:650;color:var(--ink);margin-left:4px">acme-pg</span></div>
+          <div class="tree-scroll" id="schemaTree">
+            <div class="tnode" style="--depth:0"><span class="tcaret" data-t="ub-public">▾</span><span class="ic">▤</span><span class="lbl">public</span></div>
+            <div class="tchildren" id="ub-public">
+              <div class="tnode" style="--depth:1"><span class="tcaret" data-t="ub-users">▾</span><span class="ic">▦</span><span class="lbl">users</span></div>
+              <div class="tchildren" id="ub-users">
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">email</span><span class="colty">text</span></div>
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">plan</span><span class="colty">text</span></div>
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">created_at</span><span class="colty">timestamptz</span></div>
+              </div>
+              <div class="tnode" style="--depth:1"><span class="tcaret" data-t="ub-orders">▸</span><span class="ic">▦</span><span class="lbl">orders</span></div>
+              <div class="tchildren collapsed" id="ub-orders">
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">user_id</span><span class="colty">int4</span></div>
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic"> </span><span class="lbl">status</span><span class="colty">text</span></div>
+              </div>
+              <div class="tnode" style="--depth:1"><span class="tcaret" data-t="ub-lineitems">▸</span><span class="ic">▦</span><span class="lbl">line_items</span></div>
+              <div class="tchildren collapsed" id="ub-lineitems">
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+              </div>
+              <div class="tnode" style="--depth:1"><span class="tcaret" data-t="ub-products">▸</span><span class="ic">▦</span><span class="lbl">products</span></div>
+              <div class="tchildren collapsed" id="ub-products">
+                <div class="tnode" style="--depth:2"><span class="tcaret leaf">·</span><span class="ic pk">🔑</span><span class="lbl">id</span><span class="colty">int4</span></div>
+              </div>
+            </div>
+            <div class="tnode" style="--depth:0"><span class="tcaret leaf">▸</span><span class="ic">▤</span><span class="lbl">analytics</span></div>
+          </div>
+        </div>
+
+        <!-- shared center: editor + results, common to both variants -->
+        <div class="db-center">
+          <div class="connline">
+            <div class="dropdown">conn: <span class="cv" id="connDropdownName">acme-pg</span> <span id="connDropdownBadge"><span class="badge w">acme-api</span></span><span class="ar">▾</span></div>
+            <span class="pgstr">postgres://acme@db.acme.internal/acme</span>
+            <span>· secret in keyring</span>
+          </div>
+
+          <div class="edtoolbar">
+            <button class="btn primary" id="btnRun">▶ Run</button>
+            <button class="btn" id="btnCsv">⭳ CSV</button>
+            <button class="btn" id="btnRelationships">⧉ Relationships</button>
+            <div class="sepv"></div>
+            <button class="btn" id="btnHistory">🕐 History ▾</button>
+            <div class="history-panel" id="historyPanel">
+              <div class="hrow" data-q="select o.id, u.email, o.status, o.total_cents/100.0 as total, o.created_at
+from orders o join users u on u.id = o.user_id
+where o.status = 'paid'
+order by o.created_at desc
+limit 8;">
+                <div class="hq">select o.id, u.email, o.status … from orders o join users u …</div>
+                <div class="hmeta">just now · 34 ms · 8 rows</div>
+              </div>
+              <div class="hrow" data-q="select count(*) from orders;">
+                <div class="hq">select count(*) from orders;</div>
+                <div class="hmeta">3 min ago · 2 ms · 1 row</div>
+              </div>
+              <div class="hrow" data-q="select sku, name, price_cents from products
+order by price_cents desc
+limit 20;">
+                <div class="hq">select sku, name, price_cents from products order by …</div>
+                <div class="hmeta">12 min ago · 9 ms · 20 rows</div>
+              </div>
+              <div class="hrow" data-q="update orders set status = 'refunded' where id = 8391;">
+                <div class="hq">update orders set status = 'refunded' where id = 8391;</div>
+                <div class="hmeta">38 min ago · 14 ms · 1 row affected</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="editor" id="editor"><span class="kw">select</span> o.id, u.email, o.status, o.total_cents/100.0 <span class="kw">as</span> total, o.created_at
+<span class="kw">from</span> orders o <span class="kw">join</span> users u <span class="kw">on</span> u.id = o.user_id
+<span class="kw">where</span> o.status = <span class="str">'paid'</span>
+<span class="kw">order by</span> o.created_at <span class="kw">desc</span>
+<span class="kw">limit</span> 8;</div>
+
+          <div class="gridfilter">
+            <span>⌕ Filter rows</span>
+            <input value="status = 'paid'" spellcheck="false">
+            <span class="fx" title="clear">×</span>
+            <button class="btn">Apply</button>
+            <span class="matches">8 of 1,842 rows match</span>
+          </div>
+
+          <div class="gridwrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th class="num"><div class="cn">id</div><div class="ct">int4</div></th>
+                  <th><div class="cn">email</div><div class="ct">text</div></th>
+                  <th><div class="cn">status</div><div class="ct">text</div></th>
+                  <th class="num"><div class="cn">total</div><div class="ct">numeric</div></th>
+                  <th><div class="cn">created_at</div><div class="ct">timestamptz</div></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="num">9401</td><td>mara@acme.io</td><td class="status-paid">paid</td><td class="num">128.00</td><td>2026-07-02 09:14</td></tr>
+                <tr><td class="num">9398</td><td>to@northwind.dev</td><td class="status-paid">paid</td><td class="num">64.50</td><td>2026-07-02 08:02</td></tr>
+                <tr><td class="num">9390</td><td>lee@hd.systems</td><td class="status-paid">paid</td><td class="num">212.10</td><td>2026-07-01 22:41</td></tr>
+                <tr><td class="num">9385</td><td>q@orbit.sh</td><td class="status-paid">paid</td><td class="num">39.99</td><td>2026-07-01 19:15</td></tr>
+                <tr><td class="num">9379</td><td>sid@home.lan</td><td class="status-paid">paid</td><td class="num">87.25</td><td>2026-07-01 14:08</td></tr>
+                <tr><td class="num">9371</td><td>ren@vela.io</td><td class="status-paid">paid</td><td class="num">156.00</td><td>2026-07-01 09:52</td></tr>
+                <tr><td class="num">9366</td><td>mara@acme.io</td><td class="status-paid">paid</td><td class="num">44.00</td><td>2026-06-30 21:30</td></tr>
+                <tr><td class="num">9358</td><td>jill@northwind.dev</td><td class="status-paid">paid</td><td class="num">302.75</td><td>2026-06-30 16:47</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="gridstatus">
+            <span><span class="ok">✓</span> <span id="rowCount">8</span> rows · <span id="runMs">34</span> ms</span>
+            <span>⎘ copy cell</span>
+            <div class="pagination">
+              <span id="pageInfo">Showing 1–8 of 1,842</span>
+              <button id="btnPrev" disabled>‹ Prev</button>
+              <span id="pageLabel">Page 1 of 231</span>
+              <button id="btnNext">Next ›</button>
+              <select><option>50 / page</option><option>100 / page</option><option>250 / page</option></select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Variant B: connection selector rail, right edge -->
+        <div class="conn-rail">
+          <div class="theader">Connections<span class="right">＋</span></div>
+          <div class="tree-scroll">
+            <div class="connrow" data-conn="local-pg" data-badge='<span class="badge g">⌂ Global</span>'>
+              <div class="r1"><span class="dot off"></span><span class="nm">local-pg</span><span class="badge g">⌂ Global</span></div>
+              <div class="r2">postgres · localhost:5432<button class="mini">connect</button></div>
+            </div>
+            <div class="connrow selected" data-conn="acme-pg" data-badge='<span class="badge w">acme-api</span>'>
+              <div class="r1"><span class="dot on"></span><span class="nm">acme-pg</span><span class="badge w">acme-api</span></div>
+              <div class="r2">connected · 8 ms<button class="mini on">disconnect</button></div>
+            </div>
+            <div class="connrow" data-conn="acme-pg-replica" data-badge='<span class="badge w">acme-api</span>'>
+              <div class="r1"><span class="dot on"></span><span class="nm">acme-pg-replica</span><span class="badge w">acme-api</span></div>
+              <div class="r2">connected · 21 ms · read-only<button class="mini on">disconnect</button></div>
+            </div>
+            <div class="connrow" data-conn="pay-pg" data-badge='<span class="badge w">payments-svc</span>'>
+              <div class="r1"><span class="dot off"></span><span class="nm">pay-pg</span><span class="badge w">payments-svc</span></div>
+              <div class="r2">postgres · pay-db.internal<button class="mini">connect</button></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <div class="statusbar">
+    <span>scope: <span class="sc">acme-api</span></span>
+    <span>4 connections · 1 global · 3 workspace</span>
+    <div class="right"><span>▤ acme-pg connected</span><span class="gl">✦ cosmos</span></div>
+  </div>
+</div>
+
+<!-- relationships diagram: Access-style ER window -->
+<div class="overlay" id="erOverlay">
+  <div class="erwindow">
+    <div class="pt">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <span class="ttl">sid — relationships · acme-pg</span>
+      <span class="close" id="erClose">✕ Close</span>
+    </div>
+    <div class="ercanvas-wrap">
+      <div class="ercanvas">
+        <svg class="ersvg" viewBox="0 0 920 460">
+          <path d="M220,70 H285 V94 H350"></path>
+          <text x="226" y="64">1</text>
+          <text x="345" y="88" text-anchor="end">∞</text>
+
+          <path d="M560,70 H580 V294 H600"></path>
+          <text x="566" y="64">1</text>
+          <text x="595" y="288" text-anchor="end">∞</text>
+
+          <path d="M220,320 H410 V318 H600"></path>
+          <text x="226" y="314">1</text>
+          <text x="595" y="312" text-anchor="end">∞</text>
+        </svg>
+
+        <div class="ertable" style="left:30px;top:30px;width:190px">
+          <div class="erhead">users</div>
+          <div class="ercol"><span class="pk">🔑</span><span>id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>email</span><span class="ty">text</span></div>
+          <div class="ercol"><span> </span><span>plan</span><span class="ty">text</span></div>
+          <div class="ercol"><span> </span><span>created_at</span><span class="ty">timestamptz</span></div>
+        </div>
+
+        <div class="ertable" style="left:350px;top:30px;width:210px">
+          <div class="erhead">orders</div>
+          <div class="ercol"><span class="pk">🔑</span><span>id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>user_id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>status</span><span class="ty">text</span></div>
+          <div class="ercol"><span> </span><span>total_cents</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>created_at</span><span class="ty">timestamptz</span></div>
+        </div>
+
+        <div class="ertable" style="left:600px;top:230px;width:220px">
+          <div class="erhead">line_items</div>
+          <div class="ercol"><span class="pk">🔑</span><span>id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>order_id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>product_id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>qty</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>unit_price_cents</span><span class="ty">int4</span></div>
+        </div>
+
+        <div class="ertable" style="left:30px;top:280px;width:190px">
+          <div class="erhead">products</div>
+          <div class="ercol"><span class="pk">🔑</span><span>id</span><span class="ty">int4</span></div>
+          <div class="ercol"><span> </span><span>sku</span><span class="ty">text</span></div>
+          <div class="ercol"><span> </span><span>name</span><span class="ty">text</span></div>
+          <div class="ercol"><span> </span><span>price_cents</span><span class="ty">int4</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="erfoot">
+      <span class="lg"><span class="swatch"></span> foreign key</span>
+      <span>1 = one side (PK) · ∞ = many side (FK)</span>
+      <span style="margin-left:auto">3 relationships · 4 tables · schema public</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- generic tree expand/collapse ----
+  document.querySelectorAll('.tcaret[data-t]').forEach(c=>{
+    c.onclick = (e)=>{
+      e.stopPropagation();
+      const t = document.getElementById(c.dataset.t);
+      const collapsed = t.classList.toggle('collapsed');
+      c.textContent = collapsed ? '▸' : '▾';
+    };
+  });
+
+  // ---- selecting a connection (from either tree or the conn-rail) updates the shared editor context ----
+  function selectConnection(name, badgeHtml){
+    document.getElementById('connDropdownName').textContent = name;
+    document.getElementById('connDropdownBadge').innerHTML = badgeHtml;
+    document.getElementById('schemaConnLbl').textContent = name;
+    document.querySelectorAll('.tnode[data-conn]').forEach(n=>n.classList.toggle('selected', n.dataset.conn===name));
+    document.querySelectorAll('.connrow[data-conn]').forEach(n=>n.classList.toggle('selected', n.dataset.conn===name));
+  }
+  document.querySelectorAll('.tnode[data-conn]').forEach(n=>{
+    n.addEventListener('click', (e)=>{
+      if(e.target.closest('.tcaret')) return;
+      selectConnection(n.dataset.conn, n.dataset.badge);
+    });
+  });
+  document.querySelectorAll('.connrow[data-conn]').forEach(n=>{
+    n.addEventListener('click', (e)=>{
+      if(e.target.closest('.mini')) return;
+      selectConnection(n.dataset.conn, n.dataset.badge);
+    });
+  });
+
+  // ---- layout toggle ----
+  const dbwrap = document.getElementById('dbwrap');
+  const btnA = document.getElementById('btnVariantA'), btnB = document.getElementById('btnVariantB');
+  function setVariant(v){
+    dbwrap.classList.toggle('variant-a', v==='a');
+    dbwrap.classList.toggle('variant-b', v==='b');
+    btnA.setAttribute('aria-selected', v==='a');
+    btnB.setAttribute('aria-selected', v==='b');
+  }
+  btnA.onclick = ()=>setVariant('a');
+  btnB.onclick = ()=>setVariant('b');
+
+  // ---- history dropdown ----
+  const historyPanel = document.getElementById('historyPanel');
+  document.getElementById('btnHistory').onclick = (e)=>{ e.stopPropagation(); historyPanel.classList.toggle('open'); };
+  document.addEventListener('click', ()=>historyPanel.classList.remove('open'));
+  historyPanel.querySelectorAll('.hrow').forEach(row=>row.onclick=(e)=>{
+    e.stopPropagation();
+    const q = row.dataset.q;
+    document.getElementById('editor').textContent = q;
+    historyPanel.classList.remove('open');
+  });
+
+  // ---- run: cheap "it did something" feedback ----
+  document.getElementById('btnRun').onclick = ()=>{
+    document.getElementById('runMs').textContent = String(24 + Math.floor(Math.random()*30));
+    const grid = document.querySelector('.gridwrap');
+    grid.style.opacity = '.4';
+    setTimeout(()=>{ grid.style.opacity = '1'; }, 140);
+  };
+
+  // ---- pagination: cosmetic page counter (sample data doesn't actually change) ----
+  let page = 1;
+  document.getElementById('btnNext').onclick = ()=>{
+    page = page===1 ? 2 : 1;
+    document.getElementById('pageLabel').textContent = `Page ${page} of 231`;
+    document.getElementById('pageInfo').textContent = page===1 ? 'Showing 1–8 of 1,842' : 'Showing 9–16 of 1,842';
+    document.getElementById('btnPrev').disabled = page===1;
+  };
+  document.getElementById('btnPrev').onclick = ()=>{
+    page = 1;
+    document.getElementById('pageLabel').textContent = 'Page 1 of 231';
+    document.getElementById('pageInfo').textContent = 'Showing 1–8 of 1,842';
+    document.getElementById('btnPrev').disabled = true;
+  };
+
+  // ---- relationships diagram overlay ----
+  const erOverlay = document.getElementById('erOverlay');
+  document.getElementById('btnRelationships').onclick = ()=>erOverlay.classList.add('open');
+  document.getElementById('erClose').onclick = ()=>erOverlay.classList.remove('open');
+  erOverlay.addEventListener('click', (e)=>{ if(e.target===erOverlay) erOverlay.classList.remove('open'); });
+</script>
+</body>
+</html>
