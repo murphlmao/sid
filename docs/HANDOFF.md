@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-02 — 309 tests green, working tree clean, `main` @ 7c2c879. SSH/SFTP: MobaXterm split session (terminal + file browser on one connection). Database: working connect→query→results tab (gpui-component) on the layered store + TLS adapter. Both need their live observation gates._
+_Last verified: 2026-07-02 — 350 tests green (clippy + fmt clean), working tree clean, `main` @ 6ed414b. **Three tabs now do real work.** SSH/SFTP: MobaXterm split session (terminal + file browser, one connection). Database: connect→query→results + schema tree, cell copy/view, CSV export (formula-injection-guarded), in-memory query history. Network: live listening-ports table + two-click kill + interfaces strip (`sid-sysinfo` port of the POC adapter). All three need their live observation gates._
 
 ---
 
@@ -36,10 +36,13 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 | **Plan 3C** — [terminal view + connect flow](superpowers/plans/2026-07-01-p33c-terminal-connect.md) | GPUI styled terminal grid (arbor-referenced), `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth` mapping, `secret_ref` keyring resolution, `⚡ connect` in the SSH tab, host-key `order_hostkeyalgs` | ✅ merged (C1–C7); ⚠ needs the human observation gate + live-sshd smoke |
 | **DB slice** — [backend](superpowers/plans/2026-07-01-db-slice.md) + [Wave-2 UI](superpowers/plans/2026-07-01-db-ui-wave2.md) | Backend: `DbKind`, `Store` connection facade, `sid-db` (Postgres/SQLite/redb-browse), rustls TLS. UI (gpui-component): connection picker + seeded demo, descriptor-driven add/edit form (save-to scope, keyring secret), SQL editor + Run→results grid | ✅ backend + Wave-2 increment-1 merged; ⏳ increment-2 = left-tree schema browser, query history, CSV export, cell copy/view, redb-browse UI. Needs the live observation gate. |
 | **SSH split session** — [P3.5](superpowers/plans/2026-07-01-p35-ssh-split-session.md) | MobaXterm layout: terminal + remote file browser on ONE connection; full-filesystem nav, download (traversal-guarded), view (safe text preview), copy-path | ✅ merged; needs the live observation gate |
+| **DB increment-2** — [Wave-2 §inc-2](superpowers/plans/2026-07-01-db-ui-wave2.md) | Left schema tree (over existing `schema_introspect`), click-table→`SELECT *`, cell copy/view popover, CSV export (formula-injection + RFC-4180 guarded), in-memory query-history ring | ✅ merged; needs the live observation gate. ⏳ inc-3 = redb-browse UI, sortable/filterable grid, EXPLAIN |
+| **Network** — [inc-1](superpowers/plans/2026-07-02-network-slice.md) | Port POC `SysProvider`→`sid-core::sys` + new `sid-sysinfo` crate (netstat2/sysinfo/nix, hardened kill guards). Tab: live listening-ports table (proto·port·pid·process), two-click kill-by-pid, interfaces strip (default-route first). Live/ephemeral — no store | ✅ merged; needs the live observation gate. ⏳ inc-2 = cpu/mem cols, sortable headers, filter, established conns |
 
 **Crates:** `sid` (GPUI frontend — the only place GPUI may be named), `sid-store`
-(layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal trait seam —
-no concrete deps), `sid-ssh` (russh impl), `sid-term` (vt100 styled screen).
+(layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal/db/**sys** trait
+seams — no concrete deps), `sid-ssh` (russh impl), `sid-term` (vt100 styled screen),
+`sid-db` (Postgres/SQLite/redb clients + TLS), `sid-sysinfo` (netstat2/sysinfo/nix system probe).
 
 **Key files:**
 - `crates/sid/src/app.rs` — the single `AppState` entity. Renders from a cache; events call `refresh()` then `cx.notify()`. No I/O in `render`.
