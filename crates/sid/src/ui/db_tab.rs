@@ -8,14 +8,25 @@
 //! module reaches back into `AppState`'s `pub(crate)` fields (`store`, `secrets`, `scope`,
 //! `filters`, `scopes`, `error`) to do it. See `app.rs`'s module doc comment for the
 //! host-tab equivalent this mirrors.
+//!
+//! W5 (SQL editor + results) reuses `session::ssh_runtime()` — the process-lifetime
+//! Tokio runtime the SSH track already built. It isn't SSH-specific in mechanism (just
+//! named for its original purpose): `tokio-postgres`/`rusqlite` both need an ambient
+//! Tokio context the same way `russh` does, and standing up a second runtime just for
+//! this tab would be pure duplication. `session::ssh_runtime` is `pub(crate)`, so no
+//! visibility change to `session.rs` (off-limits this slice) was needed.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString, Subscription,
-    Window, div, prelude::*, rgb, uniform_list,
+    AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString,
+    Subscription, Window, div, prelude::*, px, rgb, uniform_list,
 };
-use sid_secrets::SecretId;
+use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use sid_core::db::{DbClient, DbError, OpenParams, PageCursor, QueryPage, Row};
+use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
@@ -23,6 +34,7 @@ use crate::db_registry::DbRegistry;
 use crate::ui::db_conn_form::{
     DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
+use crate::ui::session::ssh_runtime;
 
 // DANGER matches app.rs's palette (used by the delete action's armed state).
 const DANGER: u32 = 0xd08a8a;
@@ -41,6 +53,20 @@ const ROW_ALT: u32 = 0x1c1c20;
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
 const MONO: &str = "DejaVu Sans Mono";
 
+// W5: query pane palette (the editor/results border+fill), matching `db_conn_form.rs`'s
+// field styling so the tab reads as one surface.
+const FIELD_BG: u32 = 0x121215;
+const FIELD_BORDER: u32 = 0x33343a;
+
+/// Seeded into the SQL editor on first paint — works unmodified against every engine
+/// (SQLite, Postgres, and the redb browse engine all accept a bare `select 1;`), so it
+/// isn't tied to the demo SQLite connection's schema.
+const DEMO_SQL: &str = "select 1;";
+
+/// Rows per `query_paged` call. Small enough to make the "⭳ next page" control
+/// exercisable by hand against the demo seed without a huge fixture table.
+const PAGE_SIZE: u32 = 100;
+
 /// Database tab state: the composed connection list for the active scope, the row
 /// currently selected as "active", and (once armed) a pending two-click delete.
 pub struct DbTabState {
@@ -58,6 +84,99 @@ pub struct DbTabState {
     pub(crate) form: Option<Entity<DbConnForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
     _form_subscription: Option<Subscription>,
+
+    // ---- W5: SQL editor + results ------------------------------------------------
+    /// The SQL editor. Lazily built by `ensure_query_widgets` (needs `window`, which
+    /// `DbTabState::new` doesn't have) the first time the Database tab paints.
+    sql: Option<Entity<InputState>>,
+    /// Keeps the SQL editor's `PressEnter{secondary: true}` (Ctrl/Cmd-Enter) subscription
+    /// alive for as long as the editor exists — i.e. for the tab's whole lifetime.
+    _sql_subscription: Option<Subscription>,
+    /// Results table. Built alongside `sql`, once. Its delegate is mutated *in place* on
+    /// every query completion/page — never rebuilt (`TableState::new` needs `window`,
+    /// unavailable from an async completion callback).
+    results: Option<Entity<TableState<ResultDelegate>>>,
+    /// The open client for `client_for`, reused across repeat queries against the same
+    /// connection so Run doesn't reconnect every time.
+    client: Option<Arc<dyn DbClient>>,
+    /// Which connection id `client` is open against. Compared to `active_id` on Run to
+    /// decide whether the cached client is still usable.
+    client_for: Option<String>,
+    /// True while a connect-or-query task is in flight — guards re-entrant Run/next-page
+    /// clicks.
+    running: bool,
+    status: QueryStatus,
+    /// The exact SQL text of the last run query, so "next page" repeats it without
+    /// depending on the editor's current (possibly since-edited) contents.
+    last_sql: Option<String>,
+    /// The cursor `query_paged` returned for the next page, if any.
+    next_cursor: Option<PageCursor>,
+}
+
+/// Outcome of the last query run, driving the query pane's status line.
+enum QueryStatus {
+    Idle,
+    Err(String),
+    Ok {
+        rows: usize,
+        duration_ms: u64,
+        has_more: bool,
+    },
+}
+
+/// Backs the results [`Table`]. Constructed empty by `ensure_query_widgets`, then
+/// mutated in place (`set_page`) whenever a query completes — see the `results` field
+/// doc comment for why it's never rebuilt.
+struct ResultDelegate {
+    columns: Vec<Column>,
+    rows: Vec<Row>,
+}
+
+impl ResultDelegate {
+    fn empty() -> Self {
+        Self {
+            columns: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn set_page(&mut self, page: QueryPage) {
+        self.columns = page
+            .columns
+            .iter()
+            .map(|c| Column::new(c.name.clone(), c.name.clone()).width(px(140.)))
+            .collect();
+        self.rows = page.rows;
+    }
+}
+
+impl TableDelegate for ResultDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let text = self.rows[row_ix]
+            .values
+            .get(col_ix)
+            .cloned()
+            .unwrap_or_default();
+        div().px_2().text_xs().text_color(rgb(FG)).child(text)
+    }
 }
 
 impl DbTabState {
@@ -73,6 +192,15 @@ impl DbTabState {
             armed_delete: None,
             form: None,
             _form_subscription: None,
+            sql: None,
+            _sql_subscription: None,
+            results: None,
+            client: None,
+            client_for: None,
+            running: false,
+            status: QueryStatus::Idle,
+            last_sql: None,
+            next_cursor: None,
         };
         let _ = state.refresh(store, scope, filters);
         state
@@ -104,7 +232,9 @@ impl AppState {
         self.error = self.db.refresh(&self.store, &self.scope, self.filters);
     }
 
-    pub(crate) fn db_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn db_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.ensure_query_widgets(window, cx);
+
         let count = self.db.connections.len();
         let sub: SharedString = match &self.error {
             Some(e) => format!("error: {e}").into(),
@@ -152,9 +282,158 @@ impl AppState {
                             .collect::<Vec<_>>()
                     }),
                 )
-                .flex_1(),
+                // Fixed height (was `flex_1`, W3) — the query pane below now claims the
+                // rest of the tab's vertical space.
+                .h(px(220.)),
             )
+            .child(self.query_pane(cx))
             .into_any_element()
+    }
+
+    /// Lazily build the SQL editor + results table on first paint of the DB tab.
+    /// Idempotent (checked every render) — cheap after the first call. Needs `window`
+    /// for `InputState::new`/`TableState::new`, which is why this can't happen in
+    /// `DbTabState::new` (constructed before any window exists).
+    fn ensure_query_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db.sql.is_some() {
+            return;
+        }
+        let sql = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor("sql")
+                .line_number(true)
+                .rows(8)
+                .default_value(DEMO_SQL)
+        });
+        self.db._sql_subscription = Some(cx.subscribe(&sql, Self::on_sql_event));
+        self.db.sql = Some(sql);
+        self.db.results = Some(cx.new(|cx| TableState::new(ResultDelegate::empty(), window, cx)));
+    }
+
+    /// Ctrl/Cmd-Enter in the SQL editor runs the query. Plain Enter inserts a newline
+    /// (handled inside `InputState` itself — multi-line/code-editor mode) and is not
+    /// acted on here.
+    fn on_sql_event(
+        &mut self,
+        _sql: Entity<InputState>,
+        event: &InputEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let InputEvent::PressEnter { secondary: true } = event {
+            self.run_query(cx);
+        }
+    }
+
+    /// The SQL editor + Run/next-page controls + status line + results table, below the
+    /// connection picker. Always rendered; Run/next-page are no-ops (surfaced as a
+    /// status message) with no active connection rather than being conditionally absent.
+    fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let active_label: SharedString = match &self.db.active_id {
+            Some(id) => self
+                .db
+                .connections
+                .iter()
+                .find(|a| &a.item.id == id)
+                .map(|a| {
+                    if a.item.name.is_empty() {
+                        a.item.id.clone()
+                    } else {
+                        a.item.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| id.clone())
+                .into(),
+            None => "no connection selected".into(),
+        };
+
+        let (status_text, status_color): (SharedString, u32) = match &self.db.status {
+            QueryStatus::Idle => ("".into(), FG_DIM),
+            QueryStatus::Err(e) => (format!("✗ {e}").into(), DANGER),
+            QueryStatus::Ok {
+                rows, duration_ms, ..
+            } => (format!("✓ {rows} rows · {duration_ms} ms").into(), FG_DIM),
+        };
+        let has_more = matches!(&self.db.status, QueryStatus::Ok { has_more: true, .. });
+        let run_label = if self.db.running { "…" } else { "▶ Run" };
+
+        let next_page = has_more.then(|| {
+            div()
+                .id("db-next-page")
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(BRAND))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child("⭳ next page")
+                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    this.next_page(cx);
+                }))
+        });
+
+        let sql_editor = self.db.sql.clone().map(|sql| {
+            div()
+                .h(px(140.))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(FIELD_BORDER))
+                .bg(rgb(FIELD_BG))
+                .child(Input::new(&sql))
+        });
+        let results_table = self
+            .db
+            .results
+            .clone()
+            .map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true)));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(rgb(FG_DIM))
+                            .child(active_label),
+                    )
+                    .children(next_page)
+                    .child(
+                        div()
+                            .id("db-run")
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .text_color(rgb(ACTIVE_FG))
+                            .bg(rgb(BRAND))
+                            .hover(|s| s.opacity(0.85))
+                            .child(run_label)
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.run_query(cx);
+                            })),
+                    ),
+            )
+            .children(sql_editor)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(status_color))
+                    .child(status_text),
+            )
+            .children(results_table)
     }
 
     fn db_connection_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -530,5 +809,230 @@ impl AppState {
             Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
+    }
+
+    // ---- SQL editor + results (W5) -----------------------------------------------
+
+    /// ▶ Run (or Ctrl/Cmd-Enter in the editor): resolve the active connection's secret,
+    /// reuse (or open) its client, and fetch the first page. No-ops into a status
+    /// message when nothing is selected/typed rather than disabling the button — keeps
+    /// the click handler unconditional (simpler than threading `can_run` through render).
+    fn run_query(&mut self, cx: &mut Context<Self>) {
+        if self.db.running {
+            return;
+        }
+        let Some(id) = self.db.active_id.clone() else {
+            self.db.status = QueryStatus::Err("select a connection first".into());
+            cx.notify();
+            return;
+        };
+        let Some(conn) = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| a.item.clone())
+        else {
+            self.db.status = QueryStatus::Err("selected connection no longer exists".into());
+            cx.notify();
+            return;
+        };
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        let sql = sql_entity.read(cx).value().to_string();
+        if sql.trim().is_empty() {
+            self.db.status = QueryStatus::Err("SQL is empty".into());
+            cx.notify();
+            return;
+        }
+        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.db.status = QueryStatus::Err(e);
+                cx.notify();
+                return;
+            }
+        };
+
+        // Reuse the already-open client only if it belongs to this exact connection —
+        // the active connection may have changed since the last run.
+        let cached = if self.db.client_for.as_deref() == Some(id.as_str()) {
+            self.db.client.clone()
+        } else {
+            None
+        };
+        let factory = self.db.registry.client(conn.kind);
+
+        self.db.running = true;
+        self.db.next_cursor = None;
+        self.db.last_sql = Some(sql.clone());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = run_first_page(factory, conn, secret, cached, sql).await;
+            let _ = this.update(cx, |this, cx| {
+                this.db.running = false;
+                match outcome {
+                    Ok((client, page)) => {
+                        this.db.client = Some(client);
+                        this.db.client_for = Some(id);
+                        this.apply_query_page(&page, cx);
+                    }
+                    Err(e) => this.db.status = QueryStatus::Err(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// ⭳ next page: repeat `last_sql` against the cached client with `next_cursor`.
+    fn next_page(&mut self, cx: &mut Context<Self>) {
+        if self.db.running {
+            return;
+        }
+        let (Some(cursor), Some(sql), Some(client)) = (
+            self.db.next_cursor,
+            self.db.last_sql.clone(),
+            self.db.client.clone(),
+        ) else {
+            return;
+        };
+
+        self.db.running = true;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let handle = ssh_runtime()
+                .spawn(async move { client.query_paged(&sql, Some(cursor), PAGE_SIZE).await });
+            let outcome = match handle.await {
+                Ok(Ok(page)) => Ok(page),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(join_err) => Err(format!("query task panicked: {join_err}")),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.db.running = false;
+                match outcome {
+                    Ok(page) => this.apply_query_page(&page, cx),
+                    Err(e) => this.db.status = QueryStatus::Err(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Apply a completed page to the status line + results table. The table's delegate
+    /// is mutated in place and `refresh`ed (recomputes column layout) — see the
+    /// `results` field's doc comment for why it's never rebuilt.
+    fn apply_query_page(&mut self, page: &QueryPage, cx: &mut Context<Self>) {
+        self.db.status = QueryStatus::Ok {
+            rows: page.rows.len(),
+            duration_ms: page.duration_ms,
+            has_more: page.next_cursor.is_some(),
+        };
+        self.db.next_cursor = page.next_cursor;
+        if let Some(results) = self.db.results.clone() {
+            results.update(cx, |state, cx| {
+                state.delegate_mut().set_page(page.clone());
+                state.refresh(cx);
+                cx.notify();
+            });
+        }
+    }
+}
+
+/// The connect-or-reuse-then-first-page body of [`AppState::run_query`], split out so
+/// the `cx.spawn` future in that method stays readable. Runs on `session::ssh_runtime()`
+/// (see this module's doc comment) since both `tokio-postgres` and `rusqlite` need an
+/// ambient Tokio context; gpui's own executor provides none.
+async fn run_first_page(
+    factory: Arc<dyn DbClient>,
+    conn: DbConnection,
+    secret: Option<String>,
+    cached: Option<Arc<dyn DbClient>>,
+    sql: String,
+) -> Result<(Arc<dyn DbClient>, QueryPage), String> {
+    let handle = ssh_runtime().spawn(async move {
+        let client = match cached {
+            Some(c) => c,
+            None => {
+                let params = OpenParams {
+                    kind: conn.kind,
+                    dsn: conn.dsn.clone(),
+                    password: secret,
+                    // A saved connection has no persisted SQLite mode (`DbConnection`
+                    // carries none); `sqlite.rs` treats `None` as `OpenExisting` — the
+                    // safe, non-destructive default for re-opening a file that (per the
+                    // add/edit form) was already created or picked. Ignored by
+                    // Postgres/Redb.
+                    sqlite_mode: None,
+                };
+                factory.open(params).await?
+            }
+        };
+        let page = client.query_paged(&sql, None, PAGE_SIZE).await?;
+        Ok::<_, DbError>((client, page))
+    });
+    match handle.await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(join_err) => Err(format!("query task panicked: {join_err}")),
+    }
+}
+
+/// Fetch the secret backing `secret_ref`, if any — the DB-connection mirror of
+/// `ssh_connect::resolve_secret`. No ref → `Ok(None)` (fine for SQLite/Redb, or a
+/// Postgres connection with no password). A *dangling* ref (recorded but missing from
+/// the keyring) is always an error: the connection was configured to need a secret we
+/// can no longer deliver.
+fn resolve_db_secret(
+    secrets: &dyn SecretStore,
+    secret_ref: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(secret_ref) = secret_ref else {
+        return Ok(None);
+    };
+    let id = SecretId::new(secret_ref.to_string());
+    let bytes = secrets
+        .get(&id)
+        .map_err(|e| format!("secret lookup for {secret_ref:?} failed: {e}"))?;
+    match bytes {
+        Some(b) => String::from_utf8(b)
+            .map(Some)
+            .map_err(|_| "stored secret is not valid UTF-8".to_string()),
+        None => Err(format!(
+            "dangling secret_ref {secret_ref:?} — no secret in the keyring"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod query_secret_tests {
+    use sid_secrets::MemorySecretStore;
+
+    use super::*;
+
+    #[test]
+    fn no_ref_resolves_to_no_secret() {
+        let secrets = MemorySecretStore::default();
+        assert_eq!(resolve_db_secret(&secrets, None), Ok(None));
+    }
+
+    #[test]
+    fn present_ref_resolves_to_its_bytes() {
+        let secrets = MemorySecretStore::default();
+        secrets.put(&SecretId::new("db-a"), b"hunter2").unwrap();
+        assert_eq!(
+            resolve_db_secret(&secrets, Some("db-a")),
+            Ok(Some("hunter2".to_string()))
+        );
+    }
+
+    #[test]
+    fn dangling_ref_is_an_error() {
+        let secrets = MemorySecretStore::default();
+        assert!(resolve_db_secret(&secrets, Some("db-missing")).is_err());
     }
 }

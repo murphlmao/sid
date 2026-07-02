@@ -806,7 +806,9 @@ impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
-            Tab::Database => self.db_tab(cx),
+            // `db_tab` needs `window` (W5) to lazily build the SQL editor/results table
+            // on first paint — `InputState::new`/`TableState::new` both require it.
+            Tab::Database => self.db_tab(window, cx),
             other => self.placeholder(other).into_any_element(),
         };
 
@@ -911,6 +913,37 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         .list_workspaces()
         .map(|w| w.is_empty())
         .unwrap_or(false);
+
+    // The DB connection seed is gated independently of hosts/workspaces below: on a dev
+    // machine whose store already has hosts (the common case once the SSH slice is in
+    // daily use), the host/workspace gate is permanently tripped, and a connections seed
+    // added later than that first run would otherwise never fire. Each demo dataset gets
+    // its own empty-state check so W3's DB seed still lands on existing stores.
+    let no_connections = store
+        .global()
+        .list_connections()
+        .map(|c| c.is_empty())
+        .unwrap_or(false);
+    if no_connections {
+        // The demo connection's file must exist before `run_query` (W5) opens it: saved
+        // connections always open with `sqlite_mode: None` -> `SqliteMode::OpenExisting`
+        // (see `db_tab::run_first_page`), which requires the file to already be there.
+        // An empty file is a valid, openable SQLite database (rusqlite/sqlite3 initialize
+        // it lazily on first write), so a bare `File::create` is enough.
+        let demo_db = dir.join("demo.db");
+        let _ = std::fs::File::create(&demo_db);
+        let _ = store.write_connection(
+            &sid_store::DbConnection {
+                id: "demo-sqlite".into(),
+                dsn: demo_db.to_string_lossy().into_owned(),
+                secret_ref: None,
+                kind: sid_core::db::DbKind::Sqlite,
+                name: "demo sqlite (local file)".into(),
+            },
+            &Scope::Global,
+        );
+    }
+
     if !(no_hosts && no_ws) {
         return;
     }
@@ -945,21 +978,6 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
     );
     let _ = store.write_host(&global("prod", "deploy", "prod.acme-api.internal"), &ws);
     let _ = store.write_host(&global("vps-1", "admin", "5.5.5.5"), &ws); // duplicates global vps-1
-
-    // A demo SQLite connection so the Database tab's connect → query loop is testable
-    // without a Postgres server. `sqlite_mode: CreateNew` (query-time, not persisted —
-    // see `db_tab::QuerySession::open`) creates this file lazily on first connect, so
-    // nothing needs to be touched into existence here.
-    let _ = store.write_connection(
-        &sid_store::DbConnection {
-            id: "demo-sqlite".into(),
-            dsn: dir.join("demo.db").to_string_lossy().into_owned(),
-            secret_ref: None,
-            kind: sid_core::db::DbKind::Sqlite,
-            name: "demo sqlite (local file)".into(),
-        },
-        &Scope::Global,
-    );
 }
 
 // ---- row-action routing (pure, unit-tested) ---------------------------------
