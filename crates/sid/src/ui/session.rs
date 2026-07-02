@@ -517,6 +517,7 @@ impl SshSession {
     /// `👁 view`: fetch `name` and, if it's small enough (<= [`PREVIEW_MAX_BYTES`]) and valid
     /// UTF-8, show it read-only in the preview overlay. Never renders raw bytes: too-large or
     /// non-UTF-8 content gets a notice pointing at `⭳ download` instead.
+    // ponytail: text preview only; no image/hex viewer yet.
     fn view(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(sftp) = self.sftp.clone() else {
             return;
