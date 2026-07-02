@@ -49,6 +49,13 @@ impl SftpSession for RusshSftp {
         Ok(out)
     }
 
+    async fn canonicalize(&mut self, path: &str) -> Result<String, SshError> {
+        self.inner
+            .canonicalize(path.to_string())
+            .await
+            .map_err(map_sftp_error)
+    }
+
     async fn get(&mut self, path: &str) -> Result<Vec<u8>, SshError> {
         self.inner
             .read(path.to_string())
