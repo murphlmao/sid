@@ -12,8 +12,8 @@
 //! Run with `cargo run --example db_widgets_spike -p sid` (needs a Wayland/X11 display).
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled,
-    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled, Window,
+    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme, Theme, ThemeMode,
@@ -37,7 +37,11 @@ impl SpikeDelegate {
                 Column::new("email", "email").width(px(240.)),
             ],
             rows: vec![
-                vec!["1".to_string(), "ada".to_string(), "ada@example.com".to_string()],
+                vec![
+                    "1".to_string(),
+                    "ada".to_string(),
+                    "ada@example.com".to_string(),
+                ],
                 vec![
                     "2".to_string(),
                     "grace".to_string(),

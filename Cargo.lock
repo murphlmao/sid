@@ -6499,6 +6499,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "sid-core",
+ "sid-db",
  "sid-secrets",
  "sid-ssh",
  "sid-store",

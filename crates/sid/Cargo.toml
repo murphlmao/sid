@@ -15,6 +15,9 @@ repository.workspace = true
 gpui = "0.2"
 sid-store = { path = "../sid-store" }
 sid-secrets = { path = "../sid-secrets" }
+# W2 (Database tab, Plan Wave 2): the one crate allowed to name `sid-db`'s concrete
+# `DbClient`/`DbClientDescriptor` impls — see `crates/sid/src/db_registry.rs`.
+sid-db = { path = "../sid-db" }
 # Adapter crates for Plan 3C (SSH terminal view + connect flow). `crates/sid` only ever
 # names the `sid_core` trait seam (`SshClient`/`SshShell`/`TerminalScreen`) plus the two
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/
