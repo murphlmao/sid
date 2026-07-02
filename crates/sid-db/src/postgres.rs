@@ -54,19 +54,29 @@ pub(crate) enum TlsChoice {
 
 /// Decide `Plain` vs `Tls` for a parsed `tokio_postgres::Config`.
 ///
-/// Policy (fails closed — ambiguous or remote defaults to `Tls`):
-/// - `sslmode=disable` → `Plain` (explicit opt-out).
-/// - every host is `localhost` / `127.0.0.1` / `::1` / a Unix socket → `Plain`
-///   (local, trusted transport; no network to eavesdrop).
-/// - otherwise (any remote TCP host, including the driver's own `prefer`
-///   default and an explicit `require`) → `Tls`.
+/// Policy (fails closed — remote/ambiguous → `Tls`):
+/// - every host is `localhost` / `127.0.0.1` / `::1` / a Unix socket (a locally-
+///   trusted transport): honor `sslmode` — `disable`/`prefer` → `Plain`,
+///   `require`/`verify-*` → `Tls`.
+/// - any remote TCP host (or an empty host list) → `Tls`, unconditionally.
+///   `sslmode=disable` does NOT downgrade a remote connection (credential exposure).
 pub(crate) fn tls_choice(config: &tokio_postgres::Config) -> TlsChoice {
-    if config.get_ssl_mode() == tokio_postgres::config::SslMode::Disable {
-        return TlsChoice::Plain;
-    }
-    if config.get_hosts().iter().all(is_local_host) {
-        TlsChoice::Plain
+    use tokio_postgres::config::SslMode;
+    let hosts = config.get_hosts();
+    // Empty host list → treat as non-local (fail safe: never assume plaintext).
+    let all_local = !hosts.is_empty() && hosts.iter().all(is_local_host);
+    if all_local {
+        // Loopback / unix-socket: plaintext is safe (no network to eavesdrop).
+        // Honor an explicit TLS request (`require`/`verify-*`); otherwise plaintext.
+        match config.get_ssl_mode() {
+            SslMode::Disable | SslMode::Prefer => TlsChoice::Plain,
+            _ => TlsChoice::Tls,
+        }
     } else {
+        // Remote host (or unknown): ALWAYS TLS. `sslmode=disable` must NOT downgrade
+        // an off-machine connection — that would send credentials in cleartext, and a
+        // committed workspace `.sid/config.toml` (which travels with a cloned repo)
+        // could weaponize it. Fails closed.
         TlsChoice::Tls
     }
 }
@@ -147,19 +157,23 @@ impl DbClient for PostgresClient {
                 p.kind
             )));
         }
-        let dsn = if let Some(pw) = p.password.as_ref() {
-            inject_password(&p.dsn, pw)
-        } else {
-            p.dsn.clone()
-        };
-        // TLS (DU-TLS, docs/superpowers/plans/2026-07-01-db-slice.md): the transport is
-        // chosen by `tls_choice` from the parsed DSN's `sslmode` + host — `NoTls` only for
-        // an explicit `sslmode=disable` or a localhost/unix-socket target; every remote host
-        // gets a rustls connection with platform trust-store verify-full. See
-        // `build_rustls_connector`'s ponytail note for the one deferred case (self-signed).
-        let config: tokio_postgres::Config = dsn
+        // Parse the DSN with tokio-postgres's OWN parser (the single source of truth), then
+        // set the password STRUCTURALLY via `Config::password`. This avoids a parser
+        // differential: a hand-rolled DSN splicer only understood the URL form and could
+        // misplace the plaintext password (into a query param / wrong `@`) on key-value DSNs.
+        let mut config: tokio_postgres::Config = p
+            .dsn
             .parse()
             .map_err(|e: tokio_postgres::Error| DbError::Connect(e.to_string()))?;
+        if let Some(pw) = p.password.as_ref() {
+            config.password(pw);
+        }
+        // TLS (DU-TLS, docs/superpowers/plans/2026-07-01-db-slice.md): the transport is
+        // chosen by `tls_choice` from the parsed config's host + `sslmode`. A REMOTE host is
+        // ALWAYS TLS (verify-full via the platform trust store) — `sslmode=disable` cannot
+        // downgrade an off-machine connection (credential exposure; committed workspace
+        // configs travel with repos). `NoTls` only for loopback/unix-socket targets. See
+        // `build_rustls_connector`'s ponytail note for the one deferred case (self-signed).
         let (client, conn_task, cancel_token, tls) = match tls_choice(&config) {
             TlsChoice::Plain => {
                 let (client, connection) = config
@@ -341,47 +355,6 @@ impl DbClient for PostgresClient {
     }
 }
 
-/// If the DSN does not include a password, splice one in before the host.
-/// Best-effort: handles `postgres://user@host/db` → `postgres://user:pw@host/db`.
-///
-/// Passwords never live in the persisted `DbConnection.dsn` — this splice
-/// happens only in-memory, at open time, from the secret resolved out of the
-/// keyring.
-fn inject_password(dsn: &str, pw: &str) -> String {
-    if let Some(at_idx) = dsn.find('@') {
-        let pre = &dsn[..at_idx];
-        // pre is like "postgres://user" or "postgres://user:pw".
-        // If there's a colon after the scheme `://`, treat it as user:pw already.
-        if let Some(scheme_end) = pre.find("://") {
-            let userinfo = &pre[scheme_end + 3..];
-            if userinfo.contains(':') {
-                return dsn.to_string();
-            }
-        }
-        let encoded = url_encode_password(pw);
-        return format!("{pre}:{encoded}{}", &dsn[at_idx..]);
-    }
-    dsn.to_string()
-}
-
-fn url_encode_password(pw: &str) -> String {
-    let mut out = String::with_capacity(pw.len());
-    for c in pw.chars() {
-        match c {
-            ' ' | ':' | '@' | '/' | '?' | '#' | '%' => {
-                let mut buf = [0u8; 4];
-                let s = c.encode_utf8(&mut buf);
-                for b in s.as_bytes() {
-                    use std::fmt::Write;
-                    write!(&mut out, "%{b:02X}").ok();
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     if let Some(db_err) = e.as_db_error() {
         if db_err.code().code().starts_with("42") {
@@ -457,27 +430,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inject_password_adds_password_when_missing() {
-        let r = inject_password("postgres://alice@host/db", "s3cret");
-        assert_eq!(r, "postgres://alice:s3cret@host/db");
-    }
-
-    #[test]
-    fn inject_password_leaves_existing_password_alone() {
-        let r = inject_password("postgres://alice:keep@host/db", "ignored");
-        assert_eq!(r, "postgres://alice:keep@host/db");
-    }
-
-    #[test]
-    fn url_encode_password_escapes_special_chars() {
-        assert_eq!(url_encode_password("a:b@c"), "a%3Ab%40c");
-    }
-
-    #[test]
-    fn tls_choice_disable_is_plain() {
+    fn tls_choice_remote_disable_is_still_tls() {
+        // SECURITY: `sslmode=disable` must NOT downgrade a REMOTE connection to
+        // plaintext — that would expose credentials. Remote always → Tls.
         let config: tokio_postgres::Config =
             "host=example.com sslmode=disable".parse().expect("parse");
+        assert_eq!(tls_choice(&config), TlsChoice::Tls);
+    }
+
+    #[test]
+    fn tls_choice_local_disable_is_plain() {
+        // Loopback with explicit disable → plaintext is fine (no network).
+        let config: tokio_postgres::Config =
+            "host=localhost sslmode=disable".parse().expect("parse");
         assert_eq!(tls_choice(&config), TlsChoice::Plain);
+    }
+
+    #[test]
+    fn tls_choice_local_require_is_tls() {
+        // Loopback but explicit TLS request → honor it.
+        let config: tokio_postgres::Config =
+            "host=127.0.0.1 sslmode=require".parse().expect("parse");
+        assert_eq!(tls_choice(&config), TlsChoice::Tls);
     }
 
     #[test]
