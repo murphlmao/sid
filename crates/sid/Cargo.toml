@@ -31,3 +31,11 @@ unicode-segmentation = "1"
 # `sid_core::ssh` calls run on this runtime; gpui's executors only bridge status/output
 # back to the entity via channels.
 tokio.workspace = true
+# Widget library for the Database tab (Plan Wave 2, W1): SQL editor (tree-sitter
+# highlighting) + results table. GPUI-0.2.2-compatible; validated against dbflux/pgui
+# precedent. `crates/sid` names it directly (the rendering surface) — DB drivers
+# themselves stay behind `sid_db`/`sid_core::db`, never named here.
+gpui-component = { version = "0.5.1", features = ["tree-sitter-languages"] }
+# Bundled icon/font assets `gpui-component`'s widgets reference (sort-chevron icons on
+# `Table` columns, etc.) — wired in via `Application::new().with_assets(..)`.
+gpui-component-assets = "0.5.1"
