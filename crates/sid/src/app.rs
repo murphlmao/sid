@@ -73,6 +73,29 @@ impl Tab {
     }
 }
 
+/// Map a tab name (case-insensitive) to a [`Tab`] — `ssh|database|network|workspaces|
+/// system`, anything else is `None`. Pure/string-in so it's unit-testable without env
+/// fiddling; [`tab_from_env`] is the thin env-reading wrapper around it.
+fn tab_from_str(name: &str) -> Option<Tab> {
+    match name.to_lowercase().as_str() {
+        "ssh" => Some(Tab::Ssh),
+        "database" => Some(Tab::Database),
+        "network" => Some(Tab::Network),
+        "workspaces" => Some(Tab::Workspaces),
+        "system" => Some(Tab::System),
+        _ => None,
+    }
+}
+
+/// `SID_START_TAB` support for visual-debugging tooling (`scripts/sid-shot.sh`): lets a
+/// screenshot script launch straight into a given tab instead of always landing on the
+/// SSH default. Unset or unrecognized -> `None`, leaving the normal default in place.
+fn tab_from_env() -> Option<Tab> {
+    std::env::var("SID_START_TAB")
+        .ok()
+        .and_then(|v| tab_from_str(&v))
+}
+
 /// One entry in the scope switcher.
 pub(crate) struct ScopeChoice {
     pub(crate) label: SharedString,
@@ -128,7 +151,7 @@ impl AppState {
             store,
             secrets,
             scope: Scope::Global,
-            active_tab: Tab::Ssh,
+            active_tab: tab_from_env().unwrap_or(Tab::Ssh),
             filters: ViewFilters::default(),
             scopes: Vec::new(),
             hosts: Vec::new(),
@@ -907,7 +930,14 @@ pub fn open_store() -> Store {
 /// will not survive a restart. The app does not yet surface this in the UI; for now the
 /// caller is expected to log it or wire it into the header error line once that exists.
 pub fn open_secrets() -> (Box<dyn sid_secrets::SecretStore>, Option<String>) {
-    sid_secrets::open_default_secrets()
+    let (secrets, warning) = sid_secrets::open_default_secrets();
+    let warning = warning.map(|w| {
+        format!(
+            "{w} — install a Secret Service provider (e.g. 'sudo pacman -S gnome-keyring') \
+             to fix this permanently"
+        )
+    });
+    (secrets, warning)
 }
 
 fn seed_if_empty(store: &Store, dir: &std::path::Path) {
@@ -1039,6 +1069,17 @@ mod tests {
         assert!(!delete_click_executes(None, &row));
         // …second click on the same row executes.
         assert!(delete_click_executes(Some(&row), &row));
+    }
+
+    #[test]
+    fn tab_from_str_maps_known_names_case_insensitively() {
+        assert!(matches!(tab_from_str("ssh"), Some(Tab::Ssh)));
+        assert!(matches!(tab_from_str("Database"), Some(Tab::Database)));
+        assert!(matches!(tab_from_str("NETWORK"), Some(Tab::Network)));
+        assert!(matches!(tab_from_str("Workspaces"), Some(Tab::Workspaces)));
+        assert!(matches!(tab_from_str("SYSTEM"), Some(Tab::System)));
+        assert!(tab_from_str("bogus").is_none());
+        assert!(tab_from_str("").is_none());
     }
 
     #[test]

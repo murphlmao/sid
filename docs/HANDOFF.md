@@ -99,6 +99,12 @@ in `superpowers/plans/`, matching the Plan 1/2 format.
 
 ## Testing & workflow
 
+- **Visual debugging:** `scripts/sid-shot.sh [--tab ssh|database|network|workspaces|system]
+  [--real] [--keep] [--out PATH] [--wait SECS]` builds `sid`, launches it (hermetic
+  `XDG_*` temp dirs by default, so it boots on the demo seed — pass `--real` for the live
+  store), waits for its Hyprland window, and `grim`-captures it to a PNG (path printed as
+  the last line of stdout). `--keep` leaves the app running and skips temp-dir cleanup for
+  follow-up debugging. Requires a live Hyprland/Wayland session (`hyprctl`, `grim`, `jq`).
 - **Pragmatic mode:** targeted tests per feature; one gate review at end of a slice — not
   per-commit rigor. Critical paths (store, composition, secrets) still get real tests.
 - **Commits:** no `Co-Authored-By: Claude` trailer (standing rule). Push gate-green units
