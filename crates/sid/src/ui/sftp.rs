@@ -100,7 +100,8 @@ impl SftpBrowser {
 
             let _ = this.update(cx, |browser, cx| {
                 match outcome {
-                    Ok((sftp, entries)) => {
+                    Ok((sftp, mut entries)) => {
+                        sort_entries(&mut entries);
                         browser.session = Some(Arc::new(AsyncMutex::new(sftp)));
                         browser.entries = entries;
                         browser.status = SftpStatus::Ready;
@@ -122,6 +123,95 @@ impl SftpBrowser {
         ssh_runtime().spawn(async move {
             let _ = session.lock().await.close().await;
         });
+    }
+}
+
+// ---- pure path logic + entry ordering (S2) ---------------------------------------------
+//
+// The only unit-tested surface in this module — everything else here is I/O or gpui
+// wiring, observation-gated per the plan's pragmatic-TDD rule.
+
+/// Join `base` (an absolute POSIX-style directory path) with a single path component.
+/// `base == "/"` is the one case that needs special handling — everywhere else a plain
+/// `/`-join is correct — because appending `/name` after an already-trailing `/` would
+/// double it.
+fn join_path(base: &str, name: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+/// The parent of an absolute POSIX-style path. The root is its own parent (there is
+/// nowhere further up to navigate); everything else strips its final component.
+fn parent_path(path: &str) -> String {
+    if path == "/" {
+        return "/".to_string();
+    }
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(idx) => trimmed[..idx].to_string(),
+        None => "/".to_string(),
+    }
+}
+
+/// Sort directory listings dirs-first, then alphabetically (case-insensitive) within
+/// each group — called after every `list`.
+fn sort_entries(entries: &mut [SftpEntry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+    });
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> SftpEntry {
+        SftpEntry {
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            mtime_secs: 0,
+            mode: 0,
+        }
+    }
+
+    #[test]
+    fn join_path_appends_under_a_directory() {
+        assert_eq!(join_path("/home", "a"), "/home/a");
+    }
+
+    #[test]
+    fn join_path_under_root_avoids_double_slash() {
+        assert_eq!(join_path("/", "a"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_nested_dir_strips_last_component() {
+        assert_eq!(parent_path("/a/b"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_root_is_root() {
+        assert_eq!(parent_path("/"), "/");
+    }
+
+    #[test]
+    fn sort_entries_puts_dirs_before_files_then_alphabetical() {
+        let mut entries = vec![
+            entry("zeta.txt", false),
+            entry("Banana", true),
+            entry("apple.txt", false),
+            entry("alpha", true),
+        ];
+        sort_entries(&mut entries);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
     }
 }
 
