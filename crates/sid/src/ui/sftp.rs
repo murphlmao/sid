@@ -211,6 +211,12 @@ impl SftpBrowser {
     /// `⭳ download`: fetch `name` (a file in the current directory) and write it to
     /// `$HOME/Downloads/<name>`. Surfaces success or failure in `error` — reused as a
     /// general status line, not just for failures.
+    ///
+    /// `name` is the remote server's own `SftpEntry.name` — untrusted (a malicious or
+    /// compromised server could return e.g. `"../../.bashrc"` from `list()`). It's fine to
+    /// use as-is for the *remote* GET path (that's just what the server called it), but the
+    /// *local* write path is derived from [`safe_local_name`] instead, so a hostile name
+    /// can never escape the downloads directory.
     fn download(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
@@ -219,6 +225,8 @@ impl SftpBrowser {
         self.error = None;
         cx.spawn(async move |this, cx| {
             let result: Result<PathBuf, String> = async {
+                let local_name = safe_local_name(&name)
+                    .ok_or_else(|| format!("refusing unsafe remote filename: {name:?}"))?;
                 let bytes = ssh_runtime()
                     .spawn(async move { session.lock().await.get(&remote_path).await })
                     .await
@@ -227,7 +235,15 @@ impl SftpBrowser {
                 let dir = downloads_dir();
                 std::fs::create_dir_all(&dir)
                     .map_err(|e| format!("create {}: {e}", dir.display()))?;
-                let dest = dir.join(&name);
+                let dest = dir.join(&local_name);
+                // Defense in depth: `safe_local_name` already guarantees a bare, single
+                // component, but re-check the joined path never left `dir` before writing.
+                if dest.parent() != Some(dir.as_path()) {
+                    return Err(format!(
+                        "refusing unsafe download destination: {}",
+                        dest.display()
+                    ));
+                }
                 std::fs::write(&dest, &bytes)
                     .map_err(|e| format!("write {}: {e}", dest.display()))?;
                 Ok(dest)
@@ -276,8 +292,8 @@ impl SftpBrowser {
                     .to_string_lossy()
                     .into_owned();
                 let remote_path = join_path(&remote_dir, &name);
-                let bytes = std::fs::read(&local)
-                    .map_err(|e| format!("read {}: {e}", local.display()))?;
+                let bytes =
+                    std::fs::read(&local).map_err(|e| format!("read {}: {e}", local.display()))?;
                 ssh_runtime()
                     .spawn(async move { session.lock().await.put(&remote_path, &bytes).await })
                     .await
@@ -349,58 +365,28 @@ fn parent_path(path: &str) -> String {
 /// each group — called after every `list`.
 fn sort_entries(entries: &mut [SftpEntry]) {
     entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+        b.is_dir.cmp(&a.is_dir).then_with(|| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        })
     });
 }
 
-#[cfg(test)]
-mod path_tests {
-    use super::*;
-
-    fn entry(name: &str, is_dir: bool) -> SftpEntry {
-        SftpEntry {
-            name: name.to_string(),
-            is_dir,
-            size: 0,
-            mtime_secs: 0,
-            mode: 0,
-        }
+/// Reduce an untrusted remote filename (an `SftpEntry.name`, as returned by whatever
+/// server we're talking to) to a safe bare local filename: the final path component only,
+/// no directories, no traversal. `None` if there's no usable name — the caller must refuse
+/// the download rather than fall back to something guessed.
+///
+/// This is the one thing standing between a hostile/compromised SFTP server and writing
+/// outside the local downloads directory: `list()` results are attacker-controlled data,
+/// and a name like `"../../.bashrc"` must never reach `downloads_dir().join(name)` as-is.
+fn safe_local_name(remote_name: &str) -> Option<String> {
+    let comp = std::path::Path::new(remote_name).file_name()?.to_str()?;
+    if comp.is_empty() || comp == "." || comp == ".." {
+        return None;
     }
-
-    #[test]
-    fn join_path_appends_under_a_directory() {
-        assert_eq!(join_path("/home", "a"), "/home/a");
-    }
-
-    #[test]
-    fn join_path_under_root_avoids_double_slash() {
-        assert_eq!(join_path("/", "a"), "/a");
-    }
-
-    #[test]
-    fn parent_path_of_nested_dir_strips_last_component() {
-        assert_eq!(parent_path("/a/b"), "/a");
-    }
-
-    #[test]
-    fn parent_path_of_root_is_root() {
-        assert_eq!(parent_path("/"), "/");
-    }
-
-    #[test]
-    fn sort_entries_puts_dirs_before_files_then_alphabetical() {
-        let mut entries = vec![
-            entry("zeta.txt", false),
-            entry("Banana", true),
-            entry("apple.txt", false),
-            entry("alpha", true),
-        ];
-        sort_entries(&mut entries);
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
-    }
+    Some(comp.to_string())
 }
 
 // ---- rendering (S3): toolbar + breadcrumb + entry list ---------------------------------
@@ -446,12 +432,10 @@ impl SftpBrowser {
                 .child(label)
         };
 
-        let up = button(("sftp-up", 0), "↑ up".into(), FG_DIM).on_click(cx.listener(
-            |this, _ev: &ClickEvent, _window, cx| this.go_up(cx),
-        ));
-        let refresh = button(("sftp-refresh", 0), "⟳".into(), FG_DIM).on_click(cx.listener(
-            |this, _ev: &ClickEvent, _window, cx| this.refresh(cx),
-        ));
+        let up = button(("sftp-up", 0), "↑ up".into(), FG_DIM)
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.go_up(cx)));
+        let refresh = button(("sftp-refresh", 0), "⟳".into(), FG_DIM)
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.refresh(cx)));
         let upload_label: SharedString = if self.show_upload {
             "✕ upload".into()
         } else {
@@ -518,7 +502,12 @@ impl SftpBrowser {
         for (ix, part) in self.path.split('/').filter(|s| !s.is_empty()).enumerate() {
             acc.push('/');
             acc.push_str(part);
-            children.push(self.breadcrumb_segment(ix + 1, part.to_string().into(), acc.clone(), cx));
+            children.push(self.breadcrumb_segment(
+                ix + 1,
+                part.to_string().into(),
+                acc.clone(),
+                cx,
+            ));
         }
         div()
             .flex()
@@ -607,13 +596,27 @@ impl SftpBrowser {
                     .text_color(rgb(FG))
                     .child(name.clone()),
             )
-            .child(div().w(px(80.)).text_xs().text_color(rgb(FG_DIM)).child(size))
-            .child(div().w(px(140.)).text_xs().text_color(rgb(FG_DIM)).child(mtime))
+            .child(
+                div()
+                    .w(px(80.))
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(size),
+            )
+            .child(
+                div()
+                    .w(px(140.))
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(mtime),
+            )
             .children(download_button)
             .when(is_dir, |el| {
-                el.cursor_pointer().hover(|s| s.bg(rgb(ACTIVE_BG))).on_click(cx.listener(
-                    move |this, _ev: &ClickEvent, _window, cx| this.enter_dir(&enter_name, cx),
-                ))
+                el.cursor_pointer()
+                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.enter_dir(&enter_name, cx)
+                    }))
             })
     }
 }
@@ -692,5 +695,94 @@ impl Render for SftpBrowser {
             SftpStatus::Closed => message_pane("SFTP session closed.").into_any_element(),
             SftpStatus::Ready => self.render_browser(cx).into_any_element(),
         }
+    }
+}
+
+// The only unit-tested surface in this module — everything else is I/O or gpui wiring,
+// observation-gated per the plan's pragmatic-TDD rule. Kept at the end of the file (rather
+// than next to the functions it tests) because clippy's `items_after_test_module` lint
+// wants no items declared after a `#[cfg(test)]` module.
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> SftpEntry {
+        SftpEntry {
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            mtime_secs: 0,
+            mode: 0,
+        }
+    }
+
+    #[test]
+    fn join_path_appends_under_a_directory() {
+        assert_eq!(join_path("/home", "a"), "/home/a");
+    }
+
+    #[test]
+    fn join_path_under_root_avoids_double_slash() {
+        assert_eq!(join_path("/", "a"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_nested_dir_strips_last_component() {
+        assert_eq!(parent_path("/a/b"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_root_is_root() {
+        assert_eq!(parent_path("/"), "/");
+    }
+
+    #[test]
+    fn sort_entries_puts_dirs_before_files_then_alphabetical() {
+        let mut entries = vec![
+            entry("zeta.txt", false),
+            entry("Banana", true),
+            entry("apple.txt", false),
+            entry("alpha", true),
+        ];
+        sort_entries(&mut entries);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
+    }
+
+    // safe_local_name: the path-traversal guard on downloads. A compromised/malicious
+    // SFTP server controls `list()` results, so this is the one place TDD is required
+    // beyond the pure path-join/sort logic above.
+
+    #[test]
+    fn safe_local_name_strips_relative_traversal_to_the_bare_file() {
+        assert_eq!(
+            safe_local_name("../../etc/passwd"),
+            Some("passwd".to_string())
+        );
+    }
+
+    #[test]
+    fn safe_local_name_strips_absolute_paths_to_the_bare_file() {
+        assert_eq!(safe_local_name("/etc/shadow"), Some("shadow".to_string()));
+    }
+
+    #[test]
+    fn safe_local_name_strips_nested_relative_paths_to_the_bare_file() {
+        assert_eq!(safe_local_name("a/b/c.txt"), Some("c.txt".to_string()));
+    }
+
+    #[test]
+    fn safe_local_name_rejects_dot_dot_dot_and_empty() {
+        assert_eq!(safe_local_name(".."), None);
+        assert_eq!(safe_local_name("."), None);
+        assert_eq!(safe_local_name(""), None);
+    }
+
+    #[test]
+    fn safe_local_name_passes_through_a_normal_filename() {
+        assert_eq!(
+            safe_local_name("normal.txt"),
+            Some("normal.txt".to_string())
+        );
     }
 }
