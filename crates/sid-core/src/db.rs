@@ -316,6 +316,61 @@ pub struct TableInfo {
     pub columns: Vec<Column>,
 }
 
+/// One foreign-key edge in a [`SchemaGraph`]: `from_table.from_columns`
+/// (the referencing, "many" side) points at `to_table.to_columns` (the
+/// referenced, "one" side). Composite keys keep their column order.
+///
+/// Table names are **qualified the same way [`TableInfo`] displays them**:
+/// `"schema.name"` when the engine has schemas (Postgres), bare `"name"`
+/// otherwise — so the diagram view can join edges to table boxes by string
+/// equality.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::db::ForeignKey;
+/// let fk = ForeignKey {
+///     from_table: "orders".into(),
+///     from_columns: vec!["customer_id".into()],
+///     to_table: "customers".into(),
+///     to_columns: vec!["id".into()],
+/// };
+/// assert_eq!(fk.to_table, "customers");
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForeignKey {
+    /// Referencing ("many"-side) table, qualified per the rule above.
+    pub from_table: String,
+    /// Referencing columns, in key order.
+    pub from_columns: Vec<String>,
+    /// Referenced ("one"-side) table, qualified per the rule above.
+    pub to_table: String,
+    /// Referenced columns, in key order (parallel to `from_columns`).
+    pub to_columns: Vec<String>,
+}
+
+/// Relationship metadata for the diagram view, layered on top of
+/// [`SchemaInfo`]: foreign-key edges plus each table's primary-key columns.
+/// Engines without FK support return [`Default::default`] — the diagram
+/// degrades to boxes with no lines.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::db::SchemaGraph;
+/// let g = SchemaGraph::default();
+/// assert!(g.foreign_keys.is_empty() && g.primary_keys.is_empty());
+/// ```
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SchemaGraph {
+    /// Every FK edge in the database, deterministically ordered
+    /// (by `(from_table, to_table, from_columns)`).
+    pub foreign_keys: Vec<ForeignKey>,
+    /// Table (qualified, same rule as [`ForeignKey`]) → primary-key column
+    /// names in key order. Tables without a PK are simply absent.
+    pub primary_keys: std::collections::BTreeMap<String, Vec<String>>,
+}
+
 /// Async database client trait. Implementations live in `sid-db`.
 ///
 /// # Object safety
@@ -373,6 +428,14 @@ pub trait DbClient: Send + Sync {
     /// `sqlite_master` + `PRAGMA table_info`; the redb browse engine lists its
     /// fixed set of store tables.
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError>;
+
+    /// Relationship metadata (FK edges + primary keys) for the diagram view.
+    /// Defaults to an empty graph so engines without foreign keys — or ones
+    /// not yet wired — degrade to a diagram of boxes with no lines rather
+    /// than an error.
+    async fn schema_graph(&self) -> Result<SchemaGraph, DbError> {
+        Ok(SchemaGraph::default())
+    }
 
     /// Best-effort cancel of an in-flight query. SQLite and the redb browse
     /// engine are no-ops; Postgres sends a `CancelRequest` on a side channel.
