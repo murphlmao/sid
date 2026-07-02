@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-01 — 281 tests green, working tree clean, `main` @ c53bf5b (SSH/SFTP spearhead feature-complete: host list · editable hosts · terminal · SFTP browser. DB backend foundation + Postgres TLS landed; DB tab UI is next)._
+_Last verified: 2026-07-02 — 309 tests green, working tree clean, `main` @ 7c2c879. SSH/SFTP: MobaXterm split session (terminal + file browser on one connection). Database: working connect→query→results tab (gpui-component) on the layered store + TLS adapter. Both need their live observation gates._
 
 ---
 
@@ -34,7 +34,8 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 | **Plan 3A** — [editable hosts (P3.2)](superpowers/plans/2026-07-01-p32-editable-hosts.md) | `delete_host`, `Settings`/`default_scope`, `Host` auth v2 migration, keyring (`KeyringStore`+probe), `TextInput`, host form + save-to dialog + row actions (edit/delete/promote/demote) | ✅ green, 150 tests total |
 | **Plan 3B** — [SSH adapter port (P3.3 groundwork)](superpowers/plans/2026-07-01-p33-ssh-adapter-port.md) | `sid-core` trait seam, `sid-term` styled vt100 cells, `sid-ssh` russh client/shell/SFTP + **fail-closed known-hosts**, shell `split()` (no writer deadlock) | ✅ merged; ⚠ B5 live-sshd smoke still needs one manual run |
 | **Plan 3C** — [terminal view + connect flow](superpowers/plans/2026-07-01-p33c-terminal-connect.md) | GPUI styled terminal grid (arbor-referenced), `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth` mapping, `secret_ref` keyring resolution, `⚡ connect` in the SSH tab, host-key `order_hostkeyalgs` | ✅ merged (C1–C7); ⚠ needs the human observation gate + live-sshd smoke |
-| **DB slice** — [foundation](superpowers/plans/2026-07-01-db-slice.md) | `DbKind` (sid-core), `DbConnection` v2 + `Store` connection facade (sid-store), `DbClient` trait + `sid-db` crate (Postgres/SQLite/redb-browse) | ✅ Wave-1 backend merged; ⏳ Wave-2 GPUI DB tab UI (adopt gpui-component, lift dbflux's 2 widgets) — collaborative next |
+| **DB slice** — [backend](superpowers/plans/2026-07-01-db-slice.md) + [Wave-2 UI](superpowers/plans/2026-07-01-db-ui-wave2.md) | Backend: `DbKind`, `Store` connection facade, `sid-db` (Postgres/SQLite/redb-browse), rustls TLS. UI (gpui-component): connection picker + seeded demo, descriptor-driven add/edit form (save-to scope, keyring secret), SQL editor + Run→results grid | ✅ backend + Wave-2 increment-1 merged; ⏳ increment-2 = left-tree schema browser, query history, CSV export, cell copy/view, redb-browse UI. Needs the live observation gate. |
+| **SSH split session** — [P3.5](superpowers/plans/2026-07-01-p35-ssh-split-session.md) | MobaXterm layout: terminal + remote file browser on ONE connection; full-filesystem nav, download (traversal-guarded), view (safe text preview), copy-path | ✅ merged; needs the live observation gate |
 
 **Crates:** `sid` (GPUI frontend — the only place GPUI may be named), `sid-store`
 (layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal trait seam —
