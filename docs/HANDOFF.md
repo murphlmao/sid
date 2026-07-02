@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-01 — 150 tests green, working tree clean, `main` @ f967696 (P3.2 complete + P3.3 SSH adapters landed)._
+_Last verified: 2026-07-01 — 173 tests green, working tree clean, `main` @ aa8a841 (SSH slice functionally complete through the embedded terminal; DB backend foundation landed)._
 
 ---
 
@@ -33,7 +33,8 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 | **Plan 2** — [layered store](superpowers/plans/2026-06-27-layered-store-plan.md) | `sid-store` P2.1–P2.7: global(redb)+workspace(TOML), Composer, scoped writes, secret boundary | ✅ green, 49 tests |
 | **Plan 3A** — [editable hosts (P3.2)](superpowers/plans/2026-07-01-p32-editable-hosts.md) | `delete_host`, `Settings`/`default_scope`, `Host` auth v2 migration, keyring (`KeyringStore`+probe), `TextInput`, host form + save-to dialog + row actions (edit/delete/promote/demote) | ✅ green, 150 tests total |
 | **Plan 3B** — [SSH adapter port (P3.3 groundwork)](superpowers/plans/2026-07-01-p33-ssh-adapter-port.md) | `sid-core` trait seam, `sid-term` styled vt100 cells, `sid-ssh` russh client/shell/SFTP + **fail-closed known-hosts**, shell `split()` (no writer deadlock) | ✅ merged; ⚠ B5 live-sshd smoke still needs one manual run |
-| **Plan 3C** — terminal view + connect flow | wire the merged `sid-ssh`/`sid-term` adapters into a GPUI terminal grid; map `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth`; resolve `secret_ref` via `sid-secrets` | ⏳ not written yet — the next design pass |
+| **Plan 3C** — [terminal view + connect flow](superpowers/plans/2026-07-01-p33c-terminal-connect.md) | GPUI styled terminal grid (arbor-referenced), `Host`/`AuthMethod`→`SshHostSpec`/`SshAuth` mapping, `secret_ref` keyring resolution, `⚡ connect` in the SSH tab, host-key `order_hostkeyalgs` | ✅ merged (C1–C7); ⚠ needs the human observation gate + live-sshd smoke |
+| **DB slice** — [foundation](superpowers/plans/2026-07-01-db-slice.md) | `DbKind` (sid-core), `DbConnection` v2 + `Store` connection facade (sid-store), `DbClient` trait + `sid-db` crate (Postgres/SQLite/redb-browse) | ✅ Wave-1 backend merged; ⏳ Wave-2 GPUI DB tab UI (adopt gpui-component, lift dbflux's 2 widgets) — collaborative next |
 
 **Crates:** `sid` (GPUI frontend — the only place GPUI may be named), `sid-store`
 (layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal trait seam —
