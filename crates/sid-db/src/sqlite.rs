@@ -1,11 +1,12 @@
 //! SqliteClient — rusqlite-backed `DbClient` impl. Wraps the sync rusqlite
 //! API in `tokio::task::spawn_blocking` to fit the async trait.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use sid_core::db::{
-    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, OpenParams, PageCursor, QueryPage,
-    Row, SchemaInfo, SqliteMode, TableInfo,
+    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ForeignKey, OpenParams, PageCursor,
+    QueryPage, Row, SchemaGraph, SchemaInfo, SqliteMode, TableInfo,
 };
 
 /// Factory + per-connection client.
@@ -245,6 +246,111 @@ impl DbClient for SqliteClient {
         Ok(SchemaInfo { tables })
     }
 
+    async fn schema_graph(&self) -> Result<SchemaGraph, DbError> {
+        let conn = self.inner.clone().ok_or(DbError::NotConnected)?;
+        tokio::task::spawn_blocking(move || -> Result<SchemaGraph, DbError> {
+            let guard = conn
+                .lock()
+                .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
+            let mut stmt = guard
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                )
+                .map_err(map_rusqlite_error)?;
+            let table_names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(map_rusqlite_error)?
+                .filter_map(Result::ok)
+                .collect();
+            drop(stmt);
+
+            // Primary keys per table — also used below to resolve `to`-NULL FK rows.
+            let mut primary_keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for tn in &table_names {
+                let pk = table_primary_key(&guard, tn)?;
+                if !pk.is_empty() {
+                    primary_keys.insert(tn.clone(), pk);
+                }
+            }
+
+            let mut foreign_keys: Vec<ForeignKey> = Vec::new();
+            for tn in &table_names {
+                let safe = tn.replace('"', "\"\"");
+                let mut fk_stmt = guard
+                    .prepare(&format!(r#"PRAGMA foreign_key_list("{safe}")"#))
+                    .map_err(map_rusqlite_error)?;
+                // Columns: id, seq, table, from, to, on_update, on_delete, match.
+                // `id` groups the columns of one FK constraint; `seq` orders a
+                // composite FK's columns.
+                let rows: Vec<(i64, i64, String, String, Option<String>)> = fk_stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    })
+                    .map_err(map_rusqlite_error)?
+                    .filter_map(Result::ok)
+                    .collect();
+                drop(fk_stmt);
+
+                let mut groups: BTreeMap<i64, Vec<(i64, String, String, Option<String>)>> =
+                    BTreeMap::new();
+                for (id, seq, ref_table, from_col, to_col) in rows {
+                    groups
+                        .entry(id)
+                        .or_default()
+                        .push((seq, ref_table, from_col, to_col));
+                }
+                for (_id, mut cols) in groups {
+                    cols.sort_by_key(|c| c.0);
+                    let ref_table = cols[0].1.clone();
+                    let from_columns: Vec<String> = cols.iter().map(|c| c.2.clone()).collect();
+                    // DECISION: SQLite reports `to = NULL` when the FK declaration
+                    // omitted the referenced columns (`REFERENCES parent` with no
+                    // column list) — SQLite itself resolves that case to the
+                    // referenced table's primary key. We mirror that resolution via
+                    // the `primary_keys` map built above, but only when the PK's
+                    // arity matches the FK's arity; otherwise we fall back to an
+                    // empty string per unresolved column rather than guess.
+                    let to_columns: Vec<String> = if cols.iter().any(|c| c.3.is_none()) {
+                        match primary_keys.get(&ref_table) {
+                            Some(pk) if pk.len() == from_columns.len() => pk.clone(),
+                            _ => cols
+                                .iter()
+                                .map(|c| c.3.clone().unwrap_or_default())
+                                .collect(),
+                        }
+                    } else {
+                        cols.iter().map(|c| c.3.clone().unwrap()).collect()
+                    };
+                    foreign_keys.push(ForeignKey {
+                        from_table: tn.clone(),
+                        from_columns,
+                        to_table: ref_table,
+                        to_columns,
+                    });
+                }
+            }
+            foreign_keys.sort_by(|a, b| {
+                (&a.from_table, &a.to_table, &a.from_columns).cmp(&(
+                    &b.from_table,
+                    &b.to_table,
+                    &b.from_columns,
+                ))
+            });
+            Ok(SchemaGraph {
+                foreign_keys,
+                primary_keys,
+            })
+        })
+        .await
+        .map_err(|e| DbError::Other(format!("join: {e}")))?
+    }
+
     async fn cancel(&self) -> Result<(), DbError> {
         Ok(())
     }
@@ -252,6 +358,29 @@ impl DbClient for SqliteClient {
     fn kind(&self) -> DbKind {
         DbKind::Sqlite
     }
+}
+
+/// A table's primary-key columns in key order (`PRAGMA table_info`'s `pk`
+/// column is the 1-based composite position; 0 means "not part of the PK").
+/// Empty for a table with no PK (e.g. a `WITHOUT ROWID` table missing one, or
+/// a plain rowid table that never declared one).
+fn table_primary_key(guard: &rusqlite::Connection, table: &str) -> Result<Vec<String>, DbError> {
+    let safe = table.replace('"', "\"\"");
+    let mut stmt = guard
+        .prepare(&format!(r#"PRAGMA table_info("{safe}")"#))
+        .map_err(map_rusqlite_error)?;
+    let mut rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| {
+            let pk: i64 = row.get(5)?;
+            let name: String = row.get(1)?;
+            Ok((pk, name))
+        })
+        .map_err(map_rusqlite_error)?
+        .filter_map(Result::ok)
+        .filter(|(pk, _)| *pk > 0)
+        .collect();
+    rows.sort_by_key(|(pk, _)| *pk);
+    Ok(rows.into_iter().map(|(_, name)| name).collect())
 }
 
 fn map_rusqlite_error(e: rusqlite::Error) -> DbError {
@@ -473,5 +602,140 @@ mod tests {
             render_sqlite_value(&Value::Blob(vec![0xAB, 0xCD])),
             "0xabcd"
         );
+    }
+
+    #[tokio::test]
+    async fn schema_graph_reports_single_and_composite_fks_plus_pks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.sqlite");
+        let factory = SqliteClient::factory();
+        let client = factory
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: path.to_string_lossy().into_owned(),
+                password: None,
+                sqlite_mode: Some(SqliteMode::CreateNew),
+            })
+            .await
+            .expect("create new");
+        client
+            .execute("PRAGMA foreign_keys = ON")
+            .await
+            .expect("enable fk pragma");
+        client
+            .execute("CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT)")
+            .await
+            .expect("create publishers");
+        client
+            .execute(
+                "CREATE TABLE editions (year INTEGER, region TEXT, name TEXT, \
+                 PRIMARY KEY (year, region))",
+            )
+            .await
+            .expect("create editions");
+        client
+            .execute(
+                "CREATE TABLE books (\
+                    id INTEGER PRIMARY KEY, \
+                    publisher_id INTEGER REFERENCES publishers(id), \
+                    year INTEGER, \
+                    region TEXT, \
+                    FOREIGN KEY (year, region) REFERENCES editions(year, region)\
+                 )",
+            )
+            .await
+            .expect("create books");
+
+        let graph = client.schema_graph().await.expect("schema_graph");
+
+        // PKs: single-column and a composite PK, key order preserved.
+        assert_eq!(
+            graph.primary_keys.get("books"),
+            Some(&vec!["id".to_string()])
+        );
+        assert_eq!(
+            graph.primary_keys.get("publishers"),
+            Some(&vec!["id".to_string()])
+        );
+        assert_eq!(
+            graph.primary_keys.get("editions"),
+            Some(&vec!["year".to_string(), "region".to_string()])
+        );
+
+        // FKs: deterministically ordered by (from_table, to_table, from_columns).
+        // Both edges share from_table "books"; "editions" < "publishers" sorts first.
+        assert_eq!(graph.foreign_keys.len(), 2);
+        assert_eq!(graph.foreign_keys[0].from_table, "books");
+        assert_eq!(graph.foreign_keys[0].to_table, "editions");
+        assert_eq!(
+            graph.foreign_keys[0].from_columns,
+            vec!["year".to_string(), "region".to_string()]
+        );
+        assert_eq!(
+            graph.foreign_keys[0].to_columns,
+            vec!["year".to_string(), "region".to_string()]
+        );
+        assert_eq!(graph.foreign_keys[1].from_table, "books");
+        assert_eq!(graph.foreign_keys[1].to_table, "publishers");
+        assert_eq!(
+            graph.foreign_keys[1].from_columns,
+            vec!["publisher_id".to_string()]
+        );
+        assert_eq!(graph.foreign_keys[1].to_columns, vec!["id".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn schema_graph_resolves_to_null_fk_via_referenced_pk() {
+        // `REFERENCES parent` with no column list makes SQLite report the FK's
+        // `to` column as NULL in `PRAGMA foreign_key_list` — we resolve that to
+        // the referenced table's primary key (see the DECISION comment in
+        // `schema_graph`).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("implicit_ref.sqlite");
+        let factory = SqliteClient::factory();
+        let client = factory
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: path.to_string_lossy().into_owned(),
+                password: None,
+                sqlite_mode: Some(SqliteMode::CreateNew),
+            })
+            .await
+            .expect("create new");
+        client
+            .execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+            .await
+            .expect("create parent");
+        client
+            .execute(
+                "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent)",
+            )
+            .await
+            .expect("create child");
+
+        let graph = client.schema_graph().await.expect("schema_graph");
+        assert_eq!(graph.foreign_keys.len(), 1);
+        let fk = &graph.foreign_keys[0];
+        assert_eq!(fk.from_table, "child");
+        assert_eq!(fk.from_columns, vec!["parent_id".to_string()]);
+        assert_eq!(fk.to_table, "parent");
+        assert_eq!(fk.to_columns, vec!["id".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn schema_graph_is_empty_for_a_schema_with_no_tables() {
+        let factory = SqliteClient::factory();
+        let client = factory
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: ":memory:".into(),
+                password: None,
+                sqlite_mode: None,
+            })
+            .await
+            .expect("open in-memory");
+        let graph = client.schema_graph().await.expect("schema_graph");
+        assert!(graph.foreign_keys.is_empty());
+        assert!(graph.primary_keys.is_empty());
     }
 }
