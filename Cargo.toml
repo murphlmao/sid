@@ -41,6 +41,16 @@ vt100 = "0.16"
 tokio-postgres = "0.7"
 rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 
+# DU-TLS: Postgres TLS, pure-Rust rustls stack (verified against tokio-postgres
+# 0.7 by resolving a scratch lockfile: tokio-postgres 0.7.18 + rustls 0.23.41 +
+# tokio-postgres-rustls 0.14.0 + rustls-native-certs 0.8.4 all resolve together
+# with no conflicts). `ring` chosen over the default `aws_lc_rs` provider to
+# avoid a cmake/nasm build dependency; rustls needs one crypto provider
+# installed process-wide (installed once, idempotently, at connect time).
+tokio-postgres-rustls = { version = "0.14", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+
 # Async
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
