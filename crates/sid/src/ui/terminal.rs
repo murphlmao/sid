@@ -76,7 +76,7 @@ const MONO: &str = "DejaVu Sans Mono";
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
 /// first use and driven forever on its own thread — gpui's foreground executor only ever awaits
 /// the `JoinHandle`s this hands back, never polls adapter futures itself.
-fn ssh_runtime() -> &'static tokio::runtime::Handle {
+pub(crate) fn ssh_runtime() -> &'static tokio::runtime::Handle {
     static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     HANDLE.get_or_init(|| {
         let rt = tokio::runtime::Builder::new_multi_thread()
