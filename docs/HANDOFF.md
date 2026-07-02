@@ -108,6 +108,14 @@ in `superpowers/plans/`, matching the Plan 1/2 format.
   store), waits for its Hyprland window, and `grim`-captures it to a PNG (path printed as
   the last line of stdout). `--keep` leaves the app running and skips temp-dir cleanup for
   follow-up debugging. Requires a live Hyprland/Wayland session (`hyprctl`, `grim`, `jq`).
+- **Click-through driving:** `scripts/sid-click.sh click_at X Y` / `move_to X Y` injects
+  pointer input via `ydotool` (user service `ydotool.service`, socket at
+  `$XDG_RUNTIME_DIR/.ydotool_socket`). Absolute coords are unreliable on this multi-monitor
+  scale-1.57 setup — the script converges with relative moves + `hyprctl cursorpos` read-back
+  instead. Coordinate math: screen = window `at` (from `hyprctl clients -j`, matched by PID)
+  + png_pixel / monitor_scale. Drag = `ydotool click 0x40` → stepped `mousemove` → `click 0x80`.
+  Combined with sid-shot `--keep`, agents can drive any UI flow and verify it visually
+  (first proven on the relationships-diagram window, 2026-07-02).
 - **Pragmatic mode:** targeted tests per feature; one gate review at end of a slice — not
   per-commit rigor. Critical paths (store, composition, secrets) still get real tests.
 - **Commits:** no `Co-Authored-By: Claude` trailer (standing rule). Push gate-green units
