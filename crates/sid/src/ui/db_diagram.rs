@@ -4,15 +4,15 @@
 //! [`DiagramView`] is handed an owned snapshot of the active connection's cached
 //! [`SchemaInfo`] + [`SchemaGraph`] at open time (see that method's doc comment for why
 //! a snapshot is fine for v1) and is otherwise fully self-contained: table boxes laid
-//! out on a scrollable canvas with FK lines drawn under them and `1`/`∞` endpoint labels
-//! — all pure sync render-from-state, no runtime/async of its own. Drag-to-reposition
-//! and selection highlighting land in a follow-up commit.
+//! out on a scrollable canvas, FK lines drawn under them, `1`/`∞` endpoint labels, and
+//! drag-to-reposition — all pure sync render-from-state, no runtime/async of its own.
 
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, IntoElement, Path, Pixels, Point, Render,
-    SharedString, Window, canvas, div, point, prelude::*, px, rgb, size,
+    AnyElement, Bounds, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Render, SharedString, Window, canvas, div,
+    point, prelude::*, px, rgb, size,
 };
 use sid_core::db::{SchemaGraph, SchemaInfo};
 
@@ -27,8 +27,10 @@ const FG_DIM: u32 = 0x8a8a90;
 const BOX_BG: u32 = 0x1c1c20;
 const HEADER_BG: u32 = 0x232327;
 const BRAND: u32 = 0x5a9ad0;
+const ACCENT: u32 = 0xe0b35a;
 const FK_TINT: u32 = 0x8bb0d0;
 const EDGE_DIM: u32 = 0x3a3a40;
+const EDGE_BRIGHT: u32 = 0xe0b35a;
 
 // ---- layout geometry ------------------------------------------------------------------------
 
@@ -67,14 +69,23 @@ struct DiagramEdge {
     self_ref: bool,
 }
 
+/// In-flight drag state: which table is being moved, and the fixed offset between the
+/// mouse position and that table's top-left at the moment the drag started (used every
+/// subsequent move to compute the table's new position — see [`DiagramView::on_mouse_move`]).
+struct DragState {
+    table_key: String,
+    grab_offset: Point<Pixels>,
+}
+
 /// The relationships diagram's whole state. Renders from `tables`/`edges`/`positions`
-/// alone — a follow-up commit adds dragging, which will just mutate `positions` and call
-/// `cx.notify()`; the lines already follow because line endpoints are recomputed from
-/// `positions` on every render.
+/// alone — dragging just mutates `positions` and calls `cx.notify()`; the lines follow
+/// because line endpoints are recomputed from `positions` on every render.
 pub struct DiagramView {
     tables: Vec<DiagramTable>,
     edges: Vec<DiagramEdge>,
     positions: HashMap<String, Point<Pixels>>,
+    drag: Option<DragState>,
+    selected: Option<String>,
 }
 
 impl DiagramView {
@@ -148,6 +159,8 @@ impl DiagramView {
             tables,
             edges,
             positions,
+            drag: None,
+            selected: None,
         }
     }
 
@@ -198,6 +211,43 @@ impl DiagramView {
         (max_x + MARGIN, max_y + MARGIN)
     }
 
+    /// Header click (drag handle): begin a drag and select the table. One handler does
+    /// both — there's no interaction where selecting without dragging matters here.
+    fn start_drag(&mut self, key: &str, mouse_pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(&table_pos) = self.positions.get(key) else {
+            return;
+        };
+        self.drag = Some(DragState {
+            table_key: key.to_string(),
+            grab_offset: mouse_pos - table_pos,
+        });
+        self.selected = Some(key.to_string());
+        cx.notify();
+    }
+
+    /// Bound to the scroll container so it fires for the whole canvas, not just the
+    /// dragged box (whose own bounds the mouse quickly leaves once dragging starts).
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = &self.drag else {
+            return;
+        };
+        let new_pos = event.position - drag.grab_offset;
+        let key = drag.table_key.clone();
+        self.positions.insert(key, new_pos);
+        cx.notify();
+    }
+
+    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// The header bar: table/relationship counts, and — when the backend hasn't wired
     /// up `schema_graph` yet (or the engine genuinely has no FKs) — a subtle hint
     /// rather than a diagram that silently looks broken.
@@ -227,8 +277,9 @@ impl DiagramView {
 
     /// The FK-lines layer. A `canvas()` sized to the scrollable content (see
     /// `session.rs`'s PTY grid for the same low-level-paint pattern) painted *before*
-    /// the table boxes in child order, so lines sit under them. A follow-up commit adds
-    /// a selection-driven bright pass on top of this dim one.
+    /// the table boxes in child order, so lines sit under them. Two passes: every
+    /// non-selected edge dim, then the selected table's edges again in bright — cheap
+    /// re-draw over the dim pass rather than tracking per-edge "is this one bright" state.
     fn edges_canvas(&self, content_size: (f32, f32)) -> impl IntoElement + use<> {
         let table_bounds = self.table_bounds();
         let edges: Vec<(String, String)> = self
@@ -237,11 +288,17 @@ impl DiagramView {
             .filter(|e| !e.self_ref)
             .map(|e| (e.from_table.clone(), e.to_table.clone()))
             .collect();
+        let selected = self.selected.clone();
 
         canvas(
             move |_bounds, _window, _cx| {},
             move |bounds, (), window, _cx| {
                 for (from_key, to_key) in &edges {
+                    let is_selected = selected.as_deref() == Some(from_key.as_str())
+                        || selected.as_deref() == Some(to_key.as_str());
+                    if is_selected {
+                        continue;
+                    }
                     paint_edge(
                         bounds.origin,
                         &table_bounds,
@@ -250,6 +307,20 @@ impl DiagramView {
                         EDGE_DIM,
                         window,
                     );
+                }
+                if let Some(sel) = &selected {
+                    for (from_key, to_key) in &edges {
+                        if from_key == sel || to_key == sel {
+                            paint_edge(
+                                bounds.origin,
+                                &table_bounds,
+                                from_key,
+                                to_key,
+                                EDGE_BRIGHT,
+                                window,
+                            );
+                        }
+                    }
                 }
             },
         )
@@ -285,13 +356,20 @@ impl DiagramView {
             .collect()
     }
 
-    /// One table's box: a header (optional self-ref badge; becomes the drag handle in a
-    /// follow-up commit) over a capped column list (🔑 prefix on PK columns, tinted on
-    /// FK columns, `+N more` once the list exceeds [`MAX_VISIBLE_COLUMNS`]).
-    fn table_box(&self, ix: usize, table: &DiagramTable) -> impl IntoElement + use<> {
+    /// One table's box: a header (drag handle + select trigger + optional self-ref
+    /// badge) over a capped column list (🔑 prefix on PK columns, tinted on FK columns,
+    /// `+N more` once the list exceeds [`MAX_VISIBLE_COLUMNS`]).
+    fn table_box(
+        &self,
+        ix: usize,
+        table: &DiagramTable,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let pos = self.positions.get(&table.key).copied().unwrap_or_default();
         let height = box_height(table.columns.len());
+        let selected = self.selected.as_deref() == Some(table.key.as_str());
         let self_ref_count = self.self_ref_count(&table.key);
+        let header_key = table.key.clone();
 
         let header = div()
             .id(("diagram-box-header", ix))
@@ -304,6 +382,7 @@ impl DiagramView {
             .py_1()
             .bg(rgb(HEADER_BG))
             .rounded_t_md()
+            .cursor_pointer()
             .child(
                 div()
                     .flex_1()
@@ -317,7 +396,13 @@ impl DiagramView {
                     .text_xs()
                     .text_color(rgb(FG_DIM))
                     .child(format!("↺ {self_ref_count}"))
-            }));
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                    this.start_drag(&header_key, ev.position, cx);
+                }),
+            );
 
         let visible = table
             .columns
@@ -361,7 +446,7 @@ impl DiagramView {
             .flex_col()
             .bg(rgb(BOX_BG))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(if selected { ACCENT } else { BORDER }))
             .rounded_md()
             .child(header)
             .child(
@@ -378,13 +463,17 @@ impl DiagramView {
 }
 
 impl Render for DiagramView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content_size = self.content_size();
-        let boxes = self
-            .tables
-            .iter()
-            .enumerate()
-            .map(|(ix, table)| self.table_box(ix, table));
+        // Indices, not an iterator over `&self.tables` — `table_box` re-borrows
+        // `self.tables[ix]` itself, since it also needs `&mut self` (via `cx.listener`)
+        // in the same call, and an active `&self.tables` iterator would conflict with that.
+        let boxes: Vec<_> = (0..self.tables.len())
+            .map(|ix| {
+                let table = &self.tables[ix];
+                self.table_box(ix, table, cx)
+            })
+            .collect();
 
         let content = div()
             .id("diagram-content")
@@ -407,6 +496,9 @@ impl Render for DiagramView {
                     .id("diagram-scroll")
                     .flex_1()
                     .overflow_scroll()
+                    .on_mouse_move(cx.listener(Self::on_mouse_move))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
                     .child(content),
             )
     }
