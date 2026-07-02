@@ -5,6 +5,7 @@
 //! [`init`], scoped to the `TextInput` key context so they never collide with other
 //! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
+pub mod db_tab;
 pub mod host_form;
 pub mod session;
 mod text_input;
