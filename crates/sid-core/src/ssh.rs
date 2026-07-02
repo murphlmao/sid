@@ -129,6 +129,10 @@ pub trait SshShell: Send + Sync {
 #[async_trait]
 pub trait SftpSession: Send + Sync {
     async fn list(&mut self, path: &str) -> Result<Vec<SftpEntry>, SshError>;
+    /// Resolve `path` (e.g. `"."`) to its canonical absolute form. Used once at session
+    /// start (Plan 3.5) to discover the login's home directory — SFTP servers resolve
+    /// `"."` differently per user, so the caller cannot assume any particular string.
+    async fn canonicalize(&mut self, path: &str) -> Result<String, SshError>;
     async fn get(&mut self, path: &str) -> Result<Vec<u8>, SshError>;
     async fn put(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError>;
     async fn remove_file(&mut self, path: &str) -> Result<(), SshError>;

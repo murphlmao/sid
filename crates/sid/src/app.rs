@@ -22,7 +22,7 @@ use sid_store::{
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
-use crate::ui::{SessionStatus, SftpBrowser, SftpStatus, TerminalSession};
+use crate::ui::{SessionStatus, SshSession};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
 const BG: u32 = 0x161618;
@@ -96,15 +96,11 @@ pub struct AppState {
     /// The row whose ✕ has been clicked once, keyed by (alias, origin) — the second
     /// click on the same row executes the delete.
     armed_delete: Option<(String, Scope)>,
-    /// The connected (or connecting/failed) terminal, if a host's ⚡ connect has been
+    /// The connected (or connecting/failed) SSH session, if a host's ⚡ connect has been
     /// clicked — paired with a header label so the back-strip can show which host it is
-    /// without `TerminalSession` needing to expose that itself. `Some` swaps the SSH tab's
-    /// content from the host list to the terminal (C5).
-    terminal: Option<(SharedString, Entity<TerminalSession>)>,
-    /// The connected (or connecting/failed) SFTP browser, if a host's `⊞ files` has been
-    /// clicked — same pairing/lifecycle convention as `terminal`. Mutually exclusive with
-    /// it: opening one closes the other, so the SSH tab only ever shows one live session.
-    sftp: Option<(SharedString, Entity<SftpBrowser>)>,
+    /// without `SshSession` needing to expose that itself. `Some` swaps the SSH tab's
+    /// content from the host list to the split terminal + file-browser view (P3.5).
+    session: Option<(SharedString, Entity<SshSession>)>,
 }
 
 impl AppState {
@@ -128,8 +124,7 @@ impl AppState {
             form: None,
             _form_subscription: None,
             armed_delete: None,
-            terminal: None,
-            sftp: None,
+            session: None,
         };
         state.reload_scopes();
         state.refresh();
@@ -289,61 +284,30 @@ impl AppState {
         cx.notify();
     }
 
-    // ---- terminal connect (C5) ------------------------------------------------
+    // ---- SSH session connect (P3.5 split session) ------------------------------
 
-    /// ⚡ connect: open a [`TerminalSession`] for `host` and swap the SSH tab over to it.
-    /// Only one terminal is live at a time — connecting a second host disconnects the
-    /// first rather than leaking its background read-loop.
+    /// ⚡ connect: open a combined [`SshSession`] for `host` — one connection backing both
+    /// the terminal and the file browser — and swap the SSH tab over to it. Only one
+    /// session is live at a time — connecting a second host disconnects the first rather
+    /// than leaking its background read-loop.
     fn connect_host(&mut self, host: Host, cx: &mut Context<Self>) {
-        if let Some((_, old)) = self.terminal.take() {
-            old.update(cx, |session, _cx| session.disconnect());
-        }
-        // Terminal and SFTP are mutually exclusive views of the SSH tab — opening one
-        // closes the other.
-        if let Some((_, old)) = self.sftp.take() {
-            old.update(cx, |browser, _cx| browser.close());
-        }
-        let label: SharedString =
-            format!("{} — {}@{}:{}", host.alias, host.user, host.host, host.port).into();
-        let known_hosts_path = data_dir().join("known_hosts");
-        let terminal = TerminalSession::connect(host, self.secrets.as_ref(), known_hosts_path, cx);
-        self.terminal = Some((label, terminal));
-        self.error = None;
-        cx.notify();
-    }
-
-    /// ← back: disconnect the shell (if still live) and return the SSH tab to the host
-    /// list, unchanged since the connect.
-    fn close_terminal(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, terminal)) = self.terminal.take() {
-            terminal.update(cx, |session, _cx| session.disconnect());
-        }
-        cx.notify();
-    }
-
-    /// `⊞ files`: open the SFTP browser for `host`, the sibling action to `⚡ connect`.
-    fn open_files(&mut self, host: Host, cx: &mut Context<Self>) {
-        if let Some((_, old)) = self.sftp.take() {
-            old.update(cx, |browser, _cx| browser.close());
-        }
-        // Mutually exclusive with the terminal view — see `connect_host`.
-        if let Some((_, old)) = self.terminal.take() {
+        if let Some((_, old)) = self.session.take() {
             old.update(cx, |session, _cx| session.disconnect());
         }
         let label: SharedString =
             format!("{} — {}@{}:{}", host.alias, host.user, host.host, host.port).into();
         let known_hosts_path = data_dir().join("known_hosts");
-        let browser = SftpBrowser::open(host, self.secrets.as_ref(), known_hosts_path, cx);
-        self.sftp = Some((label, browser));
+        let session = SshSession::open(host, self.secrets.as_ref(), known_hosts_path, cx);
+        self.session = Some((label, session));
         self.error = None;
         cx.notify();
     }
 
-    /// ← back: close the SFTP session (if still live) and return the SSH tab to the host
-    /// list.
-    fn close_files(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, browser)) = self.sftp.take() {
-            browser.update(cx, |browser, _cx| browser.close());
+    /// ← disconnect: close the shell + sftp + client (if still live) and return the SSH
+    /// tab to the host list, unchanged since the connect.
+    fn close_session(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, session)) = self.session.take() {
+            session.update(cx, |session, _cx| session.disconnect());
         }
         cx.notify();
     }
@@ -566,11 +530,8 @@ impl AppState {
     }
 
     fn ssh_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some((label, terminal)) = self.terminal.clone() {
-            return self.terminal_pane(label, terminal, cx).into_any_element();
-        }
-        if let Some((label, sftp)) = self.sftp.clone() {
-            return self.sftp_pane(label, sftp, cx).into_any_element();
+        if let Some((label, session)) = self.session.clone() {
+            return self.session_pane(label, session, cx).into_any_element();
         }
 
         let count = self.hosts.len();
@@ -623,15 +584,16 @@ impl AppState {
             .into_any_element()
     }
 
-    /// The connected view: a back/disconnect strip above the [`TerminalSession`] entity,
-    /// which paints its own connecting/failed/closed/grid states (C2–C4).
-    fn terminal_pane(
+    /// The connected view (P3.5): a disconnect strip showing `user@host` above the
+    /// [`SshSession`] entity, which paints its own connecting/failed/closed/split
+    /// (terminal + file panel) states.
+    fn session_pane(
         &self,
         label: SharedString,
-        terminal: Entity<TerminalSession>,
+        session: Entity<SshSession>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let status = match terminal.read(cx).status() {
+        let status = match session.read(cx).status() {
             SessionStatus::Connecting => "connecting…",
             SessionStatus::Connected => "connected",
             SessionStatus::Failed(_) => "failed",
@@ -655,7 +617,7 @@ impl AppState {
                     .border_color(rgb(BORDER))
                     .child(
                         div()
-                            .id("terminal-back")
+                            .id("session-disconnect")
                             .px_3()
                             .py_1()
                             .rounded_md()
@@ -663,9 +625,9 @@ impl AppState {
                             .cursor_pointer()
                             .bg(rgb(ACTIVE_BG))
                             .text_color(rgb(ACTIVE_FG))
-                            .child("← back")
+                            .child("← disconnect")
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.close_terminal(cx);
+                                this.close_session(cx);
                             })),
                     )
                     .child(
@@ -676,64 +638,7 @@ impl AppState {
                             .child(header),
                     ),
             )
-            .child(div().flex().flex_col().flex_1().child(terminal))
-    }
-
-    /// The connected view: a back/close strip above the [`SftpBrowser`] entity, which
-    /// paints its own connecting/failed/closed/browser states — same shape as
-    /// `terminal_pane`.
-    fn sftp_pane(
-        &self,
-        label: SharedString,
-        sftp: Entity<SftpBrowser>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let status = match sftp.read(cx).status() {
-            SftpStatus::Connecting => "connecting…",
-            SftpStatus::Ready => "ready",
-            SftpStatus::Failed(_) => "failed",
-            SftpStatus::Closed => "closed",
-        };
-        let header: SharedString = format!("{label} · {status}").into();
-
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(
-                        div()
-                            .id("sftp-back")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(ACTIVE_BG))
-                            .text_color(rgb(ACTIVE_FG))
-                            .child("← back")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.close_files(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .text_color(rgb(FG_DIM))
-                            .child(header),
-                    ),
-            )
-            .child(div().flex().flex_col().flex_1().child(sftp))
+            .child(div().flex().flex_col().flex_1().child(session))
     }
 
     fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -784,22 +689,13 @@ impl AppState {
             ))
         });
 
-        // ⚡ connect: opens a TerminalSession over this row's host (C5).
+        // ⚡ connect: opens a combined SshSession (terminal + file panel, P3.5) over this
+        // row's host.
         let connect = {
             let host = host.clone();
             action(("connect", ix), "⚡ connect".into(), BRAND).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.connect_host(host.clone(), cx);
-                },
-            ))
-        };
-
-        // ⊞ files: opens an SftpBrowser over this row's host (P3.4), sibling to ⚡ connect.
-        let files = {
-            let host = host.clone();
-            action(("files", ix), "⊞ files".into(), BRAND).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.open_files(host.clone(), cx);
                 },
             ))
         };
@@ -873,7 +769,6 @@ impl AppState {
                             .children(promote)
                             .children(demote)
                             .child(connect)
-                            .child(files)
                             .child(edit)
                             .child(delete),
                     ),
