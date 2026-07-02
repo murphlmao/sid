@@ -5,6 +5,8 @@
 //! [`init`], scoped to the `TextInput` key context so they never collide with other
 //! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
+pub mod db_conn_form;
+pub mod db_tab;
 pub mod host_form;
 pub mod session;
 mod text_input;
@@ -78,5 +80,8 @@ pub fn init(cx: &mut App) {
         // the focused TextInput, so they fire from any field inside the form.
         KeyBinding::new("escape", host_form::FormCancel, Some("HostForm")),
         KeyBinding::new("enter", host_form::FormSubmit, Some("HostForm")),
+        // DB connection form bindings (W4), scoped the same way as the host form's.
+        KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
+        KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
     ]);
 }
