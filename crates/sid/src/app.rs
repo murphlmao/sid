@@ -19,6 +19,7 @@ use sid_store::{
     Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
+use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
@@ -72,23 +73,23 @@ impl Tab {
 }
 
 /// One entry in the scope switcher.
-struct ScopeChoice {
-    label: SharedString,
-    scope: Scope,
+pub(crate) struct ScopeChoice {
+    pub(crate) label: SharedString,
+    pub(crate) scope: Scope,
 }
 
 /// The single application entity.
 pub struct AppState {
-    store: Store,
+    pub(crate) store: Store,
     /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
     /// through here; the store only ever sees opaque `secret_ref` ids.
-    secrets: Box<dyn SecretStore>,
-    scope: Scope,
+    pub(crate) secrets: Box<dyn SecretStore>,
+    pub(crate) scope: Scope,
     active_tab: Tab,
-    filters: ViewFilters,
-    scopes: Vec<ScopeChoice>,
+    pub(crate) filters: ViewFilters,
+    pub(crate) scopes: Vec<ScopeChoice>,
     hosts: Vec<Attributed<Host>>,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     /// The open host add/edit modal, if any.
     form: Option<Entity<HostForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
@@ -101,6 +102,11 @@ pub struct AppState {
     /// without `SshSession` needing to expose that itself. `Some` swaps the SSH tab's
     /// content from the host list to the split terminal + file-browser view (P3.5).
     session: Option<(SharedString, Entity<SshSession>)>,
+    /// Database tab state (W3): the connection list, its own add/edit modal, and (W5)
+    /// the active query session. Lives in its own module (`ui::db_tab`) — see that
+    /// file's second `impl AppState` block for the render/mutation methods that operate
+    /// on it via `pub(crate)` field access.
+    pub(crate) db: DbTabState,
 }
 
 impl AppState {
@@ -112,6 +118,7 @@ impl AppState {
         secrets: Box<dyn SecretStore>,
         startup_warning: Option<String>,
     ) -> Self {
+        let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
         let mut state = Self {
             store,
             secrets,
@@ -125,6 +132,7 @@ impl AppState {
             _form_subscription: None,
             armed_delete: None,
             session: None,
+            db,
         };
         state.reload_scopes();
         state.refresh();
@@ -175,13 +183,14 @@ impl AppState {
     fn set_scope(&mut self, scope: Scope) {
         self.scope = scope;
         self.refresh();
+        self.refresh_db();
     }
 
     // ---- host form (A6) ------------------------------------------------------
 
     /// The active workspace scope + its switcher label, if a workspace is focused.
     /// Feeds the form's `save to: workspace` option.
-    fn active_workspace(&self) -> Option<(Scope, SharedString)> {
+    pub(crate) fn active_workspace(&self) -> Option<(Scope, SharedString)> {
         match &self.scope {
             Scope::Global => None,
             Scope::Workspace(_) => {
@@ -411,7 +420,7 @@ impl AppState {
     }
 
     /// Human name for a layer, matching the origin badges (`⌂ global` / workspace name).
-    fn layer_label(&self, target: &Scope) -> String {
+    pub(crate) fn layer_label(&self, target: &Scope) -> String {
         match target {
             Scope::Global => "⌂ global".into(),
             Scope::Workspace(_) => self
@@ -797,12 +806,34 @@ impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
+            // `db_tab` needs `window` (W5) to lazily build the SQL editor/results table
+            // on first paint — `InputState::new`/`TableState::new` both require it.
+            Tab::Database => self.db_tab(window, cx),
             other => self.placeholder(other).into_any_element(),
         };
 
         // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
         // window origin; `deferred` paints it above everything else.
         let overlay = self.form.clone().map(|form| {
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(form),
+                ),
+            )
+            .with_priority(1)
+        });
+        // The DB connection add/edit modal (W4) — the exact mirror of `overlay` above,
+        // over `self.db.form` instead of `self.form`.
+        let db_overlay = self.db.form.clone().map(|form| {
             let viewport = window.viewport_size();
             deferred(
                 anchored().position(point(px(0.), px(0.))).child(
@@ -830,6 +861,7 @@ impl Render for AppState {
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
+            .children(db_overlay)
     }
 }
 
@@ -881,6 +913,37 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         .list_workspaces()
         .map(|w| w.is_empty())
         .unwrap_or(false);
+
+    // The DB connection seed is gated independently of hosts/workspaces below: on a dev
+    // machine whose store already has hosts (the common case once the SSH slice is in
+    // daily use), the host/workspace gate is permanently tripped, and a connections seed
+    // added later than that first run would otherwise never fire. Each demo dataset gets
+    // its own empty-state check so W3's DB seed still lands on existing stores.
+    let no_connections = store
+        .global()
+        .list_connections()
+        .map(|c| c.is_empty())
+        .unwrap_or(false);
+    if no_connections {
+        // The demo connection's file must exist before `run_query` (W5) opens it: saved
+        // connections always open with `sqlite_mode: None` -> `SqliteMode::OpenExisting`
+        // (see `db_tab::run_first_page`), which requires the file to already be there.
+        // An empty file is a valid, openable SQLite database (rusqlite/sqlite3 initialize
+        // it lazily on first write), so a bare `File::create` is enough.
+        let demo_db = dir.join("demo.db");
+        let _ = std::fs::File::create(&demo_db);
+        let _ = store.write_connection(
+            &sid_store::DbConnection {
+                id: "demo-sqlite".into(),
+                dsn: demo_db.to_string_lossy().into_owned(),
+                secret_ref: None,
+                kind: sid_core::db::DbKind::Sqlite,
+                name: "demo sqlite (local file)".into(),
+            },
+            &Scope::Global,
+        );
+    }
+
     if !(no_hosts && no_ws) {
         return;
     }
@@ -920,19 +983,22 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
 // ---- row-action routing (pure, unit-tested) ---------------------------------
 
 /// Whether a row offers ⤒ promote: only records that live in a workspace layer.
-fn can_promote(origin: &Scope) -> bool {
+pub(crate) fn can_promote(origin: &Scope) -> bool {
     matches!(origin, Scope::Workspace(_))
 }
 
 /// Whether a row offers ⤓ demote: only global-layer records, and only while a workspace
 /// scope is active to receive them.
-fn can_demote(origin: &Scope, current_scope: &Scope) -> bool {
+pub(crate) fn can_demote(origin: &Scope, current_scope: &Scope) -> bool {
     matches!(origin, Scope::Global) && matches!(current_scope, Scope::Workspace(_))
 }
 
 /// Two-click delete: `true` when the clicked row is the one already armed. Keyed on
 /// (alias, origin) so the same alias in the *other* layer never inherits the confirm.
-fn delete_click_executes(armed: Option<&(String, Scope)>, clicked: &(String, Scope)) -> bool {
+pub(crate) fn delete_click_executes(
+    armed: Option<&(String, Scope)>,
+    clicked: &(String, Scope),
+) -> bool {
     armed == Some(clicked)
 }
 
