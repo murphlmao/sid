@@ -24,8 +24,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight,
-    Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine, TextRun,
+    App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable, Font, FontStyle,
+    FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine, TextRun,
     UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, rgb, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShell};
@@ -120,6 +120,11 @@ pub struct SshSession {
     /// the connection's own lifecycle. A listing failure here does not fail the session:
     /// the terminal keeps working even if e.g. the home directory can't be read.
     file_error: Option<String>,
+    /// Split-layout collapse toggle (P5.2): no draggable divider is cheaply available in
+    /// gpui 0.2.2, so per the plan's fallback the sidebar is fixed-width with a `«`/`»`
+    /// collapse control instead, letting the terminal reclaim the full pane when browsing
+    /// files isn't needed.
+    sidebar_collapsed: bool,
 }
 
 impl SshSession {
@@ -154,6 +159,7 @@ impl SshSession {
                 path: "/".to_string(),
                 entries: Vec::new(),
                 file_error: None,
+                sidebar_collapsed: false,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -394,6 +400,27 @@ impl SshSession {
     /// — every SFTP call that could change them already ran, off gpui's executor, before
     /// `cx.notify()` scheduled this render.
     fn file_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        if self.sidebar_collapsed {
+            return div()
+                .id("session-sidebar-expand")
+                .w(px(20.))
+                .h_full()
+                .flex()
+                .pt_1()
+                .justify_center()
+                .cursor_pointer()
+                .bg(rgb(BG))
+                .border_r_1()
+                .border_color(rgb(BORDER))
+                .text_color(rgb(FG_DIM))
+                .child("»")
+                .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                    session.sidebar_collapsed = false;
+                    cx.notify();
+                }))
+                .into_any_element();
+        }
+
         let count = self.entries.len();
         let summary = format!("{} · {count} entries", self.path);
         div()
@@ -404,7 +431,25 @@ impl SshSession {
             .bg(rgb(BG))
             .border_r_1()
             .border_color(rgb(BORDER))
-            .child(status_line(&summary))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().flex_1().child(status_line(&summary)))
+                    .child(
+                        div()
+                            .id("session-sidebar-collapse")
+                            .px_2()
+                            .cursor_pointer()
+                            .text_color(rgb(FG_DIM))
+                            .child("«")
+                            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                                session.sidebar_collapsed = true;
+                                cx.notify();
+                            })),
+                    ),
+            )
             .when_some(self.file_error.clone(), |el, msg| {
                 el.child(status_line(&format!("file panel: {msg}")))
             })
@@ -418,6 +463,7 @@ impl SshSession {
                 )
                 .flex_1(),
             )
+            .into_any_element()
     }
 
     /// One (still non-interactive) row of the entry list: dir/file glyph + name.
