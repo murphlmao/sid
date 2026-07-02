@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — SSH/SFTP v2 mockup</title>
+<style>
+  :root{
+    --bg:#08090c; --panel:#17181d; --panel2:#1e2027; --panel3:#101115;
+    --ink:#e6e8ec; --muted:#8c9099; --line:#2d3038; --line2:#25272e;
+    --accent:#5a9ad0; --accent-soft:rgba(90,154,208,.16);
+    --ws:#a98fe0; --ws-soft:rgba(169,143,224,.16);
+    --good:#52c78e; --warn:#e0a23e; --danger:#e2685f;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --kitty:"CaskaydiaCove Nerd Font Mono","JetBrainsMono Nerd Font",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:24px;
+    background:
+      radial-gradient(1px 1px at 12% 22%, rgba(255,255,255,.55) 1px, transparent 0),
+      radial-gradient(1px 1px at 68% 8%,  rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1px 1px at 40% 60%, rgba(255,255,255,.35) 1px, transparent 0),
+      radial-gradient(1px 1px at 85% 45%, rgba(255,255,255,.5)  1px, transparent 0),
+      radial-gradient(1px 1px at 92% 80%, rgba(255,255,255,.3)  1px, transparent 0),
+      radial-gradient(1px 1px at 20% 88%, rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1200px 800px at 12% -8%, rgba(90,120,210,.28), transparent 60%),
+      radial-gradient(1000px 760px at 108% 112%, rgba(150,95,210,.22), transparent 55%),
+      var(--bg);
+    background-size: 240px 220px,240px 220px,240px 220px,240px 220px,240px 220px,240px 220px, auto,auto,auto;
+  }
+  .wireframe-tag{position:fixed;top:14px;left:16px;font:11px var(--mono);color:var(--muted);letter-spacing:.06em}
+
+  .window{width:1380px;max-width:100%;height:872px;background:var(--panel);border:1px solid var(--line);
+          border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;
+          position:relative}
+
+  /* ---- titlebar ---- */
+  .titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .lights{display:flex;gap:7px}.lights i{width:12px;height:12px;border-radius:50%;background:#33353c}
+  .brand{font-weight:650;display:flex;align-items:center;gap:6px}.brand .gl{color:var(--accent)}
+  .vsep{width:1px;height:20px;background:var(--line)}
+  .scope-lbl{font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .scope{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:3px;gap:2px}
+  .scope button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--muted);padding:4px 13px;border-radius:16px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .scope button .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+  .scope button[aria-selected="true"]{background:var(--accent);color:#0b0d10}
+  .scope button[aria-selected="true"] .dot{background:#0b0d10}
+  .spacer{flex:1}
+  .ico-btn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer;background:var(--panel)}
+  .ico-btn kbd{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;margin-left:5px}
+
+  /* ---- app tab strip ---- */
+  .tabstrip{height:42px;flex:0 0 42px;display:flex;align-items:stretch;gap:2px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{display:flex;align-items:center;gap:8px;padding:0 16px;cursor:default;color:var(--muted);font-size:13.5px;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
+  .tab .ic{opacity:.8}.tab .ct{font:11px var(--mono);color:var(--muted)}
+  .tabstrip .grow{flex:1}
+  .tab.right{color:var(--muted)}
+
+  .content{flex:1;min-height:0;display:flex;flex-direction:column}
+  .view{display:none;flex:1;min-height:0;flex-direction:column}
+  .view.active{display:flex}
+  .vhead{padding:11px 18px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  .vhead h2{margin:0;font-size:15px;font-weight:650}
+  .vhead .sub{font-size:12px;color:var(--muted)}
+  .vhead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:var(--panel2);border-radius:7px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0b0d10;font-weight:600}
+  .btn.danger{border-color:var(--danger);color:var(--danger);background:transparent}
+  .btn:hover{filter:brightness(1.12)}
+  .badge{font-size:10px;border-radius:10px;padding:1px 7px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.g{border-color:var(--accent);color:var(--accent)}
+  .badge.w{border-color:var(--ws);color:var(--ws);background:var(--ws-soft)}
+
+  /* ---- session tab strip (new: one tab per live connection) ---- */
+  .sesstabs{display:flex;align-items:stretch;gap:4px;padding:8px 14px 0;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .sesstab{display:flex;align-items:center;gap:8px;padding:7px 10px 8px 12px;border:1px solid var(--line);border-bottom:none;
+           border-radius:8px 8px 0 0;background:var(--panel3);color:var(--muted);font-size:12.5px;cursor:pointer;position:relative;top:1px}
+  .sesstab .dot{width:6px;height:6px;border-radius:50%;background:var(--good);box-shadow:0 0 5px rgba(82,199,142,.7)}
+  .sesstab[aria-selected="true"]{background:var(--panel);color:var(--ink);font-weight:600;border-color:var(--line);border-bottom:1px solid var(--panel)}
+  .sesstab .host{font-family:var(--mono);font-size:12px}
+  .sesstab .x{color:var(--muted);opacity:.7;border-radius:4px;padding:0 3px;margin-left:2px}
+  .sesstab .x:hover{opacity:1;background:var(--line2);color:var(--danger)}
+  .sesstab .wsbadge{font-size:9px;border-radius:8px;padding:0 5px;border:1px solid var(--ws);color:var(--ws)}
+  .sesstab-add{display:flex;align-items:center;justify-content:center;width:30px;color:var(--muted);cursor:pointer;border-radius:6px;position:relative;top:1px}
+  .sesstab-add:hover{background:var(--line2);color:var(--ink)}
+  .sesstabs-empty{padding:9px 14px;color:var(--muted);font-size:12.5px;font-style:italic}
+
+  /* ---- session/disconnect bar ---- */
+  .sessionbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line2);font-size:12.5px}
+  .sessionbar .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 6px rgba(82,199,142,.8);flex:0 0 auto}
+  .sessionbar .conn{font-family:var(--mono);color:var(--ink)}
+  .sessionbar .meta{color:var(--muted)}
+  .sessionbar .sep{color:var(--line);opacity:.9}
+  .sessionbar .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+  /* ---- split: terminal | divider | file browser ---- */
+  .splitwrap{flex:1;display:flex;min-height:0;position:relative}
+  .termpane{flex:0 0 58%;min-width:220px;background:var(--panel3);display:flex;flex-direction:column;min-height:0}
+  .term{flex:1;overflow:auto;color:#d7dde3;font:13px/1.68 var(--kitty);padding:14px 18px;white-space:pre-wrap;background:
+        radial-gradient(1200px 400px at 15% -20%, rgba(90,120,210,.05), transparent 60%), #0d0f13}
+  .term .p{color:#7fd8ad;font-weight:600}.term .d{color:#7fb6e6}.term .m{color:#7d8290}
+  .term .k{color:#e0a23e}.term .e{color:#e2685f}.term .path{color:#c9a6f0}
+
+  .divider{flex:0 0 8px;cursor:col-resize;background:var(--panel);position:relative;border-left:1px solid var(--line2);border-right:1px solid var(--line2)}
+  .divider:hover,.divider.active{background:var(--accent-soft)}
+  .divider .grip{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:5px;height:34px;border-radius:3px;
+                 background:var(--line);display:flex;align-items:center;justify-content:center}
+  .divider:hover .grip,.divider.active .grip{background:var(--accent)}
+
+  .filespane{flex:1 1 42%;min-width:300px;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .filespane.collapsed{flex:0 0 0;min-width:0;overflow:hidden}
+  .reopenFiles{display:none;flex:0 0 26px;align-items:center;justify-content:center;writing-mode:vertical-rl;
+               cursor:pointer;color:var(--muted);font-size:11px;background:var(--panel2);border-left:1px solid var(--line2);letter-spacing:.04em}
+  .reopenFiles.show{display:flex}
+  .reopenFiles:hover{color:var(--ink)}
+
+  .filehead{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted);font-weight:600}
+  .filehead .right{margin-left:auto;display:flex;gap:4px}
+  .iconbtn{border:1px solid var(--line);background:var(--panel2);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer}
+  .iconbtn:hover{color:var(--ink);border-color:var(--accent)}
+
+  .filetoolbar{padding:9px 12px;border-bottom:1px solid var(--line2);display:flex;flex-direction:column;gap:8px}
+  .row1{display:flex;align-items:center;gap:8px}
+  .breadcrumb{display:flex;align-items:center;gap:3px;overflow-x:auto;flex:1 1 auto;min-width:0;font:12px var(--mono);white-space:nowrap;padding-bottom:2px}
+  .breadcrumb .seg{padding:3px 7px;border-radius:5px;color:var(--muted);cursor:pointer;flex:0 0 auto}
+  .breadcrumb .seg:hover{background:var(--line2);color:var(--ink)}
+  .breadcrumb .seg.cur{color:var(--ink);background:var(--accent-soft)}
+  .breadcrumb .sl{color:var(--line);flex:0 0 auto}
+  .gopath{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+  .gopath input{width:200px;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);color:var(--ink);
+                border-radius:6px;padding:5px 8px}
+  .gopath input:focus{outline:none;border-color:var(--accent)}
+  .row2{display:flex;align-items:center;gap:6px}
+  .row2 .sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+  .hiddencheck{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer;user-select:none}
+  .hiddencheck .box{width:13px;height:13px;border:1px solid var(--line);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;color:transparent}
+  .hiddencheck.on .box{background:var(--accent);border-color:var(--accent);color:#0b0d10}
+  .entrycount{margin-left:auto;color:var(--muted);font-size:11.5px}
+
+  .filetable-wrap{flex:1;overflow:auto}
+  table.files{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.files th{text-align:left;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+                 padding:7px 14px;border-bottom:1px solid var(--line2);position:sticky;top:0;background:var(--panel)}
+  table.files th.num,table.files td.num{text-align:right}
+  table.files td{padding:6px 14px;border-bottom:1px solid var(--line2);color:var(--ink);white-space:nowrap}
+  table.files tr.hidden-row{display:none}
+  table.files tr.hidden-row.show{display:table-row}
+  table.files tr:hover td{background:var(--panel2)}
+  table.files td.name{display:flex;align-items:center;gap:8px;font-family:var(--mono);white-space:normal;word-break:break-word}
+  table.files td.size,table.files td.mtime{font-family:var(--mono);color:var(--muted);text-align:right}
+  .fic{opacity:.85;flex:0 0 auto}
+
+  .statusbar{height:26px;flex:0 0 26px;background:var(--panel2);border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12px;color:var(--muted)}
+  .statusbar .sc{color:var(--ink)}.statusbar .gl{color:var(--accent)}.statusbar .right{margin-left:auto;display:flex;gap:16px}
+
+  /* ---- popover: add connection ---- */
+  .overlay{position:fixed;inset:0;background:rgba(4,5,7,.55);display:none;align-items:flex-start;justify-content:center;padding-top:120px;z-index:20}
+  .overlay.open{display:flex}
+  .popover{width:380px;background:var(--panel);border:1px solid var(--line);border-radius:11px;box-shadow:0 20px 60px rgba(0,0,0,.55);overflow:hidden}
+  .popover h3{margin:0;padding:13px 16px;font-size:13.5px;border-bottom:1px solid var(--line2);font-weight:650}
+  .popover .row{padding:10px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line2);cursor:pointer}
+  .popover .row:hover{background:var(--panel2)}
+  .popover .row .nm{font-weight:600}
+  .popover .row .cn{font:11.5px var(--mono);color:var(--muted);margin-left:auto}
+
+  /* ---- pop-out illustration: floating mini OS window ---- */
+  .popout-window{position:absolute;right:26px;bottom:26px;width:360px;background:var(--panel);border:1px solid var(--accent);
+                 border-radius:10px;box-shadow:0 20px 55px rgba(0,0,0,.6),0 0 0 3px var(--accent-soft);overflow:hidden;
+                 display:none;flex-direction:column;z-index:15;animation:pop .16s ease-out}
+  .popout-window.open{display:flex}
+  @keyframes pop{from{transform:translateY(10px) scale(.97);opacity:0}to{transform:none;opacity:1}}
+  .popout-window .pt{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .popout-window .pt .lights i{width:9px;height:9px}
+  .popout-window .pt .ttl{font-size:11.5px;color:var(--muted);font-family:var(--mono)}
+  .popout-window .pt .dock{margin-left:auto;font-size:11px;color:var(--accent);cursor:pointer;border:1px solid var(--accent);border-radius:5px;padding:2px 7px}
+  .popout-window .body{padding:8px 0;max-height:220px;overflow:auto}
+  .popout-window table.files th,.popout-window table.files td{padding:5px 12px;font-size:11.5px}
+  .filespane.detached .filehead,.filespane.detached .filetoolbar,.filespane.detached .filetable-wrap{display:none}
+  .detached-note{display:none;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);
+                 font-size:12.5px;padding:20px;text-align:center}
+  .filespane.detached .detached-note{display:flex}
+  .detached-note .ic{font-size:26px;opacity:.7}
+</style>
+</head>
+<body>
+<div class="wireframe-tag">DESIGN MOCKUP v2 · SSH/SFTP · connected state · static, no app code</div>
+
+<div class="window">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand"><span class="gl">✦</span> sid</div>
+    <div class="vsep"></div>
+    <span class="scope-lbl">scope</span>
+    <div class="scope" id="scope">
+      <button aria-selected="false"><span class="dot"></span>Global</button>
+      <button aria-selected="true"><span class="dot"></span>acme-api</button>
+      <button aria-selected="false"><span class="dot"></span>payments-svc</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="ico-btn">Search actions<kbd>⌘K</kbd></div>
+  </div>
+
+  <!-- app tab strip -->
+  <div class="tabstrip">
+    <div class="tab" aria-selected="true"><span class="ic">⌁</span>SSH / SFTP<span class="ct">3</span></div>
+    <div class="tab"><span class="ic">▤</span>Database<span class="ct">1</span></div>
+    <div class="tab"><span class="ic">⇅</span>Network<span class="ct">7</span></div>
+    <div class="tab"><span class="ic">▢</span>Workspaces<span class="ct">3</span></div>
+    <div class="tab"><span class="ic">⚙</span>System</div>
+    <div class="grow"></div>
+    <div class="tab right"><span class="ic">◐</span>Settings</div>
+  </div>
+
+  <div class="content">
+    <section class="view active" id="view-ssh">
+      <div class="vhead">
+        <h2>SSH / SFTP</h2>
+        <span class="sub">3 live connections · terminal + file browser share one session</span>
+        <div class="right"><button class="btn" id="btnNewConn">＋ New connection</button></div>
+      </div>
+
+      <!-- 1. session tab strip: one tab per concurrent connection -->
+      <div class="sesstabs" id="sesstabs"></div>
+
+      <!-- disconnect bar -->
+      <div class="sessionbar" id="sessionbar"></div>
+
+      <!-- 2. split: terminal | draggable divider | file browser -->
+      <div class="splitwrap" id="splitwrap">
+        <div class="termpane" id="termpane">
+          <div class="term" id="term"></div>
+        </div>
+        <div class="divider" id="divider"><div class="grip"></div></div>
+        <div class="filespane" id="filespane">
+          <div class="detached-note">
+            <div class="ic">⧉</div>
+            <div>Detached into its own window.<br>The file browser keeps browsing this session's filesystem independently.</div>
+            <button class="btn" id="btnDock">↩ Dock back into this window</button>
+          </div>
+          <div class="filehead">
+            Files
+            <div class="right">
+              <button class="iconbtn" id="btnCollapseFiles" title="Collapse">⇤ collapse</button>
+              <button class="iconbtn" id="btnPopoutFiles" title="Pop out into its own window">⧉ pop out</button>
+            </div>
+          </div>
+          <div class="filetoolbar">
+            <div class="row1">
+              <div class="breadcrumb" id="breadcrumb"></div>
+              <div class="gopath">
+                <input id="gopathInput" spellcheck="false">
+                <button class="btn" id="btnGo">Go</button>
+              </div>
+            </div>
+            <div class="row2">
+              <button class="iconbtn" id="btnUp" title="Up one level">↑ up</button>
+              <button class="iconbtn" id="btnRefresh" title="Refresh">⟳ refresh</button>
+              <div class="row2 sep"></div>
+              <div class="hiddencheck" id="hiddenToggle"><span class="box">✓</span> hidden files</div>
+              <span class="entrycount" id="entrycount"></span>
+            </div>
+          </div>
+          <div class="filetable-wrap">
+            <table class="files">
+              <thead><tr><th>name</th><th class="num">size</th><th class="num">modified</th></tr></thead>
+              <tbody id="filetbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="reopenFiles" id="reopenFiles">Files ›</div>
+
+        <!-- 4. pop-out illustration: file browser detaches into its own OS window -->
+        <div class="popout-window" id="popoutWindow">
+          <div class="pt">
+            <div class="lights"><i></i><i></i><i></i></div>
+            <span class="ttl">sid — files · <span id="popoutHost"></span></span>
+            <span class="dock" id="btnDock2">↩ dock</span>
+          </div>
+          <div class="body">
+            <table class="files">
+              <thead><tr><th>name</th><th class="num">size</th><th class="num">modified</th></tr></thead>
+              <tbody id="popoutBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="statusbar">
+    <span>scope: <span class="sc">acme-api</span></span>
+    <span id="stCount">3 hosts connected · 1 global · 2 workspace</span>
+    <div class="right"><span id="stActive">⌁ murphy@10.1.41.6 active</span><span class="gl">✦ cosmos</span></div>
+  </div>
+</div>
+
+<!-- new-connection popover -->
+<div class="overlay" id="connOverlay">
+  <div class="popover">
+    <h3>Connect to a saved host</h3>
+    <div class="row" data-host="staging"><span class="nm">staging</span><span class="cn">deploy@staging.acme.io:22</span></div>
+    <div class="row" data-host="bastion"><span class="nm">bastion</span><span class="cn">jump@bastion.acme.io:22</span></div>
+    <div class="row" data-host="vps1"><span class="nm">vps-1</span><span class="cn">root@5.5.5.5:22</span></div>
+  </div>
+</div>
+
+<script>
+  // ---- per-connection state: terminal transcript + a small filesystem per path ----
+  const SESSIONS = {
+    home: {
+      label:'murphy@10.1.41.6', conn:'murphy@10.1.41.6:22', badge:null, auth:'ed25519 key', uptime:'00:42:17',
+      term:
+`<span class="m"># personal box — global host, no workspace</span>
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ git -C ~/vcs/sid status -sb
+## main...origin/main
+ <span class="k">M</span> crates/sid/src/ui/session.rs
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  238G   84G   142G  38% /
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ ▏`,
+      path:'/home/murphy',
+      fs:{
+        '/':[
+          {n:'home',t:'dir',s:'—',m:'2026-03-01 00:00'},
+          {n:'etc',t:'dir',s:'—',m:'2026-02-11 00:00'},
+          {n:'var',t:'dir',s:'—',m:'2026-02-11 00:00'},
+        ],
+        '/home/murphy':[
+          {n:'vcs',t:'dir',s:'—',m:'2026-07-01 08:40'},
+          {n:'projects',t:'dir',s:'—',m:'2026-06-30 09:12'},
+          {n:'Downloads',t:'dir',s:'—',m:'2026-06-29 14:03'},
+          {n:'notes.md',t:'file',s:'1.1 KB',m:'2026-06-28 21:55'},
+          {n:'.bashrc',t:'file',s:'3.6 KB',m:'2026-05-02 08:11',hidden:true},
+          {n:'.gitconfig',t:'file',s:'412 B',m:'2026-03-14 10:02',hidden:true},
+          {n:'.ssh',t:'dir',s:'—',m:'2026-04-11 19:40',hidden:true},
+        ],
+      },
+    },
+    web1: {
+      label:'web-1', conn:'deploy@web-1.acme.internal:22', badge:'acme-api', auth:'ed25519 key (acme-api)', uptime:'02:11:03',
+      term:
+`<span class="m"># acme-api front-end box</span>
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ docker compose ps
+NAME                IMAGE              STATUS              PORTS
+acme-api-web-1      acme/api:2.9.1     Up 14 hours         0.0.0.0:3000-&gt;3000/tcp
+acme-api-worker-1   acme/api:2.9.1     Up 14 hours
+acme-api-redis-1    redis:7-alpine     Up 3 days           6379/tcp
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ tail -n 4 logs/access.log
+10.1.4.22 - - [02/Jul/2026:14:02:11] "GET /v1/health HTTP/1.1" 200 12
+10.1.4.9  - - [02/Jul/2026:14:02:13] "POST /v1/orders HTTP/1.1" 201 340
+10.1.4.22 - - [02/Jul/2026:14:02:14] "GET /v1/health HTTP/1.1" 200 12
+10.1.4.9  - - [02/Jul/2026:14:02:20] "GET /v1/users/8841 HTTP/1.1" 200 512
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ ▏`,
+      path:'/opt/acme-api/releases/current',
+      fs:{
+        '/opt/acme-api/releases':[
+          {n:'current',t:'dir',s:'—',m:'2026-06-27 08:55'},
+          {n:'v2.9.0',t:'dir',s:'—',m:'2026-06-20 11:02'},
+          {n:'v2.8.4',t:'dir',s:'—',m:'2026-06-02 09:14'},
+        ],
+        '/opt/acme-api/releases/current':[
+          {n:'bin',t:'dir',s:'—',m:'2026-06-27 09:00'},
+          {n:'logs',t:'dir',s:'—',m:'2026-07-02 14:02'},
+          {n:'node_modules',t:'dir',s:'—',m:'2026-06-27 08:58'},
+          {n:'server.js',t:'file',s:'8.9 KB',m:'2026-06-27 08:55'},
+          {n:'package.json',t:'file',s:'2.3 KB',m:'2026-06-27 08:55'},
+          {n:'docker-compose.yml',t:'file',s:'3.4 KB',m:'2026-06-20 11:30'},
+          {n:'.env',t:'file',s:'1.2 KB',m:'2026-06-27 08:50',hidden:true},
+          {n:'.dockerignore',t:'file',s:'96 B',m:'2026-05-10 16:20',hidden:true},
+        ],
+      },
+    },
+    dbhost: {
+      label:'db-host', conn:'postgres@db-host.acme.internal:22', badge:'acme-api', auth:'password → keyring', uptime:'6d 02:18:44',
+      term:
+`<span class="m"># acme-api primary database host</span>
+<span class="p">postgres@db-host</span>:<span class="d">~</span>$ pg_isready -q &amp;&amp; echo ok
+ok
+<span class="p">postgres@db-host</span>:<span class="d">~</span>$ psql -c "select count(*) from orders;"
+ count
+-------
+  1842
+(1 row)
+
+<span class="p">postgres@db-host</span>:<span class="d">~</span>$ du -sh /var/lib/postgresql/16/main
+4.2G    /var/lib/postgresql/16/main
+<span class="p">postgres@db-host</span>:<span class="d">~</span>$ ▏`,
+      path:'/var/lib/postgresql/16/main',
+      fs:{
+        '/var/lib/postgresql/16':[
+          {n:'main',t:'dir',s:'—',m:'2026-01-15 12:00'},
+          {n:'main.bak',t:'dir',s:'—',m:'2026-05-30 03:00'},
+        ],
+        '/var/lib/postgresql/16/main':[
+          {n:'base',t:'dir',s:'—',m:'2026-07-02 03:00'},
+          {n:'pg_wal',t:'dir',s:'—',m:'2026-07-02 14:10'},
+          {n:'global',t:'dir',s:'—',m:'2026-04-01 00:00'},
+          {n:'postgresql.conf',t:'file',s:'28.4 KB',m:'2026-01-15 12:00'},
+          {n:'pg_hba.conf',t:'file',s:'4.9 KB',m:'2026-01-15 12:00'},
+          {n:'.psql_history',t:'file',s:'6.1 KB',m:'2026-07-02 13:55',hidden:true},
+        ],
+      },
+    },
+  };
+
+  const SAVED = {
+    staging:{label:'staging',conn:'deploy@staging.acme.io:22',badge:'acme-api',
+      term:'<span class="m"># fresh connection</span>\n<span class="p">deploy@staging</span>:<span class="d">~</span>$ ▏',
+      path:'/home/deploy', fs:{'/home/deploy':[{n:'.bashrc',t:'file',s:'3.1 KB',m:'2026-04-01 09:00',hidden:true}]}},
+    bastion:{label:'bastion',conn:'jump@bastion.acme.io:22',badge:'acme-api',
+      term:'<span class="m"># fresh connection</span>\n<span class="p">jump@bastion</span>:<span class="d">~</span>$ ▏',
+      path:'/home/jump', fs:{'/home/jump':[{n:'.bashrc',t:'file',s:'2.8 KB',m:'2026-04-01 09:00',hidden:true}]}},
+    vps1:{label:'vps-1',conn:'root@5.5.5.5:22',badge:null,
+      term:'<span class="m"># fresh connection</span>\n<span class="p">root@vps-1</span>:<span class="d">~</span>$ ▏',
+      path:'/root', fs:{'/root':[{n:'.bashrc',t:'file',s:'3.0 KB',m:'2026-01-02 00:00',hidden:true}]}},
+  };
+
+  let order = ['home','web1','dbhost'];
+  let active = 'home';
+  let showHidden = false;
+  let filesCollapsed = false;
+  let detached = false;
+
+  function human(seg){ return seg==='' ? '/' : seg; }
+
+  function renderBreadcrumb(){
+    const s = SESSIONS[active];
+    const parts = s.path.split('/').filter(Boolean);
+    let acc = '';
+    const crumbs = [{label:'/', path:'/'}];
+    parts.forEach(p=>{ acc += '/'+p; crumbs.push({label:p, path:acc}); });
+    const el = document.getElementById('breadcrumb');
+    el.innerHTML = crumbs.map((c,i)=>{
+      const cur = c.path === s.path ? ' cur' : '';
+      const sep = i>0 ? '<span class="sl">/</span>' : '';
+      return `${sep}<span class="seg${cur}" data-path="${c.path}">${human(c.label)}</span>`;
+    }).join('');
+    el.querySelectorAll('.seg').forEach(seg=>seg.onclick=()=>{
+      const p = seg.dataset.path;
+      if(SESSIONS[active].fs[p]){ SESSIONS[active].path = p; renderAll(); }
+    });
+    document.getElementById('gopathInput').value = s.path;
+  }
+
+  function renderFileRows(bodyId, compact){
+    const s = SESSIONS[active];
+    const entries = s.fs[s.path] || [];
+    const rows = entries.slice().sort((a,b)=> (a.t===b.t) ? a.n.localeCompare(b.n) : (a.t==='dir'?-1:1));
+    const body = document.getElementById(bodyId);
+    body.innerHTML = rows.map(e=>{
+      const icon = e.t==='dir' ? '📁' : '📄';
+      const hiddenCls = e.hidden ? ' hidden-row'+(showHidden?' show':'') : '';
+      return `<tr class="${hiddenCls.trim()}"><td class="name"><span class="fic">${icon}</span>${e.n}</td><td class="size num">${e.s}</td><td class="mtime num">${e.m}</td></tr>`;
+    }).join('');
+    if(!compact){
+      const visible = rows.filter(e=>!e.hidden || showHidden).length;
+      document.getElementById('entrycount').textContent = `${visible} entries`;
+    }
+  }
+
+  function renderSessionBar(){
+    const s = SESSIONS[active];
+    const badge = s.badge ? `<span class="badge w">${s.badge}</span>` : `<span class="badge g">⌂ Global</span>`;
+    document.getElementById('sessionbar').innerHTML = `
+      <span class="dot"></span>
+      <span class="conn">${s.conn}</span> ${badge}
+      <span class="sep">·</span><span class="meta">${s.auth}</span>
+      <span class="sep">·</span><span class="meta">up ${s.uptime}</span>
+      <div class="right"><button class="btn danger" id="btnDisconnect">← Disconnect</button></div>`;
+    document.getElementById('btnDisconnect').onclick = ()=>closeSession(active);
+    document.getElementById('popoutHost').textContent = s.label;
+  }
+
+  function renderTabs(){
+    const el = document.getElementById('sesstabs');
+    if(order.length===0){
+      el.innerHTML = '<div class="sesstabs-empty">No active connections — press ＋ New connection</div>';
+      return;
+    }
+    el.innerHTML = order.map(key=>{
+      const s = SESSIONS[key];
+      const sel = key===active ? 'aria-selected="true"' : 'aria-selected="false"';
+      const wb = s.badge ? `<span class="wsbadge">${s.badge}</span>` : '';
+      return `<div class="sesstab" ${sel} data-key="${key}"><span class="dot"></span><span class="host">${s.label}</span>${wb}<span class="x" data-close="${key}">×</span></div>`;
+    }).join('') + `<div class="sesstab-add" id="tabAdd">＋</div>`;
+    el.querySelectorAll('.sesstab').forEach(t=>t.onclick=(e)=>{
+      if(e.target.dataset.close) return;
+      active = t.dataset.key; renderAll();
+    });
+    el.querySelectorAll('.x').forEach(x=>x.onclick=(e)=>{ e.stopPropagation(); closeSession(x.dataset.close); });
+    document.getElementById('tabAdd').onclick = ()=>document.getElementById('connOverlay').classList.add('open');
+  }
+
+  function closeSession(key){
+    const ix = order.indexOf(key);
+    if(ix===-1) return;
+    order.splice(ix,1);
+    if(active===key){ active = order[Math.max(0, ix-1)] || order[0] || null; }
+    if(order.length===0){
+      document.getElementById('term').innerHTML = '';
+      document.getElementById('sessionbar').innerHTML = '';
+      document.getElementById('filetbody').innerHTML = '';
+      document.getElementById('breadcrumb').innerHTML = '';
+      document.getElementById('entrycount').textContent = '';
+    }
+    renderAll();
+  }
+
+  function renderAll(){
+    renderTabs();
+    if(!active){ document.getElementById('stActive').textContent = '⌁ no active session'; return; }
+    document.getElementById('term').innerHTML = SESSIONS[active].term;
+    renderSessionBar();
+    renderBreadcrumb();
+    renderFileRows('filetbody', false);
+    renderFileRows('popoutBody', true);
+    document.getElementById('stActive').textContent = `⌁ ${SESSIONS[active].label} active`;
+    document.getElementById('stCount').textContent = `${order.length} hosts connected · 1 global · ${Math.max(0,order.length-1)} workspace`;
+  }
+
+  document.getElementById('btnUp').onclick = ()=>{
+    if(!active) return;
+    const s = SESSIONS[active];
+    const parts = s.path.split('/').filter(Boolean);
+    parts.pop();
+    const parent = '/'+parts.join('/');
+    const norm = parent==='' ? '/' : parent;
+    if(s.fs[norm]){ s.path = norm; renderAll(); }
+  };
+  document.getElementById('btnRefresh').onclick = ()=>{
+    const t = document.getElementById('btnRefresh');
+    t.style.transform='rotate(180deg)'; setTimeout(()=>t.style.transform='',180);
+  };
+  document.getElementById('btnGo').onclick = ()=>{
+    if(!active) return;
+    const v = document.getElementById('gopathInput').value.trim() || '/';
+    const s = SESSIONS[active];
+    if(s.fs[v]){ s.path = v; renderAll(); }
+    else { const inp=document.getElementById('gopathInput'); inp.style.borderColor='var(--danger)'; setTimeout(()=>inp.style.borderColor='',500); }
+  };
+  document.getElementById('gopathInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('btnGo').click(); });
+
+  const hiddenToggle = document.getElementById('hiddenToggle');
+  hiddenToggle.onclick = ()=>{
+    showHidden = !showHidden;
+    hiddenToggle.classList.toggle('on', showHidden);
+    renderFileRows('filetbody', false); renderFileRows('popoutBody', true);
+  };
+
+  // collapse / pop-out
+  const filespane = document.getElementById('filespane');
+  const reopenFiles = document.getElementById('reopenFiles');
+  document.getElementById('btnCollapseFiles').onclick = ()=>{
+    filespane.classList.add('collapsed'); reopenFiles.classList.add('show');
+  };
+  reopenFiles.onclick = ()=>{ filespane.classList.remove('collapsed'); reopenFiles.classList.remove('show'); };
+
+  const popoutWindow = document.getElementById('popoutWindow');
+  function setDetached(on){
+    detached = on;
+    filespane.classList.toggle('detached', on);
+    popoutWindow.classList.toggle('open', on);
+  }
+  document.getElementById('btnPopoutFiles').onclick = ()=>setDetached(true);
+  document.getElementById('btnDock').onclick = ()=>setDetached(false);
+  document.getElementById('btnDock2').onclick = ()=>setDetached(false);
+
+  // new-connection popover
+  const connOverlay = document.getElementById('connOverlay');
+  document.getElementById('btnNewConn').onclick = ()=>connOverlay.classList.add('open');
+  connOverlay.onclick = (e)=>{ if(e.target===connOverlay) connOverlay.classList.remove('open'); };
+  connOverlay.querySelectorAll('.row').forEach(row=>row.onclick=()=>{
+    const key = row.dataset.host;
+    if(!SESSIONS[key]){
+      const saved = SAVED[key];
+      SESSIONS[key] = Object.assign({}, saved, {uptime:'00:00:00', auth:'key auth'});
+    }
+    if(!order.includes(key)) order.push(key);
+    active = key;
+    connOverlay.classList.remove('open');
+    renderAll();
+  });
+
+  // draggable divider
+  (function(){
+    const wrap = document.getElementById('splitwrap');
+    const term = document.getElementById('termpane');
+    const divider = document.getElementById('divider');
+    let dragging = false;
+    divider.addEventListener('pointerdown', e=>{
+      dragging = true; divider.classList.add('active'); divider.setPointerCapture(e.pointerId);
+    });
+    divider.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const rect = wrap.getBoundingClientRect();
+      let pct = (e.clientX - rect.left) / rect.width * 100;
+      pct = Math.min(78, Math.max(28, pct));
+      term.style.flex = `0 0 ${pct}%`;
+    });
+    ['pointerup','pointercancel'].forEach(ev=>divider.addEventListener(ev, ()=>{ dragging=false; divider.classList.remove('active'); }));
+  })();
+
+  renderAll();
+</script>
+</body>
+</html>
