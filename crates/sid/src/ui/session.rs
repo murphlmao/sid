@@ -24,9 +24,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable, Font, FontStyle,
-    FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine, TextRun,
-    UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, rgb, uniform_list,
+    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
+    FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine,
+    SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred, div, font, point,
+    prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShell};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -37,12 +38,17 @@ use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssh_connect::{connect_params, resolve_secret};
+use crate::ui::TextInput;
 
 // ---- neutral grayscale palette, matches app.rs's/terminal.rs's/sftp.rs's -----------------
 const BG: u32 = 0x161618;
 const BORDER: u32 = 0x2c2c30;
 const FG: u32 = 0xdcdce0;
 const FG_DIM: u32 = 0x8a8a90;
+const ACTIVE_BG: u32 = 0x33343a;
+const ACTIVE_FG: u32 = 0xffffff;
+const ROW_ALT: u32 = 0x1c1c20;
+const BRAND: u32 = 0x5a9ad0;
 
 /// Monospace family; gpui falls back to a proportional font if it's missing locally.
 const MONO: &str = "DejaVu Sans Mono";
@@ -59,6 +65,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(33);
 /// Placeholder pane size until the viewport-driven resize computes the real one.
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
+
+/// `👁 view`'s size cap: anything bigger is "download instead", never rendered inline.
+const PREVIEW_MAX_BYTES: usize = 1024 * 1024;
 
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
 /// first use and driven forever on its own thread — gpui's foreground executor only ever awaits
@@ -91,6 +100,23 @@ pub enum SessionStatus {
 type SharedShell = Arc<AsyncMutex<Box<dyn SshShell>>>;
 type SharedSftp = Arc<AsyncMutex<Box<dyn SftpSession>>>;
 type SharedClient = Arc<AsyncMutex<Box<dyn SshClient>>>;
+
+/// A file's preview content (`👁 view`, P5.3) — populated by [`SshSession::view`], rendered
+/// as a modal overlay, dismissed by [`SshSession::close_preview`].
+#[derive(Clone)]
+struct Preview {
+    name: String,
+    content: PreviewContent,
+}
+
+#[derive(Clone)]
+enum PreviewContent {
+    /// UTF-8 text small enough to show in full, read-only.
+    Text(String),
+    /// Why the raw bytes aren't shown (too large, binary, or the fetch failed) — the file's
+    /// contents themselves are never dumped into the UI.
+    Notice(String),
+}
 
 /// A live (or connecting/failed/closed) SSH session: one adapter-backed client with a shell
 /// channel feeding a [`TerminalScreen`] (the terminal pane) and an SFTP channel feeding a
@@ -125,6 +151,11 @@ pub struct SshSession {
     /// collapse control instead, letting the terminal reclaim the full pane when browsing
     /// files isn't needed.
     sidebar_collapsed: bool,
+    /// The "go to path" toolbar field (P5.3) — navigates the whole remote filesystem, not
+    /// just child directories.
+    goto_input: Entity<TextInput>,
+    /// `👁 view`'s open preview, if any (P5.3).
+    preview: Option<Preview>,
 }
 
 impl SshSession {
@@ -160,6 +191,8 @@ impl SshSession {
                 entries: Vec::new(),
                 file_error: None,
                 sidebar_collapsed: false,
+                goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
+                preview: None,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -360,9 +393,201 @@ impl SshSession {
             }
         });
     }
+
+    // ---- file-panel navigation (reused/adapted from Plan 3.4's SftpBrowser) --------------
+
+    /// Re-list `path` over the existing session and, on success, make it current. A failed
+    /// navigate leaves `path`/`entries` untouched — a bad click doesn't blank the view — and
+    /// surfaces the failure in `file_error` instead.
+    fn navigate(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp.clone() else {
+            return;
+        };
+        self.file_error = None;
+        let list_path = path.clone();
+        cx.spawn(async move |this, cx| {
+            let handle =
+                ssh_runtime().spawn(async move { sftp.lock().await.list(&list_path).await });
+            let result = handle.await;
+            let _ = this.update(cx, |session, cx| {
+                match result {
+                    Ok(Ok(mut entries)) => {
+                        sort_entries(&mut entries);
+                        session.path = path;
+                        session.entries = entries;
+                    }
+                    Ok(Err(e)) => session.file_error = Some(e.to_string()),
+                    Err(join_err) => {
+                        session.file_error = Some(format!("list task panicked: {join_err}"))
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Navigate into a child directory of the current path (an entry-row click).
+    fn enter_dir(&mut self, name: &str, cx: &mut Context<Self>) {
+        let target = abs_remote_path(&self.path, name);
+        self.navigate(target, cx);
+    }
+
+    /// `↑ up`: navigate to the current path's parent.
+    fn go_up(&mut self, cx: &mut Context<Self>) {
+        let target = parent_path(&self.path);
+        self.navigate(target, cx);
+    }
+
+    /// Jump directly to `path` — a breadcrumb segment click or the go-to-path field.
+    fn go_to(&mut self, path: String, cx: &mut Context<Self>) {
+        self.navigate(path, cx);
+    }
+
+    /// `⟳ refresh`: re-list the current path.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let path = self.path.clone();
+        self.navigate(path, cx);
+    }
+
+    /// Read the "go to path" field and navigate there. A bare (non-absolute) entry is rooted
+    /// (`etc` -> `/etc`) — the field navigates the filesystem, not the current directory.
+    fn goto_submit(&mut self, cx: &mut Context<Self>) {
+        let target = self.goto_input.read(cx).content().trim().to_string();
+        if target.is_empty() {
+            return;
+        }
+        let target = if target.starts_with('/') {
+            target
+        } else {
+            format!("/{target}")
+        };
+        self.navigate(target, cx);
+    }
+
+    // ---- per-file actions (P5.3) -----------------------------------------------------------
+
+    /// `⭳ download`: fetch `name` (a file in the current directory) and write it to
+    /// `$HOME/Downloads/<name>`. `name` is untrusted (a malicious or compromised SFTP server
+    /// controls `list()` results), so the local write path is derived via [`safe_local_name`]
+    /// rather than from `name` directly — see that function's doc comment.
+    fn download(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp.clone() else {
+            return;
+        };
+        let remote_path = abs_remote_path(&self.path, &name);
+        self.file_error = None;
+        cx.spawn(async move |this, cx| {
+            let result: Result<PathBuf, String> = async {
+                let local_name = safe_local_name(&name)
+                    .ok_or_else(|| format!("refusing unsafe remote filename: {name:?}"))?;
+                let bytes = ssh_runtime()
+                    .spawn(async move { sftp.lock().await.get(&remote_path).await })
+                    .await
+                    .map_err(|e| format!("download task panicked: {e}"))?
+                    .map_err(|e| e.to_string())?;
+                let dir = downloads_dir();
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("create {}: {e}", dir.display()))?;
+                let dest = dir.join(&local_name);
+                // Defense in depth: `safe_local_name` already guarantees a bare, single
+                // component, but re-check the joined path never left `dir` before writing.
+                if dest.parent() != Some(dir.as_path()) {
+                    return Err(format!(
+                        "refusing unsafe download destination: {}",
+                        dest.display()
+                    ));
+                }
+                std::fs::write(&dest, &bytes)
+                    .map_err(|e| format!("write {}: {e}", dest.display()))?;
+                Ok(dest)
+            }
+            .await;
+            let _ = this.update(cx, |session, cx| {
+                session.file_error = Some(match result {
+                    Ok(dest) => format!("downloaded to {}", dest.display()),
+                    Err(e) => e,
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `👁 view`: fetch `name` and, if it's small enough (<= [`PREVIEW_MAX_BYTES`]) and valid
+    /// UTF-8, show it read-only in the preview overlay. Never renders raw bytes: too-large or
+    /// non-UTF-8 content gets a notice pointing at `⭳ download` instead.
+    fn view(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(sftp) = self.sftp.clone() else {
+            return;
+        };
+        let remote_path = abs_remote_path(&self.path, &name);
+        cx.spawn(async move |this, cx| {
+            let result = ssh_runtime()
+                .spawn(async move { sftp.lock().await.get(&remote_path).await })
+                .await;
+            let content = match result {
+                Ok(Ok(bytes)) if bytes.len() > PREVIEW_MAX_BYTES => PreviewContent::Notice(
+                    format!("{name}: too large to preview (> 1 MiB) — download instead"),
+                ),
+                Ok(Ok(bytes)) => match String::from_utf8(bytes) {
+                    Ok(text) => PreviewContent::Text(text),
+                    Err(_) => {
+                        PreviewContent::Notice(format!("{name}: binary file — download instead"))
+                    }
+                },
+                Ok(Err(e)) => PreviewContent::Notice(format!("{name}: {e}")),
+                Err(join_err) => {
+                    PreviewContent::Notice(format!("{name}: view task panicked: {join_err}"))
+                }
+            };
+            let _ = this.update(cx, |session, cx| {
+                session.preview = Some(Preview { name, content });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// `⧉ copy path`: put the entry's absolute remote path — never its contents — on the
+    /// system clipboard. Valid for files *and* directories.
+    fn copy_path(&mut self, path: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(path));
+    }
+
+    /// Dismiss the preview overlay (`✕ close`).
+    fn close_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview = None;
+        cx.notify();
+    }
 }
 
 // ---- pure path logic + entry ordering (reused/adapted from Plan 3.4's sftp.rs) -----------
+
+/// Join `dir` (an absolute POSIX-style directory path) with a single path component. Renamed
+/// from 3.4's `join_path` — same logic (a `dir == "/"` special case avoids a doubled slash),
+/// carried over to this module's `path`/`entries` fields instead of a separate browser's.
+fn abs_remote_path(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// The parent of an absolute POSIX-style path. The root is its own parent (there is nowhere
+/// further up to navigate); everything else strips its final component.
+fn parent_path(path: &str) -> String {
+    if path == "/" {
+        return "/".to_string();
+    }
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(idx) => trimmed[..idx].to_string(),
+        None => "/".to_string(),
+    }
+}
 
 /// Sort directory listings dirs-first, then alphabetically (case-insensitive) within
 /// each group — called after every `list`.
@@ -374,6 +599,75 @@ fn sort_entries(entries: &mut [SftpEntry]) {
                 .cmp(&b.name.to_ascii_lowercase())
         })
     });
+}
+
+/// Reduce an untrusted remote filename (an `SftpEntry.name`, as returned by whatever server
+/// we're talking to) to a safe bare local filename: the final path component only, no
+/// directories, no traversal. `None` if there's no usable name — the caller must refuse the
+/// download rather than fall back to something guessed.
+///
+/// This is the one thing standing between a hostile/compromised SFTP server and writing
+/// outside the local downloads directory: `list()` results are attacker-controlled data, and a
+/// name like `"../../.bashrc"` must never reach `downloads_dir().join(name)` as-is.
+fn safe_local_name(remote_name: &str) -> Option<String> {
+    let comp = std::path::Path::new(remote_name).file_name()?.to_str()?;
+    if comp.is_empty() || comp == "." || comp == ".." {
+        return None;
+    }
+    Some(comp.to_string())
+}
+
+/// The user's `Downloads` directory: `$HOME/Downloads`. No XDG `user-dirs.dirs` parsing —
+/// matches the plan's "or `$HOME/Downloads`" fallback rather than pulling in a `dirs` crate for
+/// one path.
+fn downloads_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join("Downloads")
+}
+
+/// A human-readable byte count (`"512 B"`, `"12.3 KB"`, …). Display-only — not in the tested
+/// surface (path/sort/traversal-guard logic only, per the plan's pragmatic-TDD rule).
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!("{size:.1} {}", UNITS[unit])
+}
+
+/// Format a Unix `mtime_secs` as `YYYY-MM-DD HH:MM` (UTC; no timezone/locale support — good
+/// enough for a browse view). Display-only, same as `human_size`.
+fn format_mtime(epoch_secs: i64) -> String {
+    let days = epoch_secs.div_euclid(86_400);
+    let secs_of_day = epoch_secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    let hh = secs_of_day / 3600;
+    let mm = (secs_of_day % 3600) / 60;
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
+}
+
+/// Howard Hinnant's `civil_from_days`: days-since-epoch (1970-01-01) -> (year, month, day). A
+/// well-known, publicly documented algorithm — not reimplemented from scratch here.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
 }
 
 // ---- rendering: split layout (file sidebar + terminal) -----------------------------------
@@ -422,7 +716,6 @@ impl SshSession {
         }
 
         let count = self.entries.len();
-        let summary = format!("{} · {count} entries", self.path);
         div()
             .w(SIDEBAR_WIDTH)
             .h_full()
@@ -436,7 +729,7 @@ impl SshSession {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().child(status_line(&summary)))
+                    .child(div().flex_1().child(self.toolbar(cx)))
                     .child(
                         div()
                             .id("session-sidebar-collapse")
@@ -450,6 +743,7 @@ impl SshSession {
                             })),
                     ),
             )
+            .child(status_line(&format!("{} · {count} entries", self.path)))
             .when_some(self.file_error.clone(), |el, msg| {
                 el.child(status_line(&format!("file panel: {msg}")))
             })
@@ -457,8 +751,8 @@ impl SshSession {
                 uniform_list(
                     "session-sftp-entries",
                     count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _win, _cx| {
-                        range.map(|ix| this.entry_row(ix)).collect::<Vec<_>>()
+                    cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
+                        range.map(|ix| this.entry_row(ix, cx)).collect::<Vec<_>>()
                     }),
                 )
                 .flex_1(),
@@ -466,10 +760,194 @@ impl SshSession {
             .into_any_element()
     }
 
-    /// One (still non-interactive) row of the entry list: dir/file glyph + name.
-    fn entry_row(&self, ix: usize) -> impl IntoElement + use<> {
+    /// Toolbar: breadcrumb on its own row (it can wrap), `↑ up`/`⟳ refresh`/go-to-path field
+    /// below — the sidebar is only [`SIDEBAR_WIDTH`] wide, too narrow to fit everything on
+    /// one line.
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let icon_button = |id: (&'static str, usize), label: &'static str| {
+            div()
+                .id(id)
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(FG_DIM))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child(label)
+        };
+        let up = icon_button(("session-up", 0), "↑")
+            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.go_up(cx)));
+        let refresh = icon_button(("session-refresh", 0), "⟳")
+            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.refresh(cx)));
+        let go = div()
+            .id("session-goto-go")
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .bg(rgb(BRAND))
+            .text_color(rgb(ACTIVE_FG))
+            .child("Go")
+            .on_click(
+                cx.listener(|session, _ev: &ClickEvent, _window, cx| session.goto_submit(cx)),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(div().px_2().pt_1().child(self.breadcrumb(cx)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .pb_1()
+                    .child(up)
+                    .child(refresh)
+                    .child(div().flex_1().child(self.goto_input.clone()))
+                    .child(go),
+            )
+    }
+
+    /// Clickable breadcrumb of the current path's segments — root first, then each component
+    /// built up cumulatively (`/a/b` -> `/`, `a` (-> `/a`), `b` (-> `/a/b`)). Wraps onto
+    /// multiple lines if the path is longer than the sidebar is wide.
+    fn breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let mut children = vec![self.breadcrumb_segment(0, "/".into(), "/".to_string(), cx)];
+        let mut acc = String::new();
+        for (ix, part) in self.path.split('/').filter(|s| !s.is_empty()).enumerate() {
+            acc.push('/');
+            acc.push_str(part);
+            children.push(self.breadcrumb_segment(
+                ix + 1,
+                part.to_string().into(),
+                acc.clone(),
+                cx,
+            ));
+        }
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .text_xs()
+            .font_family(MONO)
+            .children(children)
+    }
+
+    fn breadcrumb_segment(
+        &self,
+        ix: usize,
+        label: SharedString,
+        target: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let is_current = target == self.path;
+        div()
+            .id(("session-crumb", ix))
+            .px_1()
+            .rounded_md()
+            .cursor_pointer()
+            .text_color(rgb(if is_current { FG } else { FG_DIM }))
+            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .child(label)
+            .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                session.go_to(target.clone(), cx);
+            }))
+    }
+
+    /// One row of the entry list: glyph, name, size, mtime, and per-row actions. Directories
+    /// are entered by clicking their *name* specifically — not the whole row — so that click
+    /// target sits as a sibling next to the action buttons rather than an ancestor around
+    /// them; each button keeps its own independent hitbox and there is no nested-click
+    /// ambiguity to resolve.
+    fn entry_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
-        let glyph = if entry.is_dir { "▸" } else { "·" };
+        let name = entry.name.clone();
+        let is_dir = entry.is_dir;
+        let glyph = if is_dir { "▸" } else { "·" };
+        let size = if is_dir {
+            "—".to_string()
+        } else {
+            human_size(entry.size)
+        };
+        let mtime = format_mtime(entry.mtime_secs);
+        let alt = ix % 2 == 1;
+        let abs_path = abs_remote_path(&self.path, &name);
+
+        let name_el = if is_dir {
+            let enter_name = name.clone();
+            div()
+                .id(("session-entry-name", ix))
+                .flex_1()
+                .truncate()
+                .cursor_pointer()
+                .text_color(rgb(FG))
+                .hover(|s| s.text_color(rgb(BRAND)))
+                .child(name.clone())
+                .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                    session.enter_dir(&enter_name, cx);
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .truncate()
+                .text_color(rgb(FG))
+                .child(name.clone())
+                .into_any_element()
+        };
+
+        let action_button = |id: (&'static str, usize), label: &'static str| {
+            div()
+                .id(id)
+                .px_1()
+                .rounded_md()
+                .text_xs()
+                .cursor_pointer()
+                .text_color(rgb(BRAND))
+                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .child(label)
+        };
+
+        // Files get `👁 view` + `⭳ download`; directories don't (nothing to fetch/preview).
+        let file_buttons = (!is_dir).then(|| {
+            let view_name = name.clone();
+            let download_name = name.clone();
+            div()
+                .flex()
+                .flex_row()
+                .gap_1()
+                .child(
+                    action_button(("session-view", ix), "👁").on_click(cx.listener(
+                        move |session, _ev: &ClickEvent, _window, cx| {
+                            session.view(view_name.clone(), cx)
+                        },
+                    )),
+                )
+                .child(
+                    action_button(("session-download", ix), "⭳").on_click(cx.listener(
+                        move |session, _ev: &ClickEvent, _window, cx| {
+                            session.download(download_name.clone(), cx)
+                        },
+                    )),
+                )
+        });
+
+        // `⧉ copy path` applies to files *and* directories.
+        let copy_path_button = action_button(("session-copy-path", ix), "⧉").on_click(cx.listener(
+            move |session, _ev: &ClickEvent, _window, cx| {
+                session.copy_path(abs_path.clone(), cx);
+            },
+        ));
+
         div()
             .id(("session-entry", ix))
             .flex()
@@ -480,8 +958,26 @@ impl SshSession {
             .px_3()
             .py_1()
             .text_sm()
+            .bg(rgb(if alt { ROW_ALT } else { BG }))
             .child(div().w(px(14.)).text_color(rgb(FG_DIM)).child(glyph))
-            .child(div().flex_1().text_color(rgb(FG)).child(entry.name.clone()))
+            .child(name_el)
+            .child(
+                div()
+                    .w(px(42.))
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(size),
+            )
+            .child(
+                div()
+                    .w(px(88.))
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(mtime),
+            )
+            .children(file_buttons)
+            .child(copy_path_button)
     }
 
     /// Paint the terminal grid: one `shape_line` call per row (gpui shapes a whole
@@ -579,6 +1075,99 @@ impl SshSession {
                 .size_full(),
             )
     }
+
+    /// `👁 view`'s modal overlay — `None` when nothing is being previewed. Mirrors app.rs's
+    /// host-form overlay: `anchored` pins a viewport-sized, occluding backdrop at the window
+    /// origin, `deferred` paints it above everything else.
+    fn preview_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let preview = self.preview.clone()?;
+        let viewport = window.viewport_size();
+
+        let body = match preview.content {
+            PreviewContent::Text(text) => div()
+                .id("session-preview-body")
+                .flex_1()
+                .overflow_y_scroll()
+                .p_3()
+                .text_sm()
+                .font_family(MONO)
+                .text_color(rgb(FG))
+                .child(text)
+                .into_any_element(),
+            PreviewContent::Notice(msg) => div()
+                .flex_1()
+                .p_3()
+                .text_sm()
+                .text_color(rgb(FG_DIM))
+                .child(msg)
+                .into_any_element(),
+        };
+
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(
+                            div()
+                                .w(px(640.))
+                                .h(px(480.))
+                                .flex()
+                                .flex_col()
+                                .bg(rgb(BG))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .rounded_md()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_3()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(rgb(BORDER))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(rgb(FG))
+                                                .child(preview.name.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("session-preview-close")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .text_color(rgb(FG_DIM))
+                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .child("✕ close")
+                                                .on_click(cx.listener(
+                                                    |session, _ev: &ClickEvent, _window, cx| {
+                                                        session.close_preview(cx);
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(body),
+                        ),
+                ),
+            )
+            .with_priority(1),
+        )
+    }
 }
 
 impl Render for SshSession {
@@ -587,14 +1176,16 @@ impl Render for SshSession {
             self.needs_focus = false;
             window.focus(&self.focus_handle);
         }
-        match &self.status {
+        let content = match &self.status {
             SessionStatus::Connecting => message_pane("Connecting…").into_any_element(),
             SessionStatus::Failed(err) => {
                 message_pane(&format!("Connection failed: {err}")).into_any_element()
             }
             SessionStatus::Closed => message_pane("Session closed.").into_any_element(),
             SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
-        }
+        };
+        let overlay = self.preview_overlay(window, cx);
+        div().size_full().child(content).children(overlay)
     }
 }
 
@@ -873,5 +1464,62 @@ mod path_tests {
         sort_entries(&mut entries);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "Banana", "apple.txt", "zeta.txt"]);
+    }
+
+    #[test]
+    fn abs_remote_path_appends_under_a_directory() {
+        assert_eq!(abs_remote_path("/home", "a"), "/home/a");
+    }
+
+    #[test]
+    fn abs_remote_path_under_root_avoids_double_slash() {
+        assert_eq!(abs_remote_path("/", "a"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_nested_dir_strips_last_component() {
+        assert_eq!(parent_path("/a/b"), "/a");
+    }
+
+    #[test]
+    fn parent_path_of_root_is_root() {
+        assert_eq!(parent_path("/"), "/");
+    }
+
+    // safe_local_name: the path-traversal guard on downloads. A compromised/malicious SFTP
+    // server controls `list()` results, so this is the one place TDD is required beyond the
+    // pure path-join/sort logic above.
+
+    #[test]
+    fn safe_local_name_strips_relative_traversal_to_the_bare_file() {
+        assert_eq!(
+            safe_local_name("../../etc/passwd"),
+            Some("passwd".to_string())
+        );
+    }
+
+    #[test]
+    fn safe_local_name_strips_absolute_paths_to_the_bare_file() {
+        assert_eq!(safe_local_name("/etc/shadow"), Some("shadow".to_string()));
+    }
+
+    #[test]
+    fn safe_local_name_strips_nested_relative_paths_to_the_bare_file() {
+        assert_eq!(safe_local_name("a/b/c.txt"), Some("c.txt".to_string()));
+    }
+
+    #[test]
+    fn safe_local_name_rejects_dot_dot_dot_and_empty() {
+        assert_eq!(safe_local_name(".."), None);
+        assert_eq!(safe_local_name("."), None);
+        assert_eq!(safe_local_name(""), None);
+    }
+
+    #[test]
+    fn safe_local_name_passes_through_a_normal_filename() {
+        assert_eq!(
+            safe_local_name("normal.txt"),
+            Some("normal.txt".to_string())
+        );
     }
 }
