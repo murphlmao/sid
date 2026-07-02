@@ -18,6 +18,10 @@ sid-secrets = { path = "../sid-secrets" }
 # W2 (Database tab, Plan Wave 2): the one crate allowed to name `sid-db`'s concrete
 # `DbClient`/`DbClientDescriptor` impls — see `crates/sid/src/db_registry.rs`.
 sid-db = { path = "../sid-db" }
+# Network tab (inc-1): the one crate allowed to name `sid-sysinfo`'s concrete
+# `SysinfoProvider` constructor — see `crates/sid/src/ui/network_tab.rs`. `sysinfo`/
+# `netstat2`/`nix` themselves stay behind `sid_core::sys`, never named here.
+sid-sysinfo.workspace = true
 # Adapter crates for Plan 3C (SSH terminal view + connect flow). `crates/sid` only ever
 # names the `sid_core` trait seam (`SshClient`/`SshShell`/`TerminalScreen`) plus the two
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/

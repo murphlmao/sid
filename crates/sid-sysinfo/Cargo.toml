@@ -1,0 +1,16 @@
+[package]
+name = "sid-sysinfo"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+sysinfo.workspace = true
+netstat2.workspace = true
+nix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
