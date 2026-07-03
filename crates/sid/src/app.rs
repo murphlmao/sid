@@ -963,6 +963,15 @@ impl AppState {
                 self.close_palette(cx);
                 cx.notify();
             }
+            Action::FocusFilter => {
+                // Only the Network tab has a filter input wired up so far — other tabs
+                // simply don't have one yet, so this is a no-op there (per the plan's
+                // "other tabs: no-op for now").
+                if self.active_tab == Tab::Network {
+                    self.network.focus_filter(window, cx);
+                    cx.notify();
+                }
+            }
         }
     }
 
