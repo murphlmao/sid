@@ -78,8 +78,11 @@ pub fn read_default_route_iface() -> Result<Option<String>, SysError> {
 pub fn parse_proc_net_route(body: &str) -> Option<String> {
     for line in body.lines().skip(1) {
         let mut cols = line.split('\t').filter(|s| !s.is_empty());
-        let iface = cols.next()?;
-        let dest = cols.next()?;
+        // A malformed row (blank/truncated line with fewer than two columns) must be
+        // SKIPPED, not abort the scan — the real default route may be a later row.
+        let (Some(iface), Some(dest)) = (cols.next(), cols.next()) else {
+            continue;
+        };
         if dest == "00000000" {
             return Some(iface.to_string());
         }
@@ -133,6 +136,17 @@ mod tests {
     #[test]
     fn default_route_row_after_other_rows_is_still_found() {
         let body = "Iface\tDestination\tGateway\neth0\t0000A8C0\t00000000\ndocker0\tAC110000\t00000000\nwlan0\t00000000\t0102A8C0\n";
+        assert_eq!(parse_proc_net_route(body), Some("wlan0".to_string()));
+    }
+
+    /// Regression (bug found by the test-extension pass): a malformed row (blank line
+    /// or a row with fewer than two columns) appearing BEFORE the real default route
+    /// must be skipped, not abort the whole scan. Pre-fix, the `?` inside the loop
+    /// returned `None` from the entire function on the blank line and never reached
+    /// `wlan0`.
+    #[test]
+    fn malformed_line_before_default_route_is_skipped_not_fatal() {
+        let body = "Iface\tDestination\tGateway\n\ntruncated\nwlan0\t00000000\t0102A8C0\n";
         assert_eq!(parse_proc_net_route(body), Some("wlan0".to_string()));
     }
 }
