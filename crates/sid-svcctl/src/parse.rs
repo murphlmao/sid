@@ -106,4 +106,55 @@ mod tests {
         assert_eq!(parse_active_state("deactivating"), SvcActiveState::Other);
         assert_eq!(parse_active_state("garbage"), SvcActiveState::Other);
     }
+
+    #[test]
+    fn active_state_matching_is_case_sensitive() {
+        // systemd's JSON writer always emits lowercase; an unexpected capitalized
+        // value must fold to `Other` rather than silently matching, since that
+        // would mask a real change in systemd's output shape.
+        assert_eq!(parse_active_state("Active"), SvcActiveState::Other);
+        assert_eq!(parse_active_state("ACTIVE"), SvcActiveState::Other);
+    }
+
+    #[test]
+    fn empty_string_input_is_an_error_not_an_empty_list() {
+        // Unlike `"[]"`, a truly empty stdout capture (e.g. systemctl produced no
+        // output at all) is not valid JSON and must be reported, not silently
+        // treated as zero services.
+        let e = parse_list_units("").unwrap_err();
+        assert!(matches!(e, SvcError::Other(_)));
+    }
+
+    #[test]
+    fn non_array_top_level_json_is_an_error() {
+        let e = parse_list_units(r#"{"unit":"a.service"}"#).unwrap_err();
+        assert!(matches!(e, SvcError::Other(_)));
+    }
+
+    #[test]
+    fn row_missing_required_unit_field_is_an_error() {
+        let json = r#"[{"load":"loaded","active":"active","sub":"running"}]"#;
+        let e = parse_list_units(json).unwrap_err();
+        assert!(matches!(e, SvcError::Other(_)));
+    }
+
+    #[test]
+    fn row_missing_required_active_field_is_an_error() {
+        let json = r#"[{"unit":"a.service","load":"loaded","sub":"running"}]"#;
+        let e = parse_list_units(json).unwrap_err();
+        assert!(matches!(e, SvcError::Other(_)));
+    }
+
+    #[test]
+    fn one_malformed_row_fails_the_whole_batch_not_just_that_row() {
+        // `parse_list_units` has no partial-success mode: a single bad row (here,
+        // missing `unit`) surfaces as one `Other` error for the entire call, same
+        // as any other probe failure — the caller doesn't get a half-populated list.
+        let json = r#"[
+            {"unit":"a.service","load":"loaded","active":"active","sub":"running"},
+            {"load":"loaded","active":"active","sub":"running"}
+        ]"#;
+        let e = parse_list_units(json).unwrap_err();
+        assert!(matches!(e, SvcError::Other(_)));
+    }
 }
