@@ -1891,28 +1891,34 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         form.read(cx).focus_first(window, cx);
-        self.db._form_subscription = Some(cx.subscribe(&form, Self::on_db_form_event));
+        // `subscribe_in` (not `subscribe`) so the handler gets a `&mut Window` and can
+        // refocus `root_focus` on close — otherwise closing the form (Escape/Cancel)
+        // leaves keyboard focus on a now-unrendered element and silently kills all key
+        // dispatch until the next mouse click (same class of bug the host form fixed).
+        self.db._form_subscription = Some(cx.subscribe_in(&form, window, Self::on_db_form_event));
         self.db.form = Some(form);
         cx.notify();
     }
 
-    pub(crate) fn close_db_form(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_db_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.db.form = None;
         self.db._form_subscription = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
     fn on_db_form_event(
         &mut self,
-        form: Entity<DbConnForm>,
+        form: &Entity<DbConnForm>,
         event: &DbConnFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            DbConnFormEvent::Cancel => self.close_db_form(cx),
+            DbConnFormEvent::Cancel => self.close_db_form(window, cx),
             DbConnFormEvent::Submit(submission) => match self.perform_db_submit(submission) {
                 Ok(post_warning) => {
-                    self.close_db_form(cx);
+                    self.close_db_form(window, cx);
                     self.refresh_db();
                     if post_warning.is_some() {
                         self.error = post_warning;
