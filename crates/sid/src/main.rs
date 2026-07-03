@@ -25,12 +25,13 @@ fn main() {
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let store = app::open_store();
-            // Secret backend bootstrap: keyring if it passes a startup probe, else an
-            // in-memory fallback. The warning is surfaced in the app's error line (and
-            // echoed to stderr for headless debugging).
-            let (secrets, secrets_warning) = app::open_secrets();
-            if let Some(warning) = &secrets_warning {
-                eprintln!("sid: {warning}");
+            // Secret backend bootstrap: resolves keyring vs. encrypted-file vault vs.
+            // in-memory from the persisted `Settings` toggles (see `app::open_secrets`).
+            // The status message (which backend is live, plus any warning) is surfaced
+            // in the app's error line (and echoed to stderr for headless debugging).
+            let (secrets, secret_file, secrets_status) = app::open_secrets(&store);
+            if let Some(status) = &secrets_status {
+                eprintln!("sid: {status}");
             }
             cx.open_window(
                 WindowOptions {
@@ -43,7 +44,9 @@ fn main() {
                     // `gpui_component::Root` ancestor at render time — without it,
                     // rendering panics (`root.rs`'s `window.root::<Root>().expect(..)`).
                     // The window's first layer must be `Root`, not `AppState` directly.
-                    let view = cx.new(|_cx| app::AppState::new(store, secrets, secrets_warning));
+                    let view = cx.new(|cx| {
+                        app::AppState::new(store, secrets, secret_file, secrets_status, window, cx)
+                    });
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
             )
