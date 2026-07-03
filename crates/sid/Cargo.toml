@@ -52,3 +52,8 @@ gpui-component = { version = "0.5.1", features = ["tree-sitter-languages"] }
 # Bundled icon/font assets `gpui-component`'s widgets reference (sort-chevron icons on
 # `Table` columns, etc.) — wired in via `Application::new().with_assets(..)`.
 gpui-component-assets = "0.5.1"
+
+[dev-dependencies]
+# `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`
+# on disk — same pattern `sid-store`/`sid-db` already use in their own tests.
+tempfile.workspace = true

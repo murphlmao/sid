@@ -24,11 +24,14 @@ fn main() {
             gpui_component::init(cx);
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-            let store = app::open_store();
+            // `seed_lists` is `open_store`'s already-done hosts/workspaces reads (see
+            // `app::SeedLists`) — threaded to `AppState::new` below so it doesn't
+            // immediately re-read the same two tables (perf audit finding #7).
+            let (store, seed_lists) = app::open_store();
             // Secret backend bootstrap: resolves keyring vs. encrypted-file vault vs.
             // in-memory from the persisted `Settings` toggles (see `app::open_secrets`).
             // The status message (which backend is live, plus any warning) is surfaced
-            // in the app's error line (and echoed to stderr for headless debugging).
+            // in the app's status line (and echoed to stderr for headless debugging).
             let (secrets, secret_file, secrets_status) = app::open_secrets(&store);
             if let Some(status) = &secrets_status {
                 eprintln!("sid: {status}");
@@ -45,7 +48,15 @@ fn main() {
                     // rendering panics (`root.rs`'s `window.root::<Root>().expect(..)`).
                     // The window's first layer must be `Root`, not `AppState` directly.
                     let view = cx.new(|cx| {
-                        app::AppState::new(store, secrets, secret_file, secrets_status, window, cx)
+                        app::AppState::new(
+                            store,
+                            seed_lists,
+                            secrets,
+                            secret_file,
+                            secrets_status,
+                            window,
+                            cx,
+                        )
                     });
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
