@@ -453,7 +453,7 @@ impl DiagramView {
     }
 
     /// One table's box: a header (drag handle + select trigger + optional self-ref
-    /// badge) over a capped column list (🔑 prefix on PK columns, tinted on FK columns,
+    /// badge) over a capped column list (`[pk]` prefix on PK columns, tinted on FK columns,
     /// `+N more` once the list exceeds [`MAX_VISIBLE_COLUMNS`]).
     fn table_box(
         &self,
@@ -510,7 +510,7 @@ impl DiagramView {
                 let is_pk = table.pk.contains(col);
                 let is_fk = table.fk_columns.contains(col);
                 let label = if is_pk {
-                    format!("🔑 {col}")
+                    format!("[pk] {col}")
                 } else {
                     col.clone()
                 };

@@ -27,10 +27,16 @@ pub enum Action {
     /// Switch to primary tab `1..=5` (SSH, Database, Network, Workspaces, System, in
     /// that order — see `app::Tab::ALL`). Any other value is simply never bound.
     PrimaryTab(u8),
-    /// Cycle forward: session tabs in the SSH shell, primary tabs everywhere else.
+    /// Cycle forward through the primary tabs — always, even while the SSH tab is
+    /// active. (Session tabs have their own dedicated cycle below; letting `Ctrl+Tab`
+    /// switch meanings on landing in the SSH shell trapped the cycle there.)
     CycleTabForward,
     /// Cycle backward — the mirror of [`Self::CycleTabForward`].
     CycleTabBack,
+    /// SSH shell: next session tab (Home is its own stop). No-op outside the SSH tab.
+    CycleSessionForward,
+    /// SSH shell: previous session tab — the mirror of [`Self::CycleSessionForward`].
+    CycleSessionBack,
     /// SSH shell: open a new session (goes Home to pick one).
     NewSession,
     /// SSH shell: close the active session tab.
@@ -57,6 +63,8 @@ impl Action {
             Action::PrimaryTab(_) => "Go to tab",
             Action::CycleTabForward => "Next Tab",
             Action::CycleTabBack => "Previous Tab",
+            Action::CycleSessionForward => "Next SSH Session",
+            Action::CycleSessionBack => "Previous SSH Session",
             Action::NewSession => "New SSH Session",
             Action::CloseSession => "Close SSH Session",
             Action::Settings => "Settings",
@@ -75,6 +83,8 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::PrimaryTab(5),
     Action::CycleTabForward,
     Action::CycleTabBack,
+    Action::CycleSessionForward,
+    Action::CycleSessionBack,
     Action::NewSession,
     Action::CloseSession,
     Action::Settings,
@@ -209,6 +219,20 @@ pub fn default_bindings() -> Vec<Binding> {
             Action::CycleTabForward,
         ),
         binding(chord("tab", true, Some(true)), Global, Action::CycleTabBack),
+        // Session cycling gets its own non-letter chords so `Ctrl+Tab` never changes
+        // meaning mid-cycle (the "trapped in the SSH tab" bug). PgDn/PgUp don't collide
+        // with readline; TUIs that want them lose out — acceptable, same trade as
+        // Ctrl+1..5.
+        binding(
+            chord("pagedown", true, Some(false)),
+            Global,
+            Action::CycleSessionForward,
+        ),
+        binding(
+            chord("pageup", true, Some(false)),
+            Global,
+            Action::CycleSessionBack,
+        ),
         // SSH shell session management.
         binding(
             chord("t", true, Some(false)),
@@ -416,6 +440,21 @@ mod tests {
             resolve(&ctrl_shift("tab"), FocusContext::Terminal, &bindings),
             Some(Action::CycleTabBack)
         );
+    }
+
+    #[test]
+    fn ctrl_page_up_down_cycle_sessions_in_both_contexts() {
+        let bindings = default_bindings();
+        for focus in [FocusContext::Normal, FocusContext::Terminal] {
+            assert_eq!(
+                resolve(&ctrl("pagedown"), focus, &bindings),
+                Some(Action::CycleSessionForward)
+            );
+            assert_eq!(
+                resolve(&ctrl("pageup"), focus, &bindings),
+                Some(Action::CycleSessionBack)
+            );
+        }
     }
 
     #[test]

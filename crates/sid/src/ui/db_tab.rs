@@ -78,7 +78,7 @@ const PAGE_SIZE: u32 = 100;
 
 // ---- increment 2: schema tree / cell copy-view / CSV export / history --------------------
 
-/// A result cell longer than this (in `char`s) gets a `👁 view` affordance opening the
+/// A result cell longer than this (in `char`s) gets a `view` affordance opening the
 /// read-only popover, rather than relying on the grid's truncated inline text (D2).
 const CELL_VIEW_THRESHOLD: usize = 48;
 
@@ -141,7 +141,7 @@ pub struct DbTabState {
     schema: Option<SchemaInfo>,
     /// Relationship metadata (FK edges + primary keys) for the same connection as
     /// `schema` — fetched alongside it in [`fetch_schema`] and cleared on the same
-    /// triggers (connection switch, re-fetch). Feeds the "⧉ diagram" pop-out window
+    /// triggers (connection switch, re-fetch). Feeds the "diagram" pop-out window
     /// (`db_diagram::DiagramView`); `None` before the first successful fetch, same as
     /// `schema`.
     schema_graph: Option<SchemaGraph>,
@@ -154,7 +154,7 @@ pub struct DbTabState {
     schema_expanded: HashSet<String>,
 
     // ---- D2: cell copy / view -------------------------------------------------------
-    /// The `👁 view` popover's contents, if open.
+    /// The `view` popover's contents, if open.
     cell_view: Option<CellView>,
     /// Transient one-line feedback for cell-copy and CSV-export actions (D2/D3) —
     /// shown under the query status line. Not cleared automatically; the next action
@@ -209,7 +209,7 @@ struct FolderEditState {
     input: Entity<TextInput>,
 }
 
-/// The `👁 view` popover's contents (D2) — the column a long cell came from, and its
+/// The `view` popover's contents (D2) — the column a long cell came from, and its
 /// full (untruncated) text. Read-only; mirrors `session.rs`'s `Preview`/`PreviewContent`
 /// shape but simpler (no oversize/binary cases — grid cells are always the display
 /// strings `DbClient` already rendered to text).
@@ -258,7 +258,7 @@ impl ExportFormat {
 struct ResultDelegate {
     columns: Vec<Column>,
     rows: Vec<Row>,
-    /// Handle back to the owning [`AppState`], used only by D2's `👁 view` click (open
+    /// Handle back to the owning [`AppState`], used only by D2's `view` click (open
     /// the popover on `AppState.db.cell_view`) and copy-notice (`AppState.db.notice`).
     /// A raw `div().on_click` inside `render_td` only ever gets `&mut App` at click
     /// time (see `gpui::div::InteractiveElement::on_click`), not `AppState` — this weak
@@ -301,8 +301,8 @@ impl TableDelegate for ResultDelegate {
     }
 
     /// D2: the whole cell copies its text to the clipboard on click; a cell over
-    /// [`CELL_VIEW_THRESHOLD`] chars also gets a `👁` button opening the read-only view
-    /// popover. The `👁` click sits inside the cell's own click area, so it fires the
+    /// [`CELL_VIEW_THRESHOLD`] chars also gets a `view` button opening the read-only view
+    /// popover. The `view` click sits inside the cell's own click area, so it fires the
     /// copy handler too (harmless — the same convention `app.rs`'s row action buttons
     /// use: "a click here also fires the row's on_click... which is harmless").
     fn render_td(
@@ -337,7 +337,7 @@ impl TableDelegate for ResultDelegate {
                 .cursor_pointer()
                 .text_color(rgb(BRAND))
                 .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                .child("👁")
+                .child("view")
                 .on_click(move |_ev, _window, cx| {
                     let Some(app) = &view_app else { return };
                     let _ = app.update(cx, |state, cx| {
@@ -629,7 +629,7 @@ impl AppState {
             .into_any_element()
     }
 
-    /// D2's `👁 view` popover — `None` when nothing is being viewed. Mirrors
+    /// D2's `view` popover — `None` when nothing is being viewed. Mirrors
     /// `session.rs`'s `preview_overlay` (`anchored`/`deferred` pin a viewport-sized,
     /// occluding backdrop at the window origin, painted above everything else). Built
     /// here — inside the DB tab's own returned tree — rather than composited in
@@ -740,7 +740,7 @@ impl AppState {
         self.db._sql_subscription = Some(cx.subscribe(&sql, Self::on_sql_event));
         self.db.sql = Some(sql);
         // D2: hand the results table's delegate a weak handle back to `AppState` so a
-        // cell's `👁 view` click (which only sees `&mut App`, not `AppState` — see
+        // cell's `view` click (which only sees `&mut App`, not `AppState` — see
         // `ResultDelegate::app`'s doc comment) can open the view popover.
         let app = cx.weak_entity();
         self.db.results = Some(cx.new(|cx| {
@@ -1085,7 +1085,7 @@ impl AppState {
             .child(body)
     }
 
-    /// "⧉ diagram" — opens the Access-style relationships pop-out window (see
+    /// "diagram" — opens the Access-style relationships pop-out window (see
     /// [`Self::open_diagram_window`]). Enabled (brand-colored, clickable) only once a
     /// schema is cached for the active connection; otherwise rendered dim and inert
     /// rather than hidden, matching this tab's convention of always-present, sometimes
@@ -1097,7 +1097,7 @@ impl AppState {
             .px_1()
             .rounded_sm()
             .text_color(rgb(if enabled { BRAND } else { FG_DIM }))
-            .child("⧉ diagram");
+            .child("diagram");
         if enabled {
             button
                 .cursor_pointer()
@@ -1297,7 +1297,7 @@ impl AppState {
     /// tree (Murphy: "connections on the left, like dbeaver"; an earlier pass had this
     /// on a right-edge rail — reverted). Groups the composed connection list by
     /// [`DbConnection::folder`] via [`group_connections`] under a small
-    /// `connections · N` / `＋` header. Also the F2 target: focused on every row click
+    /// `connections · N` / `+` header. Also the F2 target: focused on every row click
     /// (see [`Self::render_connection_row`]) so F2 with no text field focused reaches
     /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
     /// `render_connection_row`) needs no focus of its own.
@@ -1326,7 +1326,7 @@ impl AppState {
                     .cursor_pointer()
                     .text_color(rgb(BRAND))
                     .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                    .child("＋")
+                    .child("+")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.open_add_db_form(window, cx);
                     })),
@@ -1430,7 +1430,7 @@ impl AppState {
     /// One connection's row in the panel: its name (a live rename [`TextInput`] in
     /// place, mid-rename) plus origin badge and `★` active marker, a DSN subtitle (a
     /// live folder-edit [`TextInput`] in place, mid-folder-edit), and the
-    /// promote/demote/edit/📁/delete action strip. Structurally the pre-selector-move
+    /// promote/demote/edit/folder/delete action strip. Structurally the pre-selector-move
     /// row (W3's `db_connection_row`), restacked into the panel's narrower column and
     /// extended with the rename/folder affordances.
     fn render_connection_row(
@@ -1504,13 +1504,13 @@ impl AppState {
             ))
         };
 
-        // 📁 folder: opens the minimal inline folder-assignment editor (Task 2's "row
+        // folder: opens the minimal inline folder-assignment editor (Task 2's "row
         // hover-menu → small input" — see `Self::begin_folder_edit`).
         let folder_btn = {
             let id = conn.id.clone();
             let origin = origin.clone();
             let current = conn.folder.clone();
-            action(("db-folder-edit", ix), "📁".into(), FG_DIM).on_click(cx.listener(
+            action(("db-folder-edit", ix), "folder".into(), FG_DIM).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.begin_folder_edit(&id, &origin, current.as_deref(), window, cx);
                 },
@@ -1651,7 +1651,7 @@ impl AppState {
                 // Selecting a row is also this panel's one focus entry point — F2
                 // afterwards renames whatever just got selected (`begin_rename_active`).
                 // But a nested control's own click fires *before* this row-level one and
-                // bubbles up to here: the name's double-click (`begin_rename`), the 📁
+                // bubbles up to here: the name's double-click (`begin_rename`), the folder
                 // button (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`)
                 // each grab focus for their freshly-opened input/form — so only claim
                 // panel focus when none of those started, or this handler would steal it
@@ -1708,7 +1708,7 @@ impl AppState {
     /// of `AppState::origin_badge`.
     fn db_origin_badge(&self, a: &Attributed<DbConnection>) -> (SharedString, u32) {
         let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("⌂ global".into(), BRAND),
+            Scope::Global => ("global".into(), BRAND),
             Scope::Workspace(id) => {
                 let name = self
                     .scopes
@@ -1806,7 +1806,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// 📁 (folders/grouping) — enter the minimal inline folder-assignment editor for
+    /// folder (folders/grouping) — enter the minimal inline folder-assignment editor for
     /// connection `id`/`origin`, seeded with its `current` folder (blank when
     /// ungrouped). Replaces any rename/folder-edit already in progress.
     fn begin_folder_edit(
