@@ -1,16 +1,18 @@
-//! Network tab v2: `[Ports] [Services] [Interfaces]` segmented sub-tabs under one
-//! search box, sourced live from `sid_core::sys` (ports/interfaces) and the new
-//! `sid_core::svc` (systemd services) adapter seams.
+//! Network tab v3: `[Ports] [Services] [Interfaces] [Docker] [Kubernetes]` segmented
+//! sub-tabs under one search box, sourced live from `sid_core::sys` (ports/interfaces),
+//! `sid_core::svc` (systemd services), and `sid_core::containers` (Docker/Kubernetes)
+//! adapter seams.
 //!
 //! [`NetworkTabState`] is deliberately **live/ephemeral** — CLAUDE.md's layered-scope
 //! invariant (global store + per-workspace `.sid/config.toml`) does not apply here.
 //! There is no store, no scope, no secrets, nothing committed; every render reflects
 //! the machine's current state and a refresh simply re-probes it. `crates/sid` is the
-//! one crate allowed to name `sid_sysinfo`'s and `sid_svcctl`'s concrete
-//! `SysinfoProvider::new()` / `SvcctlProvider::new()` constructors — every call
-//! through them after construction goes back out via the `sid_core::sys::SysProvider`
-//! / `sid_core::svc::ServiceProvider` traits, matching `sid-db`'s `DbClient`/
-//! `db_registry` seam.
+//! one crate allowed to name `sid_sysinfo`'s, `sid_svcctl`'s, and `sid_containers`'s
+//! concrete `SysinfoProvider::new()` / `SvcctlProvider::new()` / `DockerCliProvider::
+//! new()` / `KubectlCliProvider::new()` constructors — every call through them after
+//! construction goes back out via the `sid_core::sys::SysProvider` /
+//! `sid_core::svc::ServiceProvider` / `sid_core::containers::{ContainerProvider,
+//! KubeProvider}` traits, matching `sid-db`'s `DbClient`/`db_registry` seam.
 //!
 //! ## Sub-tabs
 //!
@@ -22,6 +24,14 @@
 //!   visible; generic/virtual ones ([`is_hidden_interface`]) collapse under a
 //!   `hidden (N) ▸` expandable row (Murphy: docker etc. "should literally be a
 //!   dropdown to expand").
+//! - **Docker** (new, read-only): containers via `sid_core::containers::
+//!   ContainerProvider` — name/image/state/status/ports. Management (start/stop/exec)
+//!   is out of scope for this pass.
+//! - **Kubernetes** (new, read-only): kubeconfig contexts + a pods table via
+//!   `sid_core::containers::KubeProvider`. Both `docker`/`kubectl` are optional local
+//!   tooling — a `NotInstalled` probe error degrades to a dim notice (reusing the same
+//!   `sub`-line-plus-error-line two-tier pattern the Ports/Services error paths already
+//!   use below) rather than a red error banner.
 //!
 //! ## Filtering
 //!
@@ -32,21 +42,22 @@
 //! render; `apply_network_filter` pushes the new query into whichever table
 //! delegate(s) need it. The delegates cache both the full fetched row set and the
 //! filtered rows, so `/`-style instant filtering never re-probes the OS or spawns
-//! `systemctl` — it recomputes from the cache already sitting on the entity, exactly
-//! the "render pure-from-cache" rule below.
+//! `systemctl`/`docker`/`kubectl` — it recomputes from the cache already sitting on
+//! the entity, exactly the "render pure-from-cache" rule below.
 //!
 //! Ports/interfaces are rendered with `gpui-component`'s `Table`/`TableDelegate`
 //! (cribbed from `db_tab.rs`'s `ResultDelegate`), reused on the shared
 //! `session::ssh_runtime()` Tokio runtime for the same reason `db_tab.rs` does:
 //! `sysinfo`/`netstat2`/`nix` calls are synchronous OS calls, not async-native, but
 //! keeping them off gpui's own executor avoids blocking `render`. `sid_svcctl`'s
-//! `systemctl` calls are genuinely async (`tokio::process`, see that crate's docs)
-//! but run on the very same shared runtime for the same reason — never inline in
-//! `render`. Unlike `ResultDelegate`, [`PortsDelegate`]/[`ServicesDelegate`] are
-//! interactive (per-row kill/restart/stop) — `TableDelegate::render_td`'s
-//! `cx: &mut Context<TableState<Self>>` is scoped to the table's own entity, so the
-//! two-click confirm state lives on each delegate itself rather than routed back
-//! through `AppState`.
+//! `systemctl` and `sid_containers`'s `docker`/`kubectl` calls are genuinely async
+//! (`tokio::process`, see those crates' docs) but run on the very same shared runtime
+//! for the same reason — never inline in `render`. Unlike `ResultDelegate`,
+//! [`PortsDelegate`]/[`ServicesDelegate`] are interactive (per-row kill/restart/stop) —
+//! `TableDelegate::render_td`'s `cx: &mut Context<TableState<Self>>` is scoped to the
+//! table's own entity, so the two-click confirm state lives on each delegate itself
+//! rather than routed back through `AppState`. [`DockerDelegate`]/[`KubePodsDelegate`]
+//! are plain read-only tables, closer in shape to `db_tab.rs`'s `ResultDelegate`.
 
 use std::sync::{Arc, Mutex};
 
@@ -55,6 +66,10 @@ use gpui::{
     Subscription, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use sid_containers::{DockerCliProvider, KubectlCliProvider};
+use sid_core::containers::{
+    ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
+};
 use sid_core::svc::{ServiceInfo, ServiceProvider, SvcAction, SvcActiveState, SvcScope};
 use sid_core::sys::{ListeningPort, NetInterface, Pid, Protocol, Signal, SysProvider};
 use sid_svcctl::SvcctlProvider;
@@ -81,16 +96,26 @@ enum NetSubTab {
     Ports,
     Services,
     Interfaces,
+    Docker,
+    Kubernetes,
 }
 
 impl NetSubTab {
-    const ALL: [NetSubTab; 3] = [NetSubTab::Ports, NetSubTab::Services, NetSubTab::Interfaces];
+    const ALL: [NetSubTab; 5] = [
+        NetSubTab::Ports,
+        NetSubTab::Services,
+        NetSubTab::Interfaces,
+        NetSubTab::Docker,
+        NetSubTab::Kubernetes,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             NetSubTab::Ports => "Ports",
             NetSubTab::Services => "Services",
             NetSubTab::Interfaces => "Interfaces",
+            NetSubTab::Docker => "Docker",
+            NetSubTab::Kubernetes => "Kubernetes",
         }
     }
 }
@@ -144,7 +169,44 @@ pub struct NetworkTabState {
     svc_loaded: bool,
     svc_refreshing: bool,
     svc_error: Option<String>,
-    /// The one 🔍 filter input shared by all three sub-tabs.
+    /// The third seam this crate constructs concretely (`DockerCliProvider::new()`).
+    /// No `Mutex` needed — stateless, same reasoning as `svc_provider`.
+    docker_provider: Arc<dyn ContainerProvider>,
+    /// The Docker table, lazily built alongside `table`/`services_table`.
+    docker_table: Option<Entity<TableState<DockerDelegate>>>,
+    /// Set once the Docker sub-tab has triggered its first load (lazy, same pattern as
+    /// `svc_loaded`: `docker ps` is never called just because the Network tab is open).
+    docker_loaded: bool,
+    docker_refreshing: bool,
+    /// `true` when the last probe returned `ContainerError::NotInstalled` — the Docker
+    /// sub-tab renders a dim graceful-absence notice instead of a table when set.
+    docker_not_installed: bool,
+    /// A genuine (non-`NotInstalled`) probe failure, if any.
+    docker_error: Option<String>,
+    /// The fourth seam this crate constructs concretely (`KubectlCliProvider::new()`).
+    /// No `Mutex` needed — stateless, same reasoning as `svc_provider`/`docker_provider`.
+    kube_provider: Arc<dyn KubeProvider>,
+    /// Configured kubeconfig contexts, refreshed alongside the pods table.
+    kube_contexts: Vec<KubeContext>,
+    /// Which context the pods table is scoped to. `None` means "use kubectl's own
+    /// `current-context`" — distinct from "no context selected yet", which is instead
+    /// represented by `kube_contexts` being empty before the first load.
+    kube_selected_context: Option<String>,
+    /// The Kubernetes pods table, lazily built alongside the other tables.
+    kube_pods_table: Option<Entity<TableState<KubePodsDelegate>>>,
+    /// Set once the Kubernetes sub-tab has triggered its first load (lazy, same pattern
+    /// as `svc_loaded`/`docker_loaded`).
+    kube_loaded: bool,
+    kube_refreshing: bool,
+    /// `true` when the last probe returned `KubeError::NotInstalled` (covers both "no
+    /// `kubectl` binary" and "no cluster reachable" — see `sid_core::containers::
+    /// KubeError`'s doc comment) — the Kubernetes sub-tab renders the graceful
+    /// "kubectl not installed — no cluster" notice instead of the context/pods UI.
+    kube_not_installed: bool,
+    /// A genuine (non-`NotInstalled`) probe failure, if any — from either the contexts
+    /// or the pods fetch.
+    kube_error: Option<String>,
+    /// The one 🔍 filter input shared by all five sub-tabs.
     filter: Option<Entity<TextInput>>,
     /// Kept alive so the `cx.observe(&filter, ..)` subscription (see module doc)
     /// isn't dropped — mirrors `AppState::_form_subscription`.
@@ -171,6 +233,20 @@ impl NetworkTabState {
             svc_loaded: false,
             svc_refreshing: false,
             svc_error: None,
+            docker_provider: Arc::new(DockerCliProvider::new()),
+            docker_table: None,
+            docker_loaded: false,
+            docker_refreshing: false,
+            docker_not_installed: false,
+            docker_error: None,
+            kube_provider: Arc::new(KubectlCliProvider::new()),
+            kube_contexts: Vec::new(),
+            kube_selected_context: None,
+            kube_pods_table: None,
+            kube_loaded: false,
+            kube_refreshing: false,
+            kube_not_installed: false,
+            kube_error: None,
             filter: None,
             _filter_sub: None,
         }
@@ -612,6 +688,237 @@ impl TableDelegate for ServicesDelegate {
     }
 }
 
+/// Backs the Docker [`Table`]. Read-only (no per-row actions, unlike
+/// [`PortsDelegate`]/[`ServicesDelegate`]) — closer in shape to `db_tab.rs`'s
+/// `ResultDelegate`: cache the full fetched set + the filtered display set, no
+/// interactive state of its own.
+struct DockerDelegate {
+    all_containers: Vec<ContainerInfo>,
+    containers: Vec<ContainerInfo>,
+    query: String,
+    columns: Vec<Column>,
+}
+
+impl DockerDelegate {
+    fn new() -> Self {
+        Self {
+            all_containers: Vec::new(),
+            containers: Vec::new(),
+            query: String::new(),
+            columns: vec![
+                Column::new("name", "Name").width(px(200.)),
+                Column::new("image", "Image").width(px(220.)),
+                Column::new("state", "State").width(px(90.)),
+                Column::new("status", "Status").width(px(200.)),
+                Column::new("ports", "Ports").width(px(260.)),
+            ],
+        }
+    }
+
+    fn set_containers(&mut self, containers: Vec<ContainerInfo>) {
+        self.all_containers = containers;
+        self.recompute();
+    }
+
+    fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.recompute();
+    }
+
+    fn recompute(&mut self) {
+        self.containers = filter_containers(&self.all_containers, &self.query)
+            .into_iter()
+            .cloned()
+            .collect();
+    }
+}
+
+impl TableDelegate for DockerDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.containers.len()
+    }
+
+    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let container = &self.containers[row_ix];
+        let cell_id = ("docker-cell", row_ix * 8 + col_ix);
+        match col_ix {
+            0 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG))
+                .child(container.name.clone()),
+            1 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(container.image.clone()),
+            2 => {
+                let (label, color) = docker_state_badge(&container.state);
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(label.to_string())
+            }
+            3 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(container.status.clone()),
+            _ => {
+                let label: SharedString = if container.ports.is_empty() {
+                    "—".into()
+                } else {
+                    container.ports.join(", ").into()
+                };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(label)
+            }
+        }
+    }
+}
+
+/// Backs the Kubernetes pods [`Table`]. Same read-only shape as [`DockerDelegate`].
+struct KubePodsDelegate {
+    all_pods: Vec<KubePod>,
+    pods: Vec<KubePod>,
+    query: String,
+    columns: Vec<Column>,
+}
+
+impl KubePodsDelegate {
+    fn new() -> Self {
+        Self {
+            all_pods: Vec::new(),
+            pods: Vec::new(),
+            query: String::new(),
+            columns: vec![
+                Column::new("namespace", "Namespace").width(px(140.)),
+                Column::new("name", "Name").width(px(240.)),
+                Column::new("ready", "Ready").width(px(70.)),
+                Column::new("phase", "Phase").width(px(90.)),
+                Column::new("restarts", "Restarts").width(px(80.)),
+                Column::new("node", "Node").width(px(140.)),
+            ],
+        }
+    }
+
+    fn set_pods(&mut self, pods: Vec<KubePod>) {
+        self.all_pods = pods;
+        self.recompute();
+    }
+
+    fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.recompute();
+    }
+
+    fn recompute(&mut self) {
+        self.pods = filter_pods(&self.all_pods, &self.query)
+            .into_iter()
+            .cloned()
+            .collect();
+    }
+}
+
+impl TableDelegate for KubePodsDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.pods.len()
+    }
+
+    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let pod = &self.pods[row_ix];
+        let cell_id = ("kube-cell", row_ix * 8 + col_ix);
+        match col_ix {
+            0 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(pod.namespace.clone()),
+            1 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG))
+                .child(pod.name.clone()),
+            2 => div()
+                .id(cell_id)
+                .px_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(pod.ready.clone()),
+            3 => {
+                let (label, color) = kube_phase_badge(&pod.phase);
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(label.to_string())
+            }
+            4 => {
+                let color = if pod.restarts > 0 { DANGER } else { FG_DIM };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(pod.restarts.to_string())
+            }
+            _ => {
+                let label: SharedString = if pod.node.is_empty() {
+                    "—".into()
+                } else {
+                    pod.node.clone().into()
+                };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(label)
+            }
+        }
+    }
+}
+
 impl AppState {
     pub(crate) fn network_tab(
         &mut self,
@@ -626,11 +933,19 @@ impl AppState {
         if self.network.sub_tab == NetSubTab::Services && !self.network.svc_loaded {
             self.refresh_network_services(cx);
         }
+        if self.network.sub_tab == NetSubTab::Docker && !self.network.docker_loaded {
+            self.refresh_network_docker(cx);
+        }
+        if self.network.sub_tab == NetSubTab::Kubernetes && !self.network.kube_loaded {
+            self.refresh_network_kube(cx);
+        }
 
         let filter = self.network.filter.clone();
         let refreshing = match self.network.sub_tab {
             NetSubTab::Services => self.network.svc_refreshing,
             NetSubTab::Ports | NetSubTab::Interfaces => self.network.refreshing,
+            NetSubTab::Docker => self.network.docker_refreshing,
+            NetSubTab::Kubernetes => self.network.kube_refreshing,
         };
         let refresh_label = if refreshing { "…" } else { "⟳ refresh" };
 
@@ -645,6 +960,18 @@ impl AppState {
             .services_table
             .as_ref()
             .map(|t| t.read(cx).delegate().services.len())
+            .unwrap_or(0);
+        let container_count = self
+            .network
+            .docker_table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().containers.len())
+            .unwrap_or(0);
+        let pod_count = self
+            .network
+            .kube_pods_table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().pods.len())
             .unwrap_or(0);
 
         let sub: SharedString = match self.network.sub_tab {
@@ -669,6 +996,32 @@ impl AppState {
                 Some(e) => format!("error: {e}").into(),
                 None => format!("{} interfaces", self.network.interfaces.len()).into(),
             },
+            NetSubTab::Docker => {
+                if self.network.docker_not_installed {
+                    "docker not installed — no daemon reachable".into()
+                } else {
+                    match &self.network.docker_error {
+                        Some(e) => format!("error: {e}").into(),
+                        None if self.network.docker_refreshing => "refreshing…".into(),
+                        None => format!("{container_count} containers").into(),
+                    }
+                }
+            }
+            NetSubTab::Kubernetes => {
+                if self.network.kube_not_installed {
+                    "kubectl not installed — no cluster".into()
+                } else {
+                    match &self.network.kube_error {
+                        Some(e) => format!("error: {e}").into(),
+                        None if self.network.kube_refreshing => "refreshing…".into(),
+                        None => format!(
+                            "{} contexts · {pod_count} pods",
+                            self.network.kube_contexts.len()
+                        )
+                        .into(),
+                    }
+                }
+            }
         };
 
         let kill_error = self
@@ -709,6 +1062,50 @@ impl AppState {
                     .into_any_element()
             }
             NetSubTab::Interfaces => self.interfaces_strip(cx).into_any_element(),
+            NetSubTab::Docker => {
+                if self.network.docker_not_installed {
+                    graceful_absence_notice(
+                        "docker not installed — no daemon reachable",
+                        "install Docker and start the daemon to see containers here",
+                    )
+                    .into_any_element()
+                } else {
+                    self.network
+                        .docker_table
+                        .clone()
+                        .map(|t| {
+                            div()
+                                .flex_1()
+                                .w_full()
+                                .child(Table::new(&t).stripe(true))
+                                .into_any_element()
+                        })
+                        .unwrap_or_else(|| div().into_any_element())
+                }
+            }
+            NetSubTab::Kubernetes => {
+                if self.network.kube_not_installed {
+                    graceful_absence_notice(
+                        "kubectl not installed — no cluster",
+                        "install kubectl and configure a context to see pods here",
+                    )
+                    .into_any_element()
+                } else {
+                    let context_strip = self.kube_context_strip(cx);
+                    let table = self.network.kube_pods_table.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .child(context_strip)
+                        .children(
+                            table.map(|t| {
+                                div().flex_1().w_full().child(Table::new(&t).stripe(true))
+                            }),
+                        )
+                        .into_any_element()
+                }
+            }
         };
 
         div()
@@ -744,6 +1141,8 @@ impl AppState {
                                     NetSubTab::Ports | NetSubTab::Interfaces => {
                                         this.refresh_network(cx)
                                     }
+                                    NetSubTab::Docker => this.refresh_network_docker(cx),
+                                    NetSubTab::Kubernetes => this.refresh_network_kube(cx),
                                 }
                             })),
                     ),
@@ -836,6 +1235,63 @@ impl AppState {
             }))
     }
 
+    /// The Kubernetes sub-tab's context strip: one chip per configured context
+    /// (★ marks kubeconfig's own `current-context`), clicking a chip re-scopes the
+    /// pods table to that context (`select_kube_context`). Mirrors
+    /// [`Self::svc_scope_toggle`]'s shape; empty when no contexts are configured
+    /// (kubectl installed but nothing set up yet — a valid non-`NotInstalled` state).
+    fn kube_context_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let contexts = self.network.kube_contexts.clone();
+        let selected = self.network.kube_selected_context.clone();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(div().text_xs().text_color(rgb(FG_DIM)).child("context"))
+            .when(contexts.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(FG_DIM))
+                        .child("no kube contexts configured"),
+                )
+            })
+            .children(contexts.iter().enumerate().map(|(ix, ctx)| {
+                // A context is "active" either because the user explicitly selected it,
+                // or (nothing explicitly selected yet) because it's kubeconfig's own
+                // `current-context` — matches which context `list_pods(None)` actually
+                // queried on the initial load.
+                let active = match &selected {
+                    Some(name) => name == &ctx.name,
+                    None => ctx.current,
+                };
+                let label: SharedString = if ctx.current {
+                    format!("★ {}", ctx.name).into()
+                } else {
+                    ctx.name.clone().into()
+                };
+                let name = ctx.name.clone();
+                div()
+                    .id(("kube-context", ix))
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .text_sm()
+                    .cursor_pointer()
+                    .bg(rgb(if active { ACTIVE_BG } else { BORDER }))
+                    .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.select_kube_context(Some(name.clone()), cx);
+                    }))
+            }))
+    }
+
     /// Interfaces sub-tab: primary interfaces (default-route iface first, then
     /// alphabetical — `sort_interfaces_default_first`, applied on refresh) always
     /// shown; generic/virtual ones ([`is_hidden_interface`]) collapsed under a
@@ -898,9 +1354,9 @@ impl AppState {
             })
     }
 
-    /// Lazily build the ports table, the services table, and the shared filter input
-    /// on first paint of the Network tab. Idempotent (checked every render) — mirrors
-    /// `db_tab.rs`'s `ensure_query_widgets`.
+    /// Lazily build the ports table, the services table, the Docker/Kubernetes tables,
+    /// and the shared filter input on first paint of the Network tab. Idempotent
+    /// (checked every render) — mirrors `db_tab.rs`'s `ensure_query_widgets`.
     fn ensure_network_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.network.table.is_none() {
             let provider = self.network.provider.clone();
@@ -913,6 +1369,14 @@ impl AppState {
             let table = cx
                 .new(|cx| TableState::new(ServicesDelegate::new(svc_provider, scope), window, cx));
             self.network.services_table = Some(table);
+        }
+        if self.network.docker_table.is_none() {
+            let table = cx.new(|cx| TableState::new(DockerDelegate::new(), window, cx));
+            self.network.docker_table = Some(table);
+        }
+        if self.network.kube_pods_table.is_none() {
+            let table = cx.new(|cx| TableState::new(KubePodsDelegate::new(), window, cx));
+            self.network.kube_pods_table = Some(table);
         }
         if self.network.filter.is_none() {
             let filter = cx.new(|cx| TextInput::new(cx, "🔍 filter"));
@@ -946,6 +1410,18 @@ impl AppState {
             });
         }
         if let Some(table) = self.network.services_table.clone() {
+            table.update(cx, |state, cx| {
+                state.delegate_mut().set_query(&query);
+                state.refresh(cx);
+            });
+        }
+        if let Some(table) = self.network.docker_table.clone() {
+            table.update(cx, |state, cx| {
+                state.delegate_mut().set_query(&query);
+                state.refresh(cx);
+            });
+        }
+        if let Some(table) = self.network.kube_pods_table.clone() {
             table.update(cx, |state, cx| {
                 state.delegate_mut().set_query(&query);
                 state.refresh(cx);
@@ -1093,6 +1569,200 @@ impl AppState {
         })
         .detach();
     }
+
+    /// ⟳ refresh (Docker): re-fetch `docker ps -a` on the shared runtime. Also the
+    /// Docker sub-tab's lazy first-load hook — `docker` is never called just because
+    /// the Network tab is open, only once Docker is actually selected.
+    pub(crate) fn refresh_network_docker(&mut self, cx: &mut Context<Self>) {
+        if self.network.docker_refreshing {
+            return;
+        }
+        self.network.docker_refreshing = true;
+        self.network.docker_error = None;
+        self.network.docker_not_installed = false;
+        cx.notify();
+
+        let provider = self.network.docker_provider.clone();
+        let table = self.network.docker_table.clone();
+
+        cx.spawn(async move |this, cx| {
+            let handle = ssh_runtime().spawn(async move { provider.list_containers().await });
+            let outcome = handle.await;
+            let _ = this.update(cx, |this, cx| {
+                this.network.docker_refreshing = false;
+                this.network.docker_loaded = true;
+                match outcome {
+                    Ok(Ok(containers)) => {
+                        if let Some(table) = &table {
+                            table.update(cx, |state, cx| {
+                                state.delegate_mut().set_containers(containers);
+                                state.refresh(cx);
+                            });
+                        }
+                    }
+                    // `NotInstalled` degrades to the dim graceful-absence notice
+                    // (`docker_not_installed`), never `docker_error`'s red-ish "error:"
+                    // line — see `NetworkTabState::docker_not_installed`'s doc comment.
+                    Ok(Err(ContainerError::NotInstalled)) => {
+                        this.network.docker_not_installed = true;
+                        if let Some(table) = &table {
+                            table.update(cx, |state, cx| {
+                                state.delegate_mut().set_containers(Vec::new());
+                                state.refresh(cx);
+                            });
+                        }
+                    }
+                    Ok(Err(e)) => this.network.docker_error = Some(e.to_string()),
+                    Err(join_err) => {
+                        this.network.docker_error =
+                            Some(format!("docker probe task panicked: {join_err}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Apply a Kubernetes contexts-fetch outcome: populate `kube_contexts`, folding a
+    /// `KubeError::NotInstalled` into `kube_not_installed` rather than `kube_error` —
+    /// see `NetworkTabState::kube_not_installed`'s doc comment.
+    fn apply_kube_contexts(&mut self, contexts_res: Result<Vec<KubeContext>, KubeError>) {
+        match contexts_res {
+            Ok(contexts) => self.network.kube_contexts = contexts,
+            Err(KubeError::NotInstalled) => {
+                self.network.kube_not_installed = true;
+                self.network.kube_contexts.clear();
+            }
+            Err(e) => self.network.kube_error = Some(e.to_string()),
+        }
+    }
+
+    /// Apply a Kubernetes pods-fetch outcome into `table`, folding
+    /// `KubeError::NotInstalled` into `kube_not_installed` the same way as
+    /// [`Self::apply_kube_contexts`]. Shared by [`Self::refresh_network_kube`] (full
+    /// reload) and [`Self::refresh_network_kube_pods`] (context-switch reload).
+    fn apply_kube_pods(
+        &mut self,
+        pods_res: Result<Vec<KubePod>, KubeError>,
+        table: Option<&Entity<TableState<KubePodsDelegate>>>,
+        cx: &mut Context<Self>,
+    ) {
+        match pods_res {
+            Ok(pods) => {
+                if let Some(table) = table {
+                    table.update(cx, |state, cx| {
+                        state.delegate_mut().set_pods(pods);
+                        state.refresh(cx);
+                    });
+                }
+            }
+            Err(KubeError::NotInstalled) => {
+                self.network.kube_not_installed = true;
+                if let Some(table) = table {
+                    table.update(cx, |state, cx| {
+                        state.delegate_mut().set_pods(Vec::new());
+                        state.refresh(cx);
+                    });
+                }
+            }
+            Err(e) => {
+                // Don't clobber a contexts-fetch error already recorded by
+                // `apply_kube_contexts` in the same refresh pass.
+                if self.network.kube_error.is_none() {
+                    self.network.kube_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    /// ⟳ refresh (Kubernetes): re-fetch the context list, then the pods table scoped to
+    /// whichever context is selected (`None` = kubectl's own `current-context`), on the
+    /// shared runtime. Also the Kubernetes sub-tab's lazy first-load hook.
+    pub(crate) fn refresh_network_kube(&mut self, cx: &mut Context<Self>) {
+        if self.network.kube_refreshing {
+            return;
+        }
+        self.network.kube_refreshing = true;
+        self.network.kube_error = None;
+        self.network.kube_not_installed = false;
+        cx.notify();
+
+        let provider = self.network.kube_provider.clone();
+        let selected = self.network.kube_selected_context.clone();
+        let table = self.network.kube_pods_table.clone();
+
+        cx.spawn(async move |this, cx| {
+            let handle = ssh_runtime().spawn(async move {
+                let contexts = provider.list_contexts().await;
+                let pods = provider.list_pods(selected.as_deref()).await;
+                (contexts, pods)
+            });
+            let outcome = handle.await;
+            let _ = this.update(cx, |this, cx| {
+                this.network.kube_refreshing = false;
+                this.network.kube_loaded = true;
+                match outcome {
+                    Ok((contexts_res, pods_res)) => {
+                        this.apply_kube_contexts(contexts_res);
+                        this.apply_kube_pods(pods_res, table.as_ref(), cx);
+                    }
+                    Err(join_err) => {
+                        this.network.kube_error =
+                            Some(format!("kube probe task panicked: {join_err}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Re-fetch only the pods table for the currently selected context — used when the
+    /// user clicks a different context chip. Doesn't re-fetch `kube_contexts` (the
+    /// context list itself didn't change, just which context the pods table is scoped
+    /// to).
+    pub(crate) fn refresh_network_kube_pods(&mut self, cx: &mut Context<Self>) {
+        if self.network.kube_refreshing {
+            return;
+        }
+        self.network.kube_refreshing = true;
+        self.network.kube_error = None;
+        cx.notify();
+
+        let provider = self.network.kube_provider.clone();
+        let selected = self.network.kube_selected_context.clone();
+        let table = self.network.kube_pods_table.clone();
+
+        cx.spawn(async move |this, cx| {
+            let handle =
+                ssh_runtime().spawn(async move { provider.list_pods(selected.as_deref()).await });
+            let outcome = handle.await;
+            let _ = this.update(cx, |this, cx| {
+                this.network.kube_refreshing = false;
+                match outcome {
+                    Ok(pods_res) => this.apply_kube_pods(pods_res, table.as_ref(), cx),
+                    Err(join_err) => {
+                        this.network.kube_error =
+                            Some(format!("kube probe task panicked: {join_err}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Switch the Kubernetes sub-tab's selected context and re-fetch just the pods
+    /// table for it — mirrors `set_svc_scope`'s "switching context forces a fresh
+    /// fetch, it isn't a filter over one cached list" reasoning.
+    fn select_kube_context(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.network.kube_selected_context == name {
+            return;
+        }
+        self.network.kube_selected_context = name;
+        self.refresh_network_kube_pods(cx);
+    }
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
@@ -1160,6 +1830,92 @@ fn svc_state_badge(state: SvcActiveState) -> (&'static str, u32) {
         SvcActiveState::Inactive => ("inactive", FG_DIM),
         SvcActiveState::Other => ("other", FG_DIM),
     }
+}
+
+/// Case-insensitive filter over the Docker containers table: name, image, state, or
+/// status substring. Empty (or all-whitespace) query matches everything.
+fn filter_containers<'a>(containers: &'a [ContainerInfo], query: &str) -> Vec<&'a ContainerInfo> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return containers.iter().collect();
+    }
+    containers
+        .iter()
+        .filter(|c| {
+            c.name.to_lowercase().contains(&query)
+                || c.image.to_lowercase().contains(&query)
+                || c.state.to_lowercase().contains(&query)
+                || c.status.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+/// Case-insensitive filter over the Kubernetes pods table: namespace or name
+/// substring. Empty (or all-whitespace) query matches everything.
+fn filter_pods<'a>(pods: &'a [KubePod], query: &str) -> Vec<&'a KubePod> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return pods.iter().collect();
+    }
+    pods.iter()
+        .filter(|p| {
+            p.namespace.to_lowercase().contains(&query) || p.name.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+/// Badge label + color for a Docker container's coarse lifecycle state
+/// (`docker ps`'s `.State`: `"running"`, `"exited"`, `"paused"`, `"restarting"`, ...).
+/// Unrecognized values pass through verbatim with the dim "other" color rather than
+/// erroring — same "still render the row" rule as `svc_state_badge`.
+fn docker_state_badge(state: &str) -> (&str, u32) {
+    match state {
+        "running" => ("running", OK_GREEN),
+        "exited" | "dead" => ("exited", FG_DIM),
+        "paused" => ("paused", FG_DIM),
+        "restarting" => ("restarting", DANGER),
+        other => (other, FG_DIM),
+    }
+}
+
+/// Badge label + color for a Kubernetes pod's phase (`status.phase`).
+fn kube_phase_badge(phase: &str) -> (&str, u32) {
+    match phase {
+        "Running" => ("Running", OK_GREEN),
+        "Succeeded" => ("Succeeded", OK_GREEN),
+        "Pending" => ("Pending", FG_DIM),
+        "Failed" => ("Failed", DANGER),
+        "Unknown" => ("Unknown", DANGER),
+        other => (other, FG_DIM),
+    }
+}
+
+/// Two-tier graceful-absence notice, reusing the same "dim status line + secondary
+/// detail line" shape already used for the Ports/Services error paths (`sub` line +
+/// `kill_error`/`action_error` line in `network_tab`) — here both tiers are
+/// intentionally dim (not `DANGER`-colored), since "docker/kubectl isn't set up" is an
+/// expected, common local-machine state, not a failure.
+fn graceful_absence_notice(headline: &str, detail: &str) -> impl IntoElement + use<> {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_4()
+        .py_6()
+        .items_center()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(FG))
+                .child(headline.to_string()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(detail.to_string()),
+        )
 }
 
 /// Whether interface `name` should default into the collapsed "hidden (N) ▸" group.
@@ -1314,6 +2070,28 @@ mod tests {
         }
     }
 
+    fn container(name: &str, image: &str, state: &str, status: &str) -> ContainerInfo {
+        ContainerInfo {
+            id: "abc123".to_string(),
+            name: name.to_string(),
+            image: image.to_string(),
+            state: state.to_string(),
+            status: status.to_string(),
+            ports: Vec::new(),
+        }
+    }
+
+    fn pod(namespace: &str, name: &str) -> KubePod {
+        KubePod {
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            ready: "1/1".to_string(),
+            phase: "Running".to_string(),
+            restarts: 0,
+            node: "node-1".to_string(),
+        }
+    }
+
     #[test]
     fn kill_needs_two_clicks_on_the_same_pid() {
         let pid = Pid::from_u32(123);
@@ -1435,6 +2213,86 @@ mod tests {
         assert_eq!(svc_state_badge(SvcActiveState::Failed).0, "failed");
         assert_eq!(svc_state_badge(SvcActiveState::Inactive).0, "inactive");
         assert_eq!(svc_state_badge(SvcActiveState::Other).0, "other");
+    }
+
+    #[test]
+    fn filter_containers_empty_query_matches_all() {
+        let containers = vec![
+            container("web-1", "nginx:latest", "running", "Up 1 hour"),
+            container("db-1", "postgres:16", "exited", "Exited (0) 2 days ago"),
+        ];
+        assert_eq!(filter_containers(&containers, "").len(), 2);
+        assert_eq!(filter_containers(&containers, "   ").len(), 2);
+    }
+
+    #[test]
+    fn filter_containers_matches_name_case_insensitively() {
+        let containers = vec![
+            container("web-1", "nginx:latest", "running", "Up"),
+            container("db-1", "postgres:16", "running", "Up"),
+        ];
+        let got: Vec<&str> = filter_containers(&containers, "WEB")
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(got, vec!["web-1"]);
+    }
+
+    #[test]
+    fn filter_containers_matches_image_state_or_status() {
+        let containers = vec![
+            container("a", "postgres:16", "running", "Up 3 hours"),
+            container("b", "redis:7", "exited", "Exited (0) 2 days ago"),
+        ];
+        assert_eq!(filter_containers(&containers, "postgres").len(), 1);
+        assert_eq!(filter_containers(&containers, "exited").len(), 1);
+        assert_eq!(filter_containers(&containers, "2 days").len(), 1);
+        assert_eq!(filter_containers(&containers, "nonexistent").len(), 0);
+    }
+
+    #[test]
+    fn docker_state_badge_covers_known_and_unknown_states() {
+        assert_eq!(docker_state_badge("running").0, "running");
+        assert_eq!(docker_state_badge("exited").0, "exited");
+        assert_eq!(docker_state_badge("dead").0, "exited");
+        assert_eq!(docker_state_badge("paused").0, "paused");
+        assert_eq!(docker_state_badge("restarting").0, "restarting");
+        // Unrecognized values pass through verbatim rather than erroring.
+        assert_eq!(
+            docker_state_badge("weird-future-state").0,
+            "weird-future-state"
+        );
+    }
+
+    #[test]
+    fn filter_pods_empty_query_matches_all() {
+        let pods = vec![pod("default", "web-1"), pod("kube-system", "coredns-1")];
+        assert_eq!(filter_pods(&pods, "").len(), 2);
+    }
+
+    #[test]
+    fn filter_pods_matches_namespace_or_name_case_insensitively() {
+        let pods = vec![pod("default", "web-1"), pod("kube-system", "coredns-1")];
+        let by_ns: Vec<&str> = filter_pods(&pods, "KUBE-SYS")
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(by_ns, vec!["coredns-1"]);
+        let by_name: Vec<&str> = filter_pods(&pods, "WEB")
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(by_name, vec!["web-1"]);
+    }
+
+    #[test]
+    fn kube_phase_badge_covers_known_and_unknown_phases() {
+        assert_eq!(kube_phase_badge("Running").0, "Running");
+        assert_eq!(kube_phase_badge("Succeeded").0, "Succeeded");
+        assert_eq!(kube_phase_badge("Pending").0, "Pending");
+        assert_eq!(kube_phase_badge("Failed").0, "Failed");
+        assert_eq!(kube_phase_badge("Unknown").0, "Unknown");
+        assert_eq!(kube_phase_badge("SomeFuturePhase").0, "SomeFuturePhase");
     }
 
     #[test]
