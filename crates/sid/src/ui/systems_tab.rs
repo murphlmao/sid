@@ -297,7 +297,7 @@ impl TableDelegate for ProcessesDelegate {
                 .px_2()
                 .text_xs()
                 .text_color(rgb(FG))
-                .child(format!("{:.1}", proc.cpu_pct)),
+                .child(format!("{:.1}%", proc.cpu_pct)),
             1 => div()
                 .id(cell_id)
                 .px_2()
@@ -601,8 +601,9 @@ fn overview_section(overview: Option<&SystemOverview>) -> AnyElement {
     };
 
     let host_line: SharedString = format!(
-        "{} · {} · up {} · load {:.2} {:.2} {:.2}",
+        "{} · {} · kernel {} · up {} · load {:.2} {:.2} {:.2}",
         ov.hostname,
+        ov.os,
         ov.kernel,
         humanize_uptime(ov.uptime_secs),
         ov.load_avg.0,
