@@ -1645,7 +1645,16 @@ impl AppState {
                 this.db.active_id = Some(click_id.clone());
                 // Selecting a row is also this rail's one focus entry point — F2
                 // afterwards renames whatever just got selected (`begin_rename_active`).
-                if let Some(fh) = this.db.rail_focus.clone() {
+                // But a nested control's own click fires *before* this row-level one and
+                // bubbles up to here: the name's double-click (`begin_rename`), the 📁
+                // button (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`)
+                // each grab focus for their freshly-opened input/form — so only claim
+                // rail focus when none of those started, or this handler would steal it
+                // straight back and the inline editors would open unfocused.
+                let opening_editor = this.db.renaming.is_some()
+                    || this.db.folder_editing.is_some()
+                    || this.db.form.is_some();
+                if !opening_editor && let Some(fh) = this.db.rail_focus.clone() {
                     window.focus(&fh);
                 }
                 this.refresh_schema(cx);
