@@ -109,4 +109,30 @@ mod tests {
         assert_eq!(parse_proc_net_route(""), None);
         assert_eq!(parse_proc_net_route("Iface\tDestination\tGateway\n"), None);
     }
+
+    /// When more than one row claims the default route (shouldn't happen on a sane
+    /// system, but the parser must still be deterministic), the first one in file
+    /// order wins — matching how the kernel's own route table is walked top-down.
+    #[test]
+    fn multiple_default_routes_returns_the_first() {
+        let body =
+            "Iface\tDestination\tGateway\nwlan0\t00000000\t0102A8C0\neth0\t00000000\t0103A8C0\n";
+        assert_eq!(parse_proc_net_route(body), Some("wlan0".to_string()));
+    }
+
+    /// A route body with no gateway/flags columns at all (just iface + dest) still
+    /// resolves — only the first two columns are read.
+    #[test]
+    fn only_iface_and_dest_columns_still_resolves() {
+        let body = "Iface\tDestination\ntun0\t00000000\n";
+        assert_eq!(parse_proc_net_route(body), Some("tun0".to_string()));
+    }
+
+    /// A default-route row that isn't the first data row is still found — the scan
+    /// doesn't stop at the first (non-default) row.
+    #[test]
+    fn default_route_row_after_other_rows_is_still_found() {
+        let body = "Iface\tDestination\tGateway\neth0\t0000A8C0\t00000000\ndocker0\tAC110000\t00000000\nwlan0\t00000000\t0102A8C0\n";
+        assert_eq!(parse_proc_net_route(body), Some("wlan0".to_string()));
+    }
 }

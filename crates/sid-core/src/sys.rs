@@ -292,3 +292,91 @@ pub struct ProcessInfo {
     /// User identifier (stringified UID), if known.
     pub user: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Pid` derives `Ord`/`PartialOrd`/`Hash` — used to sort/dedup process lists by
+    /// pid elsewhere in the tree. Pin that the derive actually orders by the
+    /// wrapped value (not, say, by memory layout of some future added field).
+    #[test]
+    fn pid_ordering_follows_the_wrapped_value() {
+        assert!(Pid::from_u32(1) < Pid::from_u32(2));
+        assert!(Pid::from_u32(100) > Pid::from_u32(99));
+        assert_eq!(Pid::from_u32(5), Pid::from_u32(5));
+
+        let mut pids = vec![Pid::from_u32(30), Pid::from_u32(10), Pid::from_u32(20)];
+        pids.sort();
+        assert_eq!(
+            pids,
+            vec![Pid::from_u32(10), Pid::from_u32(20), Pid::from_u32(30)]
+        );
+    }
+
+    /// `Pid` derives `Hash` — used as a `HashMap`/`HashSet` key (e.g. pid → command
+    /// lookups). Confirm equal pids hash equally, the property a `Hash` impl must
+    /// uphold for hash-map lookups to work at all.
+    #[test]
+    fn pid_equal_values_hash_equally() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        fn hash_of(p: Pid) -> u64 {
+            let mut h = DefaultHasher::new();
+            p.hash(&mut h);
+            h.finish()
+        }
+
+        assert_eq!(hash_of(Pid::from_u32(42)), hash_of(Pid::from_u32(42)));
+    }
+
+    #[test]
+    fn sys_error_messages_carry_their_detail() {
+        assert!(
+            SysError::InvalidInput("bad signal".into())
+                .to_string()
+                .contains("bad signal")
+        );
+        assert!(
+            SysError::Other("netstat2: boom".into())
+                .to_string()
+                .contains("netstat2: boom")
+        );
+        assert!(
+            SysError::InvalidInput(String::new())
+                .to_string()
+                .contains("invalid input")
+        );
+        assert!(
+            SysError::Other(String::new())
+                .to_string()
+                .starts_with("system probe error")
+        );
+    }
+
+    /// `SysProvider::default_route_iface_name` has a default trait-method body
+    /// (`Ok(None)`) so pre-existing impls compile unchanged. Pin that default
+    /// directly: an impl that doesn't override it must return `Ok(None)`, not
+    /// panic or return an error.
+    #[test]
+    fn default_route_iface_name_default_impl_is_ok_none() {
+        struct Bare;
+        impl SysProvider for Bare {
+            fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
+                Ok(vec![])
+            }
+            fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
+                Ok(vec![])
+            }
+            fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
+                Ok(vec![])
+            }
+            fn kill_process(&mut self, _: Pid, _: Signal) -> Result<(), SysError> {
+                Ok(())
+            }
+        }
+        let mut p = Bare;
+        assert_eq!(p.default_route_iface_name().unwrap(), None);
+    }
+}

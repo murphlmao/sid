@@ -792,4 +792,45 @@ mod tests {
     fn assemble_foreign_keys_of_empty_input_is_empty() {
         assert!(assemble_foreign_keys(Vec::new()).is_empty());
     }
+
+    #[test]
+    fn assemble_primary_keys_of_empty_input_is_empty() {
+        assert!(assemble_primary_keys(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn assemble_foreign_keys_two_edges_between_the_same_pair_of_tables_both_survive() {
+        // Two independent FK constraints from the same table to the same
+        // referenced table, over different columns — the grouping key includes
+        // `conname`, so these must NOT collapse into one edge.
+        let rows = vec![
+            fk_row(
+                "shipments",
+                "warehouses",
+                "shipments_origin_fk",
+                1,
+                "origin_id",
+                "id",
+            ),
+            fk_row(
+                "shipments",
+                "warehouses",
+                "shipments_dest_fk",
+                1,
+                "destination_id",
+                "id",
+            ),
+        ];
+        let fks = assemble_foreign_keys(rows);
+        assert_eq!(fks.len(), 2, "distinct constraints must not be merged");
+        let from_cols: std::collections::BTreeSet<_> =
+            fks.iter().map(|fk| fk.from_columns[0].clone()).collect();
+        assert_eq!(
+            from_cols,
+            std::collections::BTreeSet::from([
+                "origin_id".to_string(),
+                "destination_id".to_string()
+            ])
+        );
+    }
 }

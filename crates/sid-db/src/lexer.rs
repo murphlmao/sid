@@ -358,4 +358,37 @@ mod tests {
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0].kind, TokenKind::Identifier);
     }
+
+    // Property-based: the module doc's robustness contract (terminates, never
+    // panics, `tok.text` concatenation equals the input) pinned above with a
+    // handful of hand-picked strings — fuzz it over arbitrary Unicode input
+    // instead of guessing which strings are adversarial. Also checks the
+    // stronger, un-stated invariant the hand-picked tests never verified
+    // directly: tokens are *contiguous* (each starts exactly where the last
+    // ended, no gaps or overlaps) and every offset lands on a char boundary.
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn tokenize_is_total_and_contiguous_on_arbitrary_input(
+            chars in prop::collection::vec(any::<char>(), 0..40)
+        ) {
+            let input: String = chars.into_iter().collect();
+            let toks = tokenize(&input);
+
+            let joined: String = toks.iter().map(|t| t.text.as_ref()).collect();
+            prop_assert_eq!(joined, input.clone(), "concatenation must equal the input verbatim");
+
+            let mut cursor = 0usize;
+            for t in &toks {
+                prop_assert_eq!(t.offset, cursor, "no gap/overlap between consecutive tokens");
+                prop_assert!(input.is_char_boundary(t.offset), "offset lands on a char boundary");
+                prop_assert!(!t.text.is_empty(), "every token covers at least one byte");
+                cursor += t.text.len();
+            }
+            prop_assert_eq!(cursor, input.len(), "tokens cover the input exactly, to the last byte");
+        }
+    }
 }
