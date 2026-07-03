@@ -19,16 +19,27 @@ use tokio::sync::Mutex;
 /// ```
 pub struct PostgresClient {
     inner: Option<Arc<Mutex<PostgresInner>>>,
+    /// Cancel side-channel, deliberately OUTSIDE `inner`'s mutex (BUG 2 fix).
+    /// `query_paged`/`execute` hold that mutex for the whole duration of a
+    /// live query, so a `cancel()` that also needed the lock could never run
+    /// until the query it's meant to interrupt already finished. A
+    /// `CancelToken` dials its own separate connection to send the
+    /// cancel-request frame — it needs no access to the primary client at
+    /// all, so it doesn't need the mutex either.
+    cancel: Option<PgCancel>,
 }
 
-#[allow(dead_code)]
 struct PostgresInner {
     client: tokio_postgres::Client,
     /// Handle for the spawned connection task. Aborted on drop.
     conn_task: tokio::task::JoinHandle<()>,
-    /// Used by `cancel` to send the cancel-request frame on a side channel.
-    cancel_token: tokio_postgres::CancelToken,
-    /// Which transport this connection was opened with — `cancel` must reuse
+}
+
+/// Everything `cancel()` needs, cloned/captured at `open()` time.
+struct PgCancel {
+    /// Used to send the cancel-request frame on a side channel.
+    token: tokio_postgres::CancelToken,
+    /// Which transport the connection was opened with — `cancel` must reuse
     /// the same choice (a cancel request over `NoTls` to a TLS-only server,
     /// or vice versa, fails).
     tls: PgTls,
@@ -145,7 +156,10 @@ impl PostgresClient {
     /// );
     /// ```
     pub fn factory() -> Arc<dyn DbClient> {
-        Arc::new(Self { inner: None })
+        Arc::new(Self {
+            inner: None,
+            cancel: None,
+        })
     }
 }
 
@@ -180,7 +194,7 @@ impl DbClient for PostgresClient {
                 let (client, connection) = config
                     .connect(tokio_postgres::NoTls)
                     .await
-                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                    .map_err(map_pg_connect_error)?;
                 let cancel_token = client.cancel_token();
                 let conn_task = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -197,7 +211,7 @@ impl DbClient for PostgresClient {
                 let (client, connection) = config
                     .connect(connector.clone())
                     .await
-                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                    .map_err(map_pg_connect_error)?;
                 let cancel_token = client.cancel_token();
                 let conn_task = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -208,12 +222,11 @@ impl DbClient for PostgresClient {
             }
         };
         Ok(Arc::new(PostgresClient {
-            inner: Some(Arc::new(Mutex::new(PostgresInner {
-                client,
-                conn_task,
-                cancel_token,
+            inner: Some(Arc::new(Mutex::new(PostgresInner { client, conn_task }))),
+            cancel: Some(PgCancel {
+                token: cancel_token,
                 tls,
-            }))),
+            }),
         }))
     }
 
@@ -249,15 +262,23 @@ impl DbClient for PostgresClient {
         // or behave oddly — the query editor is expected to send one SELECT
         // at a time; this is not a general-purpose SQL splitter.
         let trimmed = sql.trim().trim_end_matches(';');
+        const WRAP_PREFIX: &str = "SELECT * FROM ( ";
         let wrapped =
-            format!("SELECT * FROM ( {trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
+            format!("{WRAP_PREFIX}{trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
+        // BUG 5: Postgres reports a syntax error's position relative to `wrapped`
+        // (the string it actually parsed), not the caller's original `sql` — an
+        // uncorrected offset can run past `sql.len()`. `adjust_wrapped_syntax_offset`
+        // subtracts the wrapper prefix and clamps into the caller's original text.
+        let fix_offset = |e: tokio_postgres::Error| -> DbError {
+            adjust_wrapped_syntax_offset(map_pg_error(e), WRAP_PREFIX.len(), sql.len())
+        };
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
         let rows = guard
             .client
             .query(&wrapped, &[])
             .await
-            .map_err(map_pg_error)?;
+            .map_err(fix_offset)?;
         let columns: Vec<Column> = if let Some(r) = rows.first() {
             r.columns()
                 .iter()
@@ -267,7 +288,7 @@ impl DbClient for PostgresClient {
                 })
                 .collect()
         } else {
-            let stmt = guard.client.prepare(&wrapped).await.map_err(map_pg_error)?;
+            let stmt = guard.client.prepare(&wrapped).await.map_err(fix_offset)?;
             stmt.columns()
                 .iter()
                 .map(|c| Column {
@@ -302,10 +323,19 @@ impl DbClient for PostgresClient {
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let guard = inner.lock().await;
+        // Excludes `pg_%` (pg_catalog + pg_toast*) and `information_schema` (the
+        // standard system namespaces) AND TimescaleDB's internal namespaces
+        // (`_timescaledb_internal`/`_timescaledb_catalog`/`_timescaledb_config` all
+        // match `\_timescaledb%`; `timescaledb_information`/`timescaledb_experimental`
+        // don't have the leading underscore, hence the separate NOT IN) — see BUG 3.
+        // Without this, Timescale's internal chunk tables leak in as user tables.
         let sql = "
             SELECT table_schema, table_name, column_name, data_type
             FROM information_schema.columns
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            WHERE table_schema NOT LIKE 'pg\\_%'
+              AND table_schema NOT IN ('information_schema')
+              AND table_schema NOT LIKE '\\_timescaledb%'
+              AND table_schema NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY table_schema, table_name, ordinal_position
         ";
         let rows = guard.client.query(sql, &[]).await.map_err(map_pg_error)?;
@@ -367,7 +397,10 @@ impl DbClient for PostgresClient {
             JOIN pg_attribute refatt
                 ON refatt.attrelid = con.confrelid AND refatt.attnum = u.confattnum
             WHERE con.contype = 'f'
-              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND ns.nspname NOT LIKE 'pg\\_%'
+              AND ns.nspname NOT IN ('information_schema')
+              AND ns.nspname NOT LIKE '\\_timescaledb%'
+              AND ns.nspname NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY ns.nspname, cl.relname, con.conname, u.ord
         ";
         let fk_rows = guard
@@ -398,7 +431,10 @@ impl DbClient for PostgresClient {
             JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS u(conattnum, ord) ON true
             JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = u.conattnum
             WHERE con.contype = 'p'
-              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND ns.nspname NOT LIKE 'pg\\_%'
+              AND ns.nspname NOT IN ('information_schema')
+              AND ns.nspname NOT LIKE '\\_timescaledb%'
+              AND ns.nspname NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY ns.nspname, cl.relname, u.ord
         ";
         let pk_rows = guard
@@ -423,11 +459,13 @@ impl DbClient for PostgresClient {
     }
 
     async fn cancel(&self) -> Result<(), DbError> {
-        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
-        let guard = inner.lock().await;
-        match &guard.tls {
-            PgTls::Plain => guard.cancel_token.cancel_query(tokio_postgres::NoTls).await,
-            PgTls::Tls(connector) => guard.cancel_token.cancel_query(connector.clone()).await,
+        // Deliberately does NOT touch `self.inner`'s mutex — see `PostgresClient::cancel`'s
+        // doc comment (BUG 2). `CancelToken::cancel_query` dials its own side-channel
+        // connection, so it can run concurrently with a live query still holding that lock.
+        let cancel = self.cancel.as_ref().ok_or(DbError::NotConnected)?;
+        match &cancel.tls {
+            PgTls::Plain => cancel.token.cancel_query(tokio_postgres::NoTls).await,
+            PgTls::Tls(connector) => cancel.token.cancel_query(connector.clone()).await,
         }
         .map_err(|e| DbError::Other(e.to_string()))
     }
@@ -531,9 +569,31 @@ fn assemble_primary_keys(rows: Vec<PgPkRow>) -> BTreeMap<String, Vec<String>> {
         .collect()
 }
 
+/// Classify a connect-time `tokio_postgres::Error` (BUG 4): SQLSTATE `28P01`
+/// (invalid_password) or `28000` (invalid_authorization_specification) is an
+/// auth failure, distinct from every other connect failure (DNS, refused,
+/// timeout, TLS, etc.) which stays `DbError::Connect`.
+pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
+    if let Some(db_err) = e.as_db_error() {
+        if matches!(db_err.code().code(), "28P01" | "28000") {
+            return DbError::Auth;
+        }
+    }
+    DbError::Connect(e.to_string())
+}
+
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     if let Some(db_err) = e.as_db_error() {
-        if db_err.code().code().starts_with("42") {
+        let code = db_err.code().code();
+        // BUG 8: SQLSTATE class 42 covers more than syntax errors. Split off
+        // the common non-syntax members — 42P01 undefined_table, 42703
+        // undefined_column, 42883 undefined_function — into `DbError::Invalid`;
+        // everything else in the class (including true syntax, 42601) keeps
+        // the historical `DbError::Syntax` mapping below.
+        if matches!(code, "42P01" | "42703" | "42883") {
+            return DbError::Invalid(db_err.message().to_string());
+        }
+        if code.starts_with("42") {
             return DbError::Syntax {
                 offset: db_err
                     .position()
@@ -552,47 +612,115 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     DbError::Query(e.to_string())
 }
 
+/// Adjust a `DbError::Syntax` offset from being relative to `query_paged`'s
+/// rewritten `SELECT * FROM ( <sql> ) AS sid_sub LIMIT.. OFFSET..` wrapper
+/// back to the caller's original SQL text (BUG 5). Postgres reports the error
+/// position relative to whatever string it actually parsed — the wrapped
+/// one — so left uncorrected the offset can run past the end of (or point at
+/// unrelated bytes of) the SQL the caller actually wrote. Non-`Syntax` errors
+/// pass through unchanged.
+fn adjust_wrapped_syntax_offset(err: DbError, prefix_len: usize, original_len: usize) -> DbError {
+    match err {
+        DbError::Syntax { offset, message } => DbError::Syntax {
+            offset: offset.saturating_sub(prefix_len).min(original_len),
+            message,
+        },
+        other => other,
+    }
+}
+
+/// Decode column `idx` as `Option<T>`, but keep NULL and decode-failure
+/// distinct instead of collapsing both to `None` (the bug: `.ok().flatten()`
+/// used to make a present-but-undecodable value indistinguishable from a real
+/// SQL NULL). `Ok(Some(v))` = present + decoded; `Ok(None)` = a genuine SQL
+/// NULL; `Err(())` = present but this Rust type couldn't decode it.
+fn try_decode<'r, T>(row: &'r tokio_postgres::Row, idx: usize) -> Result<Option<T>, ()>
+where
+    T: tokio_postgres::types::FromSql<'r>,
+{
+    row.try_get::<_, Option<T>>(idx).map_err(|_| ())
+}
+
+/// Render one column via [`try_decode`], applying `fmt` to a present value.
+/// The `Err` arm is the load-bearing fix for BUG 1: a present-but-undecodable
+/// value renders as a distinct `⟨type?⟩` marker — **never** "NULL" — so it's
+/// never confused with a genuine SQL NULL (which still renders "NULL"; see
+/// `Row::values`'s doc comment on the lack of an `Option<String>` sentinel).
+fn render<'r, T>(row: &'r tokio_postgres::Row, idx: usize, fmt: impl FnOnce(T) -> String) -> String
+where
+    T: tokio_postgres::types::FromSql<'r>,
+{
+    match try_decode::<T>(row, idx) {
+        Ok(Some(v)) => fmt(v),
+        Ok(None) => "NULL".to_string(),
+        Err(()) => format!("⟨{}?⟩", row.columns()[idx].type_().name()),
+    }
+}
+
+/// Render a Postgres array column as `{a,b,NULL,c}` — `Vec<Option<T>>` so an
+/// individual NULL *element* (a normal, expected thing inside an array) still
+/// prints "NULL" inline without that being confused with the top-level
+/// NULL-vs-undecodable distinction `render` enforces for the column as a whole.
+fn render_array<'r, T>(row: &'r tokio_postgres::Row, idx: usize) -> String
+where
+    T: tokio_postgres::types::FromSql<'r> + ToString,
+{
+    render::<Vec<Option<T>>>(row, idx, |items| {
+        let inner = items
+            .into_iter()
+            .map(|item| {
+                item.map(|v| v.to_string())
+                    .unwrap_or_else(|| "NULL".to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{{inner}}}")
+    })
+}
+
 pub(crate) fn render_pg_value(row: &tokio_postgres::Row, idx: usize) -> String {
     use tokio_postgres::types::Type;
     let col = &row.columns()[idx];
-    macro_rules! try_get {
-        ($t:ty) => {
-            row.try_get::<_, Option<$t>>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        };
-    }
-    let s = match *col.type_() {
-        Type::BOOL => try_get!(bool),
-        Type::INT2 => try_get!(i16),
-        Type::INT4 => try_get!(i32),
-        Type::INT8 => try_get!(i64),
-        Type::FLOAT4 => try_get!(f32),
-        Type::FLOAT8 => try_get!(f64),
-        // Not `try_get!(String)` — that macro's `.map(|v| v.to_string())` is a no-op
-        // allocation/copy on a value that's already an owned `String` (perf audit
-        // finding #3). The numeric/bool arms above still need the macro's `ToString`
-        // call, so this arm alone bypasses it.
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
-            row.try_get::<_, Option<String>>(idx).ok().flatten()
+    match *col.type_() {
+        Type::BOOL => render::<bool>(row, idx, |v| v.to_string()),
+        Type::INT2 => render::<i16>(row, idx, |v| v.to_string()),
+        Type::INT4 => render::<i32>(row, idx, |v| v.to_string()),
+        Type::INT8 => render::<i64>(row, idx, |v| v.to_string()),
+        Type::FLOAT4 => render::<f32>(row, idx, |v| v.to_string()),
+        Type::FLOAT8 => render::<f64>(row, idx, |v| v.to_string()),
+        // Not `.map(|v| v.to_string())` — that would be a no-op allocation/copy
+        // on a value that's already an owned `String` (perf audit finding #3).
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => render::<String>(row, idx, |v| v),
+        Type::BYTEA => render::<Vec<u8>>(row, idx, |b| {
+            let mut s = String::with_capacity(2 + b.len() * 2);
+            s.push_str("0x");
+            for byte in &b {
+                use std::fmt::Write;
+                write!(&mut s, "{byte:02x}").ok();
+            }
+            s
+        }),
+        Type::UUID => render::<uuid::Uuid>(row, idx, |v| v.to_string()),
+        Type::TIMESTAMPTZ => render::<chrono::DateTime<chrono::Utc>>(row, idx, |v| v.to_string()),
+        Type::TIMESTAMP => render::<chrono::NaiveDateTime>(row, idx, |v| v.to_string()),
+        Type::DATE => render::<chrono::NaiveDate>(row, idx, |v| v.to_string()),
+        Type::TIME => render::<chrono::NaiveTime>(row, idx, |v| v.to_string()),
+        Type::JSON | Type::JSONB => render::<serde_json::Value>(row, idx, |v| v.to_string()),
+        Type::NUMERIC => render::<rust_decimal::Decimal>(row, idx, |v| v.to_string()),
+        Type::TEXT_ARRAY | Type::VARCHAR_ARRAY | Type::BPCHAR_ARRAY | Type::NAME_ARRAY => {
+            render_array::<String>(row, idx)
         }
-        Type::BYTEA => row
-            .try_get::<_, Option<Vec<u8>>>(idx)
-            .ok()
-            .flatten()
-            .map(|b| {
-                let mut s = String::with_capacity(2 + b.len() * 2);
-                s.push_str("0x");
-                for byte in &b {
-                    use std::fmt::Write;
-                    write!(&mut s, "{byte:02x}").ok();
-                }
-                s
-            }),
-        _ => row.try_get::<_, Option<String>>(idx).ok().flatten(),
-    };
-    s.unwrap_or_else(|| "NULL".to_string())
+        Type::INT2_ARRAY => render_array::<i16>(row, idx),
+        Type::INT4_ARRAY => render_array::<i32>(row, idx),
+        Type::INT8_ARRAY => render_array::<i64>(row, idx),
+        Type::BOOL_ARRAY => render_array::<bool>(row, idx),
+        Type::UUID_ARRAY => render_array::<uuid::Uuid>(row, idx),
+        // Fallback for every other type (custom enums/domains, extension types
+        // like `citext`, geometric types, etc.): still tri-state via `render`,
+        // so an undecodable-as-String value gets the `⟨type?⟩` marker instead
+        // of silently becoming "NULL" — this was BUG 1's exact failure mode.
+        _ => render::<String>(row, idx, |v| v),
+    }
 }
 
 pub(crate) fn pg_type_to_column_type(t: &tokio_postgres::types::Type) -> ColumnType {
@@ -610,6 +738,60 @@ pub(crate) fn pg_type_to_column_type(t: &tokio_postgres::types::Type) -> ColumnT
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_subtracts_prefix_and_clamps() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // A raw offset comfortably past the prefix subtracts cleanly.
+        let err = DbError::Syntax {
+            offset: WRAP_PREFIX_LEN + 5,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 100) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 5),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_clamps_into_original_sql_bounds() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // An offset that would land past the caller's original SQL (e.g. the
+        // wrapper's own trailing `) AS sid_sub LIMIT.. OFFSET..`) clamps to
+        // original_len rather than pointing out of bounds.
+        let err = DbError::Syntax {
+            offset: WRAP_PREFIX_LEN + 9999,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 10) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 10),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_clamps_to_zero_when_offset_is_within_the_prefix() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // An offset pointing INTO the wrapper prefix itself (before the
+        // caller's SQL even starts) saturates to 0, not a huge underflowed value.
+        let err = DbError::Syntax {
+            offset: 3,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 50) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 0),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_leaves_non_syntax_errors_untouched() {
+        let err = DbError::Query("boom".into());
+        match adjust_wrapped_syntax_offset(err, 17, 10) {
+            DbError::Query(msg) => assert_eq!(msg, "boom"),
+            other => panic!("expected Query passthrough, got {other:?}"),
+        }
+    }
 
     #[test]
     fn tls_choice_remote_disable_is_still_tls() {
