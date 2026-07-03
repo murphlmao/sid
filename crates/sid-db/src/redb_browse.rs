@@ -168,10 +168,23 @@ fn table_primary_key(name: &str) -> Vec<String> {
 }
 
 /// Column names for one of the fixed [`TABLE_NAMES`]. Empty for anything else.
+///
+/// BUG 6: this list used to omit real [`sid_store::Host`]/[`sid_store::DbConnection`]
+/// fields — `hosts` dropped `folder`, `connections` dropped `kind`/`name`/`folder`
+/// entirely — so the redb browse engine silently hid columns that exist on the
+/// entity. [`dump_table`] must emit values in this exact order.
 fn table_columns(name: &str) -> Vec<Column> {
     let cols: &[&str] = match name {
-        "hosts" => &["alias", "user", "host", "port", "secret_ref", "auth"],
-        "connections" => &["id", "dsn", "secret_ref"],
+        "hosts" => &[
+            "alias",
+            "user",
+            "host",
+            "port",
+            "secret_ref",
+            "auth",
+            "folder",
+        ],
+        "connections" => &["id", "name", "kind", "dsn", "secret_ref", "folder"],
         "quick_actions" => &["label", "cmd"],
         "workspaces" => &["id", "root", "name"],
         "settings" => &["default_scope"],
@@ -206,6 +219,7 @@ fn dump_table(store: &GlobalStore, table: &str) -> Result<(Vec<Column>, Vec<Row>
                     h.port.to_string(),
                     h.secret_ref.unwrap_or_default(),
                     format!("{:?}", h.auth),
+                    h.folder.unwrap_or_default(),
                 ],
             })
             .collect(),
@@ -214,7 +228,14 @@ fn dump_table(store: &GlobalStore, table: &str) -> Result<(Vec<Column>, Vec<Row>
             .map_err(|e| DbError::Other(e.to_string()))?
             .into_iter()
             .map(|c| Row {
-                values: vec![c.id, c.dsn, c.secret_ref.unwrap_or_default()],
+                values: vec![
+                    c.id,
+                    c.name,
+                    c.kind.label().to_string(),
+                    c.dsn,
+                    c.secret_ref.unwrap_or_default(),
+                    c.folder.unwrap_or_default(),
+                ],
             })
             .collect(),
         "quick_actions" => store
@@ -255,9 +276,11 @@ mod tests {
     use super::*;
     use sid_store::{AuthMethod, DbConnection, Host};
 
-    /// A temp-file-backed store seeded with one host and one connection. The
-    /// returned `TempDir` must be kept alive for as long as the store is used
-    /// (dropping it removes the backing file).
+    /// A temp-file-backed store seeded with one host and one connection, both
+    /// with `folder` set (and the connection's `name`/`kind` distinct from
+    /// `id`) so the columns BUG 6 fixed have a non-default value to assert on.
+    /// The returned `TempDir` must be kept alive for as long as the store is
+    /// used (dropping it removes the backing file).
     fn seeded_store() -> (tempfile::TempDir, Arc<GlobalStore>) {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
@@ -269,7 +292,7 @@ mod tests {
                 port: 22,
                 secret_ref: None,
                 auth: AuthMethod::Agent,
-                folder: None,
+                folder: Some("prod".into()),
             })
             .unwrap();
         store
@@ -278,8 +301,8 @@ mod tests {
                 dsn: "postgres://x@y/z".into(),
                 secret_ref: None,
                 kind: sid_core::db::DbKind::Postgres,
-                name: "conn1".into(),
-                folder: None,
+                name: "Conn One".into(),
+                folder: Some("analytics".into()),
             })
             .unwrap();
         (dir, Arc::new(store))
@@ -293,7 +316,8 @@ mod tests {
         let names: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, TABLE_NAMES.to_vec());
         let hosts_table = &schema.tables[0];
-        assert_eq!(hosts_table.columns.len(), 6);
+        // 7, not 6 (BUG 6): alias, user, host, port, secret_ref, auth, folder.
+        assert_eq!(hosts_table.columns.len(), 7);
     }
 
     #[tokio::test]
@@ -303,6 +327,9 @@ mod tests {
         let page = client.query_paged("hosts", None, 10).await.unwrap();
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].values[0], "box1");
+        // BUG 6: `folder` is column index 6 (alias,user,host,port,secret_ref,auth,folder).
+        assert_eq!(page.rows[0].values.len(), 7);
+        assert_eq!(page.rows[0].values[6], "prod");
         assert!(page.next_cursor.is_none());
     }
 
@@ -312,8 +339,18 @@ mod tests {
         let client = RedbBrowseClient::wrap(store);
         let page = client.query_paged("connections", None, 10).await.unwrap();
         assert_eq!(page.rows.len(), 1);
-        assert_eq!(page.rows[0].values[0], "conn1");
-        assert_eq!(page.rows[0].values[1], "postgres://x@y/z");
+        // BUG 6: column order is id, name, kind, dsn, secret_ref, folder.
+        assert_eq!(
+            page.rows[0].values,
+            vec![
+                "conn1",
+                "Conn One",
+                "postgres",
+                "postgres://x@y/z",
+                "",
+                "analytics"
+            ]
+        );
     }
 
     #[tokio::test]

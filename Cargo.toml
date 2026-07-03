@@ -56,6 +56,18 @@ tokio-postgres-rustls = { version = "0.14", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 
+# Typed Postgres value decoding (`sid-db`'s `render_pg_value`, integration-probe
+# fix — see docs/design bug log): tokio-postgres's `with-*` features (enabled on
+# the `tokio-postgres` dependency in `crates/sid-db/Cargo.toml`) decode UUID/
+# timestamp/JSON columns through these crates instead of falling through to a
+# `String` decode that silently renders a present value as "NULL". `rust_decimal`'s
+# `db-tokio-postgres` feature is the NUMERIC decode path (matched against our
+# pinned tokio-postgres "0.7" line above).
+uuid = "1"
+chrono = "0.4"
+serde_json = "1"
+rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
+
 # Async
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
