@@ -576,7 +576,16 @@ pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
 
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     if let Some(db_err) = e.as_db_error() {
-        if db_err.code().code().starts_with("42") {
+        let code = db_err.code().code();
+        // BUG 8: SQLSTATE class 42 covers more than syntax errors. Split off
+        // the common non-syntax members — 42P01 undefined_table, 42703
+        // undefined_column, 42883 undefined_function — into `DbError::Invalid`;
+        // everything else in the class (including true syntax, 42601) keeps
+        // the historical `DbError::Syntax` mapping below.
+        if matches!(code, "42P01" | "42703" | "42883") {
+            return DbError::Invalid(db_err.message().to_string());
+        }
+        if code.starts_with("42") {
             return DbError::Syntax {
                 offset: db_err
                     .position()
