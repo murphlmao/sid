@@ -229,13 +229,14 @@ impl From<DbConnectionV2> for DbConnection {
 
 /// Machine-local, identity-level preferences. Always global — never layered per workspace.
 ///
-/// Stored in its own single-key redb table under codec version 2 (see
+/// Stored in its own single-key redb table under codec version 3 (see
 /// [`SETTINGS_VERSION`]); a missing value reads as [`Settings::default`]. Version-1
 /// values (the pre-`file_browser_side` shape) migrate on read via [`SettingsV1`] →
-/// `file_browser_side: PanelSide::Left`.
+/// [`SettingsV2`] → the current shape; version-2 values (the pre-secret-toggle shape)
+/// migrate via [`SettingsV2`] → `secret_keyring_enabled: true, secret_file_enabled: true`.
 ///
 /// [`SETTINGS_VERSION`]: crate::global::SETTINGS_VERSION
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// Which layer the "save to" dialog preselects for new items.
     #[serde(default)]
@@ -244,25 +245,81 @@ pub struct Settings {
     /// defaults to [`PanelSide::Left`].
     #[serde(default)]
     pub file_browser_side: PanelSide,
+    /// Whether the OS keyring is a candidate secret backend
+    /// (`sid_secrets::resolve_secret_store`'s selection chain). Still gated by a
+    /// startup durability probe — enabling this doesn't guarantee the keyring wins.
+    /// Absent in v1/v2 stores — defaults to `true`.
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    /// Whether the dependency-less encrypted-file vault is a candidate secret backend.
+    /// Absent in v1/v2 stores — defaults to `true`.
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            default_scope: DefaultScope::default(),
+            file_browser_side: PanelSide::default(),
+            secret_keyring_enabled: true,
+            secret_file_enabled: true,
+        }
+    }
+}
+
+/// The `#[serde(default = ...)]` value for both secret-backend toggles: `true` — both
+/// backends are candidates out of the box (per the resolution chain in
+/// `sid_secrets::resolve_secret_store`; memory is the unconditional last resort and is
+/// never toggleable). A plain function (rather than a `bool::default`-style literal) is
+/// what `#[serde(default = "...")]` requires.
+fn default_secret_backend_enabled() -> bool {
+    true
 }
 
 /// The version-1 on-disk shape of [`Settings`] (before `file_browser_side`). Retained
-/// only to decode legacy redb values; `From<SettingsV1> for Settings` migrates it
+/// only to decode legacy redb values; `From<SettingsV1> for SettingsV2` migrates it
 /// forward with `file_browser_side: PanelSide::Left`.
 ///
 /// postcard is positional, so a v1 value must be decoded against this exact 1-field
-/// layout — decoding it as the current [`Settings`] would misread the trailing bytes.
+/// layout — decoding it as a later [`Settings`] shape would misread the trailing bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SettingsV1 {
     #[serde(default)]
     pub default_scope: DefaultScope,
 }
 
-impl From<SettingsV1> for Settings {
+impl From<SettingsV1> for SettingsV2 {
     fn from(v: SettingsV1) -> Self {
-        Settings {
+        SettingsV2 {
             default_scope: v.default_scope,
             file_browser_side: PanelSide::Left,
+        }
+    }
+}
+
+/// The version-2 on-disk shape of [`Settings`] (after `file_browser_side`, before the
+/// secret-backend toggles). Retained only to decode legacy redb values;
+/// `From<SettingsV2> for Settings` migrates it forward with both toggles defaulting to
+/// `true`.
+///
+/// postcard is positional, so a v2 value must be decoded against this exact 2-field
+/// layout — decoding it as the current [`Settings`] would misread the trailing bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV2 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+}
+
+impl From<SettingsV2> for Settings {
+    fn from(v: SettingsV2) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: true,
+            secret_file_enabled: true,
         }
     }
 }

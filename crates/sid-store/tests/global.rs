@@ -130,6 +130,8 @@ fn settings_roundtrip() {
     let want = Settings {
         default_scope: DefaultScope::Workspace,
         file_browser_side: PanelSide::Right,
+        secret_keyring_enabled: true,
+        secret_file_enabled: true,
     };
     s.set_settings(&want).unwrap();
     assert_eq!(s.get_settings().unwrap(), want);
@@ -144,6 +146,8 @@ fn settings_persist_across_reopen() {
         s.set_settings(&Settings {
             default_scope: DefaultScope::Global,
             file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: true,
+            secret_file_enabled: true,
         })
         .unwrap();
     }
@@ -167,6 +171,8 @@ fn facade_settings_passthrough() {
         .set_settings(&Settings {
             default_scope: DefaultScope::Global,
             file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: true,
+            secret_file_enabled: true,
         })
         .unwrap();
     assert_eq!(
@@ -177,4 +183,22 @@ fn facade_settings_passthrough() {
         store.settings().unwrap().file_browser_side,
         PanelSide::Right
     );
+}
+
+#[test]
+fn settings_secret_backend_toggles_default_true_and_round_trip_false() {
+    let (_d, s) = open();
+    assert!(s.get_settings().unwrap().secret_keyring_enabled);
+    assert!(s.get_settings().unwrap().secret_file_enabled);
+
+    let want = Settings {
+        default_scope: DefaultScope::Ask,
+        file_browser_side: PanelSide::Left,
+        secret_keyring_enabled: false,
+        secret_file_enabled: false,
+    };
+    s.set_settings(&want).unwrap();
+    let got = s.get_settings().unwrap();
+    assert!(!got.secret_keyring_enabled);
+    assert!(!got.secret_file_enabled);
 }

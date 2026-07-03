@@ -15,10 +15,10 @@
 //!
 //! Registering a backend store can succeed even when the platform's Secret Service
 //! daemon is unreachable or misconfigured (e.g. no `org.freedesktop.secrets` on the
-//! session bus) — the failure only surfaces on the first real operation. [`open_default_secrets`]
-//! runs a put/get/delete round-trip against a canary id at startup and only hands back a
-//! `KeyringStore` if that probe fully succeeds; otherwise it falls back to
-//! [`MemorySecretStore`] plus a human-readable warning the app can surface later.
+//! session bus) — the failure only surfaces on the first real operation. [`probe`] runs
+//! a put/get/delete round-trip against a canary id and is what
+//! [`resolve::probe_keyring`](crate::resolve::probe_keyring) calls to decide whether
+//! the keyring is actually usable, not just registered.
 //!
 //! ## `list_ids` limitation
 //!
@@ -26,7 +26,7 @@
 //! `Err(SecretError::Backend(...))` with a clear message. Callers that need enumeration
 //! must track ids themselves (e.g. via the committed config's `secret_ref` fields).
 
-use crate::{MemorySecretStore, SecretError, SecretId, SecretStore};
+use crate::{SecretError, SecretId, SecretStore};
 
 /// Service name used as the keyring "service" label.
 const SERVICE: &str = "sid";
@@ -197,8 +197,10 @@ impl<B: KeyringBackend> SecretStore for KeyringStore<B> {
 /// end-to-end (put, then get back the same bytes, then delete). Registering a keyring
 /// backend store can succeed even when the daemon behind it is unreachable — the failure
 /// only shows up on the first real operation — so this probe is what actually gates
-/// whether we trust the keyring.
-fn probe(store: &dyn SecretStore) -> Result<(), String> {
+/// whether we trust the keyring. `pub(crate)`: called by
+/// [`resolve::probe_keyring`](crate::resolve::probe_keyring), the production entry
+/// point [`crate::resolve_secret_store`] uses.
+pub(crate) fn probe(store: &dyn SecretStore) -> Result<(), String> {
     let id = SecretId::new(PROBE_ID);
     let payload = b"sid-startup-probe";
     store.put(&id, payload).map_err(|e| e.to_string())?;
@@ -210,33 +212,6 @@ fn probe(store: &dyn SecretStore) -> Result<(), String> {
         Some(bytes) if bytes == payload => delete_result,
         Some(_) => Err("startup probe: read-back bytes did not match".into()),
         None => Err("startup probe: value vanished immediately after put".into()),
-    }
-}
-
-/// Open the default secret backend: the OS keyring if it passes a startup durability
-/// probe, otherwise an in-memory fallback plus a human-readable warning.
-///
-/// The warning is `Some(..)` exactly when the fallback is in use, so the app can surface
-/// it (secrets entered this session will not survive a restart).
-pub fn open_default_secrets() -> (Box<dyn SecretStore>, Option<String>) {
-    if let Err(e) = install_default_backend() {
-        return (
-            Box::new(MemorySecretStore::new()),
-            Some(format!(
-                "OS keyring unavailable ({e}); secrets will not persist across restarts"
-            )),
-        );
-    }
-
-    let candidate = KeyringStore::new();
-    match probe(&candidate) {
-        Ok(()) => (Box::new(candidate), None),
-        Err(e) => (
-            Box::new(MemorySecretStore::new()),
-            Some(format!(
-                "OS keyring probe failed ({e}); secrets will not persist across restarts"
-            )),
-        ),
     }
 }
 
@@ -445,34 +420,5 @@ mod tests {
         }
         let store = KeyringStore::with_backend(Vanishes);
         assert!(probe(&store).is_err());
-    }
-
-    // ---- open_default_secrets -------------------------------------------
-
-    /// On a platform/environment with no reachable Secret Service daemon,
-    /// `install_default_backend` itself fails, so `open_default_secrets` must fall back
-    /// to the in-memory store with a warning rather than panicking or silently losing
-    /// secrets. CI/sandboxed dev boxes typically have no session bus, so this exercises
-    /// the real fallback path without requiring a live daemon.
-    #[test]
-    fn open_default_secrets_falls_back_to_memory_without_a_daemon() {
-        let (store, warning) = open_default_secrets();
-        // Whichever path was taken, the returned store must be minimally functional.
-        // Clean up afterwards: on a dev box this may be the REAL keyring, and leaving
-        // the entry behind would deposit test residue in the user's Secret Service.
-        let id = SecretId::new("sid.test-smoke");
-        store.put(&id, b"v").unwrap();
-        assert_eq!(store.get(&id).unwrap().unwrap(), b"v".to_vec());
-        store.delete(&id).unwrap();
-        assert!(store.get(&id).unwrap().is_none());
-
-        // If no real keyring daemon is reachable in this environment (the common case
-        // for CI and sandboxes), a warning must be present so the app can surface it.
-        // We can't assert which branch was taken (a dev box may have a real session
-        // Secret Service running), but we can assert the contract: whenever a warning
-        // is returned, it's non-empty and human-readable.
-        if let Some(msg) = warning {
-            assert!(!msg.is_empty());
-        }
     }
 }
