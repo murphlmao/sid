@@ -274,7 +274,11 @@ impl DbClient for PostgresClient {
         };
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
-        let rows = guard.client.query(&wrapped, &[]).await.map_err(fix_offset)?;
+        let rows = guard
+            .client
+            .query(&wrapped, &[])
+            .await
+            .map_err(fix_offset)?;
         let columns: Vec<Column> = if let Some(r) = rows.first() {
             r.columns()
                 .iter()
