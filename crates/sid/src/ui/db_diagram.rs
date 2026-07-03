@@ -10,12 +10,13 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Render, SharedString, Window, canvas, div,
-    point, prelude::*, px, rgb, size,
+    AnyElement, AnyWindowHandle, Bounds, ClickEvent, Context, FontWeight, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Render, SharedString,
+    WeakEntity, Window, canvas, div, point, prelude::*, px, rgb, size,
 };
 use sid_core::db::{SchemaGraph, SchemaInfo};
 
+use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
 
 // ---- palette (kept local — see `db_tab.rs`'s convention for why) --------------------------
@@ -43,6 +44,11 @@ const GAP_Y: f32 = 40.0;
 const BOXES_PER_COLUMN: usize = 4;
 const MARGIN: f32 = 40.0;
 const LINE_THICKNESS: f32 = 2.0;
+/// Task 2's click-vs-drag threshold: total mouse-down→mouse-up pointer movement, in px,
+/// under which a header interaction counts as a click rather than a drag. Small enough
+/// to catch real drags unambiguously, generous enough to absorb natural pointer jitter
+/// on an intended click.
+const CLICK_DRAG_THRESHOLD_PX: f32 = 4.0;
 
 /// One table box's rendering state — a pure projection of [`SchemaInfo`]/[`SchemaGraph`]
 /// keyed by [`table_display_name`] (the same qualification rule
@@ -69,12 +75,19 @@ struct DiagramEdge {
     self_ref: bool,
 }
 
-/// In-flight drag state: which table is being moved, and the fixed offset between the
-/// mouse position and that table's top-left at the moment the drag started (used every
-/// subsequent move to compute the table's new position — see [`DiagramView::on_mouse_move`]).
+/// In-flight header interaction state: which table's header the mouse went down on, the
+/// fixed offset between the mouse position and that table's top-left at that moment
+/// (used to compute the table's new position once dragging starts — see
+/// [`DiagramView::on_mouse_move`]), and the mouse-down position itself, kept to
+/// distinguish a click from a drag (see [`is_click`]).
 struct DragState {
     table_key: String,
     grab_offset: Point<Pixels>,
+    mouse_down_pos: Point<Pixels>,
+    /// Flips to `true` once cumulative movement crosses [`CLICK_DRAG_THRESHOLD_PX`] —
+    /// until then, `on_mouse_move` leaves the table's position untouched, so a clean
+    /// click never nudges the box even by a sub-threshold amount.
+    dragging: bool,
 }
 
 /// The relationships diagram's whole state. Renders from `tables`/`edges`/`positions`
@@ -86,6 +99,12 @@ pub struct DiagramView {
     positions: HashMap<String, Point<Pixels>>,
     drag: Option<DragState>,
     selected: Option<String>,
+    /// Task 2's click-through: a weak handle back to the main window's [`AppState`], and
+    /// that window itself — see [`crate::ui::db_tab::AppState::open_diagram_window`]'s
+    /// doc comment for why both are needed (the entity is app-global, but the SQL
+    /// editor's mutators need the *main* window's real `Window`, not this one's).
+    app: WeakEntity<AppState>,
+    main_window: AnyWindowHandle,
 }
 
 impl DiagramView {
@@ -94,7 +113,17 @@ impl DiagramView {
     /// backend contract doesn't guarantee it, and a dangling edge would panic the
     /// anchor-picking geometry). Self-referencing edges are kept (as box badges, not
     /// lines) rather than dropped.
-    pub fn new(schema: SchemaInfo, graph: SchemaGraph) -> Self {
+    ///
+    /// `app`/`main_window` back Task 2's click-through (a table-name or column-row click
+    /// jumping to the main window's SQL editor) — see
+    /// [`crate::ui::db_tab::AppState::open_diagram_window`]'s doc comment for where
+    /// they come from and why both are needed.
+    pub fn new(
+        schema: SchemaInfo,
+        graph: SchemaGraph,
+        app: WeakEntity<AppState>,
+        main_window: AnyWindowHandle,
+    ) -> Self {
         let tables: Vec<DiagramTable> = schema
             .tables
             .iter()
@@ -161,6 +190,8 @@ impl DiagramView {
             positions,
             drag: None,
             selected: None,
+            app,
+            main_window,
         }
     }
 
@@ -211,8 +242,11 @@ impl DiagramView {
         (max_x + MARGIN, max_y + MARGIN)
     }
 
-    /// Header click (drag handle): begin a drag and select the table. One handler does
-    /// both — there's no interaction where selecting without dragging matters here.
+    /// Header mouse-down: arm a potential drag and select the table. Selection happens
+    /// immediately either way (matches the pre-Task-2 behavior — there's no interaction
+    /// where selecting without dragging/clicking matters); whether this interaction ends
+    /// up moving the box or firing the table-name click-through is decided at mouse-up
+    /// (see [`Self::on_mouse_up`]) once we know how far the pointer traveled.
     fn start_drag(&mut self, key: &str, mouse_pos: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(&table_pos) = self.positions.get(key) else {
             return;
@@ -220,32 +254,84 @@ impl DiagramView {
         self.drag = Some(DragState {
             table_key: key.to_string(),
             grab_offset: mouse_pos - table_pos,
+            mouse_down_pos: mouse_pos,
+            dragging: false,
         });
         self.selected = Some(key.to_string());
         cx.notify();
     }
 
     /// Bound to the scroll container so it fires for the whole canvas, not just the
-    /// dragged box (whose own bounds the mouse quickly leaves once dragging starts).
+    /// dragged box (whose own bounds the mouse quickly leaves once dragging starts). The
+    /// box only starts tracking the mouse once cumulative movement crosses
+    /// [`CLICK_DRAG_THRESHOLD_PX`] (click-vs-drag disambiguation, Task 2) — before that,
+    /// this is a no-op, so a clean click never nudges the box.
     fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(drag) = &self.drag else {
+        let Some(drag) = &mut self.drag else {
             return;
         };
+        if !drag.dragging {
+            if is_click(drag.mouse_down_pos, event.position, CLICK_DRAG_THRESHOLD_PX) {
+                return;
+            }
+            drag.dragging = true;
+        }
         let new_pos = event.position - drag.grab_offset;
         let key = drag.table_key.clone();
         self.positions.insert(key, new_pos);
         cx.notify();
     }
 
+    /// Mouse-up ends the header interaction started in [`Self::start_drag`]. If it never
+    /// crossed the drag threshold (`!drag.dragging`), this was a clean click, not a
+    /// drag — fire the table-name click-through (Task 2) instead of leaving the box
+    /// merely selected/repositioned.
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.drag.take().is_some() {
-            cx.notify();
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if !drag.dragging {
+            self.navigate_to_table(&drag.table_key, cx);
         }
+        cx.notify();
+    }
+
+    /// A clean click (Task 2) on a table's header: jump the MAIN window's SQL editor to
+    /// `SELECT * FROM <table>` and run it. Crosses OS windows via `main_window`/`app`
+    /// (see [`DiagramView::new`]'s doc comment) — `AnyWindowHandle::update` hands back
+    /// the main window's real `Window`, which `AppState::diagram_open_table` needs to
+    /// touch the SQL `InputState` correctly. Best-effort: both `update` calls' results
+    /// are dropped — if the main window has since closed or the app entity released,
+    /// there's nothing to recover, and the diagram keeps working regardless.
+    fn navigate_to_table(&self, table_key: &str, cx: &mut Context<Self>) {
+        let app = self.app.clone();
+        let table = table_key.to_string();
+        let _ = self.main_window.update(cx, move |_root, window, cx| {
+            window.activate_window();
+            let _ = app.update(cx, |app, cx| {
+                app.diagram_open_table(&table, window, cx);
+            });
+        });
+    }
+
+    /// A column-row click (Task 2): seed the MAIN window's SQL editor with a `WHERE`
+    /// filter scaffold for `table`/`column` (not run). Same cross-window mechanism as
+    /// [`Self::navigate_to_table`].
+    fn navigate_to_column_filter(&self, table_key: &str, column: &str, cx: &mut Context<Self>) {
+        let app = self.app.clone();
+        let table = table_key.to_string();
+        let column = column.to_string();
+        let _ = self.main_window.update(cx, move |_root, window, cx| {
+            window.activate_window();
+            let _ = app.update(cx, |app, cx| {
+                app.diagram_open_column_filter(&table, &column, window, cx);
+            });
+        });
     }
 
     /// The header bar: table/relationship counts, and — when the backend hasn't wired
@@ -404,6 +490,7 @@ impl DiagramView {
                 }),
             );
 
+        let table_key = table.key.clone();
         let visible = table
             .columns
             .iter()
@@ -417,12 +504,24 @@ impl DiagramView {
                 } else {
                     col.clone()
                 };
+                let click_table = table_key.clone();
+                let click_column = col.clone();
                 div()
                     .id(("diagram-box-col", ix * 1000 + cix))
                     .px_2()
+                    .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(if is_fk { FK_TINT } else { FG_DIM }))
+                    .hover(|s| s.bg(rgb(HEADER_BG)))
                     .child(label)
+                    // Task 2: click a column to seed a `WHERE` filter scaffold in the
+                    // main window's editor (Murphy: "i like the filter option when we
+                    // click on a field"). Columns aren't drag handles, so no
+                    // click-vs-drag threshold is needed here — GPUI's own `on_click`
+                    // already only fires for a clean mouse-down+up on this element.
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.navigate_to_column_filter(&click_table, &click_column, cx);
+                    }))
                     .into_any_element()
             });
         let overflow = (table.columns.len() > MAX_VISIBLE_COLUMNS).then(|| {
@@ -505,6 +604,16 @@ impl Render for DiagramView {
 }
 
 // ---- pure geometry helpers (unit-tested — no `Window`/`Context` needed) --------------------
+
+/// Task 2's click-vs-drag decision: whether a mouse-down at `down` followed by a
+/// mouse-up at `up` should count as a click (`true`) rather than a drag (`false`) —
+/// total pointer movement at or under `threshold_px`. Pure — no `Window`/`Context`
+/// needed — so it's the unit-testable core of the disambiguation.
+fn is_click(down: Point<Pixels>, up: Point<Pixels>, threshold_px: f32) -> bool {
+    let dx = f32::from(up.x) - f32::from(down.x);
+    let dy = f32::from(up.y) - f32::from(down.y);
+    (dx * dx + dy * dy).sqrt() <= threshold_px
+}
 
 /// One table's layout inputs — everything [`compute_initial_layout`] needs to place it,
 /// stripped of the rest of [`DiagramTable`] so the layout function stays pure and
@@ -724,5 +833,33 @@ mod anchor_tests {
         let b = bounds_at(400.0, 100.0);
         let (from_anchor, _) = edge_anchors(a, b);
         assert_eq!(from_anchor.y, a.center().y);
+    }
+}
+
+#[cfg(test)]
+mod click_vs_drag_tests {
+    use super::*;
+
+    /// Task 2's TDD target: movement at or under the threshold is a click, anything
+    /// past it is a drag — including right at the boundary (an exact threshold-distance
+    /// move should still count as a click per `is_click`'s `<=`).
+    #[test]
+    fn movement_under_threshold_is_a_click() {
+        let down = point(px(100.0), px(100.0));
+        let up = point(px(102.0), px(101.0));
+        assert!(is_click(down, up, CLICK_DRAG_THRESHOLD_PX));
+    }
+
+    #[test]
+    fn movement_over_threshold_is_a_drag() {
+        let down = point(px(100.0), px(100.0));
+        let up = point(px(110.0), px(100.0));
+        assert!(!is_click(down, up, CLICK_DRAG_THRESHOLD_PX));
+    }
+
+    #[test]
+    fn zero_movement_is_a_click() {
+        let p = point(px(50.0), px(50.0));
+        assert!(is_click(p, p, CLICK_DRAG_THRESHOLD_PX));
     }
 }
