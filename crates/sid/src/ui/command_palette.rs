@@ -138,7 +138,7 @@ impl AppState {
                     self.connect_host(a.item, source, cx);
                 }
             }
-            PaletteTarget::Session(ix) => self.activate_session(ix, cx),
+            PaletteTarget::Session(ix) => self.activate_session(ix, window, cx),
         }
     }
 
