@@ -16,16 +16,17 @@
 //! this tab would be pure duplication. `session::ssh_runtime` is `pub(crate)`, so no
 //! visibility change to `session.rs` (off-limits this slice) was needed.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Corner, Entity, FontWeight,
-    IntoElement, SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Corner, Entity, FocusHandle,
+    FontWeight, IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity,
+    Window, WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
+    size,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
@@ -38,6 +39,7 @@ use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::db_registry::DbRegistry;
+use crate::ui::TextInput;
 use crate::ui::db_conn_form::{
     DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
@@ -57,7 +59,6 @@ const ACTIVE_BG: u32 = 0x33343a;
 const ACTIVE_FG: u32 = 0xffffff;
 const BRAND: u32 = 0x5a9ad0;
 const WS_FG: u32 = 0xa98bd0;
-const ROW_ALT: u32 = 0x1c1c20;
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
 const MONO: &str = "DejaVu Sans Mono";
 
@@ -167,6 +168,45 @@ pub struct DbTabState {
     /// Most-recent-first ring of run queries, capped at [`HISTORY_CAP`] with
     /// consecutive-duplicate suppression — see [`push_history`].
     history: Vec<String>,
+
+    // ---- selector-right: folders / inline rename ------------------------------------
+    /// Which folders are collapsed in the connection rail, keyed by folder name.
+    /// Presence encodes "collapsed" (mirrors `schema_expanded`'s presence-encodes-state
+    /// convention, inverted: there, presence means expanded — here it means collapsed,
+    /// since a freshly-created folder should default to expanded/visible).
+    collapsed_folders: HashSet<String>,
+    /// The connection rail's own focus handle — lazily created by `ensure_query_widgets`
+    /// (needs `Context`, unlike `DbTabState::new`). Focused on every row click so a
+    /// subsequent F2 (with no text field focused) reaches [`AppState::begin_rename_active`]
+    /// via the rail's `on_key_down`.
+    rail_focus: Option<FocusHandle>,
+    /// VS Code-style inline rename in progress on one connection row, if any — see
+    /// [`AppState::begin_rename`]/[`AppState::commit_rename`]/[`AppState::cancel_rename`].
+    renaming: Option<RenameState>,
+    /// Inline folder-assignment edit in progress on one connection row, if any (the
+    /// minimal "row hover-menu → small input" affordance for Task 2's grouping) — see
+    /// [`AppState::begin_folder_edit`]/[`AppState::commit_folder_edit`]/
+    /// [`AppState::cancel_folder_edit`].
+    folder_editing: Option<FolderEditState>,
+}
+
+/// An in-progress inline rename (F2 / double-click the name) — the row's identity/origin
+/// (needed for [`Store::rename_connection`]'s scope-qualified write) plus the live-edit
+/// [`TextInput`]. Only one row can be mid-rename at a time; starting a new one replaces
+/// this outright (see [`AppState::begin_rename`]).
+struct RenameState {
+    id: String,
+    origin: Scope,
+    input: Entity<TextInput>,
+}
+
+/// An in-progress inline folder edit — same shape/lifecycle as [`RenameState`], committed
+/// via [`Store::set_connection_folder`] instead. An empty/blank commit clears the
+/// connection's folder (moves it back to the ungrouped top level).
+struct FolderEditState {
+    id: String,
+    origin: Scope,
+    input: Entity<TextInput>,
 }
 
 /// The `👁 view` popover's contents (D2) — the column a long cell came from, and its
@@ -373,6 +413,64 @@ fn schema_tree_rows(schema: &SchemaInfo, expanded: &HashSet<String>) -> Vec<Sche
     rows
 }
 
+// ---- selector-right: folder grouping (pure `connections -> rail rows` transform) --------
+
+/// One renderable row of the connection rail — a collapsible folder header, or a
+/// connection nested under one (or sitting at the top level, when ungrouped). Pure data,
+/// mirroring [`SchemaRow`]'s split from rendering — [`group_connections`] is the one
+/// place the composed connection list becomes this flat, orderable row list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ConnRow {
+    Folder {
+        name: String,
+        expanded: bool,
+        count: usize,
+    },
+    /// A connection's id — the rail row re-looks this up in `self.db.connections` at
+    /// render time (rather than cloning the whole `Attributed<DbConnection>` in here) so
+    /// this stays a plain identity list, matching how `active_id`/`armed_delete` already
+    /// key rows by id rather than by index.
+    Connection { id: String },
+}
+
+/// Group `connections` by [`DbConnection::folder`] (one flat level — see that field's
+/// own doc comment) into the connection rail's row list: every ungrouped connection
+/// (`folder` absent, or present-but-blank) stays at the top level first — Murphy's
+/// "None → ungrouped top level" — followed by named folders in alphabetical order, each
+/// a collapsible header (collapsed when its name is in `collapsed`) with its members
+/// immediately after when expanded. Within a group, connections keep their incoming
+/// (store) order. Pure logic, no `AppState`/GPUI — the folder-grouping TDD target.
+fn group_connections(
+    connections: &[Attributed<DbConnection>],
+    collapsed: &HashSet<String>,
+) -> Vec<ConnRow> {
+    let mut folders: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut ungrouped: Vec<String> = Vec::new();
+    for a in connections {
+        match a.item.folder.as_deref() {
+            Some(f) if !f.is_empty() => folders.entry(f).or_default().push(a.item.id.clone()),
+            _ => ungrouped.push(a.item.id.clone()),
+        }
+    }
+
+    let mut rows: Vec<ConnRow> = ungrouped
+        .into_iter()
+        .map(|id| ConnRow::Connection { id })
+        .collect();
+    for (name, ids) in folders {
+        let expanded = !collapsed.contains(name);
+        rows.push(ConnRow::Folder {
+            name: name.to_string(),
+            expanded,
+            count: ids.len(),
+        });
+        if expanded {
+            rows.extend(ids.into_iter().map(|id| ConnRow::Connection { id }));
+        }
+    }
+    rows
+}
+
 /// `schema.table` for Postgres (non-empty schema), or the bare table name for SQLite
 /// and the redb browse engine (no schema namespace). Doubles as the tree row's expanded
 /// key and the identifier `SELECT * FROM <table_display_name>` inserts.
@@ -465,6 +563,10 @@ impl DbTabState {
             notice: None,
             export_menu_open: false,
             history: Vec::new(),
+            collapsed_folders: HashSet::new(),
+            rail_focus: None,
+            renaming: None,
+            folder_editing: None,
         };
         let _ = state.refresh(store, scope, filters);
         state
@@ -499,57 +601,28 @@ impl AppState {
     pub(crate) fn db_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_query_widgets(window, cx);
 
-        let count = self.db.connections.len();
-        let sub: SharedString = match &self.error {
-            Some(e) => format!("error: {e}").into(),
-            None => format!("{count} connections · union of this scope, deduped").into(),
-        };
+        // The saved-connection picker moved to the right-edge rail (`connection_rail`,
+        // built inside `query_pane`) — Murphy: "the database selector should be on the
+        // right side for the connection i want to start". This top strip is now just
+        // the tab's shared error line (still needed: promote/demote/delete/rename/
+        // folder-edit failures all land in `self.error`), collapsing to nothing when
+        // there is none rather than reserving dead space.
+        let error_line = self.error.clone().map(|e| {
+            div()
+                .px_4()
+                .py_2()
+                .border_b_1()
+                .border_color(rgb(BORDER))
+                .text_sm()
+                .text_color(rgb(DANGER))
+                .child(format!("error: {e}"))
+        });
 
         div()
             .flex()
             .flex_col()
             .flex_1()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub))
-                    .child(
-                        div()
-                            .id("db-add")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(rgb(BRAND))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                            .child("＋ Add connection")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.open_add_db_form(window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                uniform_list(
-                    "db-connections",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
-                        range
-                            .map(|ix| this.db_connection_row(ix, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                // Fixed height (was `flex_1`, W3) — the query pane below now claims the
-                // rest of the tab's vertical space.
-                .h(px(220.)),
-            )
+            .children(error_line)
             .child(self.query_pane(cx))
             .children(self.cell_view_overlay(window, cx))
             .into_any_element()
@@ -650,6 +723,9 @@ impl AppState {
     /// for `InputState::new`/`TableState::new`, which is why this can't happen in
     /// `DbTabState::new` (constructed before any window exists).
     fn ensure_query_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db.rail_focus.is_none() {
+            self.db.rail_focus = Some(cx.focus_handle());
+        }
         if self.db.sql.is_some() {
             return;
         }
@@ -820,6 +896,7 @@ impl AppState {
             .border_color(rgb(BORDER))
             .child(self.left_sidebar(cx))
             .child(editor_and_results)
+            .child(self.connection_rail(cx))
     }
 
     /// The "⭳ Export ▾" control: a button that toggles [`DbTabState::export_menu_open`],
@@ -1211,8 +1288,152 @@ impl AppState {
             .child(body)
     }
 
-    fn db_connection_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let a = &self.db.connections[ix];
+    /// The DBeaver-style connection selector, moved to the right edge (Murphy: "the
+    /// database selector should be on the right side for the connection i want to
+    /// start"). Groups the composed connection list by [`DbConnection::folder`] via
+    /// [`group_connections`] under a small `connections · N` / `＋` header. Also the
+    /// F2 target: focused on every row click (see [`Self::render_connection_row`]) so
+    /// F2 with no text field focused reaches [`Self::begin_rename_active`] — the
+    /// double-click-a-name path (also wired in `render_connection_row`) needs no focus
+    /// of its own.
+    fn connection_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let count = self.db.connections.len();
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(format!("connections · {count}")),
+            )
+            .child(
+                div()
+                    .id("db-rail-add")
+                    .px_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_color(rgb(BRAND))
+                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .child("＋")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_add_db_form(window, cx);
+                    })),
+            );
+
+        let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
+        let body: AnyElement = if rows.is_empty() {
+            div()
+                .p_2()
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child("no connections yet")
+                .into_any_element()
+        } else {
+            div()
+                .id("db-rail-body")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .overflow_y_scroll()
+                .children(
+                    rows.into_iter()
+                        .enumerate()
+                        .map(|(ix, row)| self.connection_rail_row(ix, row, cx)),
+                )
+                .into_any_element()
+        };
+
+        let focus_handle = self.db.rail_focus.clone();
+        div()
+            .id("db-rail")
+            .w(px(240.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(FIELD_BORDER))
+            .bg(rgb(FIELD_BG))
+            .when_some(focus_handle, |el, fh| {
+                el.track_focus(&fh).on_key_down(cx.listener(
+                    |this, ev: &KeyDownEvent, window, cx| {
+                        if ev.keystroke.key == "f2" {
+                            this.begin_rename_active(window, cx);
+                        }
+                    },
+                ))
+            })
+            .child(header)
+            .child(body)
+    }
+
+    /// One [`ConnRow`]'s rendering: a folder header (click toggles collapse) or a
+    /// connection looked up by id. A stale id (deleted mid-render, between
+    /// `group_connections` snapshotting the list and this call) renders nothing —
+    /// `refresh_db` drops it from the row list on the very next paint.
+    fn connection_rail_row(&self, ix: usize, row: ConnRow, cx: &mut Context<Self>) -> AnyElement {
+        match row {
+            ConnRow::Folder {
+                name,
+                expanded,
+                count,
+            } => {
+                let toggle_name = name.clone();
+                div()
+                    .id(("db-folder", ix))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .child(div().text_xs().text_color(rgb(FG_DIM)).child(if expanded {
+                        "▾"
+                    } else {
+                        "▸"
+                    }))
+                    .child(div().flex_1().text_xs().text_color(rgb(FG_DIM)).child(name))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(FG_DIM))
+                            .child(count.to_string()),
+                    )
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.toggle_conn_folder(&toggle_name, cx);
+                    }))
+                    .into_any_element()
+            }
+            ConnRow::Connection { id } => {
+                match self.db.connections.iter().find(|a| a.item.id == id) {
+                    Some(a) => self.render_connection_row(ix, a, cx),
+                    None => div().into_any_element(),
+                }
+            }
+        }
+    }
+
+    /// One connection's row in the rail: its name (a live rename [`TextInput`] in
+    /// place, mid-rename) plus origin badge and `★` active marker, a DSN subtitle (a
+    /// live folder-edit [`TextInput`] in place, mid-folder-edit), and the
+    /// promote/demote/edit/📁/delete action strip. Structurally the pre-selector-move
+    /// row (W3's `db_connection_row`), restacked into the rail's narrower 240px column
+    /// and extended with the rename/folder affordances.
+    fn render_connection_row(
+        &self,
+        ix: usize,
+        a: &Attributed<DbConnection>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let conn = a.item.clone();
         let display_name: SharedString = if conn.name.is_empty() {
             conn.id.clone().into()
@@ -1221,7 +1442,6 @@ impl AppState {
         };
         let subtitle: SharedString = format!("{} · {}", conn.kind.label(), conn.dsn).into();
         let (badge, badge_color) = self.db_origin_badge(a);
-        let alt = ix % 2 == 1;
         let is_active = self.db.active_id.as_deref() == Some(conn.id.as_str());
         let click_id = conn.id.clone();
         let origin = a.origin.clone();
@@ -1279,6 +1499,19 @@ impl AppState {
             ))
         };
 
+        // 📁 folder: opens the minimal inline folder-assignment editor (Task 2's "row
+        // hover-menu → small input" — see `Self::begin_folder_edit`).
+        let folder_btn = {
+            let id = conn.id.clone();
+            let origin = origin.clone();
+            let current = conn.folder.clone();
+            action(("db-folder-edit", ix), "📁".into(), FG_DIM).on_click(cx.listener(
+                move |this, _ev: &ClickEvent, window, cx| {
+                    this.begin_folder_edit(&id, &origin, current.as_deref(), window, cx);
+                },
+            ))
+        };
+
         // ✕ delete: two-click confirm — the first click arms this row, the second
         // deletes from the row's origin layer (and its secret from the keyring).
         let delete = {
@@ -1303,25 +1536,102 @@ impl AppState {
             ))
         };
 
+        // Name area — the live rename `TextInput` in place of the label while this row
+        // is mid-rename (Enter commits, Escape cancels — bound directly on the wrapper
+        // since `TextInput` itself claims neither key, same technique
+        // `DbConnForm::handle_key_down` uses for Tab); otherwise the plain
+        // double-click-armed label.
+        let is_renaming = self.db.renaming.as_ref().is_some_and(|r| r.id == conn.id);
+        let name_area: AnyElement = if is_renaming {
+            let input = self.db.renaming.as_ref().unwrap().input.clone();
+            div()
+                .id(("db-conn-rename", ix))
+                .flex_1()
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                    match ev.keystroke.key.as_str() {
+                        "enter" => {
+                            cx.stop_propagation();
+                            this.commit_rename(cx);
+                        }
+                        "escape" => {
+                            cx.stop_propagation();
+                            this.cancel_rename(cx);
+                        }
+                        _ => {}
+                    }
+                }))
+                .child(input)
+                .into_any_element()
+        } else {
+            let name_id = conn.id.clone();
+            let name_origin = origin.clone();
+            let name_text = display_name.clone();
+            div()
+                .id(("db-conn-name", ix))
+                .flex_1()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(if is_active { ACTIVE_FG } else { FG }))
+                .child(display_name.clone())
+                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                    // Double-click (VS Code convention) starts the inline rename; a
+                    // single click here also fires the row's own `on_click` below
+                    // (selecting it) — harmless, same convention the action strip uses.
+                    if ev.click_count() >= 2 {
+                        this.begin_rename(&name_id, &name_origin, &name_text, window, cx);
+                    }
+                }))
+                .into_any_element()
+        };
+
+        // Subtitle area — the folder-edit `TextInput` in place of the DSN subtitle
+        // while this row is mid-folder-edit; otherwise the plain subtitle.
+        let is_folder_editing = self
+            .db
+            .folder_editing
+            .as_ref()
+            .is_some_and(|f| f.id == conn.id);
+        let subtitle_area: AnyElement = if is_folder_editing {
+            let input = self.db.folder_editing.as_ref().unwrap().input.clone();
+            div()
+                .id(("db-conn-folder-input", ix))
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                    match ev.keystroke.key.as_str() {
+                        "enter" => {
+                            cx.stop_propagation();
+                            this.commit_folder_edit(cx);
+                        }
+                        "escape" => {
+                            cx.stop_propagation();
+                            this.cancel_folder_edit(cx);
+                        }
+                        _ => {}
+                    }
+                }))
+                .child(input)
+                .into_any_element()
+        } else {
+            div()
+                .font_family(MONO)
+                .text_xs()
+                .text_color(rgb(FG_DIM))
+                .child(subtitle)
+                .into_any_element()
+        };
+
         div()
             .id(("db-conn", ix))
             .flex()
             .flex_col()
             .gap_1()
             .w_full()
-            .px_4()
+            .px_2()
             .py_2()
             .cursor_pointer()
-            .bg(rgb(if is_active {
-                ACTIVE_BG
-            } else if alt {
-                ROW_ALT
-            } else {
-                BG
-            }))
+            .bg(rgb(if is_active { ACTIVE_BG } else { BG }))
             .border_b_1()
             .border_color(rgb(BORDER))
-            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if this.db.active_id.as_deref() != Some(click_id.as_str()) {
                     // Switching connections: drop the previous connection's schema
                     // immediately (rather than leaving it up until the new fetch
@@ -1333,6 +1643,20 @@ impl AppState {
                     this.db.schema_expanded.clear();
                 }
                 this.db.active_id = Some(click_id.clone());
+                // Selecting a row is also this rail's one focus entry point — F2
+                // afterwards renames whatever just got selected (`begin_rename_active`).
+                // But a nested control's own click fires *before* this row-level one and
+                // bubbles up to here: the name's double-click (`begin_rename`), the 📁
+                // button (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`)
+                // each grab focus for their freshly-opened input/form — so only claim
+                // rail focus when none of those started, or this handler would steal it
+                // straight back and the inline editors would open unfocused.
+                let opening_editor = this.db.renaming.is_some()
+                    || this.db.folder_editing.is_some()
+                    || this.db.form.is_some();
+                if !opening_editor && let Some(fh) = this.db.rail_focus.clone() {
+                    window.focus(&fh);
+                }
                 this.refresh_schema(cx);
                 cx.notify();
             }))
@@ -1342,37 +1666,37 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(if is_active { ACTIVE_FG } else { FG }))
-                            .child(display_name),
-                    )
+                    .child(name_area)
                     .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
-                    .child(div().flex_1())
                     .when(is_active, |el| {
-                        el.child(div().text_xs().text_color(rgb(BRAND)).child("★ active"))
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .children(promote)
-                            .children(demote)
-                            .child(edit)
-                            .child(delete),
-                    ),
+                        el.child(div().text_xs().text_color(rgb(BRAND)).child("★"))
+                    }),
             )
+            .child(subtitle_area)
             .child(
                 div()
-                    .font_family(MONO)
-                    .text_xs()
-                    .text_color(rgb(FG_DIM))
-                    .child(subtitle),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .children(promote)
+                    .children(demote)
+                    .child(folder_btn)
+                    .child(edit)
+                    .child(delete),
             )
+            .into_any_element()
+    }
+
+    /// Folder-header click (folders/grouping) — flip `name` between collapsed/expanded
+    /// in the rail. Presence-in-`collapsed_folders` encodes "collapsed" (see that
+    /// field's doc comment).
+    fn toggle_conn_folder(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self.db.collapsed_folders.remove(name) {
+            self.db.collapsed_folders.insert(name.to_string());
+        }
+        cx.notify();
     }
 
     /// Badge label + color for a connection's origin layer — the `DbConnection` mirror
@@ -1394,6 +1718,139 @@ impl AppState {
             label = format!("{label} · dup").into();
         }
         (label, color)
+    }
+
+    // ---- selector-right: inline rename / folder edit (Tasks 2-3) ---------------------
+
+    /// F2 (rail focused, see [`Self::connection_rail`]) — rename whichever connection
+    /// is currently `active_id`. A no-op with nothing selected or the row since gone
+    /// (rather than an error) — F2 with no selection is a plausible fumble, not a
+    /// mistake worth surfacing.
+    fn begin_rename_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.db.active_id.clone() else {
+            return;
+        };
+        let Some(a) = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        self.begin_rename(&a.item.id, &a.origin, &a.item.name, window, cx);
+    }
+
+    /// Enter VS Code-style inline rename for connection `id`/`origin`, seeded with
+    /// `current_name` (or `id` if the display name is empty — matches how the row
+    /// itself falls back). Replaces any rename/folder-edit already in progress — only
+    /// one inline edit is live at a time.
+    fn begin_rename(
+        &mut self,
+        id: &str,
+        origin: &Scope,
+        current_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.db.folder_editing = None;
+        let seed = if current_name.is_empty() {
+            id.to_string()
+        } else {
+            current_name.to_string()
+        };
+        let input = cx.new(|cx| {
+            let mut t = TextInput::new(cx, "name");
+            t.set_content(seed, cx);
+            t
+        });
+        input.read(cx).focus(window);
+        self.db.renaming = Some(RenameState {
+            id: id.to_string(),
+            origin: origin.clone(),
+            input,
+        });
+        cx.notify();
+    }
+
+    /// Enter commits the in-progress rename via [`Store::rename_connection`]. An empty
+    /// (post-trim) name stays in rename mode with an error rather than silently
+    /// reverting — the user's edit isn't lost.
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &self.db.renaming else {
+            return;
+        };
+        let new_name = state.input.read(cx).content().trim().to_string();
+        if new_name.is_empty() {
+            self.error = Some("name must not be empty".to_string());
+            cx.notify();
+            return;
+        }
+        let RenameState { id, origin, .. } = self.db.renaming.take().expect("checked above");
+        match self.store.rename_connection(&origin, &id, &new_name) {
+            Ok(()) => self.refresh_db(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// Escape discards the in-progress rename, leaving the stored name untouched.
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.db.renaming = None;
+        cx.notify();
+    }
+
+    /// 📁 (folders/grouping) — enter the minimal inline folder-assignment editor for
+    /// connection `id`/`origin`, seeded with its `current` folder (blank when
+    /// ungrouped). Replaces any rename/folder-edit already in progress.
+    fn begin_folder_edit(
+        &mut self,
+        id: &str,
+        origin: &Scope,
+        current: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.db.renaming = None;
+        let input = cx.new(|cx| {
+            let mut t = TextInput::new(cx, "folder (blank = none)");
+            if let Some(f) = current {
+                t.set_content(f.to_string(), cx);
+            }
+            t
+        });
+        input.read(cx).focus(window);
+        self.db.folder_editing = Some(FolderEditState {
+            id: id.to_string(),
+            origin: origin.clone(),
+            input,
+        });
+        cx.notify();
+    }
+
+    /// Enter commits the in-progress folder edit via [`Store::set_connection_folder`] —
+    /// a blank (post-trim) value clears the folder, moving the connection back to the
+    /// rail's ungrouped top level.
+    fn commit_folder_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = &self.db.folder_editing else {
+            return;
+        };
+        let raw = state.input.read(cx).content().trim().to_string();
+        let folder = (!raw.is_empty()).then_some(raw);
+        let FolderEditState { id, origin, .. } =
+            self.db.folder_editing.take().expect("checked above");
+        match self.store.set_connection_folder(&origin, &id, folder) {
+            Ok(()) => self.refresh_db(),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        cx.notify();
+    }
+
+    /// Escape discards the in-progress folder edit, leaving the stored folder untouched.
+    fn cancel_folder_edit(&mut self, cx: &mut Context<Self>) {
+        self.db.folder_editing = None;
+        cx.notify();
     }
 
     // ---- add/edit form (W4) ----------------------------------------------------------
@@ -2428,5 +2885,115 @@ mod diagram_scaffold_tests {
         assert_eq!(quote_ident("public.users"), "public.users");
         assert_eq!(quote_ident("weird schema.users"), r#""weird schema".users"#);
         assert_eq!(quote_ident("_ok123"), "_ok123");
+    }
+}
+
+#[cfg(test)]
+mod folder_grouping_tests {
+    use sid_core::db::DbKind;
+
+    use super::*;
+
+    fn conn(id: &str, folder: Option<&str>) -> Attributed<DbConnection> {
+        Attributed {
+            item: DbConnection {
+                id: id.to_string(),
+                dsn: "d".to_string(),
+                secret_ref: None,
+                kind: DbKind::Postgres,
+                name: id.to_string(),
+                folder: folder.map(str::to_string),
+            },
+            origin: Scope::Global,
+            duplicate: false,
+        }
+    }
+
+    #[test]
+    fn all_ungrouped_connections_stay_in_incoming_order() {
+        let conns = vec![conn("b", None), conn("a", None)];
+        let rows = group_connections(&conns, &HashSet::new());
+        assert_eq!(
+            rows,
+            vec![
+                ConnRow::Connection { id: "b".into() },
+                ConnRow::Connection { id: "a".into() },
+            ]
+        );
+    }
+
+    /// A present-but-empty `folder` (e.g. a legacy record, or a folder-edit committed
+    /// as an all-whitespace string that only got trimmed at the UI layer) is normalized
+    /// to ungrouped rather than becoming a nameless folder header.
+    #[test]
+    fn a_blank_folder_string_is_treated_as_ungrouped() {
+        let conns = vec![conn("a", Some(""))];
+        let rows = group_connections(&conns, &HashSet::new());
+        assert_eq!(rows, vec![ConnRow::Connection { id: "a".into() }]);
+    }
+
+    /// Murphy's "None → ungrouped top level": ungrouped connections lead the row list,
+    /// ahead of every folder, regardless of insertion order.
+    #[test]
+    fn ungrouped_connections_come_before_folders() {
+        let conns = vec![conn("in-folder", Some("acme")), conn("top-level", None)];
+        let rows = group_connections(&conns, &HashSet::new());
+        assert_eq!(
+            rows,
+            vec![
+                ConnRow::Connection {
+                    id: "top-level".into()
+                },
+                ConnRow::Folder {
+                    name: "acme".into(),
+                    expanded: true,
+                    count: 1
+                },
+                ConnRow::Connection {
+                    id: "in-folder".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn folders_are_sorted_alphabetically() {
+        let conns = vec![conn("z", Some("zeta")), conn("a", Some("alpha"))];
+        let rows = group_connections(&conns, &HashSet::new());
+        assert_eq!(
+            rows,
+            vec![
+                ConnRow::Folder {
+                    name: "alpha".into(),
+                    expanded: true,
+                    count: 1
+                },
+                ConnRow::Connection { id: "a".into() },
+                ConnRow::Folder {
+                    name: "zeta".into(),
+                    expanded: true,
+                    count: 1
+                },
+                ConnRow::Connection { id: "z".into() },
+            ]
+        );
+    }
+
+    /// Collapsing a folder (Task 2's "collapsible folder headers") hides its members
+    /// but keeps the header itself (with its member count) visible.
+    #[test]
+    fn a_collapsed_folder_hides_its_members_but_keeps_its_header() {
+        let conns = vec![conn("a", Some("acme")), conn("b", Some("acme"))];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("acme".to_string());
+        let rows = group_connections(&conns, &collapsed);
+        assert_eq!(
+            rows,
+            vec![ConnRow::Folder {
+                name: "acme".into(),
+                expanded: false,
+                count: 2
+            }]
+        );
     }
 }
