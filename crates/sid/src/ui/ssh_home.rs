@@ -213,7 +213,10 @@ impl AppState {
         for (gix, group) in groups.into_iter().enumerate() {
             if let Some(folder) = group.folder {
                 let collapsed = self.ssh_home.collapsed_folders.contains(folder);
-                rows.push(self.folder_header(gix, folder, collapsed, cx).into_any_element());
+                rows.push(
+                    self.folder_header(gix, folder, collapsed, cx)
+                        .into_any_element(),
+                );
                 if collapsed {
                     continue;
                 }
@@ -350,7 +353,11 @@ impl AppState {
 
     /// One tree row: either the normal (icon, name, live-dot, hover actions) row, or —
     /// while this exact (alias, origin) is mid-edit — the inline rename/folder box.
-    fn host_tree_row(&self, a: &Attributed<Host>, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn host_tree_row(
+        &self,
+        a: &Attributed<Host>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let host = a.item.clone();
         let origin = a.origin.clone();
 
@@ -361,7 +368,10 @@ impl AppState {
         }
 
         let key = (host.alias.clone(), origin.clone());
-        let is_live = self.ssh_sessions.iter().any(|t| t.source.as_ref() == Some(&key));
+        let is_live = self
+            .ssh_sessions
+            .iter()
+            .any(|t| t.source.as_ref() == Some(&key));
         let armed = delete_click_executes(self.armed_delete.as_ref(), &key);
         let alias: SharedString = host.alias.clone().into();
         let addr: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
@@ -403,7 +413,13 @@ impl AppState {
             let current = host.folder.clone();
             action(("ssh-tree-folder", row_id), "📁".into(), FG_DIM).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
-                    this.start_folder_edit(alias.clone(), origin.clone(), current.clone(), window, cx);
+                    this.start_folder_edit(
+                        alias.clone(),
+                        origin.clone(),
+                        current.clone(),
+                        window,
+                        cx,
+                    );
                 },
             ))
         };
@@ -434,7 +450,12 @@ impl AppState {
             let key_for_connect = key.clone();
             cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 if ev.click_count() >= 2 {
-                    this.start_rename(alias_for_rename.clone(), origin_for_rename.clone(), window, cx);
+                    this.start_rename(
+                        alias_for_rename.clone(),
+                        origin_for_rename.clone(),
+                        window,
+                        cx,
+                    );
                 } else {
                     this.connect_host(host_for_connect.clone(), Some(key_for_connect.clone()), cx);
                 }
@@ -491,7 +512,11 @@ impl AppState {
             .into_any_element()
     }
 
-    fn inline_edit_row(&self, edit: &InlineEdit, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn inline_edit_row(
+        &self,
+        edit: &InlineEdit,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let (input, flag): (Entity<TextInput>, &'static str) = match edit {
             InlineEdit::Rename { input, .. } => (input.clone(), "renaming · Enter/Esc"),
             InlineEdit::Folder { input, .. } => (input.clone(), "folder · Enter/Esc"),
@@ -515,7 +540,13 @@ impl AppState {
     }
 
     /// F2/double-click: start renaming `alias`'s label in place (VS Code style).
-    fn start_rename(&mut self, alias: String, origin: Scope, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_rename(
+        &mut self,
+        alias: String,
+        origin: Scope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let seed = alias.clone();
         let input = cx.new(|cx| {
             let mut ti = TextInput::new(cx, "alias");
@@ -592,7 +623,11 @@ impl AppState {
                 input,
             } => {
                 let folder = input.read(cx).content().trim().to_string();
-                let folder = if folder.is_empty() { None } else { Some(folder) };
+                let folder = if folder.is_empty() {
+                    None
+                } else {
+                    Some(folder)
+                };
                 match self.store.set_host_folder(&origin, &alias, folder) {
                     Ok(()) => self.refresh(),
                     Err(e) => self.error = Some(e.to_string()),
@@ -654,7 +689,11 @@ mod tests {
         let groups = group_by_folder(&hosts);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].folder, None);
-        let names: Vec<&str> = groups[0].hosts.iter().map(|a| a.item.alias.as_str()).collect();
+        let names: Vec<&str> = groups[0]
+            .hosts
+            .iter()
+            .map(|a| a.item.alias.as_str())
+            .collect();
         assert_eq!(names, vec!["alpha", "beta"]);
         assert_eq!(groups[1].folder, Some("work"));
     }
