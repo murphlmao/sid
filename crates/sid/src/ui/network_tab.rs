@@ -114,10 +114,21 @@ pub struct NetworkTabState {
     /// Which of `[Ports] [Services] [Interfaces]` is active.
     sub_tab: NetSubTab,
     interfaces: Vec<NetInterface>,
+    /// Cached partition of `interfaces` (per [`is_hidden_interface`]) after applying
+    /// the current 🔍 filter query — populated by [`Self::recompute_interfaces`],
+    /// mirroring how `PortsDelegate`/`ServicesDelegate` cache their filtered rows
+    /// (perf audit finding #5). `interfaces_strip` just reads these instead of
+    /// re-partitioning/re-filtering `interfaces` on every render.
+    visible_interfaces: Vec<NetInterface>,
+    /// See [`Self::visible_interfaces`].
+    hidden_interfaces: Vec<NetInterface>,
     /// Name of the interface holding the default route, if any — sorted first and
     /// always visible regardless of [`is_hidden_interface`].
     default_route: Option<String>,
-    /// Whether the Interfaces sub-tab's `hidden (N) ▸` group is expanded.
+    /// Whether the Interfaces sub-tab's `hidden (N) ▸` group is expanded. Toggling
+    /// this does NOT touch [`Self::visible_interfaces`]/[`Self::hidden_interfaces`] —
+    /// it only changes whether the already-cached hidden group renders, not which
+    /// interfaces belong in it.
     interfaces_expanded: bool,
     error: Option<String>,
     /// The ports table. Lazily built by `ensure_network_widgets` (needs `window`,
@@ -149,6 +160,8 @@ impl NetworkTabState {
             refreshing: false,
             sub_tab: NetSubTab::Ports,
             interfaces: Vec::new(),
+            visible_interfaces: Vec::new(),
+            hidden_interfaces: Vec::new(),
             default_route: None,
             interfaces_expanded: false,
             error: None,
@@ -161,6 +174,23 @@ impl NetworkTabState {
             filter: None,
             _filter_sub: None,
         }
+    }
+
+    /// Recompute [`Self::visible_interfaces`]/[`Self::hidden_interfaces`] from
+    /// `self.interfaces` + `self.default_route` and the given filter `query`
+    /// (case-insensitive substring match against the interface name, same rule
+    /// `interfaces_strip` used to apply inline) — perf audit finding #5. Called after
+    /// every refresh (new `interfaces`) and every filter keystroke (new `query`); NOT
+    /// called from the hidden-group expand/collapse toggle, which only flips a `bool`
+    /// and touches neither input this depends on.
+    fn recompute_interfaces(&mut self, query: &str) {
+        let query = query.trim().to_lowercase();
+        let (visible, hidden) =
+            partition_interfaces(&self.interfaces, self.default_route.as_deref());
+        let name_matches =
+            |i: &&NetInterface| query.is_empty() || i.name.to_lowercase().contains(&query);
+        self.visible_interfaces = visible.into_iter().filter(name_matches).cloned().collect();
+        self.hidden_interfaces = hidden.into_iter().filter(name_matches).cloned().collect();
     }
 }
 
@@ -287,7 +317,11 @@ impl TableDelegate for PortsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let port = self.ports[row_ix].clone();
+        // Borrow, not clone (perf audit finding #6) — every field this fn reads is
+        // either `Copy` (`protocol`, `pid`) or already individually `.clone()`d below
+        // where a `String` needs to move into a label/closure, so cloning the whole
+        // row up front was pure waste.
+        let port = &self.ports[row_ix];
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index (8 columns, generous multiplier) instead of a 3-tuple.
         let cell_id = ("net-cell", row_ix * 8 + col_ix);
@@ -494,7 +528,9 @@ impl TableDelegate for ServicesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let svc = self.services[row_ix].clone();
+        // Borrow, not clone (perf audit finding #6) — `active` is `Copy`, and every
+        // `String` field this fn needs already gets its own `.clone()` below.
+        let svc = &self.services[row_ix];
         let cell_id = ("svc-cell", row_ix * 8 + col_ix);
         match col_ix {
             0 => div()
@@ -803,24 +839,14 @@ impl AppState {
     /// Interfaces sub-tab: primary interfaces (default-route iface first, then
     /// alphabetical — `sort_interfaces_default_first`, applied on refresh) always
     /// shown; generic/virtual ones ([`is_hidden_interface`]) collapsed under a
-    /// `hidden (N) ▸` row that expands in place. The 🔍 filter (if any) narrows both
-    /// groups by interface name before the hidden count is computed, so an active
-    /// filter never shows a stale count.
+    /// `hidden (N) ▸` row that expands in place. Reads the already-filtered/partitioned
+    /// cache (`recompute_interfaces`, perf audit finding #5) instead of re-partitioning
+    /// `self.network.interfaces` on every render — the cache is kept current on every
+    /// refresh and every filter keystroke, so this never shows a stale count.
     fn interfaces_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let default_name = self.network.default_route.clone();
-        let query = self
-            .network
-            .filter
-            .as_ref()
-            .map(|f| f.read(cx).content().trim().to_lowercase())
-            .unwrap_or_default();
-
-        let (visible, hidden) =
-            partition_interfaces(&self.network.interfaces, default_name.as_deref());
-        let name_matches =
-            |i: &&NetInterface| query.is_empty() || i.name.to_lowercase().contains(&query);
-        let visible: Vec<&NetInterface> = visible.into_iter().filter(name_matches).collect();
-        let hidden: Vec<&NetInterface> = hidden.into_iter().filter(name_matches).collect();
+        let visible = &self.network.visible_interfaces;
+        let hidden = &self.network.hidden_interfaces;
         let hidden_count = hidden.len();
         let expanded = self.network.interfaces_expanded;
 
@@ -902,9 +928,10 @@ impl AppState {
     }
 
     /// Push the filter box's current text into whichever table delegate(s) it
-    /// applies to. Interfaces has no delegate to push into — `interfaces_strip` reads
-    /// the filter directly from `self.network.filter` at render time instead, since
-    /// it isn't backed by a `Table`.
+    /// applies to, and into the Interfaces sub-tab's cache (`recompute_interfaces`,
+    /// perf audit finding #5) — Interfaces has no `Table`/delegate of its own, but it
+    /// mirrors the same "cache the filtered view" contract, so it's updated here too
+    /// rather than at `interfaces_strip` render time.
     fn apply_network_filter(&mut self, cx: &mut Context<Self>) {
         let query = self
             .network
@@ -924,6 +951,7 @@ impl AppState {
                 state.refresh(cx);
             });
         }
+        self.network.recompute_interfaces(&query);
         cx.notify();
     }
 
@@ -992,6 +1020,17 @@ impl AppState {
                                 sort_interfaces_default_first(&mut ifaces, default_name.as_deref());
                                 this.network.default_route = default_name;
                                 this.network.interfaces = ifaces;
+                                // Perf audit finding #5: refresh the visible/hidden
+                                // cache here (new `interfaces`) rather than leaving
+                                // `interfaces_strip` to re-partition/re-filter on
+                                // every render.
+                                let query = this
+                                    .network
+                                    .filter
+                                    .as_ref()
+                                    .map(|f| f.read(cx).content().to_string())
+                                    .unwrap_or_default();
+                                this.network.recompute_interfaces(&query);
                             }
                             Err(e) => {
                                 if err.is_none() {
