@@ -48,12 +48,20 @@ it collides with the in-flight test-extension (sid-core) and integration (sid-ss
   re-read is correct-by-default and cheap at this scale.
 - **redb-browse full materialization** — already paged; rejected.
 
-## Flagged, verification inconclusive — Fable assesses directly during the #1 pass
-- `session.rs render_grid()` → `screen.cells()` re-materializes the **entire** vt100 grid
-  (a `String` per non-blank cell) on every render. A finder flagged this as potentially the
-  biggest render-path cost; its verifier didn't land a clean verdict. Since the #1 fix already
-  puts me in `session.rs`/`sid-term`, I'll evaluate whether to memoize the cell grid (rebuild only
-  when the screen actually changes) there, gated on not breaking the styled-cell output.
+## Flagged → Fable's verdict: real, but DEFERRED (medium effort + functional risk)
+- `session.rs render_grid()` → `screen.cells()` (`sid-term/src/screen.rs:108`) re-materializes the
+  **entire** vt100 grid — a fresh `Vec<Vec<TermCell>>` with a `String` per cell — on every render
+  (~1920 allocs for an 80×24 during active output). Real hot-path churn.
+- **Why not done now:** the clean fix memoizes inside `Vt100Screen` (a `dirty` flag set by
+  `feed()`/`resize()`, cache the grid, rebuild only when dirty; ideally have the `TerminalScreen`
+  trait's `cells()` return a borrow so `render_grid` stops cloning too). A *wrong* invalidation
+  shows **stale terminal output** — a visible functional regression, exactly the line Murphy drew
+  ("not at the sacrifice of breaking functionality"). It can only be verified by observing a live
+  terminal actually update (an observation gate), so it's not safe tail-of-session work.
+- **Correct approach when picked up:** invalidate on `feed()` AND `resize()` only (vt100 screen
+  state changes nowhere else); cursor is separate (`cursor_position`) so it doesn't affect the
+  cell cache. Verify by driving `cat`/scrolling output over the docker sshd and confirming the
+  grid tracks live. Medium gain, low-risk *if* verified — worth a dedicated increment.
 
 ## Caveats noted from the audit itself
 - Finding #7 has a **regression trap**: a naive "reuse the pre-seed emptiness-check lists" breaks
