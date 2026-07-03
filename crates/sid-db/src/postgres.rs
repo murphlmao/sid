@@ -19,16 +19,27 @@ use tokio::sync::Mutex;
 /// ```
 pub struct PostgresClient {
     inner: Option<Arc<Mutex<PostgresInner>>>,
+    /// Cancel side-channel, deliberately OUTSIDE `inner`'s mutex (BUG 2 fix).
+    /// `query_paged`/`execute` hold that mutex for the whole duration of a
+    /// live query, so a `cancel()` that also needed the lock could never run
+    /// until the query it's meant to interrupt already finished. A
+    /// `CancelToken` dials its own separate connection to send the
+    /// cancel-request frame — it needs no access to the primary client at
+    /// all, so it doesn't need the mutex either.
+    cancel: Option<PgCancel>,
 }
 
-#[allow(dead_code)]
 struct PostgresInner {
     client: tokio_postgres::Client,
     /// Handle for the spawned connection task. Aborted on drop.
     conn_task: tokio::task::JoinHandle<()>,
-    /// Used by `cancel` to send the cancel-request frame on a side channel.
-    cancel_token: tokio_postgres::CancelToken,
-    /// Which transport this connection was opened with — `cancel` must reuse
+}
+
+/// Everything `cancel()` needs, cloned/captured at `open()` time.
+struct PgCancel {
+    /// Used to send the cancel-request frame on a side channel.
+    token: tokio_postgres::CancelToken,
+    /// Which transport the connection was opened with — `cancel` must reuse
     /// the same choice (a cancel request over `NoTls` to a TLS-only server,
     /// or vice versa, fails).
     tls: PgTls,
@@ -145,7 +156,10 @@ impl PostgresClient {
     /// );
     /// ```
     pub fn factory() -> Arc<dyn DbClient> {
-        Arc::new(Self { inner: None })
+        Arc::new(Self {
+            inner: None,
+            cancel: None,
+        })
     }
 }
 
@@ -208,12 +222,11 @@ impl DbClient for PostgresClient {
             }
         };
         Ok(Arc::new(PostgresClient {
-            inner: Some(Arc::new(Mutex::new(PostgresInner {
-                client,
-                conn_task,
-                cancel_token,
+            inner: Some(Arc::new(Mutex::new(PostgresInner { client, conn_task }))),
+            cancel: Some(PgCancel {
+                token: cancel_token,
                 tls,
-            }))),
+            }),
         }))
     }
 
@@ -423,11 +436,13 @@ impl DbClient for PostgresClient {
     }
 
     async fn cancel(&self) -> Result<(), DbError> {
-        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
-        let guard = inner.lock().await;
-        match &guard.tls {
-            PgTls::Plain => guard.cancel_token.cancel_query(tokio_postgres::NoTls).await,
-            PgTls::Tls(connector) => guard.cancel_token.cancel_query(connector.clone()).await,
+        // Deliberately does NOT touch `self.inner`'s mutex — see `PostgresClient::cancel`'s
+        // doc comment (BUG 2). `CancelToken::cancel_query` dials its own side-channel
+        // connection, so it can run concurrently with a live query still holding that lock.
+        let cancel = self.cancel.as_ref().ok_or(DbError::NotConnected)?;
+        match &cancel.tls {
+            PgTls::Plain => cancel.token.cancel_query(tokio_postgres::NoTls).await,
+            PgTls::Tls(connector) => cancel.token.cancel_query(connector.clone()).await,
         }
         .map_err(|e| DbError::Other(e.to_string()))
     }
