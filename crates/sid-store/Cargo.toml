@@ -17,3 +17,4 @@ thiserror = "2"
 [dev-dependencies]
 sid-secrets = { path = "../sid-secrets" }
 tempfile = "3"
+proptest.workspace = true
