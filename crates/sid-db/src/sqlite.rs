@@ -169,7 +169,7 @@ impl DbClient for SqliteClient {
                     let mut values = Vec::with_capacity(col_count);
                     for i in 0..col_count {
                         let v: rusqlite::types::Value = row.get(i).map_err(map_rusqlite_error)?;
-                        values.push(render_sqlite_value(&v));
+                        values.push(render_sqlite_value(v));
                     }
                     rows_out.push(Row { values });
                 }
@@ -423,17 +423,21 @@ fn rusqlite_type_to_column_type(decl: Option<&str>, value_ty: rusqlite::types::T
     }
 }
 
-fn render_sqlite_value(v: &rusqlite::types::Value) -> String {
+/// Takes `Value` by value (not `&Value`) so the `Text` arm can move the already-owned
+/// `String` out instead of cloning it (perf audit finding #4) — the caller (`query_paged`
+/// above) already holds an owned `Value` per cell (`row.get(i)`), so there was never a
+/// shared borrow to preserve.
+fn render_sqlite_value(v: rusqlite::types::Value) -> String {
     use rusqlite::types::Value;
     match v {
         Value::Null => "NULL".to_string(),
         Value::Integer(i) => i.to_string(),
         Value::Real(f) => f.to_string(),
-        Value::Text(s) => s.clone(),
+        Value::Text(s) => s,
         Value::Blob(b) => {
             let mut s = String::with_capacity(2 + b.len() * 2);
             s.push_str("0x");
-            for byte in b {
+            for byte in &b {
                 use std::fmt::Write;
                 write!(&mut s, "{byte:02x}").ok();
             }
@@ -596,12 +600,9 @@ mod tests {
     #[test]
     fn render_sqlite_value_formats_each_variant() {
         use rusqlite::types::Value;
-        assert_eq!(render_sqlite_value(&Value::Null), "NULL");
-        assert_eq!(render_sqlite_value(&Value::Integer(7)), "7");
-        assert_eq!(
-            render_sqlite_value(&Value::Blob(vec![0xAB, 0xCD])),
-            "0xabcd"
-        );
+        assert_eq!(render_sqlite_value(Value::Null), "NULL");
+        assert_eq!(render_sqlite_value(Value::Integer(7)), "7");
+        assert_eq!(render_sqlite_value(Value::Blob(vec![0xAB, 0xCD])), "0xabcd");
     }
 
     #[tokio::test]
