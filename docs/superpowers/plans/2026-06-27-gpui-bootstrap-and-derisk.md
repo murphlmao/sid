@@ -85,7 +85,7 @@ Verify all true: two dirs (`~/vcs/sid-poc`, `~/vcs/sid`); `sid-poc` origin = `si
 - Create: `~/vcs/sid/.gitignore` (Rust)
 - Create: `~/vcs/sid/README.md` (adapted)
 - Create: `~/vcs/sid/CLAUDE.md` (lean)
-- Create: `~/vcs/sid/docs/mockups/sid-mockup.html` (the approved layout wireframe)
+- Create: `~/vcs/sid/docs/mockups/2026-06-27-sid-mockup.html` (the approved layout wireframe)
 - Create: `~/vcs/sid/docs/design/2026-06-27-gpui-rebuild-design.md` (the design spec)
 
 **Interfaces:**
@@ -111,7 +111,7 @@ Create `~/vcs/sid/CLAUDE.md` with only: (a) the adapter-pattern rule (GPUI named
 
 - [ ] **Step 4: Carry the approved layout mockup**
 
-Copy the wireframe built during design into `~/vcs/sid/docs/mockups/sid-mockup.html` (source: the session scratchpad `sid-mockup.html`). It is the reference for layout: top tab strip (function axis) + titlebar scope switcher (context axis), full-width content.
+Copy the wireframe built during design into `~/vcs/sid/docs/mockups/2026-06-27-sid-mockup.html` (source: the session scratchpad `sid-mockup.html`). It is the reference for layout: top tab strip (function axis) + titlebar scope switcher (context axis), full-width content.
 
 - [ ] **Step 5: Write the design spec (North Star)**
 

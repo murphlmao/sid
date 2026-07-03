@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — keyboard-driven design spec</title>
+<style>
+  :root{
+    --bg:#08090c; --panel:#17181d; --panel2:#1e2027; --panel3:#101115;
+    --ink:#e6e8ec; --muted:#8c9099; --line:#2d3038; --line2:#25272e;
+    --accent:#5a9ad0; --accent-soft:rgba(90,154,208,.16);
+    --ws:#a98fe0; --ws-soft:rgba(169,143,224,.16);
+    --good:#52c78e; --warn:#e0a23e; --danger:#e2685f; --danger-soft:rgba(226,104,95,.14);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --kitty:"CaskaydiaCove Nerd Font Mono","JetBrainsMono Nerd Font",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);
+  }
+  .hero{
+    padding:46px 26px 34px;
+    background:
+      radial-gradient(1px 1px at 12% 30%, rgba(255,255,255,.5) 1px, transparent 0),
+      radial-gradient(1px 1px at 68% 12%,  rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1px 1px at 40% 70%, rgba(255,255,255,.3) 1px, transparent 0),
+      radial-gradient(1px 1px at 85% 40%, rgba(255,255,255,.45)  1px, transparent 0),
+      radial-gradient(1000px 500px at 12% -20%, rgba(90,120,210,.30), transparent 60%),
+      radial-gradient(900px 460px at 100% 0%, rgba(150,95,210,.20), transparent 55%),
+      var(--bg);
+    border-bottom:1px solid var(--line);
+  }
+  .page{max-width:1180px;margin:0 auto;padding:0 26px 90px}
+  .wireframe-tag{font:11px var(--mono);color:var(--muted);letter-spacing:.06em;margin-bottom:14px}
+  h1{margin:0 0 6px;font-size:23px;font-weight:700;display:flex;align-items:center;gap:9px}
+  h1 .gl{color:var(--accent)}
+  .sub{color:var(--muted);font-size:13.5px;max-width:760px}
+  .hintbar{position:fixed;top:16px;right:18px;z-index:80;display:flex;align-items:center;gap:8px;
+           background:var(--panel);border:1px solid var(--accent);border-radius:20px;padding:7px 14px;
+           font-size:11.5px;color:var(--muted);box-shadow:0 10px 30px rgba(0,0,0,.5)}
+  .hintbar kbd{margin:0 2px}
+
+  section{margin:38px 0}
+  section h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:9px}
+  section h2 .idx{font:11px var(--mono);color:var(--accent);border:1px solid var(--accent);border-radius:50%;
+                  width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+  section .lead{color:var(--muted);font-size:12.8px;margin:0 0 16px;max-width:820px}
+
+  kbd{font:11.5px var(--mono);background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;
+      border-radius:5px;padding:2px 8px;color:var(--ink);white-space:nowrap;display:inline-block}
+
+  /* ---- principles ---- */
+  .principle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+  .principle{border:1px solid var(--line);border-radius:11px;background:var(--panel);padding:16px 17px;display:flex;gap:12px}
+  .principle .num{font:13px var(--mono);color:var(--accent);border:1px solid var(--accent);border-radius:50%;
+                  width:26px;height:26px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .principle .body b{display:block;margin-bottom:4px;font-size:13px}
+  .principle .body span{color:var(--muted);font-size:12.3px}
+
+  /* ---- per-context tables ---- */
+  .ctx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+  .panel{border:1px solid var(--line);border-radius:11px;background:var(--panel);overflow:hidden}
+  .panel .ph{padding:11px 16px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px}
+  .panel .ph h3{margin:0;font-size:13.5px}
+  .panel .ph .cnt{margin-left:auto;font-size:11px;color:var(--muted)}
+  table.keys{width:100%;border-collapse:collapse;font-size:12.6px}
+  table.keys th{text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+                padding:7px 16px;border-bottom:1px solid var(--line2)}
+  table.keys td{padding:8px 16px;border-bottom:1px solid var(--line2);vertical-align:top}
+  table.keys tr:last-child td{border-bottom:none}
+  table.keys tr.flash{animation:flashrow 1.1s ease}
+  @keyframes flashrow{0%{background:var(--accent-soft)}100%{background:transparent}}
+  table.keys td.act{font-weight:600;width:230px}
+  table.keys td.note{color:var(--muted);font-size:11.8px}
+  .conflict-flag{color:var(--warn);font-size:10.5px;border:1px solid var(--warn);border-radius:8px;padding:0 6px;margin-left:7px;white-space:nowrap}
+  .warnbox{margin:10px 16px 14px;padding:10px 13px;border:1px solid var(--warn);background:rgba(224,162,62,.1);
+           border-radius:8px;font-size:12px;color:var(--ink);display:flex;gap:8px;align-items:flex-start}
+  .warnbox .wi{color:var(--warn);flex:0 0 auto}
+
+  /* ---- miniwin (used for palette / keymap / storyboard frames) ---- */
+  .miniwin{border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:0 16px 44px rgba(0,0,0,.4);overflow:hidden}
+  .miniwin .mt{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel2);border-bottom:1px solid var(--line);font-size:11px;color:var(--muted)}
+  .miniwin .mt .lights{display:flex;gap:5px}
+  .miniwin .mt .lights i{width:8px;height:8px;border-radius:50%;background:#33353c;display:inline-block}
+
+  /* ---- command palette mock ---- */
+  .palette-frame{max-width:560px;margin:0 auto}
+  .palwrap{padding:10px}
+  .palinput{display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--accent);border-radius:8px;
+            background:var(--panel3);font:13px var(--mono);margin-bottom:8px}
+  .palinput .caret{color:var(--accent)}
+  .palresults .prow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:12.6px;cursor:default}
+  .palresults .prow.sel{background:var(--accent-soft)}
+  .palresults .prow .pic{flex:0 0 auto;opacity:.85}
+  .palresults .prow .plabel{flex:1;min-width:0}
+  .palresults .prow .plabel b{color:var(--ink)}
+  .palresults .prow .plabel .sub{color:var(--muted);font-size:11px;font-family:var(--mono);margin-left:6px}
+  .palresults .prow.dim{opacity:.55}
+  .palresults .prow kbd{flex:0 0 auto}
+
+  /* live overlay variants of the above */
+  .overlay{position:fixed;inset:0;background:rgba(4,5,7,.6);display:none;align-items:flex-start;justify-content:center;
+           padding-top:120px;z-index:100}
+  .overlay.open{display:flex}
+  .overlay .miniwin{width:560px;max-width:92vw}
+
+  /* ---- settings keymap mock ---- */
+  .keymap-toolbar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line2)}
+  .keymap-toolbar input{flex:1;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);
+                        color:var(--ink);border-radius:6px;padding:6px 9px}
+  .btn{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel2);border-radius:7px;
+       padding:5px 10px;cursor:pointer;color:var(--ink)}
+  .btn:hover{filter:brightness(1.15)}
+  .btn.sm{font-size:11px;padding:3px 8px}
+  table.keymap{width:100%;border-collapse:collapse;font-size:12.4px}
+  table.keymap th{text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+                  padding:7px 16px;border-bottom:1px solid var(--line2)}
+  table.keymap td{padding:7px 16px;border-bottom:1px solid var(--line2)}
+  table.keymap tr.conflict td{background:var(--danger-soft)}
+  table.keymap td.ctx{color:var(--muted);font-size:11.3px}
+  table.keymap td.bindcell{font-family:var(--mono)}
+  table.keymap .capturing{color:var(--accent);font-size:11px;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  table.keymap .rowactions{display:flex;gap:5px}
+
+  /* ---- storyboard ---- */
+  .storyboard{display:flex;gap:14px;flex-wrap:wrap}
+  .frame{width:206px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);overflow:hidden;
+        display:flex;flex-direction:column}
+  .frame .fhead{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--panel3);border-bottom:1px solid var(--line)}
+  .frame .fhead .lights i{width:6px;height:6px;border-radius:50%;background:#33353c;display:inline-block;margin-right:2px}
+  .frame .fbody{height:132px;padding:8px;font-size:9.6px;color:var(--muted);position:relative;background:var(--panel3);overflow:hidden}
+  .frame .fcap{padding:8px 9px;border-top:1px solid var(--line2);font-size:11px;display:flex;flex-direction:column;gap:4px;flex:1}
+  .frame .fcap .step{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .frame .fcap .desc{font-size:11px;color:var(--ink)}
+  .arrow{align-self:center;color:var(--muted);font-size:16px}
+  .mini-tab{font-size:8.5px;padding:2px 6px;border-radius:4px 4px 0 0;background:var(--panel2);color:var(--muted);display:inline-block}
+  .mini-tab.on{background:var(--panel3);color:var(--ink);font-weight:600;box-shadow:inset 0 -2px 0 var(--accent)}
+  .mini-row{display:flex;align-items:center;gap:4px;padding:2px 4px;border-radius:3px}
+  .mini-row.hi{background:var(--accent-soft)}
+  .mini-input{border:1px solid var(--accent);border-radius:3px;padding:1px 4px;background:var(--panel);color:var(--ink);font:9px var(--mono)}
+  .mini-term{font:9px var(--kitty);color:#c7ccd2;line-height:1.5}
+  .mini-term .p{color:#7fd8ad}.mini-term .d{color:#7fb6e6}
+
+  /* ---- questions callout ---- */
+  .questions{border:1px solid var(--ws);background:var(--ws-soft);border-radius:11px;padding:16px 18px}
+  .questions h2{color:var(--ink)}
+  .questions ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:10px;font-size:12.8px}
+  .questions ol li b{color:var(--ink)}
+  .questions ol li span{color:var(--muted)}
+
+  footer{color:var(--muted);font-size:11.5px;text-align:center;padding:20px 0 10px}
+</style>
+</head>
+<body>
+
+<div class="hintbar">⌨ live in this mockup: <kbd>Ctrl+K</kbd> palette · <kbd>?</kbd> cheat-sheet · <kbd>Ctrl+1…5</kbd> flash · <kbd>Esc</kbd> close</div>
+
+<div class="hero">
+  <div class="page" style="padding:0">
+    <div class="wireframe-tag">DESIGN SPEC MOCKUP · keyboard system · nothing implemented yet · a few bindings are live in this page for review</div>
+    <h1><span class="gl">✦</span> sid — keyboard-driven</h1>
+    <p class="sub">One modifier story, everywhere. Plain accelerators outside a terminal; the <i>same</i> binding plus <b>Shift</b> once a terminal is focused
+    (kitty convention), so the muscle memory transfers instead of fighting the terminal for its own bindings. This document is the
+    decided keymap — render it, argue with it, then it goes in <kbd>Settings → Keymap</kbd>.</p>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- (a) principles -->
+  <section id="sec-principles">
+    <h2><span class="idx">a</span>Principles</h2>
+    <p class="lead">Four rules the rest of this document follows without exception.</p>
+    <div class="principle-grid">
+      <div class="principle">
+        <div class="num">1</div>
+        <div class="body"><b>One modifier story</b><span>Plain accelerators outside the terminal. Inside a focused terminal, the same
+        binding + <kbd>Shift</kbd> — kitty's convention — so muscle memory transfers instead of resetting per-surface.</span></div>
+      </div>
+      <div class="principle">
+        <div class="num">2</div>
+        <div class="body"><b><kbd>Tab</kbd> is for forms, only</b><span><kbd>Tab</kbd>/<kbd>Shift+Tab</kbd> is reserved for field
+        cycling inside forms. Zone/pane cycling is <kbd>F6</kbd>/<kbd>Shift+F6</kbd> — never overload Tab with two jobs.</span></div>
+      </div>
+      <div class="principle">
+        <div class="num">3</div>
+        <div class="body"><b>Everything is in the palette</b><span>Every action, connection, and tab is reachable via
+        <kbd>Ctrl+K</kbd>. The keymap is a set of shortcuts <i>to</i> the palette, not a separate surface.</span></div>
+      </div>
+      <div class="principle">
+        <div class="num">4</div>
+        <div class="body"><b>Every binding is yours</b><span>Rebindable in <kbd>Settings → Keymap</kbd>, with live conflict
+        detection and a one-click reset to default, per row or all at once.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- (b) per-context binding tables -->
+  <section id="sec-bindings">
+    <h2><span class="idx">b</span>Bindings, by context</h2>
+    <p class="lead">Grouped by where focus is. The full set also renders as a condensed cheat-sheet — press <kbd>?</kbd> anywhere
+    outside a text field to see it.</p>
+    <div class="ctx-grid" id="ctxGrid"></div>
+
+    <div class="warnbox" style="margin-top:16px">
+      <span class="wi">⚠</span>
+      <span><b>Collision surfaced by principle 1:</b> outside a terminal, <kbd>Ctrl+Shift+Tab</kbd> means "previous session tab."
+      Apply the same-binding-+-Shift rule to the terminal's own <kbd>Ctrl+Tab</kbd> ("next session tab") and you land on the
+      <i>same</i> chord, <kbd>Ctrl+Shift+Tab</kbd> — now meaning "next" inside a terminal. Two actions, one binding. See the
+      highlighted row in the Keymap pane below; this needs Murphy's call (options in the closing section).</span>
+    </div>
+  </section>
+
+  <!-- (c) command palette mock -->
+  <section id="sec-palette">
+    <h2><span class="idx">c</span>Command palette — open state</h2>
+    <p class="lead">Fuzzy across actions, connections, and tabs in one list. Bindings render right-aligned so the palette
+    doubles as a live cheat-sheet for whatever you just searched. Query typed: <kbd>web1</kbd>.</p>
+    <div class="palette-frame">
+      <div class="miniwin">
+        <div class="mt"><div class="lights"><i></i><i></i><i></i></div>Command palette</div>
+        <div class="palwrap">
+          <div class="palinput">⌕ web1<span class="caret">▏</span></div>
+          <div class="palresults" id="paletteStatic"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- (d) settings -> keymap mock -->
+  <section id="sec-keymap">
+    <h2><span class="idx">d</span>Settings → Keymap</h2>
+    <p class="lead">Every row live-rebindable (press the button, then press the new chord) with a reset-to-default per row.
+    The conflicting pair from §b is highlighted with its warning, exactly as it would appear once you tried to save it.</p>
+    <div class="panel">
+      <div class="keymap-toolbar">
+        <input placeholder="Filter bindings…" spellcheck="false">
+        <button class="btn">↺ Reset all to defaults</button>
+      </div>
+      <table class="keymap" id="keymapTable">
+        <thead><tr><th>context</th><th>action</th><th>binding</th><th></th></tr></thead>
+        <tbody id="keymapBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- (e) storyboard -->
+  <section id="sec-storyboard">
+    <h2><span class="idx">e</span>Cold start → connected to <kbd style="margin:0 2px">web-1</kbd>, keyboard only</h2>
+    <p class="lead">Six frames, zero mouse. This is the walk a new keybinding proposal has to survive.</p>
+    <div class="storyboard" id="storyboard"></div>
+  </section>
+
+  <!-- design questions -->
+  <section class="questions">
+    <h2 style="margin-top:0"><span class="idx" style="color:var(--ws);border-color:var(--ws)">?</span>Open questions for Murphy</h2>
+    <ol>
+      <li><b>The <kbd>Ctrl+Shift+Tab</kbd> collision (§b/§d).</b> <span>Same-binding-+-Shift is clean everywhere else, but
+      it doubles up here because outside-terminal already uses Shift for "prev." Two ways out: (a) inside a terminal, drop
+      <kbd>Tab</kbd> for session-cycling entirely and use kitty's own default, <kbd>Ctrl+Shift+←/→</kbd>; or (b) keep Tab
+      outside only, and give inside-terminal cycling a distinct chord that isn't a Shift-of-a-Shift. Leaning (a) since it's
+      already kitty's real default and doesn't invent a new chord — but it's a one-context exception to principle 1, worth
+      saying out loud before it's load-bearing.</span></li>
+      <li><b>Do the primary-tab jumps need a terminal-focused variant?</b> <span><kbd>Ctrl+1…5</kbd> are plain outside a
+      terminal; inside one, is <kbd>Ctrl+Shift+1…5</kbd> worth reserving to jump tabs without first hitting
+      <kbd>Ctrl+Shift+A</kbd> to release focus, or is that one extra keystroke fine as the deliberate "are you sure you're
+      leaving the terminal" speed bump?</span></li>
+      <li><b><kbd>?</kbd> while another overlay is open.</b> <span>Right now this mockup just lets it stack (cheat-sheet over
+      palette). In the real app, should <kbd>?</kbd> be swallowed while the palette or a rebind-capture is active, since a
+      bare <kbd>?</kbd> might legitimately be part of a search query?</span></li>
+      <li><b>Two-step <kbd>Delete</kbd> — does "armed" expire?</b> <span>First press arms, second confirms. Worth deciding
+      whether the armed state auto-disarms after a few seconds of inactivity, or only via <kbd>Esc</kbd>/moving selection —
+      affects whether it needs a visible countdown.</span></li>
+    </ol>
+  </section>
+
+</div>
+
+<!-- live overlays: cheat-sheet + command palette -->
+<div class="overlay" id="cheatOverlay">
+  <div class="miniwin" style="width:900px;max-width:94vw">
+    <div class="mt"><div class="lights"><i></i><i></i><i></i></div>Cheat-sheet · press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div>
+    <div id="cheatBody" style="padding:14px 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;max-height:70vh;overflow:auto"></div>
+  </div>
+</div>
+
+<div class="overlay" id="paletteOverlay">
+  <div class="miniwin">
+    <div class="mt"><div class="lights"><i></i><i></i><i></i></div>Command palette · <kbd>Esc</kbd> to close</div>
+    <div class="palwrap">
+      <div class="palinput">⌕ <input id="paletteInput" style="background:transparent;border:0;outline:0;color:inherit;font:inherit;flex:1" spellcheck="false"></div>
+      <div class="palresults" id="paletteLive"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- single source of truth for all binding tables + cheat-sheet ----
+  const CONTEXTS = [
+    { id:'global', title:'Global', rows:[
+      {keys:'Ctrl+K', act:'Command palette', note:'fuzzy: actions, connections, tabs — bindings right-aligned in results'},
+      {keys:'Ctrl+1…5', act:'Primary tabs', note:'1 SSH/SFTP · 2 Database · 3 Network · 4 Workspaces · 5 System'},
+      {keys:'F6 / Shift+F6', act:'Cycle panes', note:'sidebar → main → status, forward / backward'},
+      {keys:'Ctrl+,', act:'Settings', note:'opens Settings → Keymap by default'},
+      {keys:'?', act:'Cheat-sheet overlay', note:'only when no input is focused'},
+    ]},
+    { id:'lists', title:'Lists & tables', rows:[
+      {keys:'↑/↓ or j/k', act:'Move selection', note:'hosts, connections, ports, services, schema tree'},
+      {keys:'Enter', act:'Primary action', note:'connect / open / run — context-dependent'},
+      {keys:'F2', act:'Inline rename', note:'label → edit field in place, like VS Code — never a dialog'},
+      {keys:'Delete', act:'Two-step delete', note:'first press arms it, second confirms — no modal'},
+      {keys:'/', act:'Focus filter', note:'narrows the list as you type'},
+      {keys:'Esc', act:'Clear filter / close', note:'clears filter first, then blurs / closes'},
+    ]},
+    { id:'ssh-out', title:'SSH sessions — outside terminal', rows:[
+      {keys:'Ctrl+T', act:'New tab', note:'opens Home, not a blank terminal'},
+      {keys:'Ctrl+W', act:'Close tab', note:'active session or Home'},
+      {keys:'Ctrl+Tab', act:'Next session tab', note:''},
+      {keys:'Ctrl+Shift+Tab', act:'Prev session tab', note:'', flag:'conflict'},
+      {keys:'Ctrl+Home', act:'Jump to 🏠 Home', note:''},
+    ]},
+    { id:'ssh-in', title:'SSH sessions — inside terminal (kitty: same + Shift)', rows:[
+      {keys:'Ctrl+Shift+T', act:'New tab', note:'opens Home'},
+      {keys:'Ctrl+Shift+W', act:'Close tab', note:''},
+      {keys:'Ctrl+Shift+Tab', act:'Next session tab', note:'', flag:'conflict'},
+      {keys:'Ctrl+Shift+Home', act:'Jump to 🏠 Home', note:''},
+      {keys:'Ctrl+Shift+A', act:'Release focus to sidebar', note:'the escape hatch out of the terminal grid'},
+    ]},
+    { id:'db', title:'Database', rows:[
+      {keys:'Ctrl+Enter', act:'Run query', note:'exists today'},
+      {keys:'Ctrl+E', act:'Export menu', note:'CSV today, more formats later'},
+      {keys:'Ctrl+D', act:'Relationships diagram', note:'opens the pop-out ER window'},
+      {keys:'F6', act:'Cycle editor → tree → grid', note:''},
+    ]},
+    { id:'diagram', title:'Diagram window', rows:[
+      {keys:'↑ ↓ ← →', act:'Pan the canvas', note:''},
+      {keys:'Enter', act:'Send selection to main view', note:'pulls that table’s data into the grid'},
+      {keys:'Esc', act:'Close', note:''},
+    ]},
+  ];
+
+  function ctxTableHtml(ctx){
+    const rows = ctx.rows.map(r=>{
+      const flag = r.flag==='conflict' ? '<span class="conflict-flag">⚠ conflict</span>' : '';
+      return `<tr data-ctx="${ctx.id}"><td><kbd>${r.keys}</kbd></td><td class="act">${r.act}${flag}</td><td class="note">${r.note}</td></tr>`;
+    }).join('');
+    return `<div class="panel">
+      <div class="ph"><h3>${ctx.title}</h3><span class="cnt">${ctx.rows.length} bindings</span></div>
+      <table class="keys"><thead><tr><th>key</th><th>action</th><th>note</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+  }
+  document.getElementById('ctxGrid').innerHTML = CONTEXTS.map(ctxTableHtml).join('');
+
+  // ---- cheat-sheet overlay, built from the same data ----
+  document.getElementById('cheatBody').innerHTML = CONTEXTS.map(ctx=>`
+    <div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${ctx.title}</div>
+      ${ctx.rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12.3px">
+        <span>${r.act}</span><kbd>${r.keys}</kbd></div>`).join('')}
+    </div>`).join('');
+
+  const cheatOverlay = document.getElementById('cheatOverlay');
+  const paletteOverlay = document.getElementById('paletteOverlay');
+  function closeOverlays(){ cheatOverlay.classList.remove('open'); paletteOverlay.classList.remove('open'); }
+  function toggleCheat(){ if(paletteOverlay.classList.contains('open')) paletteOverlay.classList.remove('open'); cheatOverlay.classList.toggle('open'); }
+  function openPalette(){ cheatOverlay.classList.remove('open'); paletteOverlay.classList.add('open'); const i=document.getElementById('paletteInput'); i.value='web1'; i.focus(); i.select(); renderPaletteResults(i.value); }
+  cheatOverlay.addEventListener('click', e=>{ if(e.target===cheatOverlay) closeOverlays(); });
+  paletteOverlay.addEventListener('click', e=>{ if(e.target===paletteOverlay) closeOverlays(); });
+
+  // ---- palette results (static figure + live filtered overlay share one dataset) ----
+  const ACTIONS = [
+    {ic:'⚡', label:'Connect to <b>web-1</b>', sub:'deploy@web-1.acme.internal', keys:'Enter', match:'connect web1 web-1'},
+    {ic:'⊞', label:'Browse files on <b>web-1</b>', sub:'/opt/acme-api/releases/current', keys:'—', match:'browse files web1 web-1'},
+    {ic:'✎', label:'Rename <b>web-1</b>', sub:'saved connection', keys:'F2', match:'rename web1 web-1'},
+    {ic:'⚡', label:'Connect to <b>web-2</b>', sub:'deploy@web-2.acme.internal', keys:'Enter', match:'connect web2 web-2', dim:true},
+    {ic:'🗑', label:'Delete <b>web-1</b>', sub:'saved connection', keys:'Delete', match:'delete web1 web-1'},
+    {ic:'⌁', label:'Go to SSH / SFTP', sub:'primary tab', keys:'Ctrl+1', match:'ssh sftp tab go'},
+    {ic:'▤', label:'Go to Database', sub:'primary tab', keys:'Ctrl+2', match:'database db tab go'},
+  ];
+  function paletteRowHtml(a,i){
+    return `<div class="prow ${i===0?'sel':''} ${a.dim?'dim':''}"><span class="pic">${a.ic}</span>
+      <span class="plabel">${a.label}<span class="sub">${a.sub}</span></span><kbd>${a.keys}</kbd></div>`;
+  }
+  document.getElementById('paletteStatic').innerHTML = ACTIONS.slice(0,5).map(paletteRowHtml).join('');
+
+  function renderPaletteResults(q){
+    const query = q.trim().toLowerCase();
+    const filtered = query ? ACTIONS.filter(a=>a.match.includes(query) || a.match.split(' ').some(w=>w.startsWith(query))) : ACTIONS;
+    document.getElementById('paletteLive').innerHTML = filtered.length
+      ? filtered.map(paletteRowHtml).join('')
+      : '<div style="padding:14px;color:var(--muted);font-size:12.5px">No matches</div>';
+  }
+  document.getElementById('paletteInput').addEventListener('input', e=>renderPaletteResults(e.target.value));
+
+  // ---- Settings -> Keymap table, with rebind-capture + reset, and the highlighted conflict ----
+  const KEYMAP_ROWS = [
+    {ctx:'Global', act:'Command palette', keys:'Ctrl+K'},
+    {ctx:'Global', act:'Cycle panes (forward)', keys:'F6'},
+    {ctx:'Lists & tables', act:'Inline rename', keys:'F2'},
+    {ctx:'SSH — outside terminal', act:'Prev session tab', keys:'Ctrl+Shift+Tab', conflict:'ssh-tab'},
+    {ctx:'SSH — inside terminal', act:'Next session tab', keys:'Ctrl+Shift+Tab', conflict:'ssh-tab'},
+    {ctx:'Database', act:'Run query', keys:'Ctrl+Enter'},
+  ];
+  document.getElementById('keymapBody').innerHTML = KEYMAP_ROWS.map(r=>`
+    <tr class="${r.conflict?'conflict':''}" data-default="${r.keys}">
+      <td class="ctx">${r.ctx}</td>
+      <td>${r.act}</td>
+      <td class="bindcell"><kbd>${r.keys}</kbd></td>
+      <td><div class="rowactions"><button class="btn sm rebind-btn">Rebind</button><button class="btn sm reset-btn" title="Reset to default">↺</button></div></td>
+    </tr>
+    ${r.conflict ? `<tr class="conflict"><td></td><td colspan="3" style="padding-top:0">
+      <div class="warnbox" style="margin:0 0 8px"><span class="wi">⚠</span>
+      <span>Conflict — <kbd>Ctrl+Shift+Tab</kbd> is bound to two actions across contexts (prev tab outside a terminal,
+      next tab inside one). Rebind one to resolve before this can save.</span></div></td></tr>` : ''}
+  `).join('');
+
+  document.querySelectorAll('.rebind-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      const cell = btn.closest('tr').querySelector('.bindcell');
+      cell.innerHTML = '<span class="capturing">Press a key…</span>';
+      function capture(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        if(['Control','Shift','Alt','Meta'].includes(ev.key)) return;
+        const combo = [];
+        if(ev.ctrlKey) combo.push('Ctrl');
+        if(ev.shiftKey) combo.push('Shift');
+        if(ev.altKey) combo.push('Alt');
+        if(ev.metaKey) combo.push('Meta');
+        combo.push(ev.key.length===1 ? ev.key.toUpperCase() : ev.key);
+        cell.innerHTML = `<kbd>${combo.join('+')}</kbd>`;
+        document.removeEventListener('keydown', capture, true);
+      }
+      document.addEventListener('keydown', capture, true);
+    };
+  });
+  document.querySelectorAll('.reset-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      const tr = btn.closest('tr');
+      tr.querySelector('.bindcell').innerHTML = `<kbd>${tr.dataset.default}</kbd>`;
+    };
+  });
+
+  // ---- (e) storyboard: 6 frames, cold start -> connected, keyboard only ----
+  const FRAMES = [
+    { step:'cold start', desc:'App just launched — last session left off on Database. Nothing focused.',
+      body:`<div style="display:flex;gap:2px;margin-bottom:6px"><span class="mini-tab">SSH</span><span class="mini-tab on">Database</span><span class="mini-tab">Network</span></div>
+            <div style="color:var(--muted)">grid / query editor…</div>` },
+    { step:'Ctrl+1', desc:'Jumps to SSH/SFTP. No session tabs yet selected → lands on 🏠 Home.',
+      body:`<div style="display:flex;gap:2px;margin-bottom:6px"><span class="mini-tab on">SSH</span><span class="mini-tab">Database</span><span class="mini-tab">Network</span></div>
+            <div style="display:flex;gap:3px;margin-bottom:6px"><span class="mini-tab on" style="border-radius:50%;width:16px;text-align:center">🏠</span></div>
+            <div class="mini-row hi">🖥 murphy@10.1.41.6</div>
+            <div class="mini-row">▾ homelab</div>
+            <div class="mini-row">▾ work/prod</div>` },
+    { step:'/', desc:'Focuses the quick filter at the top of the saved-connections tree.',
+      body:`<div style="margin-bottom:6px"><span class="mini-tab on" style="border-radius:50%;width:16px;text-align:center">🏠</span></div>
+            <input class="mini-input" style="width:100%;margin-bottom:6px" value="" placeholder="Quick connect…">
+            <div class="mini-row">🖥 murphy@10.1.41.6</div>
+            <div class="mini-row">▾ homelab</div>
+            <div class="mini-row">▾ work/prod</div>` },
+    { step:'type "web"', desc:'List narrows to two matches; web-1 ranks first and is pre-selected.',
+      body:`<div style="margin-bottom:6px"><span class="mini-tab on" style="border-radius:50%;width:16px;text-align:center">🏠</span></div>
+            <input class="mini-input" style="width:100%;margin-bottom:6px" value="web">
+            <div class="mini-row hi">🖥 web-1</div>
+            <div class="mini-row">🖥 web-2</div>` },
+    { step:'Enter', desc:'Connects to web-1. New session tab opens + activates; sidebar swaps to its file browser.',
+      body:`<div style="display:flex;gap:3px;margin-bottom:6px"><span class="mini-tab" style="border-radius:50%;width:16px;text-align:center">🏠</span><span class="mini-tab on">web-1 ×</span></div>
+            <div style="color:var(--muted);margin-bottom:3px">Files · web-1</div>
+            <div class="mini-row">📁 bin</div><div class="mini-row">📁 logs</div>
+            <div class="mini-term" style="margin-top:6px"><span class="p">deploy@web-1</span>:<span class="d">~</span>$ ▏</div>` },
+    { step:'Ctrl+Shift+A', desc:'Inside the terminal — releases focus back to the sidebar. Fully connected & oriented.',
+      body:`<div style="display:flex;gap:3px;margin-bottom:6px"><span class="mini-tab" style="border-radius:50%;width:16px;text-align:center">🏠</span><span class="mini-tab on">web-1 ×</span></div>
+            <div class="mini-row hi" style="margin-bottom:3px">Files · web-1 (focused)</div>
+            <div class="mini-row">📁 bin</div><div class="mini-row">📁 logs</div>
+            <div class="mini-term" style="margin-top:6px;opacity:.55"><span class="p">deploy@web-1</span>:<span class="d">~</span>$ ▏</div>` },
+  ];
+  document.getElementById('storyboard').innerHTML = FRAMES.map((f,i)=>`
+    ${i>0 ? '<span class="arrow">→</span>' : ''}
+    <div class="frame">
+      <div class="fhead"><div class="lights"><i></i><i></i><i></i></div></div>
+      <div class="fbody">${f.body}</div>
+      <div class="fcap"><span class="step">${i+1} · ${f.step}</span><span class="desc">${f.desc}</span></div>
+    </div>`).join('');
+
+  // ---- live keyboard demo on the page itself ----
+  document.addEventListener('keydown', (e)=>{
+    const el = document.activeElement;
+    const typing = el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA' || el.isContentEditable);
+
+    if(e.key==='?' && !typing){ e.preventDefault(); toggleCheat(); return; }
+    if((e.ctrlKey||e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='k'){ e.preventDefault(); openPalette(); return; }
+    if((e.ctrlKey||e.metaKey) && e.key===','){ e.preventDefault(); const s=document.getElementById('sec-keymap'); s.scrollIntoView({behavior:'smooth',block:'center'}); const p=s.querySelector('.panel'); p.style.transition='box-shadow .2s'; p.style.boxShadow='0 0 0 3px var(--accent)'; setTimeout(()=>p.style.boxShadow='',900); return; }
+    if((e.ctrlKey||e.metaKey) && !e.shiftKey && /^[1-5]$/.test(e.key)){
+      // flash the Global panel's "Primary tabs" row to confirm the binding fired
+      const globalRows = document.querySelectorAll('#ctxGrid .panel')[0].querySelectorAll('tbody tr');
+      const target = globalRows[1];
+      if(target){ target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash'); }
+    }
+    if(e.key==='Escape'){ closeOverlays(); }
+  });
+</script>
+</body>
+</html>
