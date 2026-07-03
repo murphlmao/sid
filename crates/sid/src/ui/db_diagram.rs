@@ -366,8 +366,16 @@ impl DiagramView {
     /// the table boxes in child order, so lines sit under them. Two passes: every
     /// non-selected edge dim, then the selected table's edges again in bright — cheap
     /// re-draw over the dim pass rather than tracking per-edge "is this one bright" state.
-    fn edges_canvas(&self, content_size: (f32, f32)) -> impl IntoElement + use<> {
-        let table_bounds = self.table_bounds();
+    ///
+    /// `table_bounds` is *moved* in rather than recomputed here — `render` builds it
+    /// once per frame, hands the same map to [`Self::edge_labels`] by reference first,
+    /// then moves ownership into this `'static` `canvas()` closure last (perf audit
+    /// finding #2: was two separate `table_bounds()` builds per render).
+    fn edges_canvas(
+        &self,
+        content_size: (f32, f32),
+        table_bounds: HashMap<String, Bounds<Pixels>>,
+    ) -> impl IntoElement + use<> {
         let edges: Vec<(String, String)> = self
             .edges
             .iter()
@@ -420,8 +428,10 @@ impl DiagramView {
     /// flat (two elements per edge) rather than wrapped in a container div, so each
     /// label is a direct child of the same positioned container the table boxes are —
     /// no ambiguity about which ancestor `left`/`top` resolve against.
-    fn edge_labels(&self) -> Vec<AnyElement> {
-        let table_bounds = self.table_bounds();
+    ///
+    /// Takes `table_bounds` by reference (borrowed from `render`'s single per-frame
+    /// build — see [`Self::edges_canvas`]'s doc comment) rather than computing its own.
+    fn edge_labels(&self, table_bounds: &HashMap<String, Bounds<Pixels>>) -> Vec<AnyElement> {
         self.edges
             .iter()
             .filter(|e| !e.self_ref)
@@ -564,6 +574,12 @@ impl DiagramView {
 impl Render for DiagramView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content_size = self.content_size();
+        // Perf audit finding #2: build once per render, not once per call site.
+        // `edge_labels` only ever needs to *read* it, so that call comes first
+        // (borrowing); `edges_canvas`'s `canvas()` closure is `'static`, so it takes
+        // ownership last, once nothing else needs the map.
+        let table_bounds = self.table_bounds();
+        let edge_labels = self.edge_labels(&table_bounds);
         // Indices, not an iterator over `&self.tables` — `table_box` re-borrows
         // `self.tables[ix]` itself, since it also needs `&mut self` (via `cx.listener`)
         // in the same call, and an active `&self.tables` iterator would conflict with that.
@@ -579,9 +595,9 @@ impl Render for DiagramView {
             .relative()
             .w(px(content_size.0))
             .h(px(content_size.1))
-            .child(self.edges_canvas(content_size))
+            .child(self.edges_canvas(content_size, table_bounds))
             .children(boxes)
-            .children(self.edge_labels());
+            .children(edge_labels);
 
         div()
             .id("diagram-root")
