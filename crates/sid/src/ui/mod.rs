@@ -14,6 +14,7 @@ pub mod network_tab;
 pub mod secret_unlock;
 pub mod session;
 pub mod ssh_home;
+pub mod systems_tab;
 mod text_input;
 
 pub use session::{SessionStatus, SshSession, SshSessionEvent};

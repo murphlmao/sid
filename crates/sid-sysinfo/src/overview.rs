@@ -73,7 +73,10 @@ mod tests {
             first.cpu_per_core.len(),
             "core count should be stable across two immediate calls"
         );
-        assert_eq!(second.mem_total, first.mem_total, "RAM size doesn't change mid-test");
+        assert_eq!(
+            second.mem_total, first.mem_total,
+            "RAM size doesn't change mid-test"
+        );
     }
 
     /// `overview()` never invents an OS/kernel string when `sysinfo` can't determine
