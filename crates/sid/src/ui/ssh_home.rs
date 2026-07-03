@@ -17,9 +17,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use gpui::{
-    ClickEvent, Context, Entity, IntoElement, Pixels, SharedString, Window, actions, div,
-    prelude::*, px, rgb,
+    ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels, SharedString,
+    Window, actions, div, prelude::*, px, rgb,
 };
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, delete_click_executes};
@@ -96,6 +97,30 @@ pub(crate) struct HomeTabState {
     /// The quick-connect box's last parse failure, shown under it until the next
     /// attempt or edit.
     quick_error: Option<String>,
+    /// Which row (if any) the tree's last right-click landed on — `None` reads as
+    /// "empty space" (or a folder header). Feeds the tree's *single* `context_menu`
+    /// (attached to the whole scroll container, in [`AppState::ssh_home_sidebar`]),
+    /// which decides row-menu vs. "＋ Add connection" from this.
+    ///
+    /// This indirection exists because `gpui_component::menu::ContextMenuExt` can't be
+    /// attached once per row: its convenience method hardcodes the wrapper's element id
+    /// to the literal string `"context-menu"`, and none of the tree ancestors between
+    /// the scroll container and any given row differ per row — every row's wrapper
+    /// would collide on the exact same `GlobalElementId`, sharing (and clobbering) one
+    /// `ContextMenuState`. `gpui-component`'s own `Table` sidesteps this the same way:
+    /// one `context_menu` on the table body, fed by a `right_clicked_row` field set
+    /// from each row's own `on_mouse_down(MouseButton::Right, ..)` (see
+    /// `gpui-component`'s `table/state.rs`) — this mirrors that exact pattern.
+    ///
+    /// Reset to `None` on every right-click via the tree container's
+    /// `capture_any_mouse_down` (capture phase, always runs first — see that call
+    /// site's doc comment), then set back to `Some((host, origin))` by whichever row's
+    /// ordinary bubble-phase `on_mouse_down(Right, ..)` fires next, if any. Emptiness is
+    /// therefore the default for any right-click that isn't on a row — no dedicated
+    /// "empty space" element needs its own clearing logic, and a short host list (empty
+    /// space below the last row) works exactly like an overflowing one (empty space is
+    /// merely unreachable by the mouse) or right-clicking a folder header.
+    right_click_target: Option<(Host, Scope)>,
 }
 
 impl HomeTabState {
@@ -105,6 +130,7 @@ impl HomeTabState {
             search: cx.new(|cx| TextInput::new(cx, "user@host[:port] — quick connect / filter")),
             edit: None,
             quick_error: None,
+            right_click_target: None,
         }
     }
 }
@@ -234,6 +260,7 @@ impl AppState {
             .bg(rgb(BG))
             .border_r_1()
             .border_color(rgb(BORDER))
+            .child(self.sidebar_header(cx))
             .child(self.quick_connect_box(cx))
             .child(
                 div()
@@ -241,16 +268,189 @@ impl AppState {
                     .flex_1()
                     .overflow_y_scroll()
                     .py_1()
-                    .children(rows),
+                    // Right-click *anywhere* in the tree defaults to "no row" —
+                    // `capture_any_mouse_down` fires during the CAPTURE phase, which
+                    // completes in full before any BUBBLE-phase handler runs (see
+                    // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
+                    // pass over every listener, then bubble is a second full pass, in
+                    // reverse/child-first order). So this always resets the target
+                    // first; a specific row's own `on_mouse_down(Right, ..)` (an
+                    // ordinary BUBBLE-phase handler, see `host_tree_row`) then fires
+                    // straight after and overrides it back to `Some(row)` — but only
+                    // when the click actually landed on that row. Reaching for this
+                    // instead of a plain bubble-phase clear on this same container:
+                    // bubble fires child-before-parent, so a bubble-phase clear here
+                    // would run AFTER (and stomp) a row's bubble-phase set, not before.
+                    .capture_any_mouse_down(cx.listener(
+                        |this, ev: &MouseDownEvent, _window, cx| {
+                            if ev.button == MouseButton::Right {
+                                this.ssh_home.right_click_target = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .children(rows)
+                    // Trailing empty space below the last row, so "right-click empty
+                    // space → Add connection" has somewhere to land even when the list
+                    // is short — purely a layout spacer; the capture-phase reset above
+                    // is what actually makes empty-space right-clicks correct.
+                    .child(div().flex_1().min_h(px(48.)))
+                    // ONE context menu for the whole tree — see `right_click_target`'s
+                    // doc comment on why this can't be attached per-row.
+                    .context_menu(self.tree_context_menu(cx)),
+            )
+    }
+
+    /// Builds the tree's single [`ContextMenuExt::context_menu`]: "＋ Add connection"
+    /// when nothing more specific was right-clicked, or the target row's actions
+    /// (mirrors the plan's "Rename / Edit / Assign folder / Delete", plus `Connect` for
+    /// parity with the row's hover icons) when [`HomeTabState::right_click_target`] says
+    /// a row was hit. Reads `right_click_target` fresh at build time — set by whichever
+    /// row/filler's own `on_mouse_down(MouseButton::Right, ..)` fired first for this
+    /// same click, always before this builder runs.
+    fn tree_context_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+        let this = cx.entity();
+        move |menu, _window, cx| {
+            let target = this.read(cx).ssh_home.right_click_target.clone();
+            match target {
+                Some((host, origin)) => Self::row_context_menu(menu, this.clone(), host, origin),
+                None => Self::add_connection_menu_item(menu, this.clone(), "＋ Add connection"),
+            }
+        }
+    }
+
+    /// A menu with just the single "＋ Add connection" item — the empty-space/no-target
+    /// case shared by [`Self::tree_context_menu`]'s `None` arm.
+    fn add_connection_menu_item(
+        menu: PopupMenu,
+        this: Entity<AppState>,
+        label: &'static str,
+    ) -> PopupMenu {
+        menu.item(PopupMenuItem::new(label).on_click(move |_ev, window, cx| {
+            this.update(cx, |state, cx| state.open_add_form(window, cx));
+        }))
+    }
+
+    /// The per-row menu: connect, the same in-place rename/folder-assign the row's hover
+    /// icons already offer, a full [`crate::ui::host_form::HostForm`] edit, and delete —
+    /// the plan's "Rename / Edit / Assign folder / Delete", plus `Connect`.
+    fn row_context_menu(
+        menu: PopupMenu,
+        this: Entity<AppState>,
+        host: Host,
+        origin: Scope,
+    ) -> PopupMenu {
+        let key = (host.alias.clone(), origin.clone());
+        menu.item(PopupMenuItem::new("⚡ Connect").on_click({
+            let this = this.clone();
+            let host = host.clone();
+            let key = key.clone();
+            move |_ev, _window, cx| {
+                let host = host.clone();
+                let key = key.clone();
+                this.update(cx, |state, cx| state.connect_host(host, Some(key), cx));
+            }
+        }))
+        .item(PopupMenuItem::new("✎ Rename").on_click({
+            let this = this.clone();
+            let alias = host.alias.clone();
+            let origin = origin.clone();
+            move |_ev, window, cx| {
+                let alias = alias.clone();
+                let origin = origin.clone();
+                this.update(cx, |state, cx| {
+                    state.start_rename(alias, origin, window, cx)
+                });
+            }
+        }))
+        .item(PopupMenuItem::new("✏ Edit…").on_click({
+            let this = this.clone();
+            let host = host.clone();
+            let origin = origin.clone();
+            move |_ev, window, cx| {
+                let host = host.clone();
+                let origin = origin.clone();
+                this.update(cx, |state, cx| {
+                    state.open_edit_form(host, origin, window, cx)
+                });
+            }
+        }))
+        .item(PopupMenuItem::new("📁 Assign folder…").on_click({
+            let this = this.clone();
+            let alias = host.alias.clone();
+            let origin = origin.clone();
+            let folder = host.folder.clone();
+            move |_ev, window, cx| {
+                let alias = alias.clone();
+                let origin = origin.clone();
+                let folder = folder.clone();
+                this.update(cx, |state, cx| {
+                    state.start_folder_edit(alias, origin, folder, window, cx)
+                });
+            }
+        }))
+        .separator()
+        .item(PopupMenuItem::new("✕ Delete").on_click({
+            let secret_ref = host.secret_ref.clone();
+            move |_ev, _window, cx| {
+                let (alias, origin) = key.clone();
+                let secret_ref = secret_ref.clone();
+                this.update(cx, |state, cx| {
+                    state.delete_row(&alias, &origin, secret_ref.as_deref(), cx)
+                });
+            }
+        }))
+    }
+
+    /// The sidebar's header row: a title plus the `＋ Add connection` affordance —
+    /// without this the Home sidebar had no visible way to add a host at all (the
+    /// `main` pane's own `＋ Add host` button was easy to miss, and the tree itself gave
+    /// no hint). Opens the exact same [`HostForm::new_add`] path as every other
+    /// add-connection entry point (`main`'s button, the tab-strip `＋`, this tree's
+    /// empty-space context menu) — see `AppState::open_add_form`.
+    fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(div().text_xs().text_color(rgb(FG_DIM)).child("Connections"))
+            .child(
+                div()
+                    .id("ssh-home-add-connection")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .bg(rgb(ACTIVE_BG))
+                    .text_color(rgb(FG))
+                    .child("＋ Add connection")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_add_form(window, cx);
+                    })),
             )
     }
 
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let search = self.ssh_home.search.clone();
+        // Fixed-width, never squeezed by a long placeholder/typed value — see the `go`
+        // doc comment on the sibling input wrapper below for why the input side needs
+        // its own clip.
         let go = div()
             .id("ssh-quick-connect-go")
-            .px_2()
-            .py_1()
+            .w(px(36.))
+            .h(px(34.))
+            .flex()
+            .items_center()
+            .justify_center()
             .rounded_md()
             .text_xs()
             .cursor_pointer()
@@ -272,7 +472,22 @@ impl AppState {
                     .flex()
                     .flex_row()
                     .gap_1()
-                    .child(div().flex_1().child(search))
+                    .child(
+                        // `TextInput` paints its shaped line at its own natural width,
+                        // ignoring the box's flex-assigned bounds (see `TextElement::
+                        // paint` in `text_input.rs` — it calls `line.paint` with no
+                        // content mask). Left unclipped, the placeholder/typed text
+                        // bled straight through the `go` button beside it and into
+                        // whatever sat past it. `min_w(0)` lets this flex item actually
+                        // shrink to the row's available width (the flexbox default
+                        // min-width is content-sized, which would fight `flex_1` here);
+                        // `overflow_hidden` then clips the input's own paint (including
+                        // its nested `TextElement`) to that width — a content mask
+                        // gpui's `Div` establishes around all of its descendants'
+                        // painting, not just its own quad, so it fixes the child
+                        // without needing to touch the shared `TextInput` element.
+                        div().flex_1().min_w(px(0.)).overflow_hidden().child(search),
+                    )
                     .child(go),
             )
             .child(
@@ -472,6 +687,17 @@ impl AppState {
             .py_1()
             .rounded_md()
             .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            // Records this row as the tree's right-click target — read by the tree's
+            // single `context_menu` (see `HomeTabState::right_click_target`'s doc
+            // comment for why every row can't just have its own `.context_menu`).
+            .on_mouse_down(MouseButton::Right, {
+                let host = host.clone();
+                let origin = origin.clone();
+                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                    this.ssh_home.right_click_target = Some((host.clone(), origin.clone()));
+                    cx.notify();
+                })
+            })
             .child(
                 div()
                     .w(px(12.))
@@ -535,7 +761,10 @@ impl AppState {
             .on_action(cx.listener(|this, _ev: &InlineEditCancel, _window, cx| {
                 this.cancel_inline_edit(cx);
             }))
-            .child(div().flex_1().child(input))
+            // Same `min_w(0) + overflow_hidden` clip as the quick-connect box — a long
+            // in-progress rename/folder value must not bleed into the "renaming ·
+            // Enter/Esc" flag beside it.
+            .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(input))
             .child(div().text_xs().text_color(rgb(BRAND)).child(flag))
     }
 
