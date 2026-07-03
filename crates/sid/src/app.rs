@@ -182,7 +182,10 @@ pub struct AppState {
     /// re-focuses either the newly active session's terminal or, failing that, this
     /// handle — see `refocus_stable_target` — so a keyboard-only user is never left
     /// with a dangling focus that silently kills every further shortcut.
-    root_focus: FocusHandle,
+    ///
+    /// `pub(crate)` so the `impl AppState` methods that live in `ui::db_tab` (e.g.
+    /// `close_db_form`) can refocus it on form close, same as the host-form path here.
+    pub(crate) root_focus: FocusHandle,
 }
 
 /// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
