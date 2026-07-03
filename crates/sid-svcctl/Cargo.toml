@@ -1,0 +1,20 @@
+[package]
+name = "sid-svcctl"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+# Not in `[workspace.dependencies]` (only `sid-core` pulls it in, as a dev-dependency
+# for its own doctests) — added directly here, matching that precedent, rather than
+# widening the shared workspace entry for one crate's JSON parsing need.
+serde_json = "1"
+# `process` isn't in the workspace's base tokio feature set; Cargo unifies features
+# per-dependency across the build, so this addition only ever adds `process` to the
+# final resolved tokio, the same way `sid-ssh`/`sid-db` add `rt-multi-thread` locally.
+tokio = { workspace = true, features = ["process"] }
