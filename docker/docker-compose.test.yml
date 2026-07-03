@@ -1,0 +1,45 @@
+# Integration-test services for sid's adapter crates (crates/sid-db,
+# crates/sid-ssh). Not part of the app itself — brought up on demand by
+# scripts/test-integration.sh / scripts/test-ssh.sh, never by `sid` at
+# runtime. See docs/design/2026-07-02-testing-strategy.md.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.test.yml up -d postgres
+#   docker compose -f docker/docker-compose.test.yml up -d sshd
+#   docker compose -f docker/docker-compose.test.yml down -v
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sid_test
+      POSTGRES_PASSWORD: sid_test_pw
+      POSTGRES_DB: sid_test
+    ports:
+      # Host 55432 (not the default 5432) so this never collides with a
+      # developer's own local Postgres.
+      - "55432:5432"
+    volumes:
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sid_test -d sid_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # No named volume: a fresh, throwaway data dir every `up` (the FK-rich
+    # fixture schema in pg-init/ is cheap to reseed and integration tests
+    # must never depend on prior-run state).
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  sshd:
+    build:
+      context: ./ssh
+    ports:
+      # Host 2222 so this never collides with a real sshd on 22.
+      - "2222:2222"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c 'echo -n > /dev/tcp/127.0.0.1/2222'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
