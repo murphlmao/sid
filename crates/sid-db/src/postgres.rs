@@ -315,10 +315,19 @@ impl DbClient for PostgresClient {
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let guard = inner.lock().await;
+        // Excludes `pg_%` (pg_catalog + pg_toast*) and `information_schema` (the
+        // standard system namespaces) AND TimescaleDB's internal namespaces
+        // (`_timescaledb_internal`/`_timescaledb_catalog`/`_timescaledb_config` all
+        // match `\_timescaledb%`; `timescaledb_information`/`timescaledb_experimental`
+        // don't have the leading underscore, hence the separate NOT IN) — see BUG 3.
+        // Without this, Timescale's internal chunk tables leak in as user tables.
         let sql = "
             SELECT table_schema, table_name, column_name, data_type
             FROM information_schema.columns
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            WHERE table_schema NOT LIKE 'pg\\_%'
+              AND table_schema NOT IN ('information_schema')
+              AND table_schema NOT LIKE '\\_timescaledb%'
+              AND table_schema NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY table_schema, table_name, ordinal_position
         ";
         let rows = guard.client.query(sql, &[]).await.map_err(map_pg_error)?;
@@ -380,7 +389,10 @@ impl DbClient for PostgresClient {
             JOIN pg_attribute refatt
                 ON refatt.attrelid = con.confrelid AND refatt.attnum = u.confattnum
             WHERE con.contype = 'f'
-              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND ns.nspname NOT LIKE 'pg\\_%'
+              AND ns.nspname NOT IN ('information_schema')
+              AND ns.nspname NOT LIKE '\\_timescaledb%'
+              AND ns.nspname NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY ns.nspname, cl.relname, con.conname, u.ord
         ";
         let fk_rows = guard
@@ -411,7 +423,10 @@ impl DbClient for PostgresClient {
             JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS u(conattnum, ord) ON true
             JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = u.conattnum
             WHERE con.contype = 'p'
-              AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+              AND ns.nspname NOT LIKE 'pg\\_%'
+              AND ns.nspname NOT IN ('information_schema')
+              AND ns.nspname NOT LIKE '\\_timescaledb%'
+              AND ns.nspname NOT IN ('timescaledb_information', 'timescaledb_experimental')
             ORDER BY ns.nspname, cl.relname, u.ord
         ";
         let pk_rows = guard

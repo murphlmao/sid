@@ -5,6 +5,7 @@
 #
 # Usage:
 #   docker compose -f docker/docker-compose.test.yml up -d postgres
+#   docker compose -f docker/docker-compose.test.yml up -d timescale
 #   docker compose -f docker/docker-compose.test.yml up -d sshd
 #   docker compose -f docker/docker-compose.test.yml down -v
 
@@ -29,6 +30,29 @@ services:
     # No named volume: a fresh, throwaway data dir every `up` (the FK-rich
     # fixture schema in pg-init/ is cheap to reseed and integration tests
     # must never depend on prior-run state).
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  # TimescaleDB (BUG 3: internal `_timescaledb*`/`timescaledb_information`/
+  # `timescaledb_experimental` schemas must never leak into schema_introspect
+  # / schema_graph). Separate service + port from `postgres` so both can run
+  # side by side; fixture in ./timescale-init/.
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: sid_test
+      POSTGRES_PASSWORD: sid_test_pw
+      POSTGRES_DB: sid_test
+    ports:
+      # Host 55433 — distinct from `postgres`'s 55432.
+      - "55433:5432"
+    volumes:
+      - ./timescale-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sid_test -d sid_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     tmpfs:
       - /var/lib/postgresql/data
 
