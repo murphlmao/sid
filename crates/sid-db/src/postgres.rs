@@ -262,15 +262,19 @@ impl DbClient for PostgresClient {
         // or behave oddly — the query editor is expected to send one SELECT
         // at a time; this is not a general-purpose SQL splitter.
         let trimmed = sql.trim().trim_end_matches(';');
+        const WRAP_PREFIX: &str = "SELECT * FROM ( ";
         let wrapped =
-            format!("SELECT * FROM ( {trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
+            format!("{WRAP_PREFIX}{trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
+        // BUG 5: Postgres reports a syntax error's position relative to `wrapped`
+        // (the string it actually parsed), not the caller's original `sql` — an
+        // uncorrected offset can run past `sql.len()`. `adjust_wrapped_syntax_offset`
+        // subtracts the wrapper prefix and clamps into the caller's original text.
+        let fix_offset = |e: tokio_postgres::Error| -> DbError {
+            adjust_wrapped_syntax_offset(map_pg_error(e), WRAP_PREFIX.len(), sql.len())
+        };
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
-        let rows = guard
-            .client
-            .query(&wrapped, &[])
-            .await
-            .map_err(map_pg_error)?;
+        let rows = guard.client.query(&wrapped, &[]).await.map_err(fix_offset)?;
         let columns: Vec<Column> = if let Some(r) = rows.first() {
             r.columns()
                 .iter()
@@ -280,7 +284,7 @@ impl DbClient for PostgresClient {
                 })
                 .collect()
         } else {
-            let stmt = guard.client.prepare(&wrapped).await.map_err(map_pg_error)?;
+            let stmt = guard.client.prepare(&wrapped).await.map_err(fix_offset)?;
             stmt.columns()
                 .iter()
                 .map(|c| Column {
@@ -604,6 +608,23 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     DbError::Query(e.to_string())
 }
 
+/// Adjust a `DbError::Syntax` offset from being relative to `query_paged`'s
+/// rewritten `SELECT * FROM ( <sql> ) AS sid_sub LIMIT.. OFFSET..` wrapper
+/// back to the caller's original SQL text (BUG 5). Postgres reports the error
+/// position relative to whatever string it actually parsed — the wrapped
+/// one — so left uncorrected the offset can run past the end of (or point at
+/// unrelated bytes of) the SQL the caller actually wrote. Non-`Syntax` errors
+/// pass through unchanged.
+fn adjust_wrapped_syntax_offset(err: DbError, prefix_len: usize, original_len: usize) -> DbError {
+    match err {
+        DbError::Syntax { offset, message } => DbError::Syntax {
+            offset: offset.saturating_sub(prefix_len).min(original_len),
+            message,
+        },
+        other => other,
+    }
+}
+
 /// Decode column `idx` as `Option<T>`, but keep NULL and decode-failure
 /// distinct instead of collapsing both to `None` (the bug: `.ok().flatten()`
 /// used to make a present-but-undecodable value indistinguishable from a real
@@ -713,6 +734,60 @@ pub(crate) fn pg_type_to_column_type(t: &tokio_postgres::types::Type) -> ColumnT
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_subtracts_prefix_and_clamps() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // A raw offset comfortably past the prefix subtracts cleanly.
+        let err = DbError::Syntax {
+            offset: WRAP_PREFIX_LEN + 5,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 100) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 5),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_clamps_into_original_sql_bounds() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // An offset that would land past the caller's original SQL (e.g. the
+        // wrapper's own trailing `) AS sid_sub LIMIT.. OFFSET..`) clamps to
+        // original_len rather than pointing out of bounds.
+        let err = DbError::Syntax {
+            offset: WRAP_PREFIX_LEN + 9999,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 10) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 10),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_clamps_to_zero_when_offset_is_within_the_prefix() {
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        // An offset pointing INTO the wrapper prefix itself (before the
+        // caller's SQL even starts) saturates to 0, not a huge underflowed value.
+        let err = DbError::Syntax {
+            offset: 3,
+            message: "bad".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 50) {
+            DbError::Syntax { offset, .. } => assert_eq!(offset, 0),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjust_wrapped_syntax_offset_leaves_non_syntax_errors_untouched() {
+        let err = DbError::Query("boom".into());
+        match adjust_wrapped_syntax_offset(err, 17, 10) {
+            DbError::Query(msg) => assert_eq!(msg, "boom"),
+            other => panic!("expected Query passthrough, got {other:?}"),
+        }
+    }
 
     #[test]
     fn tls_choice_remote_disable_is_still_tls() {
