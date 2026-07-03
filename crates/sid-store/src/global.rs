@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, QuickAction,
-    Settings, SettingsV1,
+    Settings, SettingsV1, SettingsV2,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -45,9 +45,10 @@ pub(crate) const HOST_VERSION: u8 = 3;
 pub(crate) const CONNECTION_VERSION: u8 = 3;
 
 /// Current codec version for [`Settings`]. Bumped to 2 when `file_browser_side` was
-/// added; reads branch on the leading version byte and migrate v1 values forward (see
+/// added and to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added; reads
+/// branch on the leading version byte and migrate older values forward (see
 /// [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 2;
+pub(crate) const SETTINGS_VERSION: u8 = 3;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -293,16 +294,20 @@ fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
 }
 
 /// Decode a stored [`Settings`] value, branching on the leading codec version byte:
-/// `1` → the pre-`file_browser_side` [`SettingsV1`] shape, migrated forward
-/// (`file_browser_side: PanelSide::Left`); `2` → the current [`Settings`] shape. Any
-/// other version is rejected.
+/// `1` → the pre-`file_browser_side` [`SettingsV1`] shape, migrated forward through
+/// [`SettingsV2`] (`file_browser_side: PanelSide::Left`); `2` → the pre-secret-toggle
+/// [`SettingsV2`] shape, migrated forward (`secret_keyring_enabled`/`secret_file_enabled`
+/// both `true`); `3` → the current [`Settings`] shape. Any other version is rejected.
 fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
     match version {
-        1 => Ok(decode_versioned::<SettingsV1>(bytes)?.1.into()),
+        1 => Ok(Settings::from(SettingsV2::from(
+            decode_versioned::<SettingsV1>(bytes)?.1,
+        ))),
+        2 => Ok(decode_versioned::<SettingsV2>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -587,16 +592,28 @@ mod tests {
         SettingsV1 { default_scope }
     }
 
+    fn settings_v2(
+        default_scope: crate::entities::DefaultScope,
+        file_browser_side: PanelSide,
+    ) -> SettingsV2 {
+        SettingsV2 {
+            default_scope,
+            file_browser_side,
+        }
+    }
+
     /// A crafted v1 (pre-`file_browser_side`) settings payload decodes with
-    /// `file_browser_side == Left`.
+    /// `file_browser_side == Left` and both secret-backend toggles defaulting to `true`.
     #[test]
-    fn settings_v1_payload_migrates_to_left_panel() {
+    fn settings_v1_payload_migrates_to_left_panel_and_both_backends_enabled() {
         use crate::entities::DefaultScope;
         let bytes = encode_versioned(1, &settings_v1(DefaultScope::Workspace)).unwrap();
         assert_eq!(bytes[0], 1, "leading byte is the v1 version");
         let settings = decode_settings(&bytes).unwrap();
         assert_eq!(settings.default_scope, DefaultScope::Workspace);
         assert_eq!(settings.file_browser_side, PanelSide::Left);
+        assert!(settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
     }
 
     /// A store seeded with raw v1 settings bytes reopens and reads cleanly, migrating on
@@ -622,11 +639,61 @@ mod tests {
         let settings = reopened.get_settings().unwrap();
         assert_eq!(settings.default_scope, DefaultScope::Global);
         assert_eq!(settings.file_browser_side, PanelSide::Left);
+        assert!(settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
     }
 
-    /// Settings written now carry version 2 (the migration only fires for old values).
+    /// A crafted v2 (pre-secret-toggle) settings payload decodes with both toggles
+    /// defaulting to `true`, preserving the v2 fields untouched.
     #[test]
-    fn settings_are_written_at_version_2() {
+    fn settings_v2_payload_migrates_to_both_backends_enabled() {
+        use crate::entities::DefaultScope;
+        let bytes =
+            encode_versioned(2, &settings_v2(DefaultScope::Global, PanelSide::Right)).unwrap();
+        assert_eq!(bytes[0], 2, "leading byte is the v2 version");
+        let settings = decode_settings(&bytes).unwrap();
+        assert_eq!(settings.default_scope, DefaultScope::Global);
+        assert_eq!(
+            settings.file_browser_side,
+            PanelSide::Right,
+            "v2 field is preserved"
+        );
+        assert!(settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
+    }
+
+    /// A store seeded with raw v2 settings bytes reopens and reads cleanly, migrating on
+    /// read.
+    #[test]
+    fn seeded_v2_settings_store_reopens_and_reads() {
+        use crate::entities::DefaultScope;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            let bytes = encode_versioned(2, &settings_v2(DefaultScope::Workspace, PanelSide::Left))
+                .unwrap();
+            store
+                .with_write("seed v2", |txn| {
+                    let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                    tbl.insert(SETTINGS_KEY, &bytes[..])
+                        .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        let settings = reopened.get_settings().unwrap();
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+        assert!(settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
+    }
+
+    /// Settings written now carry [`SETTINGS_VERSION`] (the migration only fires for
+    /// old values), and a false secret-backend toggle round-trips as `false` (not
+    /// silently coerced back to the serde default).
+    #[test]
+    fn settings_are_written_at_current_version() {
         use crate::entities::DefaultScope;
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
@@ -634,16 +701,23 @@ mod tests {
             .set_settings(&Settings {
                 default_scope: DefaultScope::Ask,
                 file_browser_side: PanelSide::Right,
+                secret_keyring_enabled: false,
+                secret_file_enabled: true,
             })
             .unwrap();
         let raw = store
             .get_with(SETTINGS, SETTINGS_KEY, |b| Ok(b[0]))
             .unwrap()
             .unwrap();
-        assert_eq!(raw, SETTINGS_VERSION, "new settings are stamped V2");
+        assert_eq!(
+            raw, SETTINGS_VERSION,
+            "new settings are stamped at the current version"
+        );
         assert_eq!(
             store.get_settings().unwrap().file_browser_side,
             PanelSide::Right
         );
+        assert!(!store.get_settings().unwrap().secret_keyring_enabled);
+        assert!(store.get_settings().unwrap().secret_file_enabled);
     }
 }
