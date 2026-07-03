@@ -747,18 +747,24 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection)
-        }
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        // Clip ALL painting (shaped text, selection, cursor) to the field's own bounds.
+        // Without this, an overlong value/placeholder paints straight past the element —
+        // e.g. bleeding through an adjacent button. Fixing it here covers every
+        // `TextInput` call site (host form, DB form, quick-connect, palette) at the source.
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            if let Some(selection) = prepaint.selection.take() {
+                window.paint_quad(selection)
+            }
+            line.paint(bounds.origin, window.line_height(), window, cx)
+                .unwrap();
 
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+            if focus_handle.is_focused(window)
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
 
         self.input.update(cx, |input, _| {
             input.last_layout = Some(line);
