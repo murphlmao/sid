@@ -22,7 +22,9 @@ pub mod store;
 pub mod workspace;
 
 pub use composer::{ViewFilters, compose};
-pub use entities::{AuthMethod, DbConnection, DefaultScope, Host, Identity, QuickAction, Settings};
+pub use entities::{
+    AuthMethod, DbConnection, DefaultScope, Host, Identity, PanelSide, QuickAction, Settings,
+};
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;
 pub use scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};

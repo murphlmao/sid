@@ -420,6 +420,7 @@ impl DbConnForm {
             secret_ref: None,
             kind: self.kind,
             name,
+            folder: None,
         };
         let secret = self.entered_secret(cx);
         let old = match &self.mode {
@@ -929,6 +930,7 @@ mod tests {
             secret_ref: secret_ref.map(Into::into),
             kind: DbKind::Postgres,
             name: id.into(),
+            folder: None,
         }
     }
 

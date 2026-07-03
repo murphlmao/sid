@@ -12,6 +12,7 @@ fn h(alias: &str, user: &str) -> Host {
         port: 22,
         secret_ref: None,
         auth: AuthMethod::default(),
+        folder: None,
     }
 }
 

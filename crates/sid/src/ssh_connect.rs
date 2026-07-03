@@ -94,6 +94,7 @@ mod tests {
             port: 2222,
             secret_ref: secret_ref.map(str::to_string),
             auth,
+            folder: None,
         }
     }
 
