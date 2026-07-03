@@ -1872,13 +1872,16 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) -> SeedLists {
         .map(|c| c.is_empty())
         .unwrap_or(false);
     if no_connections {
-        // The demo connection's file must exist before `run_query` (W5) opens it: saved
-        // connections always open with `sqlite_mode: None` -> `SqliteMode::OpenExisting`
-        // (see `db_tab::run_first_page`), which requires the file to already be there.
-        // An empty file is a valid, openable SQLite database (rusqlite/sqlite3 initialize
-        // it lazily on first write), so a bare `File::create` is enough.
+        // The demo connection's file must exist before `run_query` (W5) opens it (saved
+        // connections open `SqliteMode::OpenExisting`). Seed it with a small FK-rich
+        // sample schema (via `sid_db`, keeping rusqlite behind the adapter) so the DB tab
+        // is immediately explorable — schema tree, relationships diagram, and a first
+        // `SELECT` all have content — instead of an empty, blank-looking file. Best-effort:
+        // fall back to a bare (valid, empty) SQLite file if seeding fails.
         let demo_db = dir.join("demo.db");
-        let _ = std::fs::File::create(&demo_db);
+        if sid_db::demo::seed_demo_sqlite(&demo_db).is_err() {
+            let _ = std::fs::File::create(&demo_db);
+        }
         let _ = store.write_connection(
             &sid_store::DbConnection {
                 id: "demo-sqlite".into(),

@@ -12,6 +12,7 @@
 //! permitted place `tokio-postgres` and `rusqlite` are named (see
 //! `CLAUDE.md`'s adapter rule).
 
+pub mod demo;
 pub mod descriptor;
 pub mod lexer;
 pub mod postgres;
