@@ -10,11 +10,13 @@
 //! the `save to:` dialog) and the secret lifecycle against the [`SecretStore`]. Other tabs
 //! are placeholders for later slices.
 
+use std::sync::Arc;
+
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, SharedString, Subscription, Window, anchored,
     deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
-use sid_secrets::{SecretId, SecretStore};
+use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
@@ -24,6 +26,7 @@ use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
 use crate::ui::network_tab::NetworkTabState;
+use crate::ui::secret_unlock::{SecretUnlockEvent, SecretUnlockModal, SecretUnlockMode};
 use crate::ui::{SessionStatus, SshSession};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
@@ -134,16 +137,30 @@ pub struct AppState {
     /// Network tab state (inc-1): live/ephemeral ports + interfaces view, no store/
     /// scope/secrets. Lives in its own module (`ui::network_tab`), same shape as `db`.
     pub(crate) network: NetworkTabState,
+    /// The open secret-vault unlock/create modal, if the encrypted-file backend is
+    /// effective and not yet unlocked (see `open_secret_unlock`).
+    secret_unlock: Option<Entity<SecretUnlockModal>>,
+    /// Keeps the modal's event subscription alive exactly as long as it's open.
+    _secret_unlock_subscription: Option<Subscription>,
 }
 
 impl AppState {
-    /// Build the app state over an open store + secret backend and load the initial
-    /// (Global) view. A `startup_warning` (the keyring fallback notice) is surfaced
-    /// through the same error line store errors use.
+    /// Build the app state over an open store + resolved secret backend and load the
+    /// initial (Global) view.
+    ///
+    /// `secret_file` is `Some` exactly when the encrypted-file backend is effective
+    /// (see `open_secrets`) — its presence, plus whether a vault already exists on
+    /// disk, decides whether the startup unlock-or-create modal opens. `startup_message`
+    /// (which backend is live, plus any warning/recommendation) is surfaced through the
+    /// same error/status line store errors use — informational, not necessarily a
+    /// failure (Murphy wants to see which backend is live either way).
     pub fn new(
         store: Store,
         secrets: Box<dyn SecretStore>,
-        startup_warning: Option<String>,
+        secret_file: Option<Arc<EncryptedFileStore>>,
+        startup_message: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
         let network = NetworkTabState::new();
@@ -162,13 +179,18 @@ impl AppState {
             session: None,
             db,
             network,
+            secret_unlock: None,
+            _secret_unlock_subscription: None,
         };
         state.reload_scopes();
         state.refresh();
         // Set after the initial refresh so it isn't wiped by the successful read; it
         // stays visible until the next store event replaces it.
-        if startup_warning.is_some() {
-            state.error = startup_warning;
+        if startup_message.is_some() {
+            state.error = startup_message;
+        }
+        if let Some(handle) = secret_file {
+            state.open_secret_unlock(handle, window, cx);
         }
         state
     }
@@ -384,6 +406,49 @@ impl AppState {
                 // stays open so nothing typed is lost.
                 Err(msg) => form.update(cx, |f, cx| f.set_error(msg, cx)),
             },
+        }
+    }
+
+    // ---- secret vault unlock/create (encrypted-file backend) ------------------
+
+    /// Prompt for the encrypted-file vault's passphrase: unlock mode if a vault file
+    /// already exists, create mode (with confirmation) otherwise. `// ponytail:`
+    /// startup-only per the v1 simplification documented in `ui::secret_unlock` — if
+    /// the user cancels, the backend just stays locked for the rest of the session
+    /// (every subsequent `secrets.*` call returns `SecretError::Locked`, which reads
+    /// fine as a plain error wherever it surfaces) rather than re-prompting.
+    fn open_secret_unlock(
+        &mut self,
+        handle: Arc<EncryptedFileStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = if handle.exists() {
+            SecretUnlockMode::Unlock
+        } else {
+            SecretUnlockMode::Create
+        };
+        let modal = cx.new(|cx| SecretUnlockModal::new(cx, handle, mode));
+        modal.read(cx).focus_first(window, cx);
+        self._secret_unlock_subscription = Some(cx.subscribe(&modal, Self::on_secret_unlock_event));
+        self.secret_unlock = Some(modal);
+        cx.notify();
+    }
+
+    fn close_secret_unlock(&mut self, cx: &mut Context<Self>) {
+        self.secret_unlock = None;
+        self._secret_unlock_subscription = None;
+        cx.notify();
+    }
+
+    fn on_secret_unlock_event(
+        &mut self,
+        _modal: Entity<SecretUnlockModal>,
+        event: &SecretUnlockEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => self.close_secret_unlock(cx),
         }
     }
 
@@ -881,6 +946,25 @@ impl Render for AppState {
             )
             .with_priority(1)
         });
+        // The secret-vault unlock/create modal — the exact mirror of `overlay` above,
+        // over `self.secret_unlock` instead of `self.form`.
+        let secret_overlay = self.secret_unlock.clone().map(|modal| {
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(modal),
+                ),
+            )
+            .with_priority(1)
+        });
 
         div()
             .flex()
@@ -893,6 +977,7 @@ impl Render for AppState {
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
             .children(db_overlay)
+            .children(secret_overlay)
     }
 }
 
@@ -923,21 +1008,72 @@ pub fn open_store() -> Store {
     store
 }
 
-/// Open the default secret backend: the OS keyring if a startup durability probe
-/// passes, otherwise an in-memory fallback plus a human-readable warning.
+/// Resolve and open the effective secret backend from the persisted
+/// [`sid_store::Settings`] toggles (`secret_keyring_enabled`/`secret_file_enabled`) via
+/// [`sid_secrets::resolve_secret_store`]: keyring (if enabled & the startup probe
+/// passes) → encrypted-file (if enabled) → memory.
 ///
-/// The warning (`Some(..)`) means the fallback is in use — secrets entered this session
-/// will not survive a restart. The app does not yet surface this in the UI; for now the
-/// caller is expected to log it or wire it into the header error line once that exists.
-pub fn open_secrets() -> (Box<dyn sid_secrets::SecretStore>, Option<String>) {
-    let (secrets, warning) = sid_secrets::open_default_secrets();
-    let warning = warning.map(|w| {
-        format!(
-            "{w} — install a Secret Service provider (e.g. 'sudo pacman -S gnome-keyring') \
-             to fix this permanently"
-        )
-    });
-    (secrets, warning)
+/// Returns the store every secret call site uses, the encrypted-file handle when that
+/// backend is effective (so `AppState::new` can drive the unlock/create modal — see
+/// `AppState::open_secret_unlock`), and a status message for the header/error line:
+/// which backend is live, plus any warning/recommendation. The message is always
+/// `Some(..)` — Murphy wants to see which backend is live even when nothing's wrong,
+/// not just when something degrades.
+pub fn open_secrets(
+    store: &Store,
+) -> (
+    Box<dyn sid_secrets::SecretStore>,
+    Option<Arc<EncryptedFileStore>>,
+    Option<String>,
+) {
+    let settings = store.settings().unwrap_or_default();
+    let toggles = sid_secrets::SecretBackendToggles {
+        keyring_enabled: settings.secret_keyring_enabled,
+        file_enabled: settings.secret_file_enabled,
+    };
+    let vault_path = data_dir().join("secrets.vault");
+    let resolved =
+        sid_secrets::resolve_secret_store(toggles, vault_path, sid_secrets::probe_keyring);
+
+    let (label, file_handle) = match &resolved.effective {
+        BackendKind::Keyring => ("OS keyring".to_string(), None),
+        BackendKind::EncryptedFile(handle) => {
+            let state = if handle.exists() {
+                "locked — unlock to use"
+            } else {
+                "new — set a passphrase"
+            };
+            (
+                format!("encrypted-file vault ({state})"),
+                Some(handle.clone()),
+            )
+        }
+        BackendKind::Memory => ("in-memory (no persistence)".to_string(), None),
+    };
+    let message = secret_status_message(
+        &label,
+        resolved.warning.as_deref(),
+        resolved.recommendation.as_deref(),
+    );
+    (resolved.store, file_handle, Some(message))
+}
+
+/// Compose the startup status line for the resolved secret backend: which backend is
+/// live, plus any warning/recommendation from `resolve_secret_store`. Pure so the
+/// wording is unit-tested without touching a real keyring or vault file.
+pub(crate) fn secret_status_message(
+    effective: &str,
+    warning: Option<&str>,
+    recommendation: Option<&str>,
+) -> String {
+    let mut msg = format!("secrets: {effective}");
+    if let Some(w) = warning {
+        msg.push_str(&format!(" — {w}"));
+    }
+    if let Some(r) = recommendation {
+        msg.push_str(&format!(" ({r})"));
+    }
+    msg
 }
 
 fn seed_if_empty(store: &Store, dir: &std::path::Path) {
@@ -1095,5 +1231,39 @@ mod tests {
         // A different alias re-arms rather than confirming.
         let other = ("prod".to_string(), Scope::Global);
         assert!(!delete_click_executes(Some(&global_row), &other));
+    }
+
+    // ---- secret backend status line (pure) -------------------------------------
+
+    #[test]
+    fn secret_status_message_with_no_warning_is_just_the_backend() {
+        assert_eq!(
+            secret_status_message("OS keyring", None, None),
+            "secrets: OS keyring"
+        );
+    }
+
+    #[test]
+    fn secret_status_message_appends_warning_and_recommendation() {
+        let msg = secret_status_message(
+            "in-memory (no persistence)",
+            Some("OS keyring unavailable (no Secret Service)"),
+            Some("install a Secret Service provider"),
+        );
+        assert_eq!(
+            msg,
+            "secrets: in-memory (no persistence) — OS keyring unavailable (no Secret \
+             Service) (install a Secret Service provider)"
+        );
+    }
+
+    #[test]
+    fn secret_status_message_warning_without_recommendation() {
+        let msg =
+            secret_status_message("encrypted-file vault (locked — unlock to use)", None, None);
+        assert_eq!(
+            msg,
+            "secrets: encrypted-file vault (locked — unlock to use)"
+        );
     }
 }
