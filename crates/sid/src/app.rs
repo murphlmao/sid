@@ -13,14 +13,16 @@
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, FontWeight, SharedString, Subscription, Window, anchored,
-    deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
+    ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString, Subscription,
+    Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
+use crate::keymap::{self, Action, FocusContext};
+use crate::ui::command_palette::PaletteState;
 use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
@@ -48,7 +50,7 @@ const DANGER: u32 = 0xd08a8a;
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
 const MONO: &str = "DejaVu Sans Mono";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Ssh,
     Database,
@@ -164,6 +166,23 @@ pub struct AppState {
     secret_unlock: Option<Entity<SecretUnlockModal>>,
     /// Keeps the modal's event subscription alive exactly as long as it's open.
     _secret_unlock_subscription: Option<Subscription>,
+    /// The command palette's open/query/selection state (`Ctrl+K`) — `None` when
+    /// closed. `pub(crate)` so `ui::command_palette`'s `impl AppState` block (same
+    /// convention as `ui::db_tab`/`ui::ssh_home`) can read/mutate it directly.
+    pub(crate) palette: Option<PaletteState>,
+    /// The `?` keyboard cheat-sheet overlay's open state.
+    cheat_sheet_open: bool,
+    /// A stable focus target tracked on the outermost element (see `Render::render`'s
+    /// `.track_focus`), unconditionally re-rendered on every frame. Load-bearing for
+    /// the keyboard system: gpui falls back to a *degenerate, single-node* dispatch
+    /// path — bypassing `handle_root_key_down`'s `.capture_key_down` entirely — the
+    /// instant `window.focus`'s target isn't part of the current render frame (e.g.
+    /// the SSH terminal's handle, right after switching to another primary tab makes
+    /// it stop rendering). Every place that changes `active_tab`/`active_session`
+    /// re-focuses either the newly active session's terminal or, failing that, this
+    /// handle — see `refocus_stable_target` — so a keyboard-only user is never left
+    /// with a dangling focus that silently kills every further shortcut.
+    root_focus: FocusHandle,
 }
 
 /// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
@@ -233,6 +252,9 @@ impl AppState {
             network,
             secret_unlock: None,
             _secret_unlock_subscription: None,
+            palette: None,
+            cheat_sheet_open: false,
+            root_focus: cx.focus_handle(),
         };
         state.apply_seed_lists(seed_lists);
         // Set after the initial seed-list apply so it isn't wiped by it; it stays
@@ -470,24 +492,36 @@ impl AppState {
     /// as its own method (rather than an alias) since the keyboard track (`Ctrl+T`?)
     /// binds to this name specifically, and it may grow its own behavior later (e.g. a
     /// picker) without every `＋` caller needing to change.
-    pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
-        self.go_home(cx);
+    pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_home(window, cx);
     }
 
     /// `🏠`: show the Home tab (the connection manager + saved-connections tree).
     /// Doesn't touch any live session — switching to Home and back leaves every open
-    /// tab exactly as it was.
-    pub(crate) fn go_home(&mut self, cx: &mut Context<Self>) {
+    /// tab exactly as it was. Refocuses `root_focus` (see that field's doc comment) —
+    /// the session being left has nothing to hand focus off to.
+    pub(crate) fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active_session = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
-    /// Click a session tab: make it active. A stale/out-of-range `ix` (shouldn't happen
-    /// — every caller derives `ix` from `ssh_sessions` itself) is a silent no-op rather
-    /// than a panic.
-    pub(crate) fn activate_session(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix < self.ssh_sessions.len() {
+    /// Click a session tab (or `Ctrl+Tab` cycling — see `cycle_tabs`): make it active.
+    /// A stale/out-of-range `ix` (shouldn't happen — every caller derives `ix` from
+    /// `ssh_sessions` itself) is a silent no-op rather than a panic. Restores keyboard
+    /// focus onto the newly active session's terminal — without this, switching tabs
+    /// leaves the *previous* session's (now-unmounted) terminal as the window's
+    /// recorded focus target, which silently breaks all further keyboard dispatch (see
+    /// `root_focus`'s doc comment).
+    pub(crate) fn activate_session(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.ssh_sessions.get(ix) {
             self.active_session = Some(ix);
+            window.focus(&tab.session.read(cx).terminal_focus_handle());
             cx.notify();
         }
     }
@@ -495,8 +529,10 @@ impl AppState {
     /// `✕` on a session tab: disconnect it (shell + sftp + client), remove its tab, and
     /// fix up `active_session` — see [`next_active_after_close`] for the exact
     /// close-left-of-active / close-active / close-last-tab-goes-home bookkeeping this
-    /// delegates to (pure, unit-tested).
-    pub(crate) fn close_session(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// delegates to (pure, unit-tested). Refocuses whatever tab is now active (another
+    /// session's terminal, or `root_focus` if that lands on Home) — same reasoning as
+    /// [`Self::activate_session`].
+    pub(crate) fn close_session(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.ssh_sessions.len() {
             return;
         }
@@ -504,7 +540,24 @@ impl AppState {
         tab.session.update(cx, |session, _cx| session.disconnect());
         self.active_session =
             next_active_after_close(self.active_session, ix, self.ssh_sessions.len());
+        self.refocus_stable_target(window, cx);
         cx.notify();
+    }
+
+    /// Ensure keyboard focus never dangles after an `active_tab`/`active_session`
+    /// change: focuses the active session's terminal when the SSH tab is showing a
+    /// live session, else `root_focus` — see that field's doc comment for why this
+    /// matters (a stale focus target silently kills all further keyboard dispatch).
+    /// Called by every path that mutates either field.
+    fn refocus_stable_target(&self, window: &mut Window, cx: &Context<Self>) {
+        if self.active_tab == Tab::Ssh
+            && let Some(ix) = self.active_session
+            && let Some(tab) = self.ssh_sessions.get(ix)
+        {
+            window.focus(&tab.session.read(cx).terminal_focus_handle());
+        } else {
+            window.focus(&self.root_focus);
+        }
     }
 
     /// Routes every [`SshSessionEvent`] a live session fires. Currently just the `⇄
@@ -544,28 +597,35 @@ impl AppState {
 
     fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
         form.read(cx).focus_first(window, cx);
-        self._form_subscription = Some(cx.subscribe(&form, Self::on_form_event));
+        // `subscribe_in` (not `subscribe`) so `on_form_event` gets a `&mut Window` —
+        // needed to refocus `root_focus` on close (see that field's doc comment: a
+        // form dismissed via Escape leaves its now-dropped field's `FocusHandle` as
+        // the window's stale focus target, which silently breaks all further keyboard
+        // dispatch otherwise).
+        self._form_subscription = Some(cx.subscribe_in(&form, window, Self::on_form_event));
         self.form = Some(form);
         cx.notify();
     }
 
-    fn close_form(&mut self, cx: &mut Context<Self>) {
+    fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
         self._form_subscription = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
     fn on_form_event(
         &mut self,
-        form: Entity<HostForm>,
+        form: &Entity<HostForm>,
         event: &HostFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            HostFormEvent::Cancel => self.close_form(cx),
+            HostFormEvent::Cancel => self.close_form(window, cx),
             HostFormEvent::Submit(submission) => match self.perform_submit(submission) {
                 Ok(post_warning) => {
-                    self.close_form(cx);
+                    self.close_form(window, cx);
                     self.refresh();
                     if post_warning.is_some() {
                         self.error = post_warning;
@@ -600,25 +660,32 @@ impl AppState {
         };
         let modal = cx.new(|cx| SecretUnlockModal::new(cx, handle, mode));
         modal.read(cx).focus_first(window, cx);
-        self._secret_unlock_subscription = Some(cx.subscribe(&modal, Self::on_secret_unlock_event));
+        // `subscribe_in`, not `subscribe` — see `open_form`'s doc comment on why
+        // `on_secret_unlock_event` needs a `&mut Window` to refocus on close.
+        self._secret_unlock_subscription =
+            Some(cx.subscribe_in(&modal, window, Self::on_secret_unlock_event));
         self.secret_unlock = Some(modal);
         cx.notify();
     }
 
-    fn close_secret_unlock(&mut self, cx: &mut Context<Self>) {
+    fn close_secret_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.secret_unlock = None;
         self._secret_unlock_subscription = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
     fn on_secret_unlock_event(
         &mut self,
-        _modal: Entity<SecretUnlockModal>,
+        _modal: &Entity<SecretUnlockModal>,
         event: &SecretUnlockEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => self.close_secret_unlock(cx),
+            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => {
+                self.close_secret_unlock(window, cx)
+            }
         }
     }
 
@@ -716,6 +783,293 @@ impl AppState {
         (label, color)
     }
 
+    // ---- keyboard-driven system (2026-07-02 plan) -----------------------------
+
+    /// Whether a modal that should own the keyboard exclusively is open (the host or DB
+    /// connection form, the secret-vault unlock/create modal). The root key dispatcher
+    /// stays out of the way entirely while one of these is up — `ui::command_palette`'s
+    /// `toggle_palette` already declines to open *over* one for the same reason.
+    pub(crate) fn blocking_modal_open(&self) -> bool {
+        self.form.is_some() || self.db.form.is_some() || self.secret_unlock.is_some()
+    }
+
+    /// Whether the active SSH session's terminal currently holds keyboard focus — the
+    /// one axis [`FocusContext`] is gated on (see that type's doc comment in `keymap.rs`
+    /// for why: a focused terminal needs first dibs on `Ctrl+<letter>`).
+    fn focus_context(&self, window: &mut Window, cx: &mut Context<Self>) -> FocusContext {
+        let terminal_focused = self
+            .active_session
+            .and_then(|ix| self.ssh_sessions.get(ix))
+            .is_some_and(|tab| {
+                tab.session
+                    .read(cx)
+                    .terminal_focus_handle()
+                    .is_focused(window)
+            });
+        if terminal_focused {
+            FocusContext::Terminal
+        } else {
+            FocusContext::Normal
+        }
+    }
+
+    /// The root-level key handler, registered with `.capture_key_down` on the outermost
+    /// element (see `Render::render` below) so it sees every keystroke **before** any
+    /// descendant — the terminal included — gets a chance at it. It only
+    /// `cx.stop_propagation()`s the keystrokes it actually claims; everything else
+    /// (including, deliberately, plain `Ctrl+<letter>` while a terminal is focused)
+    /// falls through untouched to whatever's actually focused.
+    fn handle_root_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocking_modal_open() {
+            return;
+        }
+
+        let key = event.keystroke.key.as_str();
+        let m = &event.keystroke.modifiers;
+        let plain_ctrl = m.control && !m.alt && !m.shift && !m.platform;
+
+        // While the palette is open, it claims its own navigation keys outright. These
+        // aren't `keymap` registry entries (they're palette-internal, not global
+        // actions reachable any other way), so they're special-cased here rather than
+        // resolved below.
+        if self.palette.is_some() {
+            match key {
+                "escape" => {
+                    cx.stop_propagation();
+                    self.close_palette(cx);
+                    return;
+                }
+                "enter" => {
+                    cx.stop_propagation();
+                    self.palette_confirm(window, cx);
+                    return;
+                }
+                "up" => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(-1, cx);
+                    return;
+                }
+                "down" => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(1, cx);
+                    return;
+                }
+                "n" if plain_ctrl => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(1, cx);
+                    return;
+                }
+                "p" if plain_ctrl => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(-1, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.cheat_sheet_open && key == "escape" {
+            cx.stop_propagation();
+            self.cheat_sheet_open = false;
+            cx.notify();
+            return;
+        }
+
+        let focus = self.focus_context(window, cx);
+        let Some(action) = keymap::resolve(&event.keystroke, focus, &keymap::default_bindings())
+        else {
+            return;
+        };
+
+        // The one rule `keymap::resolve`'s pure `(Keystroke, FocusContext)` lookup can't
+        // express on its own: the bare `?` cheat-sheet binding must never steal a
+        // literal `?` from whatever text field currently has focus. Every text-entry
+        // widget in this app calls `track_focus`, so "nothing at all is focused" is a
+        // safe, generic proxy for "you're not mid-typing somewhere" — it never swallows
+        // a real keystroke; the only cost is the cheat sheet occasionally staying closed
+        // when some non-text focus holder (e.g. a keyboard-navigable list) has focus.
+        if action == Action::CheatSheet && window.focused(cx).is_some() {
+            return;
+        }
+
+        cx.stop_propagation();
+        self.dispatch_action(action, window, cx);
+    }
+
+    /// Route a resolved [`Action`] to whatever it does. `handle_root_key_down` above and
+    /// the palette's `Enter` confirm (`ui::command_palette::palette_confirm`) are the
+    /// only two callers.
+    pub(crate) fn dispatch_action(
+        &mut self,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            Action::CommandPalette => self.toggle_palette(window, cx),
+            Action::PrimaryTab(n) => {
+                if let Some(ix) = (n as usize).checked_sub(1)
+                    && let Some(&tab) = Tab::ALL.get(ix)
+                {
+                    self.active_tab = tab;
+                    self.close_palette(cx);
+                    self.refocus_stable_target(window, cx);
+                    cx.notify();
+                }
+            }
+            Action::CycleTabForward => self.cycle_tabs(false, window, cx),
+            Action::CycleTabBack => self.cycle_tabs(true, window, cx),
+            Action::NewSession => {
+                if self.active_tab == Tab::Ssh {
+                    self.new_session(window, cx);
+                }
+            }
+            Action::CloseSession => {
+                if self.active_tab == Tab::Ssh
+                    && let Some(ix) = self.active_session
+                {
+                    self.close_session(ix, window, cx);
+                }
+            }
+            Action::Settings => {
+                // No dedicated Settings screen exists yet (Settings -> Keymap rebinding
+                // is explicitly deferred, per the plan) — `Tab::System` is the nearest
+                // stand-in until one is built.
+                self.active_tab = Tab::System;
+                self.close_palette(cx);
+                self.refocus_stable_target(window, cx);
+                cx.notify();
+            }
+            Action::CheatSheet => {
+                self.cheat_sheet_open = !self.cheat_sheet_open;
+                self.close_palette(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: cycle session tabs while the SSH tab is active,
+    /// primary tabs everywhere else — the plan's "universal cycle". Either branch ends
+    /// by restoring keyboard focus onto whatever's now active (see
+    /// `refocus_stable_target`/`activate_session`'s doc comments) so cycling
+    /// repeatedly via the keyboard alone never dead-ends.
+    fn cycle_tabs(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab == Tab::Ssh {
+            match cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards) {
+                Some(ix) => self.activate_session(ix, window, cx),
+                None => self.go_home(window, cx),
+            }
+            return;
+        }
+        let len = Tab::ALL.len();
+        let current = Tab::ALL
+            .iter()
+            .position(|&t| t == self.active_tab)
+            .unwrap_or(0);
+        self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
+        self.refocus_stable_target(window, cx);
+        cx.notify();
+    }
+
+    /// The `?` cheat-sheet overlay: one row per [`keymap::Action`] naming its default
+    /// shortcut. Same `deferred`/`anchored` backdrop pattern as every other overlay
+    /// here.
+    fn cheat_sheet_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if !self.cheat_sheet_open {
+            return None;
+        }
+        let bindings = keymap::default_bindings();
+        let viewport = window.viewport_size();
+        let rows: Vec<_> = keymap::ALL_ACTIONS
+            .iter()
+            .map(|&action| {
+                let shortcut = keymap::primary_shortcut(action, &bindings).unwrap_or_default();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .px_3()
+                    .py_1()
+                    .child(div().text_sm().text_color(rgb(FG)).child(action.label()))
+                    .child(div().text_sm().text_color(rgb(BRAND)).child(shortcut))
+            })
+            .collect();
+
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .id("cheat-sheet-backdrop")
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(
+                            div()
+                                .w(px(420.))
+                                .flex()
+                                .flex_col()
+                                .bg(rgb(TITLEBAR_BG))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .rounded_md()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_3()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(rgb(BORDER))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(FG))
+                                                .child("Keyboard Shortcuts"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("cheat-sheet-close")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .text_color(rgb(FG_DIM))
+                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .child("✕ close")
+                                                .on_click(cx.listener(
+                                                    |this, _ev: &ClickEvent, _window, cx| {
+                                                        this.cheat_sheet_open = false;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(div().flex().flex_col().py_1().children(rows)),
+                        ),
+                ),
+            )
+            .with_priority(2),
+        )
+    }
+
     // ---- rendering helpers --------------------------------------------------
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -782,8 +1136,15 @@ impl AppState {
                     .border_b_2()
                     .border_color(rgb(if is_active { BRAND } else { TABSTRIP_BG }))
                     .child(tab.label())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.active_tab = tab;
+                        // Mouse-driven tab switches need the same refocus as the
+                        // keyboard path (`dispatch_action`'s `PrimaryTab` arm) — see
+                        // `root_focus`'s doc comment: leaving a tab that had something
+                        // focused (the SSH terminal, a DB-tab input, ...) without
+                        // claiming a new, currently-rendered focus target silently
+                        // breaks every keyboard shortcut until the next mouse click.
+                        this.refocus_stable_target(window, cx);
                         cx.notify();
                     }))
             })
@@ -843,7 +1204,7 @@ impl AppState {
             .border_1()
             .border_color(rgb(BORDER))
             .child("🏠")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.go_home(cx)));
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| this.go_home(window, cx)));
 
         let tabs: Vec<_> = self
             .ssh_sessions
@@ -881,8 +1242,8 @@ impl AppState {
                             .cursor_pointer()
                             .child(dot)
                             .child(tab.label.clone())
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.activate_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.activate_session(ix, window, cx);
                             })),
                     )
                     .child(
@@ -895,8 +1256,8 @@ impl AppState {
                             .text_color(rgb(FG_DIM))
                             .hover(|s| s.bg(rgb(ACTIVE_BG)).text_color(rgb(DANGER)))
                             .child("×")
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.close_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.close_session(ix, window, cx);
                             })),
                     )
             })
@@ -914,7 +1275,9 @@ impl AppState {
             .text_color(rgb(FG_DIM))
             .hover(|s| s.bg(rgb(ACTIVE_BG)))
             .child("＋")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.new_session(cx)));
+            .on_click(
+                cx.listener(|this, _ev: &ClickEvent, window, cx| this.new_session(window, cx)),
+            );
 
         div()
             .flex()
@@ -1033,8 +1396,8 @@ impl AppState {
                             .bg(rgb(ACTIVE_BG))
                             .text_color(rgb(ACTIVE_FG))
                             .child("← close tab")
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.close_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.close_session(ix, window, cx);
                             })),
                     )
                     .child(
@@ -1271,18 +1634,29 @@ impl Render for AppState {
             .with_priority(1)
         });
 
+        // Keyboard-driven system (2026-07-02 plan): the palette + cheat-sheet overlays,
+        // and the root-level key handler that opens/dispatches them. `capture_key_down`
+        // runs *before* any descendant (the terminal included) sees the keystroke — see
+        // `handle_root_key_down`'s doc comment for why that ordering is load-bearing.
+        let palette_overlay = self.palette_overlay(window, cx);
+        let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(BG))
             .text_color(rgb(FG))
+            .track_focus(&self.root_focus)
+            .capture_key_down(cx.listener(Self::handle_root_key_down))
             .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
             .children(db_overlay)
             .children(secret_overlay)
+            .children(palette_overlay)
+            .children(cheat_sheet_overlay)
     }
 }
 
@@ -1553,6 +1927,38 @@ pub(crate) fn next_active_after_close(
     }
 }
 
+/// Wrap-around index cycling over `len` items (`Ctrl+Tab`/`Ctrl+Shift+Tab` on primary
+/// tabs). Same algorithm as `ui::text_input::next_focus_index` (the Tab/Shift+Tab form
+/// field cycler) — kept as its own tiny pure function here rather than reaching across
+/// the `ui` module's privacy boundary for a two-line formula.
+pub(crate) fn cycle_index(current: usize, len: usize, backwards: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if backwards {
+        if current == 0 { len - 1 } else { current - 1 }
+    } else {
+        (current + 1) % len
+    }
+}
+
+/// `Ctrl+Tab`/`Ctrl+Shift+Tab` on the SSH tab: cycle the virtual sequence [🏠 Home,
+/// session 0, session 1, ..., session `len - 1`] and back to Home — Home is its own stop,
+/// not skipped over between sessions. `len` is `ssh_sessions.len()`.
+pub(crate) fn cycle_session_index(
+    active: Option<usize>,
+    len: usize,
+    backwards: bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let total = len + 1; // + the Home slot
+    let current = active.map(|ix| ix + 1).unwrap_or(0);
+    let next = cycle_index(current, total, backwards);
+    if next == 0 { None } else { Some(next - 1) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1616,6 +2022,52 @@ mod tests {
     fn close_the_last_remaining_tab_goes_home() {
         // Closing the only tab (len_after 0) returns to 🏠 home.
         assert_eq!(next_active_after_close(Some(0), 0, 0), None);
+    }
+
+    // ---- keyboard-driven system: tab/session cycling (pure) ----------------------
+
+    #[test]
+    fn cycle_index_wraps_forward_and_backward() {
+        assert_eq!(cycle_index(0, 3, false), 1);
+        assert_eq!(cycle_index(2, 3, false), 0);
+        assert_eq!(cycle_index(0, 3, true), 2);
+        assert_eq!(cycle_index(2, 3, true), 1);
+        // Degenerate: nothing to cycle among.
+        assert_eq!(cycle_index(0, 0, false), 0);
+        assert_eq!(cycle_index(0, 0, true), 0);
+    }
+
+    #[test]
+    fn cycle_session_index_has_no_sessions_to_offer() {
+        // No live sessions: stays on Home regardless of direction.
+        assert_eq!(cycle_session_index(None, 0, false), None);
+        assert_eq!(cycle_session_index(None, 0, true), None);
+    }
+
+    #[test]
+    fn cycle_session_index_visits_home_as_its_own_stop() {
+        // [Home, 0, 1] forward from Home lands on session 0.
+        assert_eq!(cycle_session_index(None, 2, false), Some(0));
+        // Forward from the last session wraps back to Home, not straight to session 0.
+        assert_eq!(cycle_session_index(Some(1), 2, false), None);
+        // Backward from Home wraps to the last session.
+        assert_eq!(cycle_session_index(None, 2, true), Some(1));
+        // Backward from session 0 lands on Home.
+        assert_eq!(cycle_session_index(Some(0), 2, true), None);
+    }
+
+    #[test]
+    fn cycle_session_index_full_forward_loop_returns_to_start() {
+        let len = 3;
+        let mut active = None;
+        let mut seen = vec![active];
+        for _ in 0..(len + 1) {
+            active = cycle_session_index(active, len, false);
+            seen.push(active);
+        }
+        // Home -> 0 -> 1 -> 2 -> Home: a full loop of `len + 1` stops returns to start.
+        assert_eq!(seen.first(), seen.last());
+        assert_eq!(seen[0], None);
     }
 
     #[test]
