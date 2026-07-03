@@ -1010,6 +1010,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher 0.5.2",
+ "poly1305",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6659,9 +6671,15 @@ dependencies = [
 name = "sid-secrets"
 version = "0.0.1"
 dependencies = [
+ "argon2",
+ "chacha20poly1305",
+ "getrandom 0.3.4",
  "keyring-core",
+ "postcard",
+ "tempfile",
  "thiserror 2.0.18",
  "zbus-secret-service-keyring-store",
+ "zeroize",
 ]
 
 [[package]]
