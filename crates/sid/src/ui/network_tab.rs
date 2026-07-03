@@ -59,13 +59,14 @@
 //! rather than routed back through `AppState`. [`DockerDelegate`]/[`KubePodsDelegate`]
 //! are plain read-only tables, closer in shape to `db_tab.rs`'s `ResultDelegate`.
 
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString,
     Subscription, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
 use sid_containers::{DockerCliProvider, KubectlCliProvider};
 use sid_core::containers::{
     ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
@@ -268,6 +269,68 @@ impl NetworkTabState {
         self.visible_interfaces = visible.into_iter().filter(name_matches).cloned().collect();
         self.hidden_interfaces = hidden.into_iter().filter(name_matches).cloned().collect();
     }
+
+    /// Move keyboard focus into the shared filter [`TextInput`] — `Action::FocusFilter`'s
+    /// (`Ctrl+F`/`Ctrl+/`) target, dispatched from `app::dispatch_action`. A no-op before
+    /// the Network tab has painted once (`ensure_network_widgets` hasn't built `filter`
+    /// yet, e.g. `Ctrl+F` pressed while another primary tab is active — `dispatch_action`
+    /// already gates the call on `active_tab == Tab::Network`, but the tab could in
+    /// principle be active without ever having rendered).
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &App) {
+        if let Some(filter) = &self.filter {
+            filter.read(cx).focus(window);
+        }
+    }
+}
+
+/// Ascending/descending sort direction, derived from gpui-component's [`ColumnSort`] by
+/// folding `ColumnSort::Default` into "no active sort" (see the `TableDelegate::
+/// perform_sort` impls below — clicking a column cycles the library's own per-column
+/// `ColumnSort` through `Default -> Descending -> Ascending -> Default`; `Default` clears
+/// the delegate's `active_sort` rather than being tracked as a third direction here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDir {
+    Asc,
+    Desc,
+}
+
+impl SortDir {
+    fn from_column_sort(sort: ColumnSort) -> Option<Self> {
+        match sort {
+            ColumnSort::Ascending => Some(SortDir::Asc),
+            ColumnSort::Descending => Some(SortDir::Desc),
+            ColumnSort::Default => None,
+        }
+    }
+
+    /// Apply this direction to an `Ordering` computed by an ascending-order comparator.
+    fn apply(self, order: Ordering) -> Ordering {
+        match self {
+            SortDir::Asc => order,
+            SortDir::Desc => order.reverse(),
+        }
+    }
+}
+
+/// Set `columns[col_ix]`'s own [`ColumnSort`] marker to `sort` and reset every other
+/// sortable column back to [`ColumnSort::Default`] — mirrors what `gpui_component::
+/// table::TableState::perform_sort` does to its *internal* `col_groups` copy. Without
+/// this, the delegate's own `columns` (the copy `TableDelegate::column` hands back on
+/// every `TableState::refresh`, e.g. after a filter keystroke — see `recompute`'s
+/// callers) would still report the construction-time `ColumnSort::Default` on every
+/// sortable column, and the header's sort chevron would visually reset even though the
+/// row order (driven by `active_sort`) stayed correctly sorted.
+fn mark_column_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
+    for (ix, column) in columns.iter_mut().enumerate() {
+        if column.sort.is_none() {
+            continue;
+        }
+        column.sort = Some(if ix == col_ix {
+            sort
+        } else {
+            ColumnSort::Default
+        });
+    }
 }
 
 /// Backs the ports [`Table`]. Constructed empty by `ensure_network_widgets`, then
@@ -291,6 +354,10 @@ struct PortsDelegate {
     /// on a root-owned process). Cleared on the next refresh, arm, or successful kill.
     kill_error: Option<String>,
     columns: Vec<Column>,
+    /// The active sort column (index into `columns`) + direction, if any — `None` means
+    /// unsorted (rows stay in probe order). Set by `TableDelegate::perform_sort`,
+    /// applied by `recompute` after the filter.
+    active_sort: Option<(usize, SortDir)>,
 }
 
 impl PortsDelegate {
@@ -303,12 +370,15 @@ impl PortsDelegate {
             armed_kill: None,
             kill_error: None,
             columns: vec![
-                Column::new("proto", "Proto").width(px(64.)),
-                Column::new("port", "Port").width(px(72.)),
-                Column::new("pid", "PID").width(px(80.)),
-                Column::new("process", "Process").width(px(240.)),
+                Column::new("proto", "Proto").width(px(64.)).sortable(),
+                Column::new("port", "Port").width(px(72.)).sortable(),
+                Column::new("addr", "Addr").width(px(120.)).sortable(),
+                Column::new("pid", "PID").width(px(80.)).sortable(),
+                Column::new("process", "Process").width(px(240.)).sortable(),
+                // Not sortable — an action column, not data.
                 Column::new("kill", "").width(px(72.)),
             ],
+            active_sort: None,
         }
     }
 
@@ -328,11 +398,17 @@ impl PortsDelegate {
         self.recompute();
     }
 
+    /// Apply the filter, then the active sort (if any) — filtering never clears the
+    /// sort, and sorting only ever reorders the already-filtered rows.
     fn recompute(&mut self) {
-        self.ports = filter_ports(&self.all_ports, &self.query)
+        let mut ports: Vec<ListeningPort> = filter_ports(&self.all_ports, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        if let Some((col_ix, dir)) = self.active_sort {
+            sort_ports(&mut ports, col_ix, dir);
+        }
+        self.ports = ports;
     }
 
     /// Second click on an armed row: send SIGTERM to `pid` on the shared runtime. On
@@ -386,6 +462,19 @@ impl TableDelegate for PortsDelegate {
         &self.columns[col_ix]
     }
 
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.recompute();
+        cx.notify();
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -421,6 +510,19 @@ impl TableDelegate for PortsDelegate {
                 .text_color(rgb(FG))
                 .child(port.port.to_string()),
             2 => {
+                let label: SharedString = if port.local_addr.is_empty() {
+                    "—".into()
+                } else {
+                    port.local_addr.clone().into()
+                };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(label)
+            }
+            3 => {
                 let label: SharedString = port
                     .pid
                     .map(|p| p.as_u32().to_string())
@@ -433,7 +535,7 @@ impl TableDelegate for PortsDelegate {
                     .text_color(rgb(FG_DIM))
                     .child(label)
             }
-            3 => {
+            4 => {
                 let label: SharedString = if port.command.is_empty() {
                     "—".into()
                 } else {
@@ -502,6 +604,8 @@ struct ServicesDelegate {
     /// `SvcError::PermissionDenied` for a system-scope action without root).
     action_error: Option<String>,
     columns: Vec<Column>,
+    /// See [`PortsDelegate::active_sort`].
+    active_sort: Option<(usize, SortDir)>,
 }
 
 impl ServicesDelegate {
@@ -515,11 +619,18 @@ impl ServicesDelegate {
             armed_action: None,
             action_error: None,
             columns: vec![
-                Column::new("name", "Unit").width(px(240.)),
-                Column::new("state", "State").width(px(90.)),
-                Column::new("description", "Description").width(px(320.)),
+                Column::new("name", "Unit").width(px(240.)).sortable(),
+                Column::new("state", "State").width(px(90.)).sortable(),
+                Column::new("sub_state", "Sub-state")
+                    .width(px(110.))
+                    .sortable(),
+                Column::new("description", "Description")
+                    .width(px(320.))
+                    .sortable(),
+                // Not sortable — an action column, not data.
                 Column::new("actions", "").width(px(210.)),
             ],
+            active_sort: None,
         }
     }
 
@@ -538,11 +649,16 @@ impl ServicesDelegate {
         self.recompute();
     }
 
+    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
     fn recompute(&mut self) {
-        self.services = filter_services(&self.all_services, &self.query)
+        let mut services: Vec<ServiceInfo> = filter_services(&self.all_services, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        if let Some((col_ix, dir)) = self.active_sort {
+            sort_services(&mut services, col_ix, dir);
+        }
+        self.services = services;
     }
 
     /// Second click on an armed (unit, action) pair: run `control` on the shared
@@ -597,6 +713,19 @@ impl TableDelegate for ServicesDelegate {
         &self.columns[col_ix]
     }
 
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.recompute();
+        cx.notify();
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -625,6 +754,19 @@ impl TableDelegate for ServicesDelegate {
                     .child(label)
             }
             2 => {
+                let label: SharedString = if svc.sub_state.is_empty() {
+                    "—".into()
+                } else {
+                    svc.sub_state.clone().into()
+                };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(FG_DIM))
+                    .child(label)
+            }
+            3 => {
                 let label: SharedString = if svc.description.is_empty() {
                     "—".into()
                 } else {
@@ -697,6 +839,8 @@ struct DockerDelegate {
     containers: Vec<ContainerInfo>,
     query: String,
     columns: Vec<Column>,
+    /// See [`PortsDelegate::active_sort`].
+    active_sort: Option<(usize, SortDir)>,
 }
 
 impl DockerDelegate {
@@ -706,12 +850,13 @@ impl DockerDelegate {
             containers: Vec::new(),
             query: String::new(),
             columns: vec![
-                Column::new("name", "Name").width(px(200.)),
-                Column::new("image", "Image").width(px(220.)),
-                Column::new("state", "State").width(px(90.)),
-                Column::new("status", "Status").width(px(200.)),
-                Column::new("ports", "Ports").width(px(260.)),
+                Column::new("name", "Name").width(px(200.)).sortable(),
+                Column::new("image", "Image").width(px(220.)).sortable(),
+                Column::new("state", "State").width(px(90.)).sortable(),
+                Column::new("status", "Status").width(px(200.)).sortable(),
+                Column::new("ports", "Ports").width(px(260.)).sortable(),
             ],
+            active_sort: None,
         }
     }
 
@@ -725,11 +870,17 @@ impl DockerDelegate {
         self.recompute();
     }
 
+    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
     fn recompute(&mut self) {
-        self.containers = filter_containers(&self.all_containers, &self.query)
-            .into_iter()
-            .cloned()
-            .collect();
+        let mut containers: Vec<ContainerInfo> =
+            filter_containers(&self.all_containers, &self.query)
+                .into_iter()
+                .cloned()
+                .collect();
+        if let Some((col_ix, dir)) = self.active_sort {
+            sort_containers(&mut containers, col_ix, dir);
+        }
+        self.containers = containers;
     }
 }
 
@@ -744,6 +895,19 @@ impl TableDelegate for DockerDelegate {
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
         &self.columns[col_ix]
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.recompute();
+        cx.notify();
     }
 
     fn render_td(
@@ -806,6 +970,8 @@ struct KubePodsDelegate {
     pods: Vec<KubePod>,
     query: String,
     columns: Vec<Column>,
+    /// See [`PortsDelegate::active_sort`].
+    active_sort: Option<(usize, SortDir)>,
 }
 
 impl KubePodsDelegate {
@@ -815,13 +981,18 @@ impl KubePodsDelegate {
             pods: Vec::new(),
             query: String::new(),
             columns: vec![
-                Column::new("namespace", "Namespace").width(px(140.)),
-                Column::new("name", "Name").width(px(240.)),
-                Column::new("ready", "Ready").width(px(70.)),
-                Column::new("phase", "Phase").width(px(90.)),
-                Column::new("restarts", "Restarts").width(px(80.)),
-                Column::new("node", "Node").width(px(140.)),
+                Column::new("namespace", "Namespace")
+                    .width(px(140.))
+                    .sortable(),
+                Column::new("name", "Name").width(px(240.)).sortable(),
+                Column::new("ready", "Ready").width(px(70.)).sortable(),
+                Column::new("phase", "Phase").width(px(90.)).sortable(),
+                Column::new("restarts", "Restarts")
+                    .width(px(80.))
+                    .sortable(),
+                Column::new("node", "Node").width(px(140.)).sortable(),
             ],
+            active_sort: None,
         }
     }
 
@@ -835,11 +1006,16 @@ impl KubePodsDelegate {
         self.recompute();
     }
 
+    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
     fn recompute(&mut self) {
-        self.pods = filter_pods(&self.all_pods, &self.query)
+        let mut pods: Vec<KubePod> = filter_pods(&self.all_pods, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        if let Some((col_ix, dir)) = self.active_sort {
+            sort_pods(&mut pods, col_ix, dir);
+        }
+        self.pods = pods;
     }
 }
 
@@ -854,6 +1030,19 @@ impl TableDelegate for KubePodsDelegate {
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
         &self.columns[col_ix]
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.recompute();
+        cx.notify();
     }
 
     fn render_td(
@@ -1807,6 +1996,62 @@ fn filter_ports<'a>(ports: &'a [ListeningPort], query: &str) -> Vec<&'a Listenin
         .collect()
 }
 
+/// Column-index dispatch for the Ports table's sort — `col_ix` matches
+/// [`PortsDelegate::columns`]' order (`proto, port, addr, pid, process`; `kill` at
+/// index 5 carries no comparator and is unreachable since it's never marked
+/// `.sortable()`, so `TableState::perform_sort` never calls back with that index).
+fn sort_ports(rows: &mut [ListeningPort], col_ix: usize, dir: SortDir) {
+    let cmp: fn(&ListeningPort, &ListeningPort) -> Ordering = match col_ix {
+        0 => cmp_port_proto,
+        1 => cmp_port_number,
+        2 => cmp_port_addr,
+        3 => cmp_port_pid,
+        4 => cmp_port_process,
+        _ => return,
+    };
+    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+/// Numeric port compare — never lexicographic (`9 < 10 < 443 < 8080`, not the string
+/// order `10 < 443 < 8080 < 9`).
+fn cmp_port_number(a: &ListeningPort, b: &ListeningPort) -> Ordering {
+    a.port.cmp(&b.port)
+}
+
+fn cmp_port_proto(a: &ListeningPort, b: &ListeningPort) -> Ordering {
+    protocol_label(a.protocol).cmp(protocol_label(b.protocol))
+}
+
+fn protocol_label(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::Tcp => "tcp",
+        Protocol::Udp => "udp",
+    }
+}
+
+fn cmp_port_addr(a: &ListeningPort, b: &ListeningPort) -> Ordering {
+    a.local_addr.cmp(&b.local_addr)
+}
+
+/// Case-insensitive process/command compare.
+fn cmp_port_process(a: &ListeningPort, b: &ListeningPort) -> Ordering {
+    a.command.to_lowercase().cmp(&b.command.to_lowercase())
+}
+
+/// Numeric PID compare (never lexicographic). A row with no attributable PID (`None`)
+/// sorts after every row that has one when ascending; `SortDir::apply`'s blanket
+/// `Ordering::reverse` for descending flips that leg too, so `None` rows sort first
+/// when descending — the same thing that happens to every other value under reversal,
+/// not a separate "blanks always last" rule.
+fn cmp_port_pid(a: &ListeningPort, b: &ListeningPort) -> Ordering {
+    match (a.pid, b.pid) {
+        (Some(x), Some(y)) => x.as_u32().cmp(&y.as_u32()),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
 /// Case-insensitive substring filter over a service's name/description. Empty (or
 /// all-whitespace) query matches everything.
 fn filter_services<'a>(services: &'a [ServiceInfo], query: &str) -> Vec<&'a ServiceInfo> {
@@ -1830,6 +2075,57 @@ fn svc_state_badge(state: SvcActiveState) -> (&'static str, u32) {
         SvcActiveState::Inactive => ("inactive", FG_DIM),
         SvcActiveState::Other => ("other", FG_DIM),
     }
+}
+
+/// Column-index dispatch for the Services table's sort — `col_ix` matches
+/// [`ServicesDelegate::columns`]' order (`name, state, sub_state, description`;
+/// `actions` at index 4 carries no comparator, same reasoning as [`sort_ports`]'s
+/// `kill` column).
+fn sort_services(rows: &mut [ServiceInfo], col_ix: usize, dir: SortDir) {
+    let cmp: fn(&ServiceInfo, &ServiceInfo) -> Ordering = match col_ix {
+        0 => cmp_svc_name,
+        1 => cmp_svc_state,
+        2 => cmp_svc_sub_state,
+        3 => cmp_svc_description,
+        _ => return,
+    };
+    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+/// Case-insensitive unit-name compare.
+fn cmp_svc_name(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
+    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+}
+
+/// Active-first rank used by [`cmp_svc_state`]: `active < activating < reloading <
+/// (any other/unrecognized "other" sub-state) < inactive < failed`.
+/// `SvcActiveState::Other` folds systemd's `activating`/`deactivating`/`reloading`
+/// together (see the enum's own doc comment) — `sub_state`'s text is what actually
+/// distinguishes them for ranking purposes.
+fn svc_state_rank(svc: &ServiceInfo) -> u8 {
+    match svc.active {
+        SvcActiveState::Active => 0,
+        SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("activating") => 1,
+        SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("reloading") => 2,
+        SvcActiveState::Other => 3,
+        SvcActiveState::Inactive => 4,
+        SvcActiveState::Failed => 5,
+    }
+}
+
+/// State rank first, then alphabetical by name for units sharing a rank.
+fn cmp_svc_state(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
+    svc_state_rank(a)
+        .cmp(&svc_state_rank(b))
+        .then_with(|| cmp_svc_name(a, b))
+}
+
+fn cmp_svc_sub_state(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
+    a.sub_state.cmp(&b.sub_state)
+}
+
+fn cmp_svc_description(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
+    a.description.cmp(&b.description)
 }
 
 /// Case-insensitive filter over the Docker containers table: name, image, state, or
@@ -1878,6 +2174,59 @@ fn docker_state_badge(state: &str) -> (&str, u32) {
     }
 }
 
+/// Column-index dispatch for the Docker table's sort — `col_ix` matches
+/// [`DockerDelegate::columns`]' order (`name, image, state, status, ports`, all five
+/// sortable).
+fn sort_containers(rows: &mut [ContainerInfo], col_ix: usize, dir: SortDir) {
+    let cmp: fn(&ContainerInfo, &ContainerInfo) -> Ordering = match col_ix {
+        0 => cmp_container_name,
+        1 => cmp_container_image,
+        2 => cmp_container_state,
+        3 => cmp_container_status,
+        4 => cmp_container_ports,
+        _ => return,
+    };
+    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+fn cmp_container_name(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
+    a.name.cmp(&b.name)
+}
+
+fn cmp_container_image(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
+    a.image.cmp(&b.image)
+}
+
+/// Lifecycle rank used by [`cmp_container_state`]: `running < paused < restarting <
+/// (exited/dead) < anything unrecognized` — matches [`docker_state_badge`]'s known
+/// values, with the transient `restarting` state (already flagged `DANGER` there)
+/// placed ahead of the terminal `exited`/`dead` states.
+fn docker_state_rank(state: &str) -> u8 {
+    match state {
+        "running" => 0,
+        "paused" => 1,
+        "restarting" => 2,
+        "exited" | "dead" => 3,
+        _ => 4,
+    }
+}
+
+/// State rank first, then name for containers sharing a rank.
+fn cmp_container_state(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
+    docker_state_rank(&a.state)
+        .cmp(&docker_state_rank(&b.state))
+        .then_with(|| cmp_container_name(a, b))
+}
+
+fn cmp_container_status(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
+    a.status.cmp(&b.status)
+}
+
+/// Compares the same joined label `render_td` displays (`"host:5432->5432/tcp, ..."`).
+fn cmp_container_ports(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
+    a.ports.join(", ").cmp(&b.ports.join(", "))
+}
+
 /// Badge label + color for a Kubernetes pod's phase (`status.phase`).
 fn kube_phase_badge(phase: &str) -> (&str, u32) {
     match phase {
@@ -1888,6 +2237,63 @@ fn kube_phase_badge(phase: &str) -> (&str, u32) {
         "Unknown" => ("Unknown", DANGER),
         other => (other, FG_DIM),
     }
+}
+
+/// Column-index dispatch for the Kubernetes pods table's sort — `col_ix` matches
+/// [`KubePodsDelegate::columns`]' order (`namespace, name, ready, phase, restarts,
+/// node`, all six sortable).
+fn sort_pods(rows: &mut [KubePod], col_ix: usize, dir: SortDir) {
+    let cmp: fn(&KubePod, &KubePod) -> Ordering = match col_ix {
+        0 => cmp_pod_namespace,
+        1 => cmp_pod_name,
+        2 => cmp_pod_ready,
+        3 => cmp_pod_phase,
+        4 => cmp_pod_restarts,
+        5 => cmp_pod_node,
+        _ => return,
+    };
+    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+fn cmp_pod_namespace(a: &KubePod, b: &KubePod) -> Ordering {
+    a.namespace.cmp(&b.namespace)
+}
+
+fn cmp_pod_name(a: &KubePod, b: &KubePod) -> Ordering {
+    a.name.cmp(&b.name)
+}
+
+fn cmp_pod_ready(a: &KubePod, b: &KubePod) -> Ordering {
+    a.ready.cmp(&b.ready)
+}
+
+/// Running-first rank used by [`cmp_pod_phase`], mirroring [`kube_phase_badge`]'s known
+/// values: `Running < Succeeded < Pending < Failed < Unknown < anything unrecognized`.
+fn kube_phase_rank(phase: &str) -> u8 {
+    match phase {
+        "Running" => 0,
+        "Succeeded" => 1,
+        "Pending" => 2,
+        "Failed" => 3,
+        "Unknown" => 4,
+        _ => 5,
+    }
+}
+
+/// Phase rank first, then name for pods sharing a rank.
+fn cmp_pod_phase(a: &KubePod, b: &KubePod) -> Ordering {
+    kube_phase_rank(&a.phase)
+        .cmp(&kube_phase_rank(&b.phase))
+        .then_with(|| cmp_pod_name(a, b))
+}
+
+/// Numeric restart-count compare — never lexicographic.
+fn cmp_pod_restarts(a: &KubePod, b: &KubePod) -> Ordering {
+    a.restarts.cmp(&b.restarts)
+}
+
+fn cmp_pod_node(a: &KubePod, b: &KubePod) -> Ordering {
+    a.node.cmp(&b.node)
 }
 
 /// Two-tier graceful-absence notice, reusing the same "dim status line + secondary
@@ -2379,5 +2785,343 @@ mod tests {
         sort_interfaces_default_first(&mut ifaces, None);
         let names: Vec<&str> = ifaces.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["eth0", "wlan0"]);
+    }
+
+    // ---- SortDir / mark_column_sort ---------------------------------------------
+
+    #[test]
+    fn sort_dir_from_column_sort_maps_ascending_and_descending_only() {
+        assert_eq!(
+            SortDir::from_column_sort(ColumnSort::Ascending),
+            Some(SortDir::Asc)
+        );
+        assert_eq!(
+            SortDir::from_column_sort(ColumnSort::Descending),
+            Some(SortDir::Desc)
+        );
+        assert_eq!(SortDir::from_column_sort(ColumnSort::Default), None);
+    }
+
+    #[test]
+    fn sort_dir_apply_reverses_only_for_descending() {
+        assert_eq!(SortDir::Asc.apply(Ordering::Less), Ordering::Less);
+        assert_eq!(SortDir::Desc.apply(Ordering::Less), Ordering::Greater);
+        assert_eq!(SortDir::Asc.apply(Ordering::Equal), Ordering::Equal);
+        assert_eq!(SortDir::Desc.apply(Ordering::Equal), Ordering::Equal);
+    }
+
+    #[test]
+    fn mark_column_sort_sets_target_and_clears_other_sortable_columns() {
+        let mut columns = vec![
+            Column::new("a", "A").sortable(),
+            Column::new("b", "B").sortable(),
+            // Not sortable to begin with — must stay `None`, not get stamped `Default`.
+            Column::new("c", "C"),
+        ];
+        // Simulate column "a" having been sorted descending on a previous click.
+        columns[0].sort = Some(ColumnSort::Descending);
+
+        mark_column_sort(&mut columns, 1, ColumnSort::Ascending);
+
+        assert_eq!(columns[0].sort, Some(ColumnSort::Default));
+        assert_eq!(columns[1].sort, Some(ColumnSort::Ascending));
+        assert_eq!(columns[2].sort, None);
+    }
+
+    // ---- Ports: sort comparators --------------------------------------------------
+
+    #[test]
+    fn cmp_port_number_orders_numerically_not_lexicographically() {
+        let mut ports = vec![
+            port(8080, None, "", ""),
+            port(9, None, "", ""),
+            port(443, None, "", ""),
+            port(10, None, "", ""),
+        ];
+        sort_ports(&mut ports, 1, SortDir::Asc);
+        let nums: Vec<u16> = ports.iter().map(|p| p.port).collect();
+        // Lexicographic order would give 10, 443, 8080, 9 — numeric order must not.
+        assert_eq!(nums, vec![9, 10, 443, 8080]);
+    }
+
+    #[test]
+    fn cmp_port_number_descending_reverses_numeric_order() {
+        let mut ports = vec![port(9, None, "", ""), port(443, None, "", "")];
+        sort_ports(&mut ports, 1, SortDir::Desc);
+        let nums: Vec<u16> = ports.iter().map(|p| p.port).collect();
+        assert_eq!(nums, vec![443, 9]);
+    }
+
+    #[test]
+    fn cmp_port_proto_orders_tcp_before_udp() {
+        let mut udp = port(53, None, "", "");
+        udp.protocol = Protocol::Udp;
+        let tcp = port(80, None, "", "");
+        let mut ports = vec![udp, tcp.clone()];
+        sort_ports(&mut ports, 0, SortDir::Asc);
+        assert_eq!(ports[0].port, tcp.port);
+    }
+
+    #[test]
+    fn cmp_port_addr_orders_lexicographically() {
+        let mut ports = vec![port(1, None, "", "127.0.0.1"), port(2, None, "", "0.0.0.0")];
+        sort_ports(&mut ports, 2, SortDir::Asc);
+        let addrs: Vec<&str> = ports.iter().map(|p| p.local_addr.as_str()).collect();
+        assert_eq!(addrs, vec!["0.0.0.0", "127.0.0.1"]);
+    }
+
+    #[test]
+    fn cmp_port_process_is_case_insensitive() {
+        let mut ports = vec![
+            port(1, None, "Zsh", ""),
+            port(2, None, "bash", ""),
+            port(3, None, "Ash", ""),
+        ];
+        sort_ports(&mut ports, 4, SortDir::Asc);
+        let commands: Vec<&str> = ports.iter().map(|p| p.command.as_str()).collect();
+        assert_eq!(commands, vec!["Ash", "bash", "Zsh"]);
+    }
+
+    #[test]
+    fn cmp_port_pid_none_sorts_after_some_ascending_and_before_descending() {
+        let mut ports = vec![
+            port(1, None, "", ""),
+            port(2, Some(456), "", ""),
+            port(3, Some(123), "", ""),
+        ];
+        sort_ports(&mut ports, 3, SortDir::Asc);
+        let pids: Vec<Option<u32>> = ports.iter().map(|p| p.pid.map(Pid::as_u32)).collect();
+        assert_eq!(pids, vec![Some(123), Some(456), None]);
+
+        sort_ports(&mut ports, 3, SortDir::Desc);
+        let pids: Vec<Option<u32>> = ports.iter().map(|p| p.pid.map(Pid::as_u32)).collect();
+        assert_eq!(pids, vec![None, Some(456), Some(123)]);
+    }
+
+    #[test]
+    fn sort_ports_unsortable_column_index_is_a_no_op() {
+        let mut ports = vec![port(80, None, "b", ""), port(22, None, "a", "")];
+        let before: Vec<u16> = ports.iter().map(|p| p.port).collect();
+        // Index 5 is the `kill` action column — never `.sortable()`, so `sort_ports`
+        // must leave row order untouched rather than panic on an out-of-range match.
+        sort_ports(&mut ports, 5, SortDir::Asc);
+        let after: Vec<u16> = ports.iter().map(|p| p.port).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn filter_then_sort_composes_for_ports() {
+        // Mirrors `PortsDelegate::recompute`'s pipeline: filter first, then sort —
+        // filtering must never lose or reorder-around the active sort.
+        let ports = vec![
+            port(8080, Some(3), "app", "0.0.0.0"),
+            port(9, Some(1), "small", "127.0.0.1"), // filtered out below
+            port(443, Some(2), "https", "0.0.0.0"),
+            port(80, Some(4), "http", "0.0.0.0"),
+        ];
+        let mut filtered: Vec<ListeningPort> = filter_ports(&ports, "0.0.0.0")
+            .into_iter()
+            .cloned()
+            .collect();
+        sort_ports(&mut filtered, 1, SortDir::Asc);
+        let nums: Vec<u16> = filtered.iter().map(|p| p.port).collect();
+        assert_eq!(nums, vec![80, 443, 8080]);
+    }
+
+    // ---- Services: sort comparators ------------------------------------------------
+
+    fn svc_with_state(name: &str, active: SvcActiveState, sub_state: &str) -> ServiceInfo {
+        ServiceInfo {
+            name: name.to_string(),
+            description: String::new(),
+            active,
+            sub_state: sub_state.to_string(),
+        }
+    }
+
+    #[test]
+    fn svc_state_rank_orders_active_first() {
+        let active = svc_with_state("a", SvcActiveState::Active, "running");
+        let activating = svc_with_state("b", SvcActiveState::Other, "activating");
+        let reloading = svc_with_state("c", SvcActiveState::Other, "reloading");
+        let inactive = svc_with_state("d", SvcActiveState::Inactive, "dead");
+        let failed = svc_with_state("e", SvcActiveState::Failed, "failed");
+
+        assert!(svc_state_rank(&active) < svc_state_rank(&activating));
+        assert!(svc_state_rank(&activating) < svc_state_rank(&reloading));
+        assert!(svc_state_rank(&reloading) < svc_state_rank(&inactive));
+        assert!(svc_state_rank(&inactive) < svc_state_rank(&failed));
+    }
+
+    #[test]
+    fn cmp_svc_state_sorts_by_rank_then_name() {
+        let mut services = vec![
+            svc_with_state("z-active", SvcActiveState::Active, "running"),
+            svc_with_state("nginx.service", SvcActiveState::Failed, "failed"),
+            svc_with_state("a-active", SvcActiveState::Active, "running"),
+        ];
+        sort_services(&mut services, 1, SortDir::Asc);
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["a-active", "z-active", "nginx.service"]);
+    }
+
+    #[test]
+    fn cmp_svc_name_is_case_insensitive() {
+        let mut services = vec![svc("Zsh.service", ""), svc("bash.service", "")];
+        sort_services(&mut services, 0, SortDir::Asc);
+        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["bash.service", "Zsh.service"]);
+    }
+
+    #[test]
+    fn cmp_svc_sub_state_orders_lexicographically() {
+        let mut services = vec![
+            svc_with_state("a", SvcActiveState::Active, "running"),
+            svc_with_state("b", SvcActiveState::Active, "dead"),
+        ];
+        sort_services(&mut services, 2, SortDir::Asc);
+        let sub_states: Vec<&str> = services.iter().map(|s| s.sub_state.as_str()).collect();
+        assert_eq!(sub_states, vec!["dead", "running"]);
+    }
+
+    #[test]
+    fn cmp_svc_description_orders_lexicographically() {
+        let mut services = vec![svc("a", "web server"), svc("b", "database")];
+        sort_services(&mut services, 3, SortDir::Asc);
+        let descriptions: Vec<&str> = services.iter().map(|s| s.description.as_str()).collect();
+        assert_eq!(descriptions, vec!["database", "web server"]);
+    }
+
+    // ---- Docker: sort comparators ---------------------------------------------------
+
+    #[test]
+    fn docker_state_rank_orders_running_first() {
+        assert!(docker_state_rank("running") < docker_state_rank("paused"));
+        assert!(docker_state_rank("paused") < docker_state_rank("exited"));
+        assert!(docker_state_rank("running") < docker_state_rank("exited"));
+    }
+
+    #[test]
+    fn cmp_container_state_sorts_running_before_exited() {
+        let mut containers = vec![
+            container("b", "img", "exited", ""),
+            container("a", "img", "running", ""),
+            container("c", "img", "paused", ""),
+        ];
+        sort_containers(&mut containers, 2, SortDir::Asc);
+        let names: Vec<&str> = containers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn cmp_container_name_orders_lexicographically() {
+        let mut containers = vec![
+            container("web-2", "img", "running", ""),
+            container("web-1", "img", "running", ""),
+        ];
+        sort_containers(&mut containers, 0, SortDir::Asc);
+        let names: Vec<&str> = containers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["web-1", "web-2"]);
+    }
+
+    #[test]
+    fn cmp_container_image_orders_lexicographically() {
+        let mut containers = vec![
+            container("a", "redis:7", "running", ""),
+            container("b", "nginx:latest", "running", ""),
+        ];
+        sort_containers(&mut containers, 1, SortDir::Asc);
+        let images: Vec<&str> = containers.iter().map(|c| c.image.as_str()).collect();
+        assert_eq!(images, vec!["nginx:latest", "redis:7"]);
+    }
+
+    #[test]
+    fn cmp_container_status_orders_lexicographically() {
+        let mut containers = vec![
+            container("a", "img", "running", "Up 3 hours"),
+            container("b", "img", "exited", "Exited (0) 2 days ago"),
+        ];
+        sort_containers(&mut containers, 3, SortDir::Asc);
+        let statuses: Vec<&str> = containers.iter().map(|c| c.status.as_str()).collect();
+        assert_eq!(statuses, vec!["Exited (0) 2 days ago", "Up 3 hours"]);
+    }
+
+    #[test]
+    fn cmp_container_ports_orders_by_joined_label() {
+        let mut a = container("a", "img", "running", "");
+        a.ports = vec!["0.0.0.0:8080->80/tcp".to_string()];
+        let mut b = container("b", "img", "running", "");
+        b.ports = vec!["0.0.0.0:5432->5432/tcp".to_string()];
+        let mut containers = vec![a.clone(), b.clone()];
+        sort_containers(&mut containers, 4, SortDir::Asc);
+        assert_eq!(containers[0].name, b.name);
+    }
+
+    // ---- Kubernetes: sort comparators ------------------------------------------------
+
+    #[test]
+    fn kube_phase_rank_orders_running_first() {
+        assert!(kube_phase_rank("Running") < kube_phase_rank("Succeeded"));
+        assert!(kube_phase_rank("Running") < kube_phase_rank("Pending"));
+        assert!(kube_phase_rank("Running") < kube_phase_rank("Failed"));
+        assert!(kube_phase_rank("Running") < kube_phase_rank("Unknown"));
+    }
+
+    #[test]
+    fn cmp_pod_phase_sorts_running_before_others() {
+        let mut a = pod("default", "a");
+        a.phase = "Failed".to_string();
+        let mut b = pod("default", "b");
+        b.phase = "Running".to_string();
+        let mut pods = vec![a, b];
+        sort_pods(&mut pods, 3, SortDir::Asc);
+        assert_eq!(pods[0].name, "b");
+    }
+
+    #[test]
+    fn cmp_pod_restarts_orders_numerically_not_lexicographically() {
+        let mut p9 = pod("default", "nine");
+        p9.restarts = 9;
+        let mut p10 = pod("default", "ten");
+        p10.restarts = 10;
+        let mut p2 = pod("default", "two");
+        p2.restarts = 2;
+        let mut pods = vec![p9, p10, p2];
+        sort_pods(&mut pods, 4, SortDir::Asc);
+        let restarts: Vec<u32> = pods.iter().map(|p| p.restarts).collect();
+        assert_eq!(restarts, vec![2, 9, 10]);
+    }
+
+    #[test]
+    fn cmp_pod_namespace_orders_lexicographically() {
+        let mut pods = vec![pod("kube-system", "a"), pod("default", "b")];
+        sort_pods(&mut pods, 0, SortDir::Asc);
+        let namespaces: Vec<&str> = pods.iter().map(|p| p.namespace.as_str()).collect();
+        assert_eq!(namespaces, vec!["default", "kube-system"]);
+    }
+
+    #[test]
+    fn cmp_pod_name_orders_lexicographically() {
+        let mut pods = vec![pod("default", "web-2"), pod("default", "web-1")];
+        sort_pods(&mut pods, 1, SortDir::Asc);
+        let names: Vec<&str> = pods.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["web-1", "web-2"]);
+    }
+
+    #[test]
+    fn cmp_pod_ready_and_node_order_lexicographically() {
+        let mut a = pod("default", "a");
+        a.ready = "0/1".to_string();
+        a.node = "node-2".to_string();
+        let mut b = pod("default", "b");
+        b.ready = "1/1".to_string();
+        b.node = "node-1".to_string();
+        let mut pods = vec![a, b];
+
+        sort_pods(&mut pods, 2, SortDir::Asc);
+        assert_eq!(pods[0].ready, "0/1");
+
+        sort_pods(&mut pods, 5, SortDir::Asc);
+        assert_eq!(pods[0].node, "node-1");
     }
 }
