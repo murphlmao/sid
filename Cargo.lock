@@ -6675,6 +6675,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "sid-containers",
  "sid-core",
  "sid-db",
  "sid-secrets",
@@ -6686,6 +6687,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "sid-containers"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sid-core",
+ "tokio",
 ]
 
 [[package]]
