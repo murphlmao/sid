@@ -93,6 +93,7 @@
   .sshview{display:none;flex:1;min-height:0;flex-direction:column}
   .sshview.active{display:flex}
   .split{flex:1;display:flex;min-height:0;min-width:0}
+  .split.dockright{flex-direction:row-reverse}
   .divider{flex:0 0 8px;cursor:col-resize;background:var(--panel);position:relative;border-left:1px solid var(--line2);border-right:1px solid var(--line2)}
   .divider:hover,.divider.active{background:var(--accent-soft)}
   .divider .grip{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:5px;height:34px;border-radius:3px;
@@ -166,7 +167,7 @@
   .sessionbar .sep{color:var(--line);opacity:.9}
   .sessionbar .right{margin-left:auto;display:flex;gap:8px;align-items:center}
 
-  .files-sidebar{flex:0 0 340px;min-width:220px;max-width:520px;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .files-sidebar{flex:0 0 380px;min-width:220px;max-width:520px;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
   .filehead{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted);font-weight:600}
   .filehead .right{margin-left:auto;display:flex;gap:6px;align-items:center}
   .iconbtn{border:1px solid var(--line);background:var(--panel2);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer}
@@ -189,7 +190,7 @@
   .breadcrumb .seg.cur{color:var(--ink);background:var(--accent-soft)}
   .breadcrumb .sl{color:var(--line);flex:0 0 auto}
   .gopath{display:flex;align-items:center;gap:6px;flex:0 0 auto}
-  .gopath input{width:150px;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);color:var(--ink);
+  .gopath input{width:118px;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);color:var(--ink);
                 border-radius:6px;padding:5px 8px}
   .gopath input:focus{outline:none;border-color:var(--accent)}
   .row2{display:flex;align-items:center;gap:6px}
@@ -208,7 +209,7 @@
   table.files tr.hidden-row{display:none}
   table.files tr.hidden-row.show{display:table-row}
   table.files tr:hover td{background:var(--panel2)}
-  table.files td.name{display:flex;align-items:center;gap:8px;font-family:var(--mono);white-space:normal;word-break:break-word}
+  table.files td.name{display:flex;align-items:center;gap:8px;font-family:var(--mono);white-space:nowrap}
   table.files td.size,table.files td.mtime{font-family:var(--mono);color:var(--muted);text-align:right}
   .fic{opacity:.85;flex:0 0 auto}
 
