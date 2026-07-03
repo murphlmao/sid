@@ -368,8 +368,12 @@ impl AppState {
     }
 
     /// Open the empty add form, preselecting `save to:` from the persisted
-    /// [`sid_store::Settings::default_scope`].
-    fn open_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// [`sid_store::Settings::default_scope`]. `pub(crate)` so every add-connection
+    /// entry point the ssh-v3 discoverability pass added — `ui::ssh_home`'s sidebar
+    /// header button, its tree's empty-space context menu, and this tab strip's `＋`
+    /// when already on Home (see `session_tab_strip`) — all go through this one path,
+    /// same as the pre-existing `main` pane's `＋ Add host` button below.
+    pub(crate) fn open_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let default_scope = self
             .store
             .settings()
@@ -383,7 +387,9 @@ impl AppState {
     // ---- row actions (A7) ----------------------------------------------------
 
     /// ✎ Open the edit form prefilled with `host`, writing back into `origin` on save.
-    fn open_edit_form(
+    /// `pub(crate)` so `ui::ssh_home`'s tree right-click menu's "Edit…" item shares this
+    /// exact path with the `main` pane's own `✎ edit` row action.
+    pub(crate) fn open_edit_form(
         &mut self,
         host: Host,
         origin: Scope,
@@ -1167,9 +1173,10 @@ impl AppState {
     }
 
     /// The SSH tab, top to bottom: the session tab strip (🏠 · one tab per live
-    /// session · ＋), then either the Home view (tree sidebar + connection-manager
-    /// MAIN) or the active session's view (status strip + that `SshSession` entity,
-    /// which paints its own terminal/file-browser split).
+    /// session · ＋), then — on Home — the full-width status/error bar (see
+    /// `ssh_status_bar`) above the [tree sidebar | connection-manager] split, or the
+    /// active session's view (status strip + that `SshSession` entity, which paints its
+    /// own terminal/file-browser split).
     fn ssh_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -1179,13 +1186,52 @@ impl AppState {
             .child(match self.active_session {
                 None => div()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .flex_1()
-                    .child(self.ssh_home_sidebar(cx).into_any_element())
-                    .child(self.ssh_connections_main(cx).into_any_element())
+                    .children(self.ssh_status_bar())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .child(self.ssh_home_sidebar(cx).into_any_element())
+                            .child(self.ssh_connections_main(cx).into_any_element()),
+                    )
                     .into_any_element(),
                 Some(ix) => self.ssh_session_view(ix, cx).into_any_element(),
             })
+    }
+
+    /// The SSH Home tab's status/error notice: a **full-width bar** between the session
+    /// tab strip and the [sidebar | main] split — never inside either side. This used to
+    /// live inside `ssh_connections_main`'s own header, sharing a row with that pane's
+    /// `＋ Add host` button; a long message (the startup secrets-backend notice — e.g.
+    /// "secrets: encrypted-file vault … OS keyring unavailable …" — routinely runs past
+    /// a single pane's width) had nowhere to go but visually collide with that button,
+    /// and since the header row sits at the same height as the sidebar's quick-connect
+    /// box, it read as overlapping the sidebar too. `.truncate()` (clip + ellipsis, not
+    /// wrap) keeps it to one line no matter how long the message is. `None` — the common
+    /// case once past startup with no error — renders nothing.
+    fn ssh_status_bar(&self) -> Option<impl IntoElement> {
+        let (text, color): (SharedString, u32) = match (&self.error, &self.status) {
+            (Some(e), _) => (format!("error: {e}").into(), DANGER),
+            (None, Some(s)) => (s.clone().into(), FG_DIM),
+            (None, None) => return None,
+        };
+        Some(
+            div()
+                .w_full()
+                .px_4()
+                .py_1()
+                .border_b_1()
+                .border_color(rgb(BORDER))
+                .bg(rgb(TABSTRIP_BG))
+                .text_xs()
+                .text_color(rgb(color))
+                .truncate()
+                .child(text),
+        )
     }
 
     /// The session tab strip (ssh-v3): `🏠` (leftmost, icon-only, always goes Home) ·
@@ -1278,9 +1324,19 @@ impl AppState {
             .text_color(rgb(FG_DIM))
             .hover(|s| s.bg(rgb(ACTIVE_BG)))
             .child("＋")
-            .on_click(
-                cx.listener(|this, _ev: &ClickEvent, window, cx| this.new_session(window, cx)),
-            );
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                // Already on Home: `new_session`/`go_home` would be a no-op with no
+                // visible effect (this *was* the "tab-strip ＋ does nothing" bug) — the
+                // only meaningful next step from there is opening the add-connection
+                // form. Coming from a live session tab, ＋ still just goes Home first
+                // (mirrors the mockup's "New tab (opens Home)"), ready to add or pick a
+                // connection from there.
+                if this.active_session.is_none() {
+                    this.open_add_form(window, cx);
+                } else {
+                    this.new_session(window, cx);
+                }
+            }));
 
         div()
             .flex()
@@ -1300,18 +1356,14 @@ impl AppState {
     /// Home tab's MAIN pane: the connection manager (header + full host list) —
     /// unchanged from the pre-ssh-v3 single-session SSH tab, just relocated out of
     /// `ssh_tab` now that the session tab strip + tree sidebar (`ui::ssh_home`) wrap it.
+    ///
+    /// The header's `sub` line is just the host count now — the error/status notice
+    /// this used to double as moved to `ssh_status_bar`, a full-width bar above this
+    /// [sidebar | main] split, so a long message can't collide with `＋ Add host` below
+    /// (see that method's doc comment for why).
     fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.hosts.len();
-        // A real error always wins (matches the pre-`status`-field priority); absent
-        // that, an informational `status` (e.g. the startup secret-backend line) shows
-        // plainly — no `error: ` prefix, since it isn't one. Cosmetic fix: this used to
-        // be `self.error` doing double duty for both, so a normal "secrets: OS keyring"
-        // notice rendered as "error: secrets: OS keyring".
-        let sub: SharedString = match (&self.error, &self.status) {
-            (Some(e), _) => format!("error: {e}").into(),
-            (None, Some(s)) => s.clone().into(),
-            (None, None) => format!("{count} hosts · union of this scope, deduped").into(),
-        };
+        let sub: SharedString = format!("{count} hosts · union of this scope, deduped").into();
 
         div()
             .flex()
@@ -1327,7 +1379,15 @@ impl AppState {
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(BORDER))
-                    .child(div().flex_1().text_sm().text_color(rgb(FG_DIM)).child(sub))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_sm()
+                            .text_color(rgb(FG_DIM))
+                            .truncate()
+                            .child(sub),
+                    )
                     .child(
                         div()
                             .id("add-host")

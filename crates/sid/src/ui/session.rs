@@ -988,7 +988,19 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    .child(div().flex_1().child(self.goto_input.clone()))
+                    // `min_w(0) + overflow_hidden`: `TextInput` paints its shaped line
+                    // at its own natural width regardless of the box's flex-assigned
+                    // bounds (see `ui::ssh_home`'s quick-connect box for the writeup —
+                    // same shared `TextInput`, same fix), so a long typed/placeholder
+                    // path would otherwise bleed into the `Go` button beside it in this
+                    // fixed, narrow (`SIDEBAR_WIDTH`) toolbar.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .child(self.goto_input.clone()),
+                    )
                     .child(go),
             )
             .child(
