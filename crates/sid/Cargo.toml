@@ -22,6 +22,12 @@ sid-db = { path = "../sid-db" }
 # `SysinfoProvider` constructor — see `crates/sid/src/ui/network_tab.rs`. `sysinfo`/
 # `netstat2`/`nix` themselves stay behind `sid_core::sys`, never named here.
 sid-sysinfo.workspace = true
+# Network tab v2 (Services sub-view): the one crate allowed to name `sid-svcctl`'s
+# concrete `SvcctlProvider::new()` constructor — same seam shape as `sid-sysinfo`
+# above. `systemctl`/subprocess calls themselves stay behind `sid_core::svc`, never
+# named here. Not in `[workspace.dependencies]` (a plain path dep, like `sid-store`/
+# `sid-db`/`sid-secrets` below already are) — see the root `Cargo.toml`'s `members`.
+sid-svcctl = { path = "../sid-svcctl" }
 # Adapter crates for Plan 3C (SSH terminal view + connect flow). `crates/sid` only ever
 # names the `sid_core` trait seam (`SshClient`/`SshShell`/`TerminalScreen`) plus the two
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/

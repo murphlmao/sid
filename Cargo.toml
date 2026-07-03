@@ -9,6 +9,7 @@ members = [
     "crates/sid-ssh",
     "crates/sid-db",
     "crates/sid-sysinfo",
+    "crates/sid-svcctl",
 ]
 
 [workspace.package]
