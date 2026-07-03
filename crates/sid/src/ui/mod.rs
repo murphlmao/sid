@@ -10,6 +10,7 @@ pub mod db_diagram;
 pub mod db_tab;
 pub mod host_form;
 pub mod network_tab;
+pub mod secret_unlock;
 pub mod session;
 mod text_input;
 

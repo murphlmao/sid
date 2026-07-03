@@ -9,6 +9,19 @@ repository.workspace = true
 [dependencies]
 thiserror = "2"
 
+# Encrypted-file vault backend (`file.rs`) — the dependency-less peer to the OS keyring.
+# argon2id derives a 32-byte key from the user's passphrase; XChaCha20-Poly1305 is the
+# AEAD sealing the secret map; zeroize wipes the derived key (and decrypted plaintext)
+# on drop; getrandom generates the salt and the per-write nonce. postcard encodes the
+# `BTreeMap<String, Vec<u8>>` before encryption — the same wire format `sid-store` uses
+# for its own redb values, kept a plain (non-workspace) dependency here since this is
+# the only crate in the workspace that needs it outside `sid-store`.
+argon2.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+postcard = { version = "1", features = ["use-std"] }
+
 # Keyring / OS secret service.
 # keyring v4 split the library into `keyring-core` (the API) plus per-platform backend
 # STORE crates that are registered at RUNTIME (the v3 compile-time `features` model is
@@ -31,3 +44,6 @@ keyring-core = "1"
 # tokio-based blocking wrapper would panic "runtime within a runtime"; async-io's
 # block_on is runtime-independent. crypto-rust avoids an OpenSSL C dependency.
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+
+[dev-dependencies]
+tempfile = "3"

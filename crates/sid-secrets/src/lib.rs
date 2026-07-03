@@ -2,18 +2,26 @@
 //!
 //! Secrets never live in the committed config or the redb store. A config record holds
 //! only an opaque [`SecretId`] (`secret_ref`); the actual bytes live behind a
-//! [`SecretStore`]. This crate defines that trait plus an in-memory implementation for
-//! tests and non-persistent fallback. The OS-keyring implementation is a later platform
-//! integration behind this same trait (Linux now; macOS/Windows are empty slots).
+//! [`SecretStore`]. This crate defines that trait plus three implementations:
+//! [`MemorySecretStore`] (non-persistent, tests + final fallback), [`keyring::KeyringStore`]
+//! (the OS Secret Service), and [`file::EncryptedFileStore`] (a dependency-less
+//! passphrase-protected vault — a peer to the keyring, not a lesser fallback).
+//! [`resolve::resolve_secret_store`] is the entry point that picks between them per the
+//! user's toggles plus a startup keyring durability probe.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
+pub mod file;
 pub mod keyring;
+pub mod resolve;
 
-pub use keyring::open_default_secrets;
+pub use file::EncryptedFileStore;
+pub use resolve::{
+    BackendKind, KeyringProbe, Resolved, SecretBackendToggles, probe_keyring, resolve_secret_store,
+};
 
 /// An opaque reference to a secret, e.g. `"ssh.prod.key"`. This is all that ever appears
 /// in committed config.
@@ -38,6 +46,12 @@ pub enum SecretError {
     /// The underlying backend failed.
     #[error("secret backend: {0}")]
     Backend(String),
+    /// [`file::EncryptedFileStore`] exists but hasn't been unlocked this session (or
+    /// hasn't been created yet). The app should show the unlock/create modal
+    /// (`ui::secret_unlock` in the `sid` crate) and retry the operation after
+    /// [`file::EncryptedFileStore::unlock`] or `::create` succeeds.
+    #[error("secret vault is locked — unlock it first")]
+    Locked,
 }
 
 /// A backend that stores opaque secret bytes keyed by [`SecretId`].
@@ -50,6 +64,25 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, id: &SecretId) -> Result<(), SecretError>;
     /// List every stored id.
     fn list_ids(&self) -> Result<Vec<SecretId>, SecretError>;
+}
+
+/// Delegate through an `Arc`, so a concrete store can be shared (e.g. the app keeps an
+/// `Arc<EncryptedFileStore>` to drive the unlock modal's `unlock`/`create` calls) while
+/// also being handed out as the common `Box<dyn SecretStore>` every other call site
+/// uses — see [`resolve::resolve_secret_store`].
+impl<T: SecretStore + ?Sized> SecretStore for Arc<T> {
+    fn put(&self, id: &SecretId, value: &[u8]) -> Result<(), SecretError> {
+        (**self).put(id, value)
+    }
+    fn get(&self, id: &SecretId) -> Result<Option<Vec<u8>>, SecretError> {
+        (**self).get(id)
+    }
+    fn delete(&self, id: &SecretId) -> Result<(), SecretError> {
+        (**self).delete(id)
+    }
+    fn list_ids(&self) -> Result<Vec<SecretId>, SecretError> {
+        (**self).list_ids()
+    }
 }
 
 /// An in-memory [`SecretStore`] — for tests and as a non-persistent fallback.
