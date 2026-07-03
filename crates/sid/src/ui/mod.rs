@@ -91,7 +91,15 @@ pub fn init(cx: &mut App) {
         // row wrapper's own key context so Enter/Esc commit/cancel the in-place edit no
         // matter which nested `TextInput` has focus — same ancestor-context trick the
         // host form uses.
-        KeyBinding::new("escape", ssh_home::InlineEditCancel, Some(ssh_home::INLINE_EDIT_CONTEXT)),
-        KeyBinding::new("enter", ssh_home::InlineEditCommit, Some(ssh_home::INLINE_EDIT_CONTEXT)),
+        KeyBinding::new(
+            "escape",
+            ssh_home::InlineEditCancel,
+            Some(ssh_home::INLINE_EDIT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "enter",
+            ssh_home::InlineEditCommit,
+            Some(ssh_home::INLINE_EDIT_CONTEXT),
+        ),
     ]);
 }
