@@ -1,0 +1,9 @@
+# Keep the build context for docker/**'s images (postgres/sshd test fixtures,
+# the headless-smoke image) small and fast to send to the daemon. Added
+# alongside docker/** by the integration/automation test harness — see
+# docs/design/2026-07-02-testing-strategy.md.
+target/
+.git/
+docs/
+.claude/
+.serena/
