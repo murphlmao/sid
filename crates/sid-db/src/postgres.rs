@@ -194,7 +194,7 @@ impl DbClient for PostgresClient {
                 let (client, connection) = config
                     .connect(tokio_postgres::NoTls)
                     .await
-                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                    .map_err(map_pg_connect_error)?;
                 let cancel_token = client.cancel_token();
                 let conn_task = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -211,7 +211,7 @@ impl DbClient for PostgresClient {
                 let (client, connection) = config
                     .connect(connector.clone())
                     .await
-                    .map_err(|e| DbError::Connect(e.to_string()))?;
+                    .map_err(map_pg_connect_error)?;
                 let cancel_token = client.cancel_token();
                 let conn_task = tokio::spawn(async move {
                     if let Err(e) = connection.await {
@@ -559,6 +559,19 @@ fn assemble_primary_keys(rows: Vec<PgPkRow>) -> BTreeMap<String, Vec<String>> {
             )
         })
         .collect()
+}
+
+/// Classify a connect-time `tokio_postgres::Error` (BUG 4): SQLSTATE `28P01`
+/// (invalid_password) or `28000` (invalid_authorization_specification) is an
+/// auth failure, distinct from every other connect failure (DNS, refused,
+/// timeout, TLS, etc.) which stays `DbError::Connect`.
+pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
+    if let Some(db_err) = e.as_db_error() {
+        if matches!(db_err.code().code(), "28P01" | "28000") {
+            return DbError::Auth;
+        }
+    }
+    DbError::Connect(e.to_string())
 }
 
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
