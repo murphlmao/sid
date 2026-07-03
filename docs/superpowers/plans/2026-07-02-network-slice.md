@@ -9,7 +9,7 @@
 **interfaces** summary (name · addrs · up · rx/tx, default-route first) and a **refresh**. Purely
 **live/ephemeral** — nothing persists to the store; no scope, no secrets, no redb.
 
-Mockup intent (`docs/mockups/sid-mockup.html`, `#view-net`): *"glanceable · sortable ·
+Mockup intent (`docs/mockups/2026-06-27-sid-mockup.html`, `#view-net`): *"glanceable · sortable ·
 kill-by-pid / kill-by-port"*.
 
 ## Salvage map (POC → new sid)

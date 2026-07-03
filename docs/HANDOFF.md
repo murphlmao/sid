@@ -4,7 +4,7 @@
 orientation doc: current state, what's next, where the landmines are. Read this,
 then the North Star spec, then the relevant plan.
 
-_Last verified: 2026-07-02 — 368 tests green (clippy + fmt clean), working tree clean, `main` @ b45a17e. **Three tabs do real work.** SSH/SFTP: MobaXterm split session; file-browser toolbar restructured (no overlap), hidden-files toggle, kitty-parity terminal font. Database: connect→query→results, schema tree, cell copy/view, CSV export, query history, **Access-style relationships diagram in a pop-out window** (`schema_graph` FK/PK introspection on all 3 engines). Network: live ports + kill + interfaces. Forms: Tab/Shift-Tab traversal. Visual debugging: `scripts/sid-shot.sh`. Design mockups for the next UX pass: `docs/mockups/{ssh-v2,db-v2}.html`. All observation gates still need human eyes._
+_Last verified: 2026-07-02 — 368 tests green (clippy + fmt clean), working tree clean, `main` @ b45a17e. **Three tabs do real work.** SSH/SFTP: MobaXterm split session; file-browser toolbar restructured (no overlap), hidden-files toggle, kitty-parity terminal font. Database: connect→query→results, schema tree, cell copy/view, CSV export, query history, **Access-style relationships diagram in a pop-out window** (`schema_graph` FK/PK introspection on all 3 engines). Network: live ports + kill + interfaces. Forms: Tab/Shift-Tab traversal. Visual debugging: `scripts/sid-shot.sh`. Design mockups for the next UX pass: `docs/mockups/{2026-07-02-ssh-v2,2026-07-02-db-v2}.html`. All observation gates still need human eyes._
 
 ---
 
@@ -22,7 +22,7 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 1. [`../CLAUDE.md`](../CLAUDE.md) — the binding ruleset.
 2. [`design/2026-06-27-gpui-rebuild-design.md`](design/2026-06-27-gpui-rebuild-design.md) — North Star: the reframe, the layered-scope model, code disposition.
 3. [`design/2026-06-27-store-schema.html`](design/2026-06-27-store-schema.html) — how global + workspace compose (open in a browser).
-4. [`mockups/sid-mockup.html`](mockups/sid-mockup.html) — the intended UI layout.
+4. [`mockups/2026-06-27-sid-mockup.html`](mockups/2026-06-27-sid-mockup.html) — the intended UI layout.
 5. This file's **Next work** section, below.
 
 ## Where things stand
@@ -40,7 +40,7 @@ live in [`../CLAUDE.md`](../CLAUDE.md). **Read it — those are invariants, not 
 | **Network** — [inc-1](superpowers/plans/2026-07-02-network-slice.md) | Port POC `SysProvider`→`sid-core::sys` + new `sid-sysinfo` crate (netstat2/sysinfo/nix, hardened kill guards). Tab: live listening-ports table (proto·port·pid·process), two-click kill-by-pid, interfaces strip (default-route first). Live/ephemeral — no store | ✅ merged; needs the live observation gate. ⏳ inc-2 = cpu/mem cols, sortable headers, filter, established conns |
 | **UX pass 1** (no plan doc — six parallel tracks, 2026-07-02) | `scripts/sid-shot.sh` + `SID_START_TAB` (agent-drivable screenshots); SSH file-browser toolbar restructure + hidden-files toggle + date fix; terminal font → CaskaydiaCove Nerd Font Mono (kitty parity); Tab/Shift-Tab focus traversal in both forms; actionable keyring warning | ✅ merged; browser layout + font need a live connected session to observe |
 | **Relationships diagram** | `sid-core`: `SchemaGraph`/`ForeignKey` + defaulted `DbClient::schema_graph`; `sid-db`: FK/PK introspection (Postgres `pg_catalog` w/ ordinality, SQLite `PRAGMA foreign_key_list` incl. implicit-PK refs, redb identity cols); `sid`: ⧉ diagram button → **pop-out OS window** (`Root`-wrapped), draggable table boxes w/ 🔑 PKs, canvas FK lines w/ `1`/`∞` labels that follow drags | ✅ merged; observation gate = open it on a real FK-bearing DB (demo sqlite has no FKs). Polish queue: refresh-in-window, self-ref FK stubs, release-outside-window drag edge |
-| **Next UX pass** — settle via [`mockups/ssh-v2.html`](mockups/ssh-v2.html) + [`mockups/db-v2.html`](mockups/db-v2.html) | Multiple SSH connection tabs, drag-to-resize split divider, file-browser pop-out/in, DB layout variant (tree-left vs selector-right) | ⏳ awaiting Murphy's mockup verdicts |
+| **Next UX pass** — settle via [`mockups/2026-07-02-ssh-v2.html`](mockups/2026-07-02-ssh-v2.html) + [`mockups/2026-07-02-db-v2.html`](mockups/2026-07-02-db-v2.html) | Multiple SSH connection tabs, drag-to-resize split divider, file-browser pop-out/in, DB layout variant (tree-left vs selector-right) | ⏳ awaiting Murphy's mockup verdicts |
 
 **Crates:** `sid` (GPUI frontend — the only place GPUI may be named), `sid-store`
 (layered store), `sid-secrets` (keyring boundary), `sid-core` (SSH/terminal/db/**sys** trait
