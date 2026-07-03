@@ -66,4 +66,29 @@ mod tests {
         let err = kill_process(Pid::from_u32(u32::MAX), Signal::Term).unwrap_err();
         assert!(matches!(err, SysError::NotFound(_)));
     }
+
+    /// The pid-0 guard applies regardless of which signal is requested — it's a
+    /// property of the pid, not the signal.
+    #[test]
+    fn rejects_pid_0_for_every_signal_variant() {
+        for sig in [Signal::Term, Signal::Kill, Signal::Int, Signal::Hup] {
+            let err = kill_process(Pid::from_u32(0), sig).unwrap_err();
+            assert!(matches!(err, SysError::InvalidInput(_)), "signal {sig:?}");
+        }
+    }
+
+    /// Boundary just past the overflow guard: `i32::MAX` fits as a positive raw pid,
+    /// so it must reach the real `kill(2)` syscall rather than being rejected as an
+    /// overflow. No process has this pid, so the syscall itself reports `ESRCH`,
+    /// mapped to `NotFound` — proving the boundary is drawn at the right value (one
+    /// past `i32::MAX` is rejected by `rejects_pid_overflowing_i32`'s sibling
+    /// behaviour; `i32::MAX` itself is not).
+    #[test]
+    fn pid_at_i32_max_is_not_rejected_as_overflow() {
+        let err = kill_process(Pid::from_u32(i32::MAX as u32), Signal::Term).unwrap_err();
+        assert!(
+            matches!(err, SysError::NotFound(_)),
+            "i32::MAX is a valid raw pid; failure must come from the syscall (ESRCH), not the overflow guard"
+        );
+    }
 }
