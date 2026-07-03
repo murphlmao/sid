@@ -13,8 +13,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, FontWeight, KeyDownEvent, SharedString, Subscription, Window,
-    anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
+    ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString, Subscription,
+    Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
 use sid_store::{
@@ -50,7 +50,7 @@ const DANGER: u32 = 0xd08a8a;
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
 const MONO: &str = "DejaVu Sans Mono";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Ssh,
     Database,
@@ -172,6 +172,17 @@ pub struct AppState {
     pub(crate) palette: Option<PaletteState>,
     /// The `?` keyboard cheat-sheet overlay's open state.
     cheat_sheet_open: bool,
+    /// A stable focus target tracked on the outermost element (see `Render::render`'s
+    /// `.track_focus`), unconditionally re-rendered on every frame. Load-bearing for
+    /// the keyboard system: gpui falls back to a *degenerate, single-node* dispatch
+    /// path — bypassing `handle_root_key_down`'s `.capture_key_down` entirely — the
+    /// instant `window.focus`'s target isn't part of the current render frame (e.g.
+    /// the SSH terminal's handle, right after switching to another primary tab makes
+    /// it stop rendering). Every place that changes `active_tab`/`active_session`
+    /// re-focuses either the newly active session's terminal or, failing that, this
+    /// handle — see `refocus_stable_target` — so a keyboard-only user is never left
+    /// with a dangling focus that silently kills every further shortcut.
+    root_focus: FocusHandle,
 }
 
 /// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
@@ -243,6 +254,7 @@ impl AppState {
             _secret_unlock_subscription: None,
             palette: None,
             cheat_sheet_open: false,
+            root_focus: cx.focus_handle(),
         };
         state.apply_seed_lists(seed_lists);
         // Set after the initial seed-list apply so it isn't wiped by it; it stays
@@ -480,24 +492,36 @@ impl AppState {
     /// as its own method (rather than an alias) since the keyboard track (`Ctrl+T`?)
     /// binds to this name specifically, and it may grow its own behavior later (e.g. a
     /// picker) without every `＋` caller needing to change.
-    pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
-        self.go_home(cx);
+    pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_home(window, cx);
     }
 
     /// `🏠`: show the Home tab (the connection manager + saved-connections tree).
     /// Doesn't touch any live session — switching to Home and back leaves every open
-    /// tab exactly as it was.
-    pub(crate) fn go_home(&mut self, cx: &mut Context<Self>) {
+    /// tab exactly as it was. Refocuses `root_focus` (see that field's doc comment) —
+    /// the session being left has nothing to hand focus off to.
+    pub(crate) fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active_session = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
-    /// Click a session tab: make it active. A stale/out-of-range `ix` (shouldn't happen
-    /// — every caller derives `ix` from `ssh_sessions` itself) is a silent no-op rather
-    /// than a panic.
-    pub(crate) fn activate_session(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix < self.ssh_sessions.len() {
+    /// Click a session tab (or `Ctrl+Tab` cycling — see `cycle_tabs`): make it active.
+    /// A stale/out-of-range `ix` (shouldn't happen — every caller derives `ix` from
+    /// `ssh_sessions` itself) is a silent no-op rather than a panic. Restores keyboard
+    /// focus onto the newly active session's terminal — without this, switching tabs
+    /// leaves the *previous* session's (now-unmounted) terminal as the window's
+    /// recorded focus target, which silently breaks all further keyboard dispatch (see
+    /// `root_focus`'s doc comment).
+    pub(crate) fn activate_session(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.ssh_sessions.get(ix) {
             self.active_session = Some(ix);
+            window.focus(&tab.session.read(cx).terminal_focus_handle());
             cx.notify();
         }
     }
@@ -505,8 +529,10 @@ impl AppState {
     /// `✕` on a session tab: disconnect it (shell + sftp + client), remove its tab, and
     /// fix up `active_session` — see [`next_active_after_close`] for the exact
     /// close-left-of-active / close-active / close-last-tab-goes-home bookkeeping this
-    /// delegates to (pure, unit-tested).
-    pub(crate) fn close_session(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// delegates to (pure, unit-tested). Refocuses whatever tab is now active (another
+    /// session's terminal, or `root_focus` if that lands on Home) — same reasoning as
+    /// [`Self::activate_session`].
+    pub(crate) fn close_session(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.ssh_sessions.len() {
             return;
         }
@@ -514,7 +540,24 @@ impl AppState {
         tab.session.update(cx, |session, _cx| session.disconnect());
         self.active_session =
             next_active_after_close(self.active_session, ix, self.ssh_sessions.len());
+        self.refocus_stable_target(window, cx);
         cx.notify();
+    }
+
+    /// Ensure keyboard focus never dangles after an `active_tab`/`active_session`
+    /// change: focuses the active session's terminal when the SSH tab is showing a
+    /// live session, else `root_focus` — see that field's doc comment for why this
+    /// matters (a stale focus target silently kills all further keyboard dispatch).
+    /// Called by every path that mutates either field.
+    fn refocus_stable_target(&self, window: &mut Window, cx: &Context<Self>) {
+        if self.active_tab == Tab::Ssh
+            && let Some(ix) = self.active_session
+            && let Some(tab) = self.ssh_sessions.get(ix)
+        {
+            window.focus(&tab.session.read(cx).terminal_focus_handle());
+        } else {
+            window.focus(&self.root_focus);
+        }
     }
 
     /// Routes every [`SshSessionEvent`] a live session fires. Currently just the `⇄
@@ -554,28 +597,35 @@ impl AppState {
 
     fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
         form.read(cx).focus_first(window, cx);
-        self._form_subscription = Some(cx.subscribe(&form, Self::on_form_event));
+        // `subscribe_in` (not `subscribe`) so `on_form_event` gets a `&mut Window` —
+        // needed to refocus `root_focus` on close (see that field's doc comment: a
+        // form dismissed via Escape leaves its now-dropped field's `FocusHandle` as
+        // the window's stale focus target, which silently breaks all further keyboard
+        // dispatch otherwise).
+        self._form_subscription = Some(cx.subscribe_in(&form, window, Self::on_form_event));
         self.form = Some(form);
         cx.notify();
     }
 
-    fn close_form(&mut self, cx: &mut Context<Self>) {
+    fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
         self._form_subscription = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
     fn on_form_event(
         &mut self,
-        form: Entity<HostForm>,
+        form: &Entity<HostForm>,
         event: &HostFormEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            HostFormEvent::Cancel => self.close_form(cx),
+            HostFormEvent::Cancel => self.close_form(window, cx),
             HostFormEvent::Submit(submission) => match self.perform_submit(submission) {
                 Ok(post_warning) => {
-                    self.close_form(cx);
+                    self.close_form(window, cx);
                     self.refresh();
                     if post_warning.is_some() {
                         self.error = post_warning;
@@ -610,25 +660,32 @@ impl AppState {
         };
         let modal = cx.new(|cx| SecretUnlockModal::new(cx, handle, mode));
         modal.read(cx).focus_first(window, cx);
-        self._secret_unlock_subscription = Some(cx.subscribe(&modal, Self::on_secret_unlock_event));
+        // `subscribe_in`, not `subscribe` — see `open_form`'s doc comment on why
+        // `on_secret_unlock_event` needs a `&mut Window` to refocus on close.
+        self._secret_unlock_subscription =
+            Some(cx.subscribe_in(&modal, window, Self::on_secret_unlock_event));
         self.secret_unlock = Some(modal);
         cx.notify();
     }
 
-    fn close_secret_unlock(&mut self, cx: &mut Context<Self>) {
+    fn close_secret_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.secret_unlock = None;
         self._secret_unlock_subscription = None;
+        window.focus(&self.root_focus);
         cx.notify();
     }
 
     fn on_secret_unlock_event(
         &mut self,
-        _modal: Entity<SecretUnlockModal>,
+        _modal: &Entity<SecretUnlockModal>,
         event: &SecretUnlockEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => self.close_secret_unlock(cx),
+            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => {
+                self.close_secret_unlock(window, cx)
+            }
         }
     }
 
@@ -861,21 +918,22 @@ impl AppState {
                 {
                     self.active_tab = tab;
                     self.close_palette(cx);
+                    self.refocus_stable_target(window, cx);
                     cx.notify();
                 }
             }
-            Action::CycleTabForward => self.cycle_tabs(false, cx),
-            Action::CycleTabBack => self.cycle_tabs(true, cx),
+            Action::CycleTabForward => self.cycle_tabs(false, window, cx),
+            Action::CycleTabBack => self.cycle_tabs(true, window, cx),
             Action::NewSession => {
                 if self.active_tab == Tab::Ssh {
-                    self.new_session(cx);
+                    self.new_session(window, cx);
                 }
             }
             Action::CloseSession => {
                 if self.active_tab == Tab::Ssh
                     && let Some(ix) = self.active_session
                 {
-                    self.close_session(ix, cx);
+                    self.close_session(ix, window, cx);
                 }
             }
             Action::Settings => {
@@ -884,6 +942,7 @@ impl AppState {
                 // stand-in until one is built.
                 self.active_tab = Tab::System;
                 self.close_palette(cx);
+                self.refocus_stable_target(window, cx);
                 cx.notify();
             }
             Action::CheatSheet => {
@@ -895,19 +954,25 @@ impl AppState {
     }
 
     /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: cycle session tabs while the SSH tab is active,
-    /// primary tabs everywhere else — the plan's "universal cycle".
-    fn cycle_tabs(&mut self, backwards: bool, cx: &mut Context<Self>) {
+    /// primary tabs everywhere else — the plan's "universal cycle". Either branch ends
+    /// by restoring keyboard focus onto whatever's now active (see
+    /// `refocus_stable_target`/`activate_session`'s doc comments) so cycling
+    /// repeatedly via the keyboard alone never dead-ends.
+    fn cycle_tabs(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == Tab::Ssh {
-            self.active_session =
-                cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards);
-        } else {
-            let len = Tab::ALL.len();
-            let current = Tab::ALL
-                .iter()
-                .position(|&t| t == self.active_tab)
-                .unwrap_or(0);
-            self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
+            match cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards) {
+                Some(ix) => self.activate_session(ix, window, cx),
+                None => self.go_home(window, cx),
+            }
+            return;
         }
+        let len = Tab::ALL.len();
+        let current = Tab::ALL
+            .iter()
+            .position(|&t| t == self.active_tab)
+            .unwrap_or(0);
+        self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
+        self.refocus_stable_target(window, cx);
         cx.notify();
     }
 
@@ -1071,8 +1136,15 @@ impl AppState {
                     .border_b_2()
                     .border_color(rgb(if is_active { BRAND } else { TABSTRIP_BG }))
                     .child(tab.label())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.active_tab = tab;
+                        // Mouse-driven tab switches need the same refocus as the
+                        // keyboard path (`dispatch_action`'s `PrimaryTab` arm) — see
+                        // `root_focus`'s doc comment: leaving a tab that had something
+                        // focused (the SSH terminal, a DB-tab input, ...) without
+                        // claiming a new, currently-rendered focus target silently
+                        // breaks every keyboard shortcut until the next mouse click.
+                        this.refocus_stable_target(window, cx);
                         cx.notify();
                     }))
             })
@@ -1132,7 +1204,7 @@ impl AppState {
             .border_1()
             .border_color(rgb(BORDER))
             .child("🏠")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.go_home(cx)));
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| this.go_home(window, cx)));
 
         let tabs: Vec<_> = self
             .ssh_sessions
@@ -1170,8 +1242,8 @@ impl AppState {
                             .cursor_pointer()
                             .child(dot)
                             .child(tab.label.clone())
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.activate_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.activate_session(ix, window, cx);
                             })),
                     )
                     .child(
@@ -1184,8 +1256,8 @@ impl AppState {
                             .text_color(rgb(FG_DIM))
                             .hover(|s| s.bg(rgb(ACTIVE_BG)).text_color(rgb(DANGER)))
                             .child("×")
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.close_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.close_session(ix, window, cx);
                             })),
                     )
             })
@@ -1203,7 +1275,9 @@ impl AppState {
             .text_color(rgb(FG_DIM))
             .hover(|s| s.bg(rgb(ACTIVE_BG)))
             .child("＋")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.new_session(cx)));
+            .on_click(
+                cx.listener(|this, _ev: &ClickEvent, window, cx| this.new_session(window, cx)),
+            );
 
         div()
             .flex()
@@ -1322,8 +1396,8 @@ impl AppState {
                             .bg(rgb(ACTIVE_BG))
                             .text_color(rgb(ACTIVE_FG))
                             .child("← close tab")
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.close_session(ix, cx);
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.close_session(ix, window, cx);
                             })),
                     )
                     .child(
@@ -1573,6 +1647,7 @@ impl Render for AppState {
             .size_full()
             .bg(rgb(BG))
             .text_color(rgb(FG))
+            .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(Self::handle_root_key_down))
             .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
