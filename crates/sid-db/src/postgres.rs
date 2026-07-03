@@ -567,47 +567,98 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     DbError::Query(e.to_string())
 }
 
+/// Decode column `idx` as `Option<T>`, but keep NULL and decode-failure
+/// distinct instead of collapsing both to `None` (the bug: `.ok().flatten()`
+/// used to make a present-but-undecodable value indistinguishable from a real
+/// SQL NULL). `Ok(Some(v))` = present + decoded; `Ok(None)` = a genuine SQL
+/// NULL; `Err(())` = present but this Rust type couldn't decode it.
+fn try_decode<'r, T>(row: &'r tokio_postgres::Row, idx: usize) -> Result<Option<T>, ()>
+where
+    T: tokio_postgres::types::FromSql<'r>,
+{
+    row.try_get::<_, Option<T>>(idx).map_err(|_| ())
+}
+
+/// Render one column via [`try_decode`], applying `fmt` to a present value.
+/// The `Err` arm is the load-bearing fix for BUG 1: a present-but-undecodable
+/// value renders as a distinct `⟨type?⟩` marker — **never** "NULL" — so it's
+/// never confused with a genuine SQL NULL (which still renders "NULL"; see
+/// `Row::values`'s doc comment on the lack of an `Option<String>` sentinel).
+fn render<'r, T>(row: &'r tokio_postgres::Row, idx: usize, fmt: impl FnOnce(T) -> String) -> String
+where
+    T: tokio_postgres::types::FromSql<'r>,
+{
+    match try_decode::<T>(row, idx) {
+        Ok(Some(v)) => fmt(v),
+        Ok(None) => "NULL".to_string(),
+        Err(()) => format!("⟨{}?⟩", row.columns()[idx].type_().name()),
+    }
+}
+
+/// Render a Postgres array column as `{a,b,NULL,c}` — `Vec<Option<T>>` so an
+/// individual NULL *element* (a normal, expected thing inside an array) still
+/// prints "NULL" inline without that being confused with the top-level
+/// NULL-vs-undecodable distinction `render` enforces for the column as a whole.
+fn render_array<'r, T>(row: &'r tokio_postgres::Row, idx: usize) -> String
+where
+    T: tokio_postgres::types::FromSql<'r> + ToString,
+{
+    render::<Vec<Option<T>>>(row, idx, |items| {
+        let inner = items
+            .into_iter()
+            .map(|item| {
+                item.map(|v| v.to_string())
+                    .unwrap_or_else(|| "NULL".to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{{inner}}}")
+    })
+}
+
 pub(crate) fn render_pg_value(row: &tokio_postgres::Row, idx: usize) -> String {
     use tokio_postgres::types::Type;
     let col = &row.columns()[idx];
-    macro_rules! try_get {
-        ($t:ty) => {
-            row.try_get::<_, Option<$t>>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        };
-    }
-    let s = match *col.type_() {
-        Type::BOOL => try_get!(bool),
-        Type::INT2 => try_get!(i16),
-        Type::INT4 => try_get!(i32),
-        Type::INT8 => try_get!(i64),
-        Type::FLOAT4 => try_get!(f32),
-        Type::FLOAT8 => try_get!(f64),
-        // Not `try_get!(String)` — that macro's `.map(|v| v.to_string())` is a no-op
-        // allocation/copy on a value that's already an owned `String` (perf audit
-        // finding #3). The numeric/bool arms above still need the macro's `ToString`
-        // call, so this arm alone bypasses it.
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
-            row.try_get::<_, Option<String>>(idx).ok().flatten()
+    match *col.type_() {
+        Type::BOOL => render::<bool>(row, idx, |v| v.to_string()),
+        Type::INT2 => render::<i16>(row, idx, |v| v.to_string()),
+        Type::INT4 => render::<i32>(row, idx, |v| v.to_string()),
+        Type::INT8 => render::<i64>(row, idx, |v| v.to_string()),
+        Type::FLOAT4 => render::<f32>(row, idx, |v| v.to_string()),
+        Type::FLOAT8 => render::<f64>(row, idx, |v| v.to_string()),
+        // Not `.map(|v| v.to_string())` — that would be a no-op allocation/copy
+        // on a value that's already an owned `String` (perf audit finding #3).
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => render::<String>(row, idx, |v| v),
+        Type::BYTEA => render::<Vec<u8>>(row, idx, |b| {
+            let mut s = String::with_capacity(2 + b.len() * 2);
+            s.push_str("0x");
+            for byte in &b {
+                use std::fmt::Write;
+                write!(&mut s, "{byte:02x}").ok();
+            }
+            s
+        }),
+        Type::UUID => render::<uuid::Uuid>(row, idx, |v| v.to_string()),
+        Type::TIMESTAMPTZ => render::<chrono::DateTime<chrono::Utc>>(row, idx, |v| v.to_string()),
+        Type::TIMESTAMP => render::<chrono::NaiveDateTime>(row, idx, |v| v.to_string()),
+        Type::DATE => render::<chrono::NaiveDate>(row, idx, |v| v.to_string()),
+        Type::TIME => render::<chrono::NaiveTime>(row, idx, |v| v.to_string()),
+        Type::JSON | Type::JSONB => render::<serde_json::Value>(row, idx, |v| v.to_string()),
+        Type::NUMERIC => render::<rust_decimal::Decimal>(row, idx, |v| v.to_string()),
+        Type::TEXT_ARRAY | Type::VARCHAR_ARRAY | Type::BPCHAR_ARRAY | Type::NAME_ARRAY => {
+            render_array::<String>(row, idx)
         }
-        Type::BYTEA => row
-            .try_get::<_, Option<Vec<u8>>>(idx)
-            .ok()
-            .flatten()
-            .map(|b| {
-                let mut s = String::with_capacity(2 + b.len() * 2);
-                s.push_str("0x");
-                for byte in &b {
-                    use std::fmt::Write;
-                    write!(&mut s, "{byte:02x}").ok();
-                }
-                s
-            }),
-        _ => row.try_get::<_, Option<String>>(idx).ok().flatten(),
-    };
-    s.unwrap_or_else(|| "NULL".to_string())
+        Type::INT2_ARRAY => render_array::<i16>(row, idx),
+        Type::INT4_ARRAY => render_array::<i32>(row, idx),
+        Type::INT8_ARRAY => render_array::<i64>(row, idx),
+        Type::BOOL_ARRAY => render_array::<bool>(row, idx),
+        Type::UUID_ARRAY => render_array::<uuid::Uuid>(row, idx),
+        // Fallback for every other type (custom enums/domains, extension types
+        // like `citext`, geometric types, etc.): still tri-state via `render`,
+        // so an undecodable-as-String value gets the `⟨type?⟩` marker instead
+        // of silently becoming "NULL" — this was BUG 1's exact failure mode.
+        _ => render::<String>(row, idx, |v| v),
+    }
 }
 
 pub(crate) fn pg_type_to_column_type(t: &tokio_postgres::types::Type) -> ColumnType {

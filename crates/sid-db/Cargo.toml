@@ -10,12 +10,20 @@ repository.workspace = true
 sid-core.workspace = true
 sid-store.workspace = true
 tokio.workspace = true
-tokio-postgres.workspace = true
+# with-uuid-1/with-chrono-0_4/with-serde_json-1: typed decoding for
+# render_pg_value (BUG 1 fix) — without these, tokio-postgres's `FromSql` for
+# UUID/timestamp/JSON columns doesn't exist and the value falls through to a
+# `String` decode that fails and gets swallowed.
+tokio-postgres = { workspace = true, features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 tokio-postgres-rustls.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
 rusqlite.workspace = true
 async-trait.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
