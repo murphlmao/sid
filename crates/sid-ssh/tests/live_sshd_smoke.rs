@@ -75,3 +75,100 @@ async fn live_sshd_agent_exec_shell_sftp() {
 
     client.disconnect().await.expect("disconnect");
 }
+
+/// Docker-sshd integration test (Plan: sid integration/automation harness,
+/// 2026-07-02). Unlike [`live_sshd_agent_exec_shell_sftp`] above (which needs
+/// *your* real ssh-agent + a trusted localhost sshd), this points at the
+/// throwaway `sshd` service in `docker/docker-compose.test.yml` — a fixed
+/// user/key baked into `docker/ssh/Dockerfile` — using key-file auth
+/// (`SshAuth::Key`), so it's runnable in CI with no agent involved.
+///
+/// Exercises exec + an SFTP round-trip: list the baked fixture directory,
+/// `put` a file, `get` it back, and assert the bytes match (closing the gap
+/// the smoke test above only half-covers — `list` alone doesn't prove
+/// upload/download correctness).
+///
+/// Run manually:
+///   docker compose -f docker/docker-compose.test.yml up -d sshd
+///   cargo test -p sid-ssh --test live_sshd_smoke docker_sshd -- --ignored --nocapture
+///   docker compose -f docker/docker-compose.test.yml down -v
+///
+/// Or via `scripts/test-ssh.sh`, which sets up the env vars below itself.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires docker/docker-compose.test.yml's sshd service; run via scripts/test-ssh.sh"]
+async fn docker_sshd_key_auth_exec_and_sftp_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app_known_hosts: PathBuf = tmp.path().join("known_hosts");
+
+    let host = std::env::var("SID_TEST_SSH_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port: u16 = std::env::var("SID_TEST_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(2222);
+    let user = std::env::var("SID_TEST_SSH_USER").unwrap_or_else(|_| "sid_test".to_string());
+    let key_path: PathBuf = std::env::var("SID_TEST_SSH_KEY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docker/ssh/test_id_ed25519")
+        });
+
+    let factory = RusshClientFactory::new(app_known_hosts);
+    let mut client = factory.new_client();
+
+    let mut spec = SshHostSpec::new(host, user);
+    spec.port = port;
+    let auth = SshAuth::Key {
+        path: key_path,
+        passphrase: None,
+    };
+
+    // 1. Connect via the baked-in disposable test key (TOFU-learns the
+    // container's host key into the throwaway known_hosts above).
+    client
+        .connect(&spec, &auth)
+        .await
+        .expect("key-auth connect to dockerized sshd");
+    assert!(client.is_connected());
+
+    // 2. exec — same shape as the agent-based smoke test.
+    let result = client.exec("echo ok").await.expect("exec echo ok");
+    assert_eq!(result.exit_code, 0, "echo should exit 0");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("ok"));
+
+    // 3. SFTP round-trip: list the fixture dir baked into the image
+    // (docker/ssh/Dockerfile's `sftp-fixture/hello.txt`), then prove
+    // put+get actually moves bytes, not just names.
+    let mut sftp = client.open_sftp().await.expect("open sftp");
+    let entries = sftp
+        .list("sftp-fixture")
+        .await
+        .expect("sftp list sftp-fixture");
+    assert!(
+        entries.iter().any(|e| e.name == "hello.txt"),
+        "expected the baked-in fixture file in the listing, got: {entries:?}"
+    );
+
+    // NOTE: `put` targets a file the image already contains
+    // (`sftp-fixture/writable.txt`), not a brand-new path — see the
+    // Dockerfile comment. `sid_ssh::RusshSftp::put` (crates/sid-ssh/src/sftp.rs)
+    // wraps russh-sftp's `SftpSession::write`, which opens with
+    // `OpenFlags::WRITE` only (no `CREATE`), so it can overwrite an existing
+    // remote file but cannot create a new one — a real gap this test
+    // surfaced, out of scope to fix from this harness (product code).
+    let payload = b"sid-ssh sftp round-trip integration test payload".to_vec();
+    sftp.put("sftp-fixture/writable.txt", &payload)
+        .await
+        .expect("sftp put (overwrite of a pre-existing remote file)");
+    let downloaded = sftp
+        .get("sftp-fixture/writable.txt")
+        .await
+        .expect("sftp get");
+    assert_eq!(
+        downloaded, payload,
+        "downloaded bytes must match what was uploaded"
+    );
+
+    sftp.close().await.expect("sftp close");
+
+    client.disconnect().await.expect("disconnect");
+}
