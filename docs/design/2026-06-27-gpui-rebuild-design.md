@@ -59,7 +59,7 @@ Modeled on Claude Code's `~/.claude` + repo `.claude`:
 
 ## 4. Layout (theming deferred)
 
-Decided via wireframe (`docs/mockups/sid-mockup.html`). The rule: **navigation and
+Decided via wireframe (`docs/mockups/2026-06-27-sid-mockup.html`). The rule: **navigation and
 selection go on the top axis; content gets all horizontal width** (horizontal is the scarce
 axis; the data-dense views need it).
 
