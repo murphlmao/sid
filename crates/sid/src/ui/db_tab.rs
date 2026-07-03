@@ -388,12 +388,49 @@ pub(crate) fn table_display_name(table: &TableInfo) -> String {
     }
 }
 
+/// Quote an introspected identifier for interpolation into generated SQL, unless every
+/// dot-segment is already a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`). ANSI style —
+/// wrap in `"` with internal `"` doubled — valid for both Postgres and SQLite, sid's two
+/// SQL engines. Splitting on `.` keeps `schema.table` display names (see
+/// [`table_display_name`]) emitting the correct `"schema"."table"` form; a SQLite table
+/// whose *name* literally contains a dot mis-splits (already unrepresentable in the
+/// display key), but every segment is still quoted, so a hostile name (`x"; DROP …`)
+/// can never escape the identifier position — worst case is a syntax error, never a
+/// second statement.
+fn quote_ident(ident: &str) -> String {
+    fn plain(s: &str) -> bool {
+        !s.is_empty()
+            && s.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+    if ident.split('.').all(plain) {
+        return ident.to_string();
+    }
+    ident
+        .split('.')
+        .map(|seg| {
+            if plain(seg) {
+                seg.to_string()
+            } else {
+                format!("\"{}\"", seg.replace('"', "\"\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// Task 2's `WHERE` filter scaffold — the diagram's column-row click seeds the editor
-/// with this, trailing space included, for the user to complete. No identifier quoting:
-/// sid has no identifier-quoting layer, so `table`/`column` are interpolated verbatim —
-/// the same convention `insert_select_star` already uses for the table-name click.
+/// with this, trailing space included, for the user to complete. Identifiers pass
+/// through [`quote_ident`]: plain names stay bare (readable editor SQL); anything else
+/// is ANSI-quoted so an introspected name can't smuggle SQL into the scaffold.
 fn where_filter_scaffold(table: &str, column: &str) -> String {
-    format!("SELECT * FROM {table} WHERE {column} = ")
+    format!(
+        "SELECT * FROM {} WHERE {} = ",
+        quote_ident(table),
+        quote_ident(column)
+    )
 }
 
 impl DbTabState {
@@ -1769,7 +1806,7 @@ impl AppState {
         let Some(sql_entity) = self.db.sql.clone() else {
             return;
         };
-        let stmt = format!("SELECT * FROM {display_name}");
+        let stmt = format!("SELECT * FROM {}", quote_ident(display_name));
         sql_entity.update(cx, |state, cx| {
             state.set_value(stmt, window, cx);
         });
@@ -2363,15 +2400,33 @@ mod schema_tree_tests {
 mod diagram_scaffold_tests {
     use super::*;
 
-    /// Task 2's TDD target: the `WHERE` filter scaffold, trailing space included, with
-    /// no identifier quoting — a schema-qualified table name (Postgres) and a
-    /// space-containing column name both round-trip verbatim, exactly as
-    /// `insert_select_star`'s bare `SELECT * FROM <table>` already does.
+    /// Task 2's TDD target: the `WHERE` filter scaffold, trailing space included. Plain
+    /// identifiers (including a dotted `schema.table`) stay bare for readable editor
+    /// SQL; anything else gets ANSI quoting via [`quote_ident`].
     #[test]
-    fn builds_a_bare_where_scaffold_with_a_trailing_space() {
+    fn builds_a_where_scaffold_with_a_trailing_space() {
+        assert_eq!(
+            where_filter_scaffold("public.users", "user_id"),
+            "SELECT * FROM public.users WHERE user_id = "
+        );
         assert_eq!(
             where_filter_scaffold("public.users", "user id"),
-            "SELECT * FROM public.users WHERE user id = "
+            "SELECT * FROM public.users WHERE \"user id\" = "
         );
+    }
+
+    /// Security-load-bearing: an introspected name from a hostile database cannot break
+    /// out of the identifier position in generated SQL — quotes are doubled, so the
+    /// payload stays one (syntactically doomed) identifier, never a second statement.
+    #[test]
+    fn quote_ident_defuses_hostile_introspected_names() {
+        assert_eq!(
+            quote_ident(r#"users"; DROP TABLE x;--"#),
+            r#""users""; DROP TABLE x;--""#
+        );
+        assert_eq!(quote_ident("order items"), r#""order items""#);
+        assert_eq!(quote_ident("public.users"), "public.users");
+        assert_eq!(quote_ident("weird schema.users"), r#""weird schema".users"#);
+        assert_eq!(quote_ident("_ok123"), "_ok123");
     }
 }
