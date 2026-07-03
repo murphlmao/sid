@@ -70,3 +70,4 @@ serde = { version = "1", features = ["derive"] }
 
 # Test
 tempfile = "3"
+proptest = "1"
