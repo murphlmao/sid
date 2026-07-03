@@ -570,7 +570,13 @@ pub(crate) fn render_pg_value(row: &tokio_postgres::Row, idx: usize) -> String {
         Type::INT8 => try_get!(i64),
         Type::FLOAT4 => try_get!(f32),
         Type::FLOAT8 => try_get!(f64),
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => try_get!(String),
+        // Not `try_get!(String)` — that macro's `.map(|v| v.to_string())` is a no-op
+        // allocation/copy on a value that's already an owned `String` (perf audit
+        // finding #3). The numeric/bool arms above still need the macro's `ToString`
+        // call, so this arm alone bypasses it.
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
+            row.try_get::<_, Option<String>>(idx).ok().flatten()
+        }
         Type::BYTEA => row
             .try_get::<_, Option<Vec<u8>>>(idx)
             .ok()
