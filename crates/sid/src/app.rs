@@ -30,6 +30,7 @@ use crate::ui::host_form::{
 use crate::ui::network_tab::NetworkTabState;
 use crate::ui::secret_unlock::{SecretUnlockEvent, SecretUnlockModal, SecretUnlockMode};
 use crate::ui::ssh_home::HomeTabState;
+use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
@@ -52,8 +53,11 @@ const WARN: u32 = 0xd0c88a;
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
 const MONO: &str = "DejaVu Sans Mono";
 
+// `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
+// `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
+// instant the user switches away from `Tab::System` — see that module's doc comment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
+pub(crate) enum Tab {
     Ssh,
     Database,
     Network,
@@ -163,6 +167,10 @@ pub struct AppState {
     /// Network tab state (inc-1): live/ephemeral ports + interfaces view, no store/
     /// scope/secrets. Lives in its own module (`ui::network_tab`), same shape as `db`.
     pub(crate) network: NetworkTabState,
+    /// Systems tab state (Round D §C): live/ephemeral host overview + processes view,
+    /// same "no store/scope/secrets" shape as `network`. Lives in its own module
+    /// (`ui::systems_tab`).
+    pub(crate) systems: SystemsTabState,
     /// The open secret-vault unlock/create modal, if the encrypted-file backend is
     /// effective and not yet unlocked (see `open_secret_unlock`).
     secret_unlock: Option<Entity<SecretUnlockModal>>,
@@ -229,6 +237,7 @@ impl AppState {
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
         let network = NetworkTabState::new();
+        let systems = SystemsTabState::new();
         // Read before `store` moves into the struct literal below — `.settings()` only
         // borrows. Falls back to `PanelSide::default()` (Left) on a read error, same as
         // every other `Settings` read in this constructor's neighborhood.
@@ -255,6 +264,7 @@ impl AppState {
             ssh_home: HomeTabState::new(cx),
             db,
             network,
+            systems,
             secret_unlock: None,
             _secret_unlock_subscription: None,
             palette: None,
@@ -367,6 +377,13 @@ impl AppState {
                 Some((self.scope.clone(), label))
             }
         }
+    }
+
+    /// Which primary tab is active. `pub(crate)` (rather than exposing `active_tab`
+    /// itself) so `ui::systems_tab`'s periodic refresh loop can check "is the Systems
+    /// tab still the one on screen" without the field itself needing wider visibility.
+    pub(crate) fn active_tab(&self) -> Tab {
+        self.active_tab
     }
 
     /// Open the empty add form, preselecting `save to:` from the persisted
@@ -951,8 +968,10 @@ impl AppState {
             }
             Action::Settings => {
                 // No dedicated Settings screen exists yet (Settings -> Keymap rebinding
-                // is explicitly deferred, per the plan) — `Tab::System` is the nearest
-                // stand-in until one is built.
+                // is explicitly deferred, per the plan). `Tab::System` now renders a real
+                // host-overview/processes view (Round D §C), not a placeholder — it is
+                // still just a stand-in *landing spot* for this action, not an actual
+                // settings surface; nothing here exposes keymap/preferences UI.
                 self.active_tab = Tab::System;
                 self.close_palette(cx);
                 self.refocus_stable_target(window, cx);
@@ -1651,6 +1670,8 @@ impl Render for AppState {
             Tab::Database => self.db_tab(window, cx),
             // `network_tab` needs `window` for the same reason (`TableState::new`).
             Tab::Network => self.network_tab(window, cx),
+            // `systems_tab` needs `window` for the same reason (`TableState::new`).
+            Tab::System => self.systems_tab(window, cx),
             other => self.placeholder(other).into_any_element(),
         };
 
