@@ -239,6 +239,17 @@ impl SshSession {
         &self.status
     }
 
+    /// The terminal grid's own [`FocusHandle`] (keyboard-driven system, 2026-07-02
+    /// plan) — `app.rs`'s root key dispatcher compares this against `window.focused(cx)`
+    /// to decide [`crate::keymap::FocusContext`]. Identical to [`Focusable::focus_handle`]
+    /// (this session has exactly one focus handle, the terminal's), named explicitly so
+    /// the call site reads as "is the terminal focused" rather than "is this session
+    /// entity focused" (there being only one thing to focus here today doesn't mean
+    /// there always will be).
+    pub fn terminal_focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
     fn start_connect(
         &mut self,
         host: Host,

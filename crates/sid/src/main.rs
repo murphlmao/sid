@@ -8,6 +8,9 @@ mod app;
 // `.client()`/`.descriptor()`/`.kinds()` are now all exercised for real: `.descriptor()`
 // by the W4 connection form, `.client()` by the W5 query pane's Run/next-page flow.
 mod db_registry;
+// The keyboard-driven system (2026-07-02 plan): the `Action` enum + default binding
+// registry. Pure/gpui-light — see that module's doc comment.
+mod keymap;
 mod ssh_connect;
 mod ui;
 
