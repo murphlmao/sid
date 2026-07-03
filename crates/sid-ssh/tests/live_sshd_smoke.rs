@@ -47,11 +47,14 @@ async fn live_sshd_agent_exec_shell_sftp() {
     );
 
     // 3. open_shell → feed output through Vt100Screen → styled cells non-empty.
-    let mut shell = client
+    // `open_shell` returns the read/write halves separately (Bug 1 fix: a shared
+    // mutex across both meant a write awaiting flow-control window could starve the
+    // read loop) — write via the writer, read via the reader.
+    let (mut shell_reader, mut shell_writer) = client
         .open_shell("xterm-256color", 24, 80)
         .await
         .expect("open shell");
-    shell
+    shell_writer
         .write(b"printf '\\033[31mRED\\033[0m\\n'\n")
         .await
         .expect("shell write");
@@ -59,13 +62,13 @@ async fn live_sshd_agent_exec_shell_sftp() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     // Drive the screen through the trait object the GPUI view (Plan 3C) will hold.
     let mut screen: Box<dyn TerminalScreen> = Box::new(Vt100Screen::new(24, 80));
-    let bytes = shell.try_read().await.expect("shell read");
+    let bytes = shell_reader.try_read().await.expect("shell read");
     assert!(!bytes.is_empty(), "shell should have produced output");
     screen.feed(&bytes);
     let cells = screen.cells();
     let non_empty = cells.iter().flatten().any(|c| !c.text.is_empty());
     assert!(non_empty, "styled cell grid should have visible content");
-    shell.close().await.expect("shell close");
+    shell_writer.close().await.expect("shell close");
 
     // 4. sftp list("/tmp") returns entries.
     let mut sftp = client.open_sftp().await.expect("open sftp");
@@ -148,13 +151,9 @@ async fn docker_sshd_key_auth_exec_and_sftp_round_trip() {
         "expected the baked-in fixture file in the listing, got: {entries:?}"
     );
 
-    // NOTE: `put` targets a file the image already contains
-    // (`sftp-fixture/writable.txt`), not a brand-new path — see the
-    // Dockerfile comment. `sid_ssh::RusshSftp::put` (crates/sid-ssh/src/sftp.rs)
-    // wraps russh-sftp's `SftpSession::write`, which opens with
-    // `OpenFlags::WRITE` only (no `CREATE`), so it can overwrite an existing
-    // remote file but cannot create a new one — a real gap this test
-    // surfaced, out of scope to fix from this harness (product code).
+    // Overwrite case: `put` targets a file the image already contains
+    // (`sftp-fixture/writable.txt`) — kept as a regression pin for the "existing
+    // file" path even though `put` no longer needs `CREATE` to succeed here.
     let payload = b"sid-ssh sftp round-trip integration test payload".to_vec();
     sftp.put("sftp-fixture/writable.txt", &payload)
         .await
@@ -167,6 +166,30 @@ async fn docker_sshd_key_auth_exec_and_sftp_round_trip() {
         downloaded, payload,
         "downloaded bytes must match what was uploaded"
     );
+
+    // Bug 2 regression: `sid_ssh::RusshSftp::put` (crates/sid-ssh/src/sftp.rs) used
+    // to wrap russh-sftp's `SftpSession::write`, which opens with `OpenFlags::WRITE`
+    // only (no `CREATE`) — it could overwrite an existing remote file but never
+    // create a new one. `put` now opens via `SftpSession::create` (`CREATE |
+    // TRUNCATE | WRITE`), so a put to a path that has never existed must succeed
+    // and round-trip, not just the pre-existing-file case above.
+    let new_path = "sftp-fixture/created-by-put.txt";
+    let new_payload = b"sid-ssh sftp put-creates-a-new-file regression payload".to_vec();
+    sftp.put(new_path, &new_payload)
+        .await
+        .expect("sftp put to a brand-new remote path must create it (Bug 2 fix)");
+    let downloaded_new = sftp
+        .get(new_path)
+        .await
+        .expect("sftp get of the newly created file");
+    assert_eq!(
+        downloaded_new, new_payload,
+        "downloaded bytes must match what was uploaded to the new path"
+    );
+    // Clean up so a `--keep`'d container stays idempotent across repeat runs.
+    sftp.remove_file(new_path)
+        .await
+        .expect("cleanup: remove the newly created file");
 
     sftp.close().await.expect("sftp close");
 

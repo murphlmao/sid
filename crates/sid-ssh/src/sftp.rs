@@ -6,6 +6,7 @@ use russh_sftp::{
     protocol::StatusCode,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshError};
+use tokio::io::AsyncWriteExt;
 
 pub struct RusshSftp {
     inner: RusshSftpSession,
@@ -64,10 +65,20 @@ impl SftpSession for RusshSftp {
     }
 
     async fn put(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError> {
-        self.inner
-            .write(path.to_string(), bytes)
+        // `RusshSftpSession::write` opens with `OpenFlags::WRITE` only — it can
+        // overwrite an existing remote file but can't create a new one. `create`
+        // is the `File::create`-equivalent: it opens with
+        // `CREATE | TRUNCATE | WRITE`, so a put to a path that doesn't exist yet
+        // succeeds (and a put to an existing path still truncates + overwrites,
+        // same as before).
+        let mut file = self
+            .inner
+            .create(path.to_string())
             .await
-            .map_err(map_sftp_error)
+            .map_err(map_sftp_error)?;
+        file.write_all(bytes)
+            .await
+            .map_err(|e| SshError::Other(format!("sftp write: {e}")))
     }
 
     async fn remove_file(&mut self, path: &str) -> Result<(), SshError> {
