@@ -707,6 +707,7 @@ pub(crate) fn validate(input: &FormInput) -> Result<Host, String> {
         port,
         secret_ref: None,
         auth,
+        folder: None,
     })
 }
 
@@ -889,6 +890,7 @@ mod tests {
             port: 22,
             secret_ref: secret_ref.map(Into::into),
             auth,
+            folder: None,
         }
     }
 

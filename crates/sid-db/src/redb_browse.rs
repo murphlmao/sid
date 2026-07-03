@@ -269,6 +269,7 @@ mod tests {
                 port: 22,
                 secret_ref: None,
                 auth: AuthMethod::Agent,
+                folder: None,
             })
             .unwrap();
         store
@@ -278,6 +279,7 @@ mod tests {
                 secret_ref: None,
                 kind: sid_core::db::DbKind::Postgres,
                 name: "conn1".into(),
+                folder: None,
             })
             .unwrap();
         (dir, Arc::new(store))

@@ -12,6 +12,7 @@ fn sample_host() -> Host {
         port: 22,
         secret_ref: Some("ssh.prod.key".into()),
         auth: AuthMethod::default(),
+        folder: None,
     }
 }
 
@@ -34,6 +35,7 @@ fn host_secret_ref_is_optional() {
         port: 2222,
         secret_ref: None,
         auth: AuthMethod::default(),
+        folder: None,
     };
     let (_, got): (u8, Host) = decode_versioned(&encode_versioned(1, &h).unwrap()).unwrap();
     assert_eq!(got.secret_ref, None);
@@ -68,6 +70,7 @@ fn db_connection_roundtrip() {
         secret_ref: Some("db.acme-pg.pw".into()),
         kind: DbKind::Postgres,
         name: "Acme PG".into(),
+        folder: Some("prod".into()),
     };
     let (_, got): (u8, DbConnection) = decode_versioned(&encode_versioned(3, &c).unwrap()).unwrap();
     assert_eq!(got, c);
@@ -82,6 +85,7 @@ fn db_connection_v2_roundtrips_all_kinds() {
             secret_ref: None,
             kind,
             name: "Acme DB".into(),
+            folder: None,
         };
         let bytes = encode_versioned(2, &c).unwrap();
         assert_eq!(bytes[0], 2, "leading byte is the v2 version");

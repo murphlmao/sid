@@ -12,6 +12,7 @@ fn host(alias: &str, secret: Option<&str>) -> Host {
         port: 22,
         secret_ref: secret.map(Into::into),
         auth: AuthMethod::default(),
+        folder: None,
     }
 }
 
@@ -22,6 +23,7 @@ fn connection(id: &str) -> DbConnection {
         secret_ref: None,
         kind: DbKind::Postgres,
         name: id.into(),
+        folder: None,
     }
 }
 
@@ -49,6 +51,7 @@ fn save_then_load_roundtrips_everything() {
         secret_ref: Some("db.acme-pg.pw".into()),
         kind: DbKind::Postgres,
         name: "Acme PG".into(),
+        folder: Some("acme".into()),
     });
     cfg.quick_action.push(QuickAction {
         label: "tail app log".into(),
