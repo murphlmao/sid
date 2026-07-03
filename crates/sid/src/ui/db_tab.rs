@@ -23,11 +23,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Entity, FontWeight, IntoElement,
-    SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
-    anchored, deferred, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
+    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Corner, Entity, FontWeight,
+    IntoElement, SharedString, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size, uniform_list,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
 use gpui_component::{Root, Theme, ThemeMode};
 use sid_core::db::{
@@ -159,6 +159,9 @@ pub struct DbTabState {
     /// shown under the query status line. Not cleared automatically; the next action
     /// (or query run) overwrites or clears it.
     notice: Option<String>,
+    /// Whether the "⭳ Export ▾" menu is open — toggled by its own click, closed by
+    /// picking a format (see [`AppState::export`]).
+    export_menu_open: bool,
 
     // ---- D4: query history -----------------------------------------------------------
     /// Most-recent-first ring of run queries, capped at [`HISTORY_CAP`] with
@@ -185,6 +188,28 @@ enum QueryStatus {
         duration_ms: u64,
         has_more: bool,
     },
+}
+
+/// The query pane's "⭳ Export ▾" control (Murphy: "we should also make it a generic
+/// export option so we can add more export types in the future") — the whole seam for a
+/// new format is one variant here + one arm in [`AppState::export`]; the menu itself
+/// renders from [`Self::ALL`] and needs no other change. Exactly one format today (CSV),
+/// carried over unchanged from the old standalone `⭳ CSV` button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportFormat {
+    Csv,
+}
+
+impl ExportFormat {
+    /// Every format, in menu order. The one place a new variant needs to be listed.
+    const ALL: &'static [ExportFormat] = &[ExportFormat::Csv];
+
+    /// The menu item's label.
+    fn label(self) -> &'static str {
+        match self {
+            ExportFormat::Csv => "CSV (current page)",
+        }
+    }
 }
 
 /// Backs the results [`Table`]. Constructed empty by `ensure_query_widgets`, then
@@ -363,6 +388,14 @@ pub(crate) fn table_display_name(table: &TableInfo) -> String {
     }
 }
 
+/// Task 2's `WHERE` filter scaffold — the diagram's column-row click seeds the editor
+/// with this, trailing space included, for the user to complete. No identifier quoting:
+/// sid has no identifier-quoting layer, so `table`/`column` are interpolated verbatim —
+/// the same convention `insert_select_star` already uses for the table-name click.
+fn where_filter_scaffold(table: &str, column: &str) -> String {
+    format!("SELECT * FROM {table} WHERE {column} = ")
+}
+
 impl DbTabState {
     /// Build the DB tab state and load its initial connection list for `scope`. A read
     /// failure here is swallowed (matches `AppState::new`'s host-list bootstrap
@@ -393,6 +426,7 @@ impl DbTabState {
             schema_expanded: HashSet::new(),
             cell_view: None,
             notice: None,
+            export_menu_open: false,
             history: Vec::new(),
         };
         let _ = state.refresh(store, scope, filters);
@@ -711,21 +745,6 @@ impl AppState {
                     .children(next_page)
                     .child(
                         div()
-                            .id("db-export-csv")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .cursor_pointer()
-                            .text_color(rgb(BRAND))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                            .child("⭳ CSV")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.export_csv(cx);
-                            })),
-                    )
-                    .child(
-                        div()
                             .id("db-run")
                             .px_3()
                             .py_1()
@@ -739,7 +758,10 @@ impl AppState {
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                 this.run_query(cx);
                             })),
-                    ),
+                    )
+                    // Far right, after Run (Murphy: "download as csv should be on the
+                    // far right") — the generic export control (Task 1).
+                    .child(self.export_control(cx)),
             )
             .children(sql_editor)
             .child(
@@ -761,6 +783,83 @@ impl AppState {
             .border_color(rgb(BORDER))
             .child(self.left_sidebar(cx))
             .child(editor_and_results)
+    }
+
+    /// The "⭳ Export ▾" control: a button that toggles [`DbTabState::export_menu_open`],
+    /// plus (when open) a small dropdown listing [`ExportFormat::ALL`]. Reuses the
+    /// `anchored`/`deferred` primitives [`Self::cell_view_overlay`] is built from (see
+    /// that method's doc comment) so the menu paints above the editor/results below it
+    /// in the tab's child order, rather than being clipped by them — but anchors at the
+    /// button's own flow position (`Corner::TopRight`, no explicit `.position()`) instead
+    /// of a window-pinned point, since this is a small trigger-attached menu, not a
+    /// full-viewport modal.
+    fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let button = div()
+            .id("db-export-open")
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(rgb(BRAND))
+            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .child("⭳ Export ▾")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.db.export_menu_open = !this.db.export_menu_open;
+                cx.notify();
+            }));
+
+        let menu = self.db.export_menu_open.then(|| {
+            deferred(
+                anchored()
+                    .anchor(Corner::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        div()
+                            .id("db-export-menu")
+                            .occlude()
+                            .mt_1()
+                            .min_w(px(180.))
+                            .flex()
+                            .flex_col()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(BG))
+                            .py_1()
+                            .children(ExportFormat::ALL.iter().enumerate().map(|(ix, fmt)| {
+                                let fmt = *fmt;
+                                div()
+                                    .id(("db-export-item", ix))
+                                    .px_3()
+                                    .py_1()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .text_color(rgb(FG))
+                                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                    .child(fmt.label())
+                                    .on_click(cx.listener(
+                                        move |this, _ev: &ClickEvent, _window, cx| {
+                                            this.export(fmt, cx);
+                                        },
+                                    ))
+                            })),
+                    ),
+            )
+            .with_priority(1)
+        });
+
+        div().relative().child(button).children(menu)
+    }
+
+    /// Run `format`'s export and close the menu — the one call site every export
+    /// format's action routes through. A new format is one [`ExportFormat`] variant plus
+    /// one arm here.
+    fn export(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+        self.db.export_menu_open = false;
+        match format {
+            ExportFormat::Csv => self.export_csv(cx),
+        }
     }
 
     /// D1 + D4's left sidebar: the schema tree (claims most of the vertical space) atop
@@ -885,8 +984,8 @@ impl AppState {
             button
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                    this.open_diagram_window(cx);
+                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                    this.open_diagram_window(window, cx);
                 }))
                 .into_any_element()
         } else {
@@ -904,7 +1003,19 @@ impl AppState {
     /// gpui-component's widgets panic reaching for a `Root` ancestor. A snapshot means
     /// the pop-out goes stale if the schema changes later; re-opening it re-reads
     /// whatever is cached then (acceptable for v1 — noted in the module's plan).
-    fn open_diagram_window(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Also hands the new [`DiagramView`] a [`WeakEntity`] back to this `AppState` and an
+    /// [`gpui::AnyWindowHandle`] for *this* (the main) window — the diagram's click-
+    /// through (Task 2: click a table/column to jump back to the main SQL editor) needs
+    /// both. Entities are app-global in GPUI, so `weak.update(cx, ...)` reaches this
+    /// `AppState` from the diagram window's own `Context` with no extra plumbing; the
+    /// window handle is only needed because the SQL `InputState`'s mutators
+    /// (`set_value`/`set_cursor_position`) take a `&mut Window` and use it for
+    /// window-scoped bookkeeping (focus, cursor blink) — handing them the *diagram*
+    /// window's `Window` there would register that bookkeeping against the wrong OS
+    /// window. `AnyWindowHandle::update` (see [`DiagramView::navigate_to_table`]) resolves
+    /// that by handing back the *main* window's real `Window` when the click fires.
+    fn open_diagram_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(schema) = self.db.schema.clone() else {
             return;
         };
@@ -923,6 +1034,8 @@ impl AppState {
             })
             .unwrap_or_else(|| "connection".to_string());
         let title = format!("sid — relationships · {connection_label}");
+        let main_window = window.window_handle();
+        let app = cx.entity().downgrade();
 
         let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);
         let _ = cx.open_window(
@@ -936,7 +1049,7 @@ impl AppState {
             },
             move |window, cx| {
                 Theme::change(ThemeMode::Dark, Some(window), cx);
-                let view = cx.new(|_cx| DiagramView::new(schema, graph));
+                let view = cx.new(|_cx| DiagramView::new(schema, graph, app, main_window));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         );
@@ -1663,6 +1776,48 @@ impl AppState {
         cx.notify();
     }
 
+    /// Task 2 — diagram click-through, table NAME click: set the editor to
+    /// `SELECT * FROM <table>` (same scaffold [`Self::insert_select_star`] builds) and
+    /// run it immediately. `pub(crate)` — called from `db_diagram.rs` across the
+    /// diagram's OS window via the `WeakEntity<AppState>`/`AnyWindowHandle` pair
+    /// [`Self::open_diagram_window`] hands the diagram (see that method's doc comment).
+    pub(crate) fn diagram_open_table(
+        &mut self,
+        table: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_select_star(table, window, cx);
+        self.run_query(cx);
+    }
+
+    /// Task 2 — diagram click-through, COLUMN row click: seed (not run) the editor with
+    /// a `WHERE` filter scaffold for `table`/`column`, cursor parked at the end (after
+    /// the trailing space) so the user can type the value straight away, and surface a
+    /// notice explaining the scaffold. `set_value` alone would leave the cursor at
+    /// offset 0 for a multi-line/code-editor `InputState` (see its doc comment) — hence
+    /// the explicit `set_cursor_position` follow-up here, which `insert_select_star`
+    /// doesn't need (that scaffold has nothing left for the user to type).
+    pub(crate) fn diagram_open_column_filter(
+        &mut self,
+        table: &str,
+        column: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        let stmt = where_filter_scaffold(table, column);
+        let end = Position::new(0, stmt.chars().count() as u32);
+        sql_entity.update(cx, |state, cx| {
+            state.set_value(stmt, window, cx);
+            state.set_cursor_position(end, window, cx);
+        });
+        self.db.notice = Some("filter scaffold from diagram — complete the value and Run".into());
+        cx.notify();
+    }
+
     /// D4: history-entry click — reload that exact SQL text into the editor
     /// (unmodified; doesn't re-run it).
     fn reload_history_entry(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2201,5 +2356,22 @@ mod schema_tree_tests {
     fn sqlite_table_with_no_schema_uses_bare_name() {
         let table = table(None, "users", &[]);
         assert_eq!(table_display_name(&table), "users");
+    }
+}
+
+#[cfg(test)]
+mod diagram_scaffold_tests {
+    use super::*;
+
+    /// Task 2's TDD target: the `WHERE` filter scaffold, trailing space included, with
+    /// no identifier quoting — a schema-qualified table name (Postgres) and a
+    /// space-containing column name both round-trip verbatim, exactly as
+    /// `insert_select_star`'s bare `SELECT * FROM <table>` already does.
+    #[test]
+    fn builds_a_bare_where_scaffold_with_a_trailing_space() {
+        assert_eq!(
+            where_filter_scaffold("public.users", "user id"),
+            "SELECT * FROM public.users WHERE user id = "
+        );
     }
 }
