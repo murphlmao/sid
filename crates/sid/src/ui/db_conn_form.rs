@@ -990,17 +990,17 @@ mod tests {
 
     #[test]
     fn add_guard_refuses_add_into_a_layer_that_holds_the_id() {
-        assert!(add_guard(false, true, "⌂ global").is_err());
+        assert!(add_guard(false, true, "global").is_err());
     }
 
     #[test]
     fn add_guard_allows_add_into_a_free_layer() {
-        assert!(add_guard(false, false, "⌂ global").is_ok());
+        assert!(add_guard(false, false, "global").is_ok());
     }
 
     #[test]
     fn add_guard_always_allows_edit() {
-        assert!(add_guard(true, true, "⌂ global").is_ok());
+        assert!(add_guard(true, true, "global").is_ok());
     }
 
     // ---- plan_secret --------------------------------------------------------------------

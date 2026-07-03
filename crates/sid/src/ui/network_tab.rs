@@ -35,7 +35,7 @@
 //!
 //! ## Filtering
 //!
-//! One 🔍 [`TextInput`] in the top bar applies to whichever sub-tab is active.
+//! One filter [`TextInput`] in the top bar applies to whichever sub-tab is active.
 //! `TextInput` has no change-callback of its own, so filtering is wired via
 //! `cx.observe(&filter, ..)` (fired on every `cx.notify()` the input makes while
 //! editing — i.e. every keystroke) rather than re-reading its content once per
@@ -140,7 +140,7 @@ pub struct NetworkTabState {
     sub_tab: NetSubTab,
     interfaces: Vec<NetInterface>,
     /// Cached partition of `interfaces` (per [`is_hidden_interface`]) after applying
-    /// the current 🔍 filter query — populated by [`Self::recompute_interfaces`],
+    /// the current filter query — populated by [`Self::recompute_interfaces`],
     /// mirroring how `PortsDelegate`/`ServicesDelegate` cache their filtered rows
     /// (perf audit finding #5). `interfaces_strip` just reads these instead of
     /// re-partitioning/re-filtering `interfaces` on every render.
@@ -206,7 +206,7 @@ pub struct NetworkTabState {
     /// A genuine (non-`NotInstalled`) probe failure, if any — from either the contexts
     /// or the pods fetch.
     kube_error: Option<String>,
-    /// The one 🔍 filter input shared by all five sub-tabs.
+    /// The one filter input shared by all five sub-tabs.
     filter: Option<Entity<TextInput>>,
     /// Kept alive so the `cx.observe(&filter, ..)` subscription (see module doc)
     /// isn't dropped — mirrors `AppState::_form_subscription`.
@@ -1379,7 +1379,7 @@ impl AppState {
             self.network.kube_pods_table = Some(table);
         }
         if self.network.filter.is_none() {
-            let filter = cx.new(|cx| TextInput::new(cx, "🔍 filter"));
+            let filter = cx.new(|cx| TextInput::new(cx, "filter"));
             // `TextInput` has no change-callback; `cx.observe` fires on every
             // `cx.notify()` it makes while editing, i.e. every keystroke — see the
             // module doc's "Filtering" section.
@@ -1433,7 +1433,7 @@ impl AppState {
 
     /// Switch the Services sub-tab's scope, forcing a fresh `list_services` call —
     /// system and user units are disjoint sets, so this isn't a filter over one
-    /// cached list the way the 🔍 box is.
+    /// cached list the way the filter box is.
     fn set_svc_scope(&mut self, scope: SvcScope, cx: &mut Context<Self>) {
         if self.network.svc_scope == scope {
             return;

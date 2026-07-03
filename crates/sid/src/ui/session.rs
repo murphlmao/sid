@@ -68,7 +68,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(33);
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
-/// `👁 view`'s size cap: anything bigger is "download instead", never rendered inline.
+/// `view`'s size cap: anything bigger is "download instead", never rendered inline.
 const PREVIEW_MAX_BYTES: usize = 1024 * 1024;
 
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
@@ -121,7 +121,7 @@ type SharedShellWriter = Arc<AsyncMutex<Box<dyn SshShellWriter>>>;
 type SharedSftp = Arc<AsyncMutex<Box<dyn SftpSession>>>;
 type SharedClient = Arc<AsyncMutex<Box<dyn SshClient>>>;
 
-/// A file's preview content (`👁 view`, P5.3) — populated by [`SshSession::view`], rendered
+/// A file's preview content (`view`, P5.3) — populated by [`SshSession::view`], rendered
 /// as a modal overlay, dismissed by [`SshSession::close_preview`].
 #[derive(Clone)]
 struct Preview {
@@ -182,7 +182,7 @@ pub struct SshSession {
     /// The "go to path" toolbar field (P5.3) — navigates the whole remote filesystem, not
     /// just child directories.
     goto_input: Entity<TextInput>,
-    /// `👁 view`'s open preview, if any (P5.3).
+    /// `view`'s open preview, if any (P5.3).
     preview: Option<Preview>,
     /// Which side of the terminal the file sidebar renders on (ssh-v3). Initialized from
     /// `Settings.file_browser_side` by whoever calls [`Self::open`]; `AppState` pushes
@@ -594,7 +594,7 @@ impl SshSession {
         .detach();
     }
 
-    /// `👁 view`: fetch `name` and, if it's small enough (<= [`PREVIEW_MAX_BYTES`]) and valid
+    /// `view`: fetch `name` and, if it's small enough (<= [`PREVIEW_MAX_BYTES`]) and valid
     /// UTF-8, show it read-only in the preview overlay. Never renders raw bytes: too-large or
     /// non-UTF-8 content gets a notice pointing at `⭳ download` instead.
     // ponytail: text preview only; no image/hex viewer yet.
@@ -1140,7 +1140,7 @@ impl SshSession {
                 .child(label)
         };
 
-        // Files get `👁 view` + `⭳ download`; directories don't (nothing to fetch/preview).
+        // Files get `view` + `⭳ download`; directories don't (nothing to fetch/preview).
         let file_buttons = (!is_dir).then(|| {
             let view_name = name.clone();
             let download_name = name.clone();
@@ -1149,7 +1149,7 @@ impl SshSession {
                 .flex_row()
                 .gap_1()
                 .child(
-                    action_button(("session-view", ix), "👁").on_click(cx.listener(
+                    action_button(("session-view", ix), "view").on_click(cx.listener(
                         move |session, _ev: &ClickEvent, _window, cx| {
                             session.view(view_name.clone(), cx)
                         },
@@ -1302,7 +1302,7 @@ impl SshSession {
             )
     }
 
-    /// `👁 view`'s modal overlay — `None` when nothing is being previewed. Mirrors app.rs's
+    /// `view`'s modal overlay — `None` when nothing is being previewed. Mirrors app.rs's
     /// host-form overlay: `anchored` pins a viewport-sized, occluding backdrop at the window
     /// origin, `deferred` paints it above everything else.
     fn preview_overlay(

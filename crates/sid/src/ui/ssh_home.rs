@@ -100,7 +100,7 @@ pub(crate) struct HomeTabState {
     /// Which row (if any) the tree's last right-click landed on — `None` reads as
     /// "empty space" (or a folder header). Feeds the tree's *single* `context_menu`
     /// (attached to the whole scroll container, in [`AppState::ssh_home_sidebar`]),
-    /// which decides row-menu vs. "＋ Add connection" from this.
+    /// which decides row-menu vs. "+ Add connection" from this.
     ///
     /// This indirection exists because `gpui_component::menu::ContextMenuExt` can't be
     /// attached once per row: its convenience method hardcodes the wrapper's element id
@@ -301,7 +301,7 @@ impl AppState {
             )
     }
 
-    /// Builds the tree's single [`ContextMenuExt::context_menu`]: "＋ Add connection"
+    /// Builds the tree's single [`ContextMenuExt::context_menu`]: "+ Add connection"
     /// when nothing more specific was right-clicked, or the target row's actions
     /// (mirrors the plan's "Rename / Edit / Assign folder / Delete", plus `Connect` for
     /// parity with the row's hover icons) when [`HomeTabState::right_click_target`] says
@@ -317,12 +317,12 @@ impl AppState {
             let target = this.read(cx).ssh_home.right_click_target.clone();
             match target {
                 Some((host, origin)) => Self::row_context_menu(menu, this.clone(), host, origin),
-                None => Self::add_connection_menu_item(menu, this.clone(), "＋ Add connection"),
+                None => Self::add_connection_menu_item(menu, this.clone(), "+ Add connection"),
             }
         }
     }
 
-    /// A menu with just the single "＋ Add connection" item — the empty-space/no-target
+    /// A menu with just the single "+ Add connection" item — the empty-space/no-target
     /// case shared by [`Self::tree_context_menu`]'s `None` arm.
     fn add_connection_menu_item(
         menu: PopupMenu,
@@ -344,7 +344,7 @@ impl AppState {
         origin: Scope,
     ) -> PopupMenu {
         let key = (host.alias.clone(), origin.clone());
-        menu.item(PopupMenuItem::new("⚡ Connect").on_click({
+        menu.item(PopupMenuItem::new("Connect").on_click({
             let this = this.clone();
             let host = host.clone();
             let key = key.clone();
@@ -354,7 +354,7 @@ impl AppState {
                 this.update(cx, |state, cx| state.connect_host(host, Some(key), cx));
             }
         }))
-        .item(PopupMenuItem::new("✎ Rename").on_click({
+        .item(PopupMenuItem::new("Rename").on_click({
             let this = this.clone();
             let alias = host.alias.clone();
             let origin = origin.clone();
@@ -366,7 +366,7 @@ impl AppState {
                 });
             }
         }))
-        .item(PopupMenuItem::new("✏ Edit…").on_click({
+        .item(PopupMenuItem::new("Edit…").on_click({
             let this = this.clone();
             let host = host.clone();
             let origin = origin.clone();
@@ -378,7 +378,7 @@ impl AppState {
                 });
             }
         }))
-        .item(PopupMenuItem::new("📁 Assign folder…").on_click({
+        .item(PopupMenuItem::new("Assign folder…").on_click({
             let this = this.clone();
             let alias = host.alias.clone();
             let origin = origin.clone();
@@ -393,7 +393,7 @@ impl AppState {
             }
         }))
         .separator()
-        .item(PopupMenuItem::new("✕ Delete").on_click({
+        .item(PopupMenuItem::new("Delete").on_click({
             let secret_ref = host.secret_ref.clone();
             move |_ev, _window, cx| {
                 let (alias, origin) = key.clone();
@@ -405,11 +405,11 @@ impl AppState {
         }))
     }
 
-    /// The sidebar's header row: a title plus the `＋ Add connection` affordance —
+    /// The sidebar's header row: a title plus the `+ Add connection` affordance —
     /// without this the Home sidebar had no visible way to add a host at all (the
-    /// `main` pane's own `＋ Add host` button was easy to miss, and the tree itself gave
+    /// `main` pane's own `+ Add host` button was easy to miss, and the tree itself gave
     /// no hint). Opens the exact same [`HostForm::new_add`] path as every other
-    /// add-connection entry point (`main`'s button, the tab-strip `＋`, this tree's
+    /// add-connection entry point (`main`'s button, the tab-strip `+`, this tree's
     /// empty-space context menu) — see `AppState::open_add_form`.
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
@@ -432,7 +432,7 @@ impl AppState {
                     .cursor_pointer()
                     .bg(rgb(ACTIVE_BG))
                     .text_color(rgb(FG))
-                    .child("＋ Add connection")
+                    .child("+ Add connection")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.open_add_form(window, cx);
                     })),
@@ -607,7 +607,7 @@ impl AppState {
         let connect = {
             let host = host.clone();
             let key = key.clone();
-            action(("ssh-tree-connect", row_id), "⚡".into(), BRAND).on_click(cx.listener(
+            action(("ssh-tree-connect", row_id), "»".into(), BRAND).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.connect_host(host.clone(), Some(key.clone()), cx);
                 },
@@ -626,7 +626,7 @@ impl AppState {
             let alias = host.alias.clone();
             let origin = origin.clone();
             let current = host.folder.clone();
-            action(("ssh-tree-folder", row_id), "📁".into(), FG_DIM).on_click(cx.listener(
+            action(("ssh-tree-folder", row_id), "folder".into(), FG_DIM).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.start_folder_edit(
                         alias.clone(),
@@ -791,7 +791,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// `📁`: start reassigning `alias`'s folder in place — blank commits to "no folder".
+    /// `folder`: start reassigning `alias`'s folder in place — blank commits to "no folder".
     fn start_folder_edit(
         &mut self,
         alias: String,

@@ -713,7 +713,7 @@ pub(crate) fn validate(input: &FormInput) -> Result<Host, String> {
 
 /// The attributive add-mode guard: an *add* into a layer that already holds the alias is
 /// refused (nothing is ever silently clobbered); only an explicit edit upserts.
-/// `target_label` names the offending layer in the message (e.g. `⌂ global`).
+/// `target_label` names the offending layer in the message (e.g. `global`).
 pub(crate) fn add_guard(
     is_edit: bool,
     target_holds_alias: bool,
@@ -966,18 +966,18 @@ mod tests {
 
     #[test]
     fn add_guard_rejects_add_into_occupied_layer_with_named_layer() {
-        let err = add_guard(false, true, "⌂ global").unwrap_err();
-        assert_eq!(err, "alias exists in ⌂ global — edit it instead");
+        let err = add_guard(false, true, "global").unwrap_err();
+        assert_eq!(err, "alias exists in global — edit it instead");
     }
 
     #[test]
     fn add_guard_allows_add_into_free_layer() {
-        assert!(add_guard(false, false, "⌂ global").is_ok());
+        assert!(add_guard(false, false, "global").is_ok());
     }
 
     #[test]
     fn add_guard_allows_edit_upsert() {
-        assert!(add_guard(true, true, "⌂ global").is_ok());
+        assert!(add_guard(true, true, "global").is_ok());
     }
 
     // ---- save-to preselection ---------------------------------------------------

@@ -45,6 +45,8 @@ const BRAND: u32 = 0x5a9ad0;
 const WS_FG: u32 = 0xa98bd0;
 const ROW_ALT: u32 = 0x1c1c20;
 const DANGER: u32 = 0xd08a8a;
+const SUCCESS: u32 = 0x8ad08a;
+const WARN: u32 = 0xd0c88a;
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
@@ -142,7 +144,7 @@ pub struct AppState {
     /// the old single-`Option` field now that MobaXterm-style multi-session tabs are the
     /// SSH tab's whole shape.
     pub(crate) ssh_sessions: Vec<SshTab>,
-    /// Which SSH session tab is active. `None` is the 🏠 Home tab (the connection
+    /// Which SSH session tab is active. `None` is the Home tab (the connection
     /// manager + saved-connections tree); `Some(ix)` indexes `ssh_sessions`.
     pub(crate) active_session: Option<usize>,
     /// Cached from `Settings.file_browser_side` at startup. New sessions open docked to
@@ -370,9 +372,9 @@ impl AppState {
     /// Open the empty add form, preselecting `save to:` from the persisted
     /// [`sid_store::Settings::default_scope`]. `pub(crate)` so every add-connection
     /// entry point the ssh-v3 discoverability pass added — `ui::ssh_home`'s sidebar
-    /// header button, its tree's empty-space context menu, and this tab strip's `＋`
+    /// header button, its tree's empty-space context menu, and this tab strip's `+`
     /// when already on Home (see `session_tab_strip`) — all go through this one path,
-    /// same as the pre-existing `main` pane's `＋ Add host` button below.
+    /// same as the pre-existing `main` pane's `+ Add host` button below.
     pub(crate) fn open_add_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let default_scope = self
             .store
@@ -464,7 +466,7 @@ impl AppState {
 
     // ---- SSH multi-session tabs (ssh-v3) ----------------------------------------
 
-    /// ⚡ connect (or quick-connect): open a new, independent [`SshSession`] for `host`
+    /// connect (or quick-connect): open a new, independent [`SshSession`] for `host`
     /// and switch to it. ssh-v3 makes every session fully independent — connecting a
     /// second (or third, …) host no longer disconnects any other open tab. `source`
     /// identifies which saved (alias, origin) row this came from, for the home tree's
@@ -496,16 +498,16 @@ impl AppState {
         cx.notify();
     }
 
-    /// `＋`/`✕` on a live tab go through the SAME "back to home" verb the mockup uses —
+    /// `+`/`✕` on a live tab go through the SAME "back to home" verb the mockup uses —
     /// `new_session` currently just means "show Home", same as [`Self::go_home`]. Kept
     /// as its own method (rather than an alias) since the keyboard track (`Ctrl+T`?)
     /// binds to this name specifically, and it may grow its own behavior later (e.g. a
-    /// picker) without every `＋` caller needing to change.
+    /// picker) without every `+` caller needing to change.
     pub(crate) fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.go_home(window, cx);
     }
 
-    /// `🏠`: show the Home tab (the connection manager + saved-connections tree).
+    /// `home`: show the Home tab (the connection manager + saved-connections tree).
     /// Doesn't touch any live session — switching to Home and back leaves every open
     /// tab exactly as it was. Refocuses `root_focus` (see that field's doc comment) —
     /// the session being left has nothing to hand focus off to.
@@ -762,7 +764,7 @@ impl AppState {
     /// Human name for a layer, matching the origin badges (`⌂ global` / workspace name).
     pub(crate) fn layer_label(&self, target: &Scope) -> String {
         match target {
-            Scope::Global => "⌂ global".into(),
+            Scope::Global => "global".into(),
             Scope::Workspace(_) => self
                 .scopes
                 .iter()
@@ -775,7 +777,7 @@ impl AppState {
     /// Badge label + color for an item's origin layer.
     fn origin_badge(&self, a: &Attributed<Host>) -> (SharedString, u32) {
         let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("⌂ global".into(), BRAND),
+            Scope::Global => ("global".into(), BRAND),
             Scope::Workspace(id) => {
                 let name = self
                     .scopes
@@ -933,6 +935,8 @@ impl AppState {
             }
             Action::CycleTabForward => self.cycle_tabs(false, window, cx),
             Action::CycleTabBack => self.cycle_tabs(true, window, cx),
+            Action::CycleSessionForward => self.cycle_sessions(false, window, cx),
+            Action::CycleSessionBack => self.cycle_sessions(true, window, cx),
             Action::NewSession => {
                 if self.active_tab == Tab::Ssh {
                     self.new_session(window, cx);
@@ -962,19 +966,12 @@ impl AppState {
         }
     }
 
-    /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: cycle session tabs while the SSH tab is active,
-    /// primary tabs everywhere else — the plan's "universal cycle". Either branch ends
-    /// by restoring keyboard focus onto whatever's now active (see
-    /// `refocus_stable_target`/`activate_session`'s doc comments) so cycling
-    /// repeatedly via the keyboard alone never dead-ends.
+    /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: cycle the primary tabs — unconditionally. This used
+    /// to switch to cycling *session* tabs whenever the SSH tab was active, which
+    /// trapped a primary-tab cycle the moment it landed on SSH (Murphy: "it lags and
+    /// then wont continue"). Session tabs now cycle on their own chords — see
+    /// [`Self::cycle_sessions`].
     fn cycle_tabs(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_tab == Tab::Ssh {
-            match cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards) {
-                Some(ix) => self.activate_session(ix, window, cx),
-                None => self.go_home(window, cx),
-            }
-            return;
-        }
         let len = Tab::ALL.len();
         let current = Tab::ALL
             .iter()
@@ -983,6 +980,21 @@ impl AppState {
         self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
         self.refocus_stable_target(window, cx);
         cx.notify();
+    }
+
+    /// `Ctrl+PgDn`/`Ctrl+PgUp`: cycle SSH session tabs (Home is its own stop). A no-op
+    /// on every other primary tab — the chord is about sessions, not a second way to
+    /// leave the tab you're on. Ends by restoring keyboard focus onto whatever's now
+    /// active (see `activate_session`/`go_home`) so keyboard-only cycling never
+    /// dead-ends on a dangling focus.
+    fn cycle_sessions(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab != Tab::Ssh {
+            return;
+        }
+        match cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards) {
+            Some(ix) => self.activate_session(ix, window, cx),
+            None => self.go_home(window, cx),
+        }
     }
 
     /// The `?` cheat-sheet overlay: one row per [`keymap::Action`] naming its default
@@ -1172,8 +1184,8 @@ impl AppState {
             .children(tabs)
     }
 
-    /// The SSH tab, top to bottom: the session tab strip (🏠 · one tab per live
-    /// session · ＋), then — on Home — the full-width status/error bar (see
+    /// The SSH tab, top to bottom: the session tab strip (home · one tab per live
+    /// session · +), then — on Home — the full-width status/error bar (see
     /// `ssh_status_bar`) above the [tree sidebar | connection-manager] split, or the
     /// active session's view (status strip + that `SshSession` entity, which paints its
     /// own terminal/file-browser split).
@@ -1206,7 +1218,7 @@ impl AppState {
     /// The SSH Home tab's status/error notice: a **full-width bar** between the session
     /// tab strip and the [sidebar | main] split — never inside either side. This used to
     /// live inside `ssh_connections_main`'s own header, sharing a row with that pane's
-    /// `＋ Add host` button; a long message (the startup secrets-backend notice — e.g.
+    /// `+ Add host` button; a long message (the startup secrets-backend notice — e.g.
     /// "secrets: encrypted-file vault … OS keyring unavailable …" — routinely runs past
     /// a single pane's width) had nowhere to go but visually collide with that button,
     /// and since the header row sits at the same height as the sidebar's quick-connect
@@ -1234,15 +1246,17 @@ impl AppState {
         )
     }
 
-    /// The session tab strip (ssh-v3): `🏠` (leftmost, icon-only, always goes Home) ·
+    /// The session tab strip (ssh-v3): `home` (leftmost, always goes Home) ·
     /// one `● user@host ×` tab per live session (click activates, `×` disconnects +
-    /// closes) · `＋` (also goes Home, ready for a new connection).
+    /// closes) · `+` (also goes Home, ready for a new connection).
     fn session_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let home_selected = self.active_session.is_none();
         let home = div()
             .id("ssh-tab-home")
-            .w(px(34.))
+            .px_2()
             .h(px(30.))
+            .text_xs()
+            .font_family(MONO)
             .flex()
             .items_center()
             .justify_center()
@@ -1252,7 +1266,7 @@ impl AppState {
             .bg(rgb(if home_selected { BG } else { TABSTRIP_BG }))
             .border_1()
             .border_color(rgb(BORDER))
-            .child("🏠")
+            .child("home")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| this.go_home(window, cx)));
 
         let tabs: Vec<_> = self
@@ -1261,11 +1275,12 @@ impl AppState {
             .enumerate()
             .map(|(ix, tab)| {
                 let selected = self.active_session == Some(ix);
-                let dot = match tab.session.read(cx).status() {
-                    SessionStatus::Connected => "🟢",
-                    SessionStatus::Connecting => "🟡",
-                    SessionStatus::Failed(_) | SessionStatus::Closed => "🔴",
+                let dot_color = match tab.session.read(cx).status() {
+                    SessionStatus::Connected => SUCCESS,
+                    SessionStatus::Connecting => WARN,
+                    SessionStatus::Failed(_) | SessionStatus::Closed => DANGER,
                 };
+                let dot = div().text_color(rgb(dot_color)).child("●");
                 div()
                     .id(("ssh-session-tab", ix))
                     .flex()
@@ -1323,12 +1338,12 @@ impl AppState {
             .cursor_pointer()
             .text_color(rgb(FG_DIM))
             .hover(|s| s.bg(rgb(ACTIVE_BG)))
-            .child("＋")
+            .child("+")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                 // Already on Home: `new_session`/`go_home` would be a no-op with no
-                // visible effect (this *was* the "tab-strip ＋ does nothing" bug) — the
+                // visible effect (this *was* the "tab-strip + does nothing" bug) — the
                 // only meaningful next step from there is opening the add-connection
-                // form. Coming from a live session tab, ＋ still just goes Home first
+                // form. Coming from a live session tab, + still just goes Home first
                 // (mirrors the mockup's "New tab (opens Home)"), ready to add or pick a
                 // connection from there.
                 if this.active_session.is_none() {
@@ -1359,7 +1374,7 @@ impl AppState {
     ///
     /// The header's `sub` line is just the host count now — the error/status notice
     /// this used to double as moved to `ssh_status_bar`, a full-width bar above this
-    /// [sidebar | main] split, so a long message can't collide with `＋ Add host` below
+    /// [sidebar | main] split, so a long message can't collide with `+ Add host` below
     /// (see that method's doc comment for why).
     fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.hosts.len();
@@ -1398,7 +1413,7 @@ impl AppState {
                             .cursor_pointer()
                             .bg(rgb(ACTIVE_BG))
                             .text_color(rgb(ACTIVE_FG))
-                            .child("＋ Add host")
+                            .child("+ Add host")
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.open_add_form(window, cx);
                             })),
@@ -1522,12 +1537,12 @@ impl AppState {
             ))
         });
 
-        // ⚡ connect: opens a new, independent SshSession (terminal + file panel) over
+        // connect: opens a new, independent SshSession (terminal + file panel) over
         // this row's host and switches to it — ssh-v3 makes every session independent.
         let connect = {
             let host = host.clone();
             let source = Some((host.alias.clone(), origin.clone()));
-            action(("connect", ix), "⚡ connect".into(), BRAND).on_click(cx.listener(
+            action(("connect", ix), "connect".into(), BRAND).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.connect_host(host.clone(), source.clone(), cx);
                 },
@@ -2008,7 +2023,7 @@ pub(crate) fn cycle_index(current: usize, len: usize, backwards: bool) -> usize 
     }
 }
 
-/// `Ctrl+Tab`/`Ctrl+Shift+Tab` on the SSH tab: cycle the virtual sequence [🏠 Home,
+/// `Ctrl+Tab`/`Ctrl+Shift+Tab` on the SSH tab: cycle the virtual sequence [Home,
 /// session 0, session 1, ..., session `len - 1`] and back to Home — Home is its own stop,
 /// not skipped over between sessions. `len` is `ssh_sessions.len()`.
 pub(crate) fn cycle_session_index(
@@ -2060,7 +2075,7 @@ mod tests {
 
     #[test]
     fn close_on_home_leaves_active_untouched() {
-        // No session active (on 🏠): closing some tab never changes the active pointer.
+        // No session active (on home): closing some tab never changes the active pointer.
         assert_eq!(next_active_after_close(None, 0, 2), None);
     }
 
@@ -2086,7 +2101,7 @@ mod tests {
 
     #[test]
     fn close_the_last_remaining_tab_goes_home() {
-        // Closing the only tab (len_after 0) returns to 🏠 home.
+        // Closing the only tab (len_after 0) returns to home.
         assert_eq!(next_active_after_close(Some(0), 0, 0), None);
     }
 
