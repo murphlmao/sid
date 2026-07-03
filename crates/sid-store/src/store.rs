@@ -61,6 +61,35 @@ impl Store {
         Ok(WorkspaceStore::new(meta.root))
     }
 
+    /// Read a host from **exactly** `scope` (no composition with the other layer) — the
+    /// seam rename/folder mutators use to find the record they will write back in place.
+    fn host_in_scope(&self, scope: &Scope, alias: &str) -> Result<Option<Host>> {
+        match scope {
+            Scope::Global => self.global.get_host(alias),
+            Scope::Workspace(id) => Ok(self
+                .workspace_store(id)?
+                .load()?
+                .ssh
+                .host
+                .into_iter()
+                .find(|h| h.alias == alias)),
+        }
+    }
+
+    /// Read a connection from **exactly** `scope` (see [`Store::host_in_scope`]).
+    fn connection_in_scope(&self, scope: &Scope, id: &str) -> Result<Option<DbConnection>> {
+        match scope {
+            Scope::Global => self.global.get_connection(id),
+            Scope::Workspace(ws_id) => Ok(self
+                .workspace_store(ws_id)?
+                .load()?
+                .db
+                .connection
+                .into_iter()
+                .find(|c| c.id == id)),
+        }
+    }
+
     /// Read hosts composed for `scope`, applying the view `filters`.
     pub fn read_hosts(&self, scope: &Scope, filters: ViewFilters) -> Result<Vec<Attributed<Host>>> {
         let global = self.global.list_hosts()?;
@@ -130,6 +159,47 @@ impl Store {
         ws.upsert_host(&item)?;
         self.global.remove_host(alias)?;
         Ok(())
+    }
+
+    /// Rename a host **within its own layer**: `alias` is the identity, so this is a
+    /// write-new + delete-old under the hood, preserving every other field (auth,
+    /// secret_ref, folder). Refuses a no-op rename, and refuses (via
+    /// [`StoreError::Conflict`]) if `new_alias` already exists in `scope` — the other
+    /// layer is never consulted or touched, matching [`Store::delete_host`]'s
+    /// attributive, single-layer semantics.
+    pub fn rename_host(&self, scope: &Scope, old_alias: &str, new_alias: &str) -> Result<()> {
+        if old_alias == new_alias {
+            return Err(StoreError::Conflict(format!(
+                "host {old_alias:?} is already named {new_alias:?}"
+            )));
+        }
+        let mut host = self
+            .host_in_scope(scope, old_alias)?
+            .ok_or_else(|| StoreError::Storage(format!("host {old_alias} not in {scope:?}")))?;
+        if self.host_in_scope(scope, new_alias)?.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "{scope:?} already has a host {new_alias:?}; resolve before renaming"
+            )));
+        }
+        host.alias = new_alias.to_string();
+        self.write_host(&host, scope)?;
+        self.delete_host(old_alias, scope)?;
+        Ok(())
+    }
+
+    /// Set (or clear) a host's `folder` in place, within its own layer. Errors if
+    /// `alias` does not exist in `scope`.
+    pub fn set_host_folder(
+        &self,
+        scope: &Scope,
+        alias: &str,
+        folder: Option<String>,
+    ) -> Result<()> {
+        let mut host = self
+            .host_in_scope(scope, alias)?
+            .ok_or_else(|| StoreError::Storage(format!("host {alias} not in {scope:?}")))?;
+        host.folder = folder;
+        self.write_host(&host, scope)
     }
 
     /// Read connections composed for `scope`, applying the view `filters`.
@@ -209,5 +279,32 @@ impl Store {
         ws.upsert_connection(&item)?;
         self.global.remove_connection(id)?;
         Ok(())
+    }
+
+    /// Rename a connection's display `name` **in place, within its own layer**. Unlike
+    /// [`Store::rename_host`], the identity is `id` (not `name`), so this is a plain
+    /// read-modify-write — no delete/insert, no cross-layer conflict to guard against.
+    /// Errors if `id` does not exist in `scope`.
+    pub fn rename_connection(&self, scope: &Scope, id: &str, new_name: &str) -> Result<()> {
+        let mut c = self
+            .connection_in_scope(scope, id)?
+            .ok_or_else(|| StoreError::Storage(format!("connection {id} not in {scope:?}")))?;
+        c.name = new_name.to_string();
+        self.write_connection(&c, scope)
+    }
+
+    /// Set (or clear) a connection's `folder` in place, within its own layer. Errors if
+    /// `id` does not exist in `scope`.
+    pub fn set_connection_folder(
+        &self,
+        scope: &Scope,
+        id: &str,
+        folder: Option<String>,
+    ) -> Result<()> {
+        let mut c = self
+            .connection_in_scope(scope, id)?
+            .ok_or_else(|| StoreError::Storage(format!("connection {id} not in {scope:?}")))?;
+        c.folder = folder;
+        self.write_connection(&c, scope)
     }
 }

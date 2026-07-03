@@ -977,6 +977,7 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
                 secret_ref: None,
                 kind: sid_core::db::DbKind::Sqlite,
                 name: "demo sqlite (local file)".into(),
+                folder: None,
             },
             &Scope::Global,
         );
@@ -993,6 +994,7 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
         port: 22,
         secret_ref: None,
         auth: AuthMethod::default(),
+        folder: None,
     };
     let _ = store.write_host(
         &global("home-server", "you", "192.168.1.10"),

@@ -16,7 +16,8 @@ use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
-    DbConnection, DbConnectionV1, Host, HostV1, Identity, QuickAction, Settings,
+    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, QuickAction,
+    Settings, SettingsV1,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -33,14 +34,20 @@ const SETTINGS_KEY: &str = "settings";
 /// Codec version for global entities that have not changed layout.
 const V1: u8 = 1;
 
-/// Current codec version for [`Host`] values. Bumped to 2 when `auth` was added; reads
-/// branch on the leading version byte and migrate v1 values forward (see [`decode_host`]).
-pub(crate) const HOST_VERSION: u8 = 2;
+/// Current codec version for [`Host`] values. Bumped to 2 when `auth` was added and to 3
+/// when `folder` was added; reads branch on the leading version byte and migrate older
+/// values forward (see [`decode_host`]).
+pub(crate) const HOST_VERSION: u8 = 3;
 
-/// Current codec version for [`DbConnection`] values. Bumped to 2 when `kind`/`name` were
+/// Current codec version for [`DbConnection`] values. Bumped to 2 when `kind`/`name`
+/// were added and to 3 when `folder` was added; reads branch on the leading version byte
+/// and migrate older values forward (see [`decode_connection`]).
+pub(crate) const CONNECTION_VERSION: u8 = 3;
+
+/// Current codec version for [`Settings`]. Bumped to 2 when `file_browser_side` was
 /// added; reads branch on the leading version byte and migrate v1 values forward (see
-/// [`decode_connection`]).
-pub(crate) const CONNECTION_VERSION: u8 = 2;
+/// [`decode_settings`]).
+pub(crate) const SETTINGS_VERSION: u8 = 2;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -234,42 +241,69 @@ impl GlobalStore {
 
     /// Read the machine-local [`Settings`]; a never-written table yields the default.
     pub fn get_settings(&self) -> Result<Settings> {
-        Ok(self.get(SETTINGS, SETTINGS_KEY)?.unwrap_or_default())
+        Ok(self
+            .get_with(SETTINGS, SETTINGS_KEY, decode_settings)?
+            .unwrap_or_default())
     }
 
     /// Persist the machine-local [`Settings`].
     pub fn set_settings(&self, s: &Settings) -> Result<()> {
-        self.upsert(SETTINGS, SETTINGS_KEY, s)
+        self.upsert_versioned(SETTINGS, SETTINGS_KEY, SETTINGS_VERSION, s)
     }
 }
 
 /// Decode a stored [`Host`] value, branching on the leading codec version byte:
-/// `1` → the pre-`auth` [`HostV1`] shape, migrated forward (`auth: Agent`);
-/// `2` → the current [`Host`] shape. Any other version is rejected.
+/// `1` → the pre-`auth` [`HostV1`] shape, migrated forward through [`HostV2`]
+/// (`auth: Agent`, `folder: None`); `2` → the pre-`folder` [`HostV2`] shape, migrated
+/// forward (`folder: None`); `3` → the current [`Host`] shape. Any other version is
+/// rejected.
 fn decode_host(bytes: &[u8]) -> Result<Host> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty host payload".into(),
     })?;
     match version {
-        1 => Ok(decode_versioned::<HostV1>(bytes)?.1.into()),
+        1 => Ok(Host::from(HostV2::from(
+            decode_versioned::<HostV1>(bytes)?.1,
+        ))),
+        2 => Ok(decode_versioned::<HostV2>(bytes)?.1.into()),
         HOST_VERSION => Ok(decode_versioned::<Host>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
 }
 
 /// Decode a stored [`DbConnection`] value, branching on the leading codec version byte:
-/// `1` → the pre-`kind`/`name` [`DbConnectionV1`] shape, migrated forward
-/// (`kind: Postgres`, `name: id.clone()`); `2` → the current [`DbConnection`] shape. Any
-/// other version is rejected.
+/// `1` → the pre-`kind`/`name` [`DbConnectionV1`] shape, migrated forward through
+/// [`DbConnectionV2`] (`kind: Postgres`, `name: id.clone()`, `folder: None`); `2` → the
+/// pre-`folder` [`DbConnectionV2`] shape, migrated forward (`folder: None`); `3` → the
+/// current [`DbConnection`] shape. Any other version is rejected.
 fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty connection payload".into(),
     })?;
     match version {
-        1 => Ok(decode_versioned::<DbConnectionV1>(bytes)?.1.into()),
+        1 => Ok(DbConnection::from(DbConnectionV2::from(
+            decode_versioned::<DbConnectionV1>(bytes)?.1,
+        ))),
+        2 => Ok(decode_versioned::<DbConnectionV2>(bytes)?.1.into()),
         CONNECTION_VERSION => Ok(decode_versioned::<DbConnection>(bytes)?.1),
+        other => Err(StoreError::UnsupportedVersion(other)),
+    }
+}
+
+/// Decode a stored [`Settings`] value, branching on the leading codec version byte:
+/// `1` → the pre-`file_browser_side` [`SettingsV1`] shape, migrated forward
+/// (`file_browser_side: PanelSide::Left`); `2` → the current [`Settings`] shape. Any
+/// other version is rejected.
+fn decode_settings(bytes: &[u8]) -> Result<Settings> {
+    let &version = bytes.first().ok_or_else(|| StoreError::Decode {
+        version: 0,
+        msg: "empty settings payload".into(),
+    })?;
+    match version {
+        1 => Ok(decode_versioned::<SettingsV1>(bytes)?.1.into()),
+        SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
 }
@@ -296,10 +330,11 @@ fn write_table<'t, K: Key + 'static, V: Value + 'static>(
 
 #[cfg(test)]
 mod tests {
-    //! A3 migration: these exercise the version-branching host decode against the
-    //! *private* `HostV1` shape, so they live in-crate rather than in `tests/`.
+    //! A3 migration: these exercise the version-branching host/connection/settings
+    //! decode against the *private* V1/V2 shapes, so they live in-crate rather than in
+    //! `tests/`.
     use super::*;
-    use crate::entities::AuthMethod;
+    use crate::entities::{AuthMethod, PanelSide};
 
     fn host_v1(alias: &str) -> HostV1 {
         HostV1 {
@@ -308,6 +343,17 @@ mod tests {
             host: "h".into(),
             port: 22,
             secret_ref: None,
+        }
+    }
+
+    fn host_v2(alias: &str, auth: AuthMethod) -> HostV2 {
+        HostV2 {
+            alias: alias.into(),
+            user: "u".into(),
+            host: "h".into(),
+            port: 22,
+            secret_ref: None,
+            auth,
         }
     }
 
@@ -351,9 +397,44 @@ mod tests {
         );
     }
 
-    /// Hosts written now carry version 2 (the migration only fires for old values).
+    /// A crafted v2 (pre-`folder`) payload decodes into a `Host` with `folder == None`.
     #[test]
-    fn hosts_are_written_at_version_2() {
+    fn v2_payload_migrates_to_no_folder() {
+        let bytes = encode_versioned(2, &host_v2("legacy2", AuthMethod::Password)).unwrap();
+        assert_eq!(bytes[0], 2, "leading byte is the v2 version");
+        let host = decode_host(&bytes).unwrap();
+        assert_eq!(host.alias, "legacy2");
+        assert_eq!(host.auth, AuthMethod::Password, "v2 auth is preserved");
+        assert_eq!(host.folder, None);
+    }
+
+    /// A store seeded with raw v2 bytes reopens and lists cleanly, migrating on read.
+    #[test]
+    fn seeded_v2_store_reopens_and_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            let bytes = encode_versioned(2, &host_v2("legacy2", AuthMethod::Agent)).unwrap();
+            store
+                .with_write("seed v2", |txn| {
+                    let mut tbl = write_table(txn, HOSTS, "open hosts")?;
+                    tbl.insert("legacy2", &bytes[..])
+                        .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        let hosts = reopened.list_hosts().unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].alias, "legacy2");
+        assert_eq!(hosts[0].folder, None);
+    }
+
+    /// Hosts written now carry version 3 (the migration only fires for old values).
+    #[test]
+    fn hosts_are_written_at_version_3() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         store
@@ -364,14 +445,14 @@ mod tests {
                 port: 22,
                 secret_ref: None,
                 auth: AuthMethod::Key { path: "/k".into() },
+                folder: Some("prod".into()),
             })
             .unwrap();
         let raw = store.get_with(HOSTS, "new", |b| Ok(b[0])).unwrap().unwrap();
-        assert_eq!(raw, HOST_VERSION, "new hosts are stamped V2");
-        assert_eq!(
-            store.get_host("new").unwrap().unwrap().auth,
-            AuthMethod::Key { path: "/k".into() }
-        );
+        assert_eq!(raw, HOST_VERSION, "new hosts are stamped V3");
+        let got = store.get_host("new").unwrap().unwrap();
+        assert_eq!(got.auth, AuthMethod::Key { path: "/k".into() });
+        assert_eq!(got.folder.as_deref(), Some("prod"));
     }
 
     fn connection_v1(id: &str) -> DbConnectionV1 {
@@ -379,6 +460,16 @@ mod tests {
             id: id.into(),
             dsn: "postgres://x".into(),
             secret_ref: None,
+        }
+    }
+
+    fn connection_v2(id: &str) -> DbConnectionV2 {
+        DbConnectionV2 {
+            id: id.into(),
+            dsn: "postgres://x".into(),
+            secret_ref: None,
+            kind: sid_core::db::DbKind::Sqlite,
+            name: "Legacy".into(),
         }
     }
 
@@ -425,9 +516,50 @@ mod tests {
         );
     }
 
-    /// Connections written now carry version 2 (the migration only fires for old values).
+    /// A crafted v2 (pre-`folder`) connection payload decodes with `folder == None`.
     #[test]
-    fn connections_are_written_at_version_2() {
+    fn v2_connection_payload_migrates_to_no_folder() {
+        let bytes = encode_versioned(2, &connection_v2("legacy-pg2")).unwrap();
+        assert_eq!(bytes[0], 2, "leading byte is the v2 version");
+        let conn = decode_connection(&bytes).unwrap();
+        assert_eq!(conn.id, "legacy-pg2");
+        assert_eq!(conn.name, "Legacy", "v2 name is preserved");
+        assert_eq!(
+            conn.kind,
+            sid_core::db::DbKind::Sqlite,
+            "v2 kind is preserved"
+        );
+        assert_eq!(conn.folder, None);
+    }
+
+    /// A store seeded with raw v2 connection bytes reopens and lists cleanly, migrating
+    /// on read.
+    #[test]
+    fn seeded_v2_connection_store_reopens_and_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            let bytes = encode_versioned(2, &connection_v2("legacy-pg2")).unwrap();
+            store
+                .with_write("seed v2", |txn| {
+                    let mut tbl = write_table(txn, CONNECTIONS, "open connections")?;
+                    tbl.insert("legacy-pg2", &bytes[..])
+                        .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        let conns = reopened.list_connections().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].id, "legacy-pg2");
+        assert_eq!(conns[0].folder, None);
+    }
+
+    /// Connections written now carry version 3 (the migration only fires for old values).
+    #[test]
+    fn connections_are_written_at_version_3() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         store
@@ -437,15 +569,81 @@ mod tests {
                 secret_ref: None,
                 kind: sid_core::db::DbKind::Sqlite,
                 name: "New PG".into(),
+                folder: Some("analytics".into()),
             })
             .unwrap();
         let raw = store
             .get_with(CONNECTIONS, "new-pg", |b| Ok(b[0]))
             .unwrap()
             .unwrap();
-        assert_eq!(raw, CONNECTION_VERSION, "new connections are stamped V2");
+        assert_eq!(raw, CONNECTION_VERSION, "new connections are stamped V3");
         let got = store.get_connection("new-pg").unwrap().unwrap();
         assert_eq!(got.kind, sid_core::db::DbKind::Sqlite);
         assert_eq!(got.name, "New PG");
+        assert_eq!(got.folder.as_deref(), Some("analytics"));
+    }
+
+    fn settings_v1(default_scope: crate::entities::DefaultScope) -> SettingsV1 {
+        SettingsV1 { default_scope }
+    }
+
+    /// A crafted v1 (pre-`file_browser_side`) settings payload decodes with
+    /// `file_browser_side == Left`.
+    #[test]
+    fn settings_v1_payload_migrates_to_left_panel() {
+        use crate::entities::DefaultScope;
+        let bytes = encode_versioned(1, &settings_v1(DefaultScope::Workspace)).unwrap();
+        assert_eq!(bytes[0], 1, "leading byte is the v1 version");
+        let settings = decode_settings(&bytes).unwrap();
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+        assert_eq!(settings.file_browser_side, PanelSide::Left);
+    }
+
+    /// A store seeded with raw v1 settings bytes reopens and reads cleanly, migrating on
+    /// read.
+    #[test]
+    fn seeded_v1_settings_store_reopens_and_reads() {
+        use crate::entities::DefaultScope;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            let bytes = encode_versioned(1, &settings_v1(DefaultScope::Global)).unwrap();
+            store
+                .with_write("seed v1", |txn| {
+                    let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                    tbl.insert(SETTINGS_KEY, &bytes[..])
+                        .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        let settings = reopened.get_settings().unwrap();
+        assert_eq!(settings.default_scope, DefaultScope::Global);
+        assert_eq!(settings.file_browser_side, PanelSide::Left);
+    }
+
+    /// Settings written now carry version 2 (the migration only fires for old values).
+    #[test]
+    fn settings_are_written_at_version_2() {
+        use crate::entities::DefaultScope;
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        store
+            .set_settings(&Settings {
+                default_scope: DefaultScope::Ask,
+                file_browser_side: PanelSide::Right,
+            })
+            .unwrap();
+        let raw = store
+            .get_with(SETTINGS, SETTINGS_KEY, |b| Ok(b[0]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw, SETTINGS_VERSION, "new settings are stamped V2");
+        assert_eq!(
+            store.get_settings().unwrap().file_browser_side,
+            PanelSide::Right
+        );
     }
 }

@@ -44,6 +44,7 @@ fn committed_config_holds_ref_never_secret() {
         port: 22,
         secret_ref: Some(secret_ref.into()),
         auth: AuthMethod::default(),
+        folder: None,
     };
     store
         .write_host(&host, &Scope::Workspace(id.clone()))
@@ -85,6 +86,7 @@ fn ref_resolves_to_material_only_via_secret_store() {
                 port: 22,
                 secret_ref: Some("ssh.prod.key".into()),
                 auth: AuthMethod::default(),
+                folder: None,
             },
             &Scope::Workspace(id.clone()),
         )
