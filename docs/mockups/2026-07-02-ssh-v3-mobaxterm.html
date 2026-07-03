@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sid — SSH/SFTP v3 mockup (MobaXterm model)</title>
+<style>
+  :root{
+    --bg:#08090c; --panel:#17181d; --panel2:#1e2027; --panel3:#101115;
+    --ink:#e6e8ec; --muted:#8c9099; --line:#2d3038; --line2:#25272e;
+    --accent:#5a9ad0; --accent-soft:rgba(90,154,208,.16);
+    --ws:#a98fe0; --ws-soft:rgba(169,143,224,.16);
+    --good:#52c78e; --warn:#e0a23e; --danger:#e2685f;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --kitty:"CaskaydiaCove Nerd Font Mono","JetBrainsMono Nerd Font",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;color:var(--ink);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:24px;
+    background:
+      radial-gradient(1px 1px at 12% 22%, rgba(255,255,255,.55) 1px, transparent 0),
+      radial-gradient(1px 1px at 68% 8%,  rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1px 1px at 40% 60%, rgba(255,255,255,.35) 1px, transparent 0),
+      radial-gradient(1px 1px at 85% 45%, rgba(255,255,255,.5)  1px, transparent 0),
+      radial-gradient(1px 1px at 92% 80%, rgba(255,255,255,.3)  1px, transparent 0),
+      radial-gradient(1px 1px at 20% 88%, rgba(255,255,255,.4)  1px, transparent 0),
+      radial-gradient(1200px 800px at 12% -8%, rgba(90,120,210,.28), transparent 60%),
+      radial-gradient(1000px 760px at 108% 112%, rgba(150,95,210,.22), transparent 55%),
+      var(--bg);
+    background-size: 240px 220px,240px 220px,240px 220px,240px 220px,240px 220px,240px 220px, auto,auto,auto;
+  }
+  .wireframe-tag{position:fixed;top:14px;left:16px;font:11px var(--mono);color:var(--muted);letter-spacing:.06em;max-width:640px}
+  .wireframe-tag b{color:var(--ink)}
+
+  .window{width:1440px;max-width:100%;height:900px;background:var(--panel);border:1px solid var(--line);
+          border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.55);overflow:hidden;display:flex;flex-direction:column;
+          position:relative}
+
+  /* ---- titlebar ---- */
+  .titlebar{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .lights{display:flex;gap:7px}.lights i{width:12px;height:12px;border-radius:50%;background:#33353c}
+  .brand{font-weight:650;display:flex;align-items:center;gap:6px}.brand .gl{color:var(--accent)}
+  .vsep{width:1px;height:20px;background:var(--line)}
+  .scope-lbl{font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .scope{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:3px;gap:2px}
+  .scope button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--muted);padding:4px 13px;border-radius:16px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .scope button .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+  .scope button[aria-selected="true"]{background:var(--accent);color:#0b0d10}
+  .scope button[aria-selected="true"] .dot{background:#0b0d10}
+  .spacer{flex:1}
+  .ico-btn{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:7px;padding:5px 9px;cursor:pointer;background:var(--panel)}
+  .ico-btn kbd{font:11px var(--mono);background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;margin-left:5px}
+
+  /* ---- app tab strip ---- */
+  .tabstrip{height:42px;flex:0 0 42px;display:flex;align-items:stretch;gap:2px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{display:flex;align-items:center;gap:8px;padding:0 16px;cursor:default;color:var(--muted);font-size:13.5px;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab[aria-selected="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
+  .tab .ic{opacity:.8}.tab .ct{font:11px var(--mono);color:var(--muted)}
+  .tabstrip .grow{flex:1}
+  .tab.right{color:var(--muted)}
+
+  .content{flex:1;min-height:0;display:flex;flex-direction:column}
+  .vhead{padding:10px 18px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  .vhead h2{margin:0;font-size:15px;font-weight:650}
+  .vhead .sub{font-size:12px;color:var(--muted)}
+  .vhead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{font:inherit;font-size:12.5px;border:1px solid var(--line);background:var(--panel2);border-radius:7px;padding:6px 11px;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#0b0d10;font-weight:600}
+  .btn.danger{border-color:var(--danger);color:var(--danger);background:transparent}
+  .btn:hover{filter:brightness(1.12)}
+  .btn.sm{padding:3px 9px;font-size:11.5px}
+  .badge{font-size:10px;border-radius:10px;padding:1px 7px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .badge.g{border-color:var(--accent);color:var(--accent)}
+  .badge.w{border-color:var(--ws);color:var(--ws);background:var(--ws-soft)}
+
+  /* ---- session tab strip: 🏠 home (icon-only, leftmost, no close) + one tab per live connection + add ---- */
+  .sesstabs{display:flex;align-items:stretch;gap:4px;padding:8px 14px 0;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .sesstab{display:flex;align-items:center;gap:8px;padding:7px 10px 8px 12px;border:1px solid var(--line);border-bottom:none;
+           border-radius:8px 8px 0 0;background:var(--panel3);color:var(--muted);font-size:12.5px;cursor:pointer;position:relative;top:1px}
+  .sesstab[aria-selected="true"]{background:var(--panel);color:var(--ink);font-weight:600;border-color:var(--line);border-bottom:1px solid var(--panel)}
+  .sesstab.home{width:38px;justify-content:center;padding:0;font-size:15px}
+  .sesstab .dot{width:6px;height:6px;border-radius:50%;background:var(--good);box-shadow:0 0 5px rgba(82,199,142,.7)}
+  .sesstab .host{font-family:var(--mono);font-size:12px}
+  .sesstab .x{color:var(--muted);opacity:.7;border-radius:4px;padding:0 3px;margin-left:2px}
+  .sesstab .x:hover{opacity:1;background:var(--line2);color:var(--danger)}
+  .sesstab .wsbadge{font-size:9px;border-radius:8px;padding:0 5px;border:1px solid var(--ws);color:var(--ws)}
+  .sesstab-add{display:flex;align-items:center;justify-content:center;width:30px;color:var(--muted);cursor:pointer;border-radius:6px;position:relative;top:1px}
+  .sesstab-add:hover{background:var(--line2);color:var(--ink)}
+
+  /* ---- generic view + split row ---- */
+  .sshview{display:none;flex:1;min-height:0;flex-direction:column}
+  .sshview.active{display:flex}
+  .split{flex:1;display:flex;min-height:0;min-width:0}
+  .divider{flex:0 0 8px;cursor:col-resize;background:var(--panel);position:relative;border-left:1px solid var(--line2);border-right:1px solid var(--line2)}
+  .divider:hover,.divider.active{background:var(--accent-soft)}
+  .divider .grip{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:5px;height:34px;border-radius:3px;
+                 background:var(--line);display:flex;align-items:center;justify-content:center}
+  .divider:hover .grip,.divider.active .grip{background:var(--accent)}
+
+  /* ================= HOME state: saved-connections tree (left) ================= */
+  .tree-sidebar{flex:0 0 280px;width:280px;border-right:1px solid var(--line2);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .quickconnect{padding:10px 12px;border-bottom:1px solid var(--line2);display:flex;flex-direction:column;gap:4px}
+  .quickconnect .row{display:flex;gap:6px}
+  .quickconnect input{flex:1;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);color:var(--ink);
+                      border-radius:6px;padding:6px 8px;min-width:0}
+  .quickconnect input:focus{outline:none;border-color:var(--accent)}
+  .quickconnect .hint{font-size:10px;color:var(--muted)}
+  .tree-scroll{flex:1;overflow:auto;padding:6px 0}
+
+  .tnode{display:flex;align-items:center;gap:6px;padding:5px 10px;padding-left:calc(10px + var(--depth)*14px);
+        cursor:pointer;border-radius:5px;font-size:12.3px;white-space:nowrap}
+  .tnode:hover{background:var(--panel2)}
+  .tcaret{width:11px;text-align:center;color:var(--muted);flex:0 0 auto;font-size:9px}
+  .tnode .ic{flex:0 0 auto;opacity:.9;font-size:12px}
+  .tnode .lbl{overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+  .tnode .wsb{font-size:8.5px;border:1px solid var(--ws);color:var(--ws);border-radius:8px;padding:0 5px;flex:0 0 auto;margin-left:2px}
+  .tchildren.collapsed{display:none}
+
+  .hostrow{display:flex;align-items:center;gap:5px;padding:5px 10px;padding-left:calc(10px + var(--depth)*14px);
+          border-radius:5px;cursor:pointer;position:relative;font-size:12.3px}
+  .hostrow:hover,.hostrow.force-hover{background:var(--panel2)}
+  .hostrow .ic{flex:0 0 auto;font-size:12px;opacity:.9}
+  .hostrow .nm{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
+  .hostrow .addr{font:10.5px var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
+  .hostrow .live{width:6px;height:6px;border-radius:50%;background:var(--good);box-shadow:0 0 5px rgba(82,199,142,.7);flex:0 0 auto}
+  .hostrow .actions{display:none;margin-left:auto;gap:2px;flex:0 0 auto}
+  .hostrow:hover .actions,.hostrow.force-hover .actions{display:flex}
+  .hostrow .aic{font-size:11px;color:var(--muted);border-radius:4px;padding:2px 5px;cursor:pointer}
+  .hostrow .aic:hover{color:var(--ink);background:var(--line2)}
+  .hostrow .aic.danger:hover{color:var(--danger)}
+  .rename-wrap{display:flex;align-items:center;gap:5px;padding:4px 10px;padding-left:calc(10px + var(--depth)*14px)}
+  .rename-input{flex:1;font:12.3px var(--mono);background:var(--panel3);border:1.5px solid var(--accent);color:var(--ink);
+               border-radius:4px;padding:3px 6px;min-width:0;outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+  .rename-flag{font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:1px 5px;flex:0 0 auto;white-space:nowrap}
+
+  /* ---- HOME state: main = connection screen / host manager ---- */
+  .host-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+  .recent-strip{display:flex;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line2);overflow-x:auto}
+  .recent-card{flex:0 0 196px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);padding:12px;
+              display:flex;flex-direction:column;gap:6px;cursor:pointer}
+  .recent-card:hover{border-color:var(--accent)}
+  .recent-card .nm{font-weight:650;font-size:13px;display:flex;align-items:center;gap:6px}
+  .recent-card .addr{font:11px var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .recent-card .meta{font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+
+  .hostsTable-wrap{flex:1;overflow:auto}
+  table.hosts{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.hosts th{text-align:left;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+                padding:7px 14px;border-bottom:1px solid var(--line2);position:sticky;top:0;background:var(--panel)}
+  table.hosts td{padding:7px 14px;border-bottom:1px solid var(--line2);color:var(--ink);white-space:nowrap}
+  table.hosts tr:hover td{background:var(--panel2)}
+  table.hosts td.name{font-family:var(--mono);display:flex;align-items:center;gap:7px}
+  table.hosts td.addr{font-family:var(--mono);color:var(--muted)}
+  table.hosts td.folder{color:var(--muted);font-size:12px}
+  table.hosts td.actions{text-align:right}
+  table.hosts .rowact{display:none;gap:6px;justify-content:flex-end}
+  table.hosts tr:hover .rowact{display:flex}
+
+  /* ================= SESSION state: sidebar SWAPS to file browser ================= */
+  .sessionbar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line2);font-size:12.5px;flex:0 0 auto}
+  .sessionbar .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 6px rgba(82,199,142,.8);flex:0 0 auto}
+  .sessionbar .conn{font-family:var(--mono);color:var(--ink)}
+  .sessionbar .meta{color:var(--muted)}
+  .sessionbar .sep{color:var(--line);opacity:.9}
+  .sessionbar .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+  .files-sidebar{flex:0 0 340px;min-width:220px;max-width:520px;display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+  .filehead{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12px;color:var(--muted);font-weight:600}
+  .filehead .right{margin-left:auto;display:flex;gap:6px;align-items:center}
+  .iconbtn{border:1px solid var(--line);background:var(--panel2);color:var(--muted);border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer}
+  .iconbtn:hover{color:var(--ink);border-color:var(--accent)}
+
+  .dockctrl{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel2);border-radius:6px;
+           padding:3px 7px 3px 8px;cursor:pointer;font-size:11px;color:var(--muted);position:relative}
+  .dockctrl:hover{border-color:var(--accent);color:var(--ink)}
+  .dockghost{display:flex;gap:1.5px;width:30px;height:14px;border:1px solid var(--line);border-radius:3px;overflow:hidden;padding:1px;flex:0 0 auto}
+  .dockghost.rev{flex-direction:row-reverse}
+  .gbox{flex:1;border-radius:1px;background:var(--line2)}
+  .gbox.gfiles{flex:0 0 40%;background:var(--accent-soft);border:1px solid var(--accent)}
+  .dockhint{font-size:9.5px;color:var(--muted);opacity:.75}
+
+  .filetoolbar{padding:9px 12px;border-bottom:1px solid var(--line2);display:flex;flex-direction:column;gap:8px}
+  .row1{display:flex;align-items:center;gap:8px}
+  .breadcrumb{display:flex;align-items:center;gap:3px;overflow-x:auto;flex:1 1 auto;min-width:0;font:12px var(--mono);white-space:nowrap;padding-bottom:2px}
+  .breadcrumb .seg{padding:3px 7px;border-radius:5px;color:var(--muted);cursor:pointer;flex:0 0 auto}
+  .breadcrumb .seg:hover{background:var(--line2);color:var(--ink)}
+  .breadcrumb .seg.cur{color:var(--ink);background:var(--accent-soft)}
+  .breadcrumb .sl{color:var(--line);flex:0 0 auto}
+  .gopath{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+  .gopath input{width:150px;font:12px var(--mono);background:var(--panel3);border:1px solid var(--line);color:var(--ink);
+                border-radius:6px;padding:5px 8px}
+  .gopath input:focus{outline:none;border-color:var(--accent)}
+  .row2{display:flex;align-items:center;gap:6px}
+  .row2 .sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+  .hiddencheck{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer;user-select:none}
+  .hiddencheck .box{width:13px;height:13px;border:1px solid var(--line);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;color:transparent}
+  .hiddencheck.on .box{background:var(--accent);border-color:var(--accent);color:#0b0d10}
+  .entrycount{margin-left:auto;color:var(--muted);font-size:11.5px}
+
+  .filetable-wrap{flex:1;overflow:auto}
+  table.files{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.files th{text-align:left;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+                 padding:7px 14px;border-bottom:1px solid var(--line2);position:sticky;top:0;background:var(--panel)}
+  table.files th.num,table.files td.num{text-align:right}
+  table.files td{padding:6px 14px;border-bottom:1px solid var(--line2);color:var(--ink);white-space:nowrap}
+  table.files tr.hidden-row{display:none}
+  table.files tr.hidden-row.show{display:table-row}
+  table.files tr:hover td{background:var(--panel2)}
+  table.files td.name{display:flex;align-items:center;gap:8px;font-family:var(--mono);white-space:normal;word-break:break-word}
+  table.files td.size,table.files td.mtime{font-family:var(--mono);color:var(--muted);text-align:right}
+  .fic{opacity:.85;flex:0 0 auto}
+
+  .term-main{flex:1;min-width:220px;background:var(--panel3);display:flex;flex-direction:column;min-height:0}
+  .term{flex:1;overflow:auto;color:#d7dde3;font:13px/1.68 var(--kitty);padding:14px 18px;white-space:pre-wrap;background:
+        radial-gradient(1200px 400px at 15% -20%, rgba(90,120,210,.05), transparent 60%), #0d0f13}
+  .term .p{color:#7fd8ad;font-weight:600}.term .d{color:#7fb6e6}.term .m{color:#7d8290}
+  .term .k{color:#e0a23e}.term .e{color:#e2685f}.term .path{color:#c9a6f0}
+
+  .statusbar{height:26px;flex:0 0 26px;background:var(--panel2);border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12px;color:var(--muted)}
+  .statusbar .sc{color:var(--ink)}.statusbar .gl{color:var(--accent)}.statusbar .right{margin-left:auto;display:flex;gap:16px}
+</style>
+</head>
+<body>
+<div class="wireframe-tag">DESIGN MOCKUP v3 · SSH/SFTP · MobaXterm-inspired session model · static, no app code<br>
+<b>🏠 Home</b> tab → sidebar = saved-connections tree, main = connection manager · <b>session</b> tab → sidebar SWAPS to that session's file browser, main = terminal.</div>
+
+<div class="window">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="brand"><span class="gl">✦</span> sid</div>
+    <div class="vsep"></div>
+    <span class="scope-lbl">scope</span>
+    <div class="scope">
+      <button aria-selected="false"><span class="dot"></span>Global</button>
+      <button aria-selected="true"><span class="dot"></span>acme-api</button>
+      <button aria-selected="false"><span class="dot"></span>payments-svc</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="ico-btn">Search actions<kbd>⌘K</kbd></div>
+  </div>
+
+  <!-- app tab strip -->
+  <div class="tabstrip">
+    <div class="tab" aria-selected="true"><span class="ic">⌁</span>SSH / SFTP<span class="ct">2</span></div>
+    <div class="tab"><span class="ic">▤</span>Database<span class="ct">1</span></div>
+    <div class="tab"><span class="ic">⇅</span>Network<span class="ct">7</span></div>
+    <div class="tab"><span class="ic">▢</span>Workspaces<span class="ct">3</span></div>
+    <div class="tab"><span class="ic">⚙</span>System</div>
+    <div class="grow"></div>
+    <div class="tab right"><span class="ic">◐</span>Settings</div>
+  </div>
+
+  <div class="content">
+
+    <!-- session tab strip: 🏠 home (icon-only) · one tab per live connection · add -->
+    <div class="sesstabs" id="sesstabs"></div>
+
+    <!-- ============ HOME state ============ -->
+    <div class="sshview active" id="view-home">
+      <div class="split">
+        <!-- saved-connections tree -->
+        <div class="tree-sidebar">
+          <div class="quickconnect">
+            <div class="row">
+              <input id="quickConnect" placeholder="Quick connect… user@host:port" spellcheck="false">
+              <button class="btn sm" title="Connect">⏎</button>
+            </div>
+            <span class="hint">saved hosts below · origin badge shows global vs workspace</span>
+          </div>
+          <div class="tree-scroll" id="tree"></div>
+        </div>
+        <div class="divider" id="divHome"><div class="grip"></div></div>
+
+        <!-- connection screen / host manager -->
+        <div class="host-main">
+          <div class="vhead">
+            <h2>Connections</h2>
+            <span class="sub">8 saved hosts · 1 folder collapsed</span>
+            <div class="right"><button class="btn primary">＋ New connection</button></div>
+          </div>
+          <div class="recent-strip" id="recentStrip"></div>
+          <div class="hostsTable-wrap">
+            <table class="hosts">
+              <thead><tr><th>name</th><th>address</th><th>folder</th><th>origin</th><th>last connected</th><th></th></tr></thead>
+              <tbody id="hostsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SESSION state ============ -->
+    <div class="sshview" id="view-session">
+      <div class="sessionbar" id="sessionbar"></div>
+      <div class="split" id="splitSession">
+        <!-- sidebar SWAPS to this session's file browser (tree is gone) -->
+        <div class="files-sidebar" id="filesSidebar">
+          <div class="filehead">
+            Files · <span id="fileHost" style="color:var(--ink);font-weight:650;margin-left:2px"></span>
+            <div class="right">
+              <div class="dockctrl" id="dockCtrl" title="Toggle dock side — also draggable to either edge in the real app; side is a persisted setting">
+                <span id="dockLabel">⇄ dock right</span>
+                <span class="dockghost" id="dockGhost"><span class="gbox gterm"></span><span class="gbox gfiles"></span></span>
+              </div>
+            </div>
+          </div>
+          <div class="filetoolbar">
+            <div class="row1">
+              <div class="breadcrumb" id="breadcrumb"></div>
+              <div class="gopath">
+                <input id="gopathInput" spellcheck="false">
+                <button class="btn sm" id="btnGo">Go</button>
+              </div>
+            </div>
+            <div class="row2">
+              <button class="iconbtn" id="btnUp" title="Up one level">↑ up</button>
+              <button class="iconbtn" id="btnRefresh" title="Refresh">⟳ refresh</button>
+              <div class="row2 sep"></div>
+              <div class="hiddencheck on" id="hiddenToggle"><span class="box">✓</span> hidden files</div>
+              <span class="entrycount" id="entrycount"></span>
+            </div>
+          </div>
+          <div class="filetable-wrap">
+            <table class="files">
+              <thead><tr><th>name</th><th class="num">size</th><th class="num">modified</th></tr></thead>
+              <tbody id="filetbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="divider" id="divSession"><div class="grip"></div></div>
+        <div class="term-main">
+          <div class="term" id="term"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="statusbar">
+    <span>scope: <span class="sc">acme-api</span></span>
+    <span id="stCount">2 sessions live · 1 global · 1 workspace</span>
+    <div class="right"><span id="stActive">🏠 home</span><span class="gl">✦ cosmos</span></div>
+  </div>
+</div>
+
+<script>
+  // ---- saved hosts: folders + flat entries, origin = global | workspace name ----
+  const HOSTS = {
+    murphy:  {label:'murphy@10.1.41.6',  addr:'murphy@10.1.41.6:22',              folder:'—',            badge:null,        last:'now · live'},
+    nas:     {label:'nas',               addr:'nas@10.1.50.10:22',                folder:'homelab',      badge:null,        last:'3d ago'},
+    pihole:  {label:'pihole',            addr:'root@10.1.50.2:22',                folder:'homelab',      badge:null,        last:'11d ago'},
+    proxmox: {label:'proxmox',           addr:'root@10.1.50.6:8006',              folder:'homelab',      badge:null,        last:'2d ago'},
+    web1:    {label:'web-1',             addr:'deploy@web-1.acme.internal:22',    folder:'work/prod',    badge:'acme-api',  last:'now · live'},
+    web2:    {label:'web-2',             addr:'deploy@web-2.acme.internal:22',    folder:'work/prod',    badge:'acme-api',  last:'6h ago'},
+    dbhost:  {label:'db-host',           addr:'postgres@db-host.acme.internal:22',folder:'work/prod',    badge:'acme-api',  last:'yesterday'},
+    bastion: {label:'bastion',           addr:'jump@bastion.acme.io:22',          folder:'work/prod',    badge:'acme-api',  last:'2d ago'},
+    staging: {label:'staging-web',       addr:'deploy@staging.acme.io:22',        folder:'work/staging', badge:'acme-api',  last:'5d ago'},
+  };
+  const RECENT = ['web1','murphy','staging'];
+
+  // ---- per-session terminal + filesystem state ----
+  const SESSIONS = {
+    murphy: {
+      term:
+`<span class="m"># personal box — global host, no workspace</span>
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ git -C ~/vcs/sid status -sb
+## main...origin/main
+ <span class="k">M</span> crates/sid/src/ui/session.rs
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  238G   84G   142G  38% /
+<span class="p">murphy@10.1.41.6</span>:<span class="d">~</span>$ ▏`,
+      auth:'ed25519 key', uptime:'00:42:17',
+      path:'/home/murphy',
+      fs:{
+        '/':[
+          {n:'home',t:'dir',s:'—',m:'2026-03-01 00:00'},
+          {n:'etc',t:'dir',s:'—',m:'2026-02-11 00:00'},
+        ],
+        '/home/murphy':[
+          {n:'vcs',t:'dir',s:'—',m:'2026-07-01 08:40'},
+          {n:'projects',t:'dir',s:'—',m:'2026-06-30 09:12'},
+          {n:'notes.md',t:'file',s:'1.1 KB',m:'2026-06-28 21:55'},
+          {n:'.bashrc',t:'file',s:'3.6 KB',m:'2026-05-02 08:11',hidden:true},
+          {n:'.ssh',t:'dir',s:'—',m:'2026-04-11 19:40',hidden:true},
+        ],
+      },
+    },
+    web1: {
+      term:
+`<span class="m"># acme-api front-end box</span>
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ docker compose ps
+NAME                IMAGE              STATUS              PORTS
+acme-api-web-1      acme/api:2.9.1     Up 14 hours         0.0.0.0:3000-&gt;3000/tcp
+acme-api-worker-1   acme/api:2.9.1     Up 14 hours
+acme-api-redis-1    redis:7-alpine     Up 3 days           6379/tcp
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ tail -n 3 logs/access.log
+10.1.4.22 - - [02/Jul/2026:14:02:11] "GET /v1/health HTTP/1.1" 200 12
+10.1.4.9  - - [02/Jul/2026:14:02:13] "POST /v1/orders HTTP/1.1" 201 340
+10.1.4.22 - - [02/Jul/2026:14:02:14] "GET /v1/health HTTP/1.1" 200 12
+<span class="p">deploy@web-1</span>:<span class="path">/opt/acme-api/releases/current</span>$ ▏`,
+      auth:'ed25519 key (acme-api)', uptime:'02:11:03',
+      path:'/opt/acme-api/releases/current',
+      fs:{
+        '/opt/acme-api/releases':[
+          {n:'current',t:'dir',s:'—',m:'2026-06-27 08:55'},
+          {n:'v2.9.0',t:'dir',s:'—',m:'2026-06-20 11:02'},
+        ],
+        '/opt/acme-api/releases/current':[
+          {n:'bin',t:'dir',s:'—',m:'2026-06-27 09:00'},
+          {n:'logs',t:'dir',s:'—',m:'2026-07-02 14:02'},
+          {n:'node_modules',t:'dir',s:'—',m:'2026-06-27 08:58'},
+          {n:'server.js',t:'file',s:'8.9 KB',m:'2026-06-27 08:55'},
+          {n:'docker-compose.yml',t:'file',s:'3.4 KB',m:'2026-06-20 11:30'},
+          {n:'.env',t:'file',s:'1.2 KB',m:'2026-06-27 08:50',hidden:true},
+        ],
+      },
+    },
+  };
+  // fresh-connection placeholder used when the demo opens a host with no rich transcript yet
+  function freshSession(h){
+    const user = h.addr.split('@')[0];
+    const home = user === 'root' ? '/root' : `/home/${user}`;
+    return {
+      term:`<span class="m"># fresh connection</span>\n<span class="p">${user}@${h.label}</span>:<span class="d">~</span>$ ▏`,
+      auth:'key auth', uptime:'00:00:00', path:home,
+      fs:{ [home]:[{n:'.bashrc',t:'file',s:'3.1 KB',m:'2026-04-01 09:00',hidden:true}] },
+    };
+  }
+
+  let order = ['murphy','web1'];   // live session tabs
+  let active = 'home';             // 'home' | a HOSTS key
+  let showHidden = true;
+  let dockSide = 'left';           // files-sidebar dock side — persisted setting
+
+  function renderTabs(){
+    const el = document.getElementById('sesstabs');
+    let html = `<div class="sesstab home" aria-selected="${active==='home'}" data-key="home" title="Home">🏠</div>`;
+    html += order.map(key=>{
+      const h = HOSTS[key];
+      const sel = key===active ? 'aria-selected="true"' : 'aria-selected="false"';
+      const wb = h.badge ? `<span class="wsbadge">${h.badge}</span>` : '';
+      return `<div class="sesstab" ${sel} data-key="${key}"><span class="dot"></span><span class="host">${h.label}</span>${wb}<span class="x" data-close="${key}">×</span></div>`;
+    }).join('');
+    html += `<div class="sesstab-add" id="tabAdd" title="New tab (opens Home)">＋</div>`;
+    el.innerHTML = html;
+    el.querySelectorAll('.sesstab').forEach(t=>t.onclick=(e)=>{
+      if(e.target.dataset.close) return;
+      active = t.dataset.key; renderAll();
+    });
+    el.querySelectorAll('.x').forEach(x=>x.onclick=(e)=>{ e.stopPropagation(); closeSession(x.dataset.close); });
+    document.getElementById('tabAdd').onclick = ()=>{ active='home'; renderAll(); };
+  }
+
+  function closeSession(key){
+    const ix = order.indexOf(key);
+    if(ix===-1) return;
+    order.splice(ix,1);
+    if(active===key) active = order[Math.max(0, ix-1)] || 'home';
+    renderAll();
+  }
+
+  function connectHost(key){
+    if(!order.includes(key)) order.push(key);
+    if(!SESSIONS[key]) SESSIONS[key] = freshSession(HOSTS[key]);
+    active = key;
+    renderAll();
+  }
+
+  // ---- HOME: tree ----
+  function badgeHtml(b){ return b ? `<span class="badge w">${b}</span>` : `<span class="badge g">⌂ Global</span>`; }
+
+  function renderTree(){
+    const el = document.getElementById('tree');
+    el.innerHTML = `
+      <div class="hostrow" style="--depth:0" data-host="murphy">
+        <span class="ic">🖥</span><span class="nm">murphy@10.1.41.6</span><span class="live"></span>
+        <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+      </div>
+
+      <div class="tnode" style="--depth:0"><span class="tcaret" data-t="t-homelab">▾</span><span class="ic">▾</span><span class="lbl">homelab</span></div>
+      <div class="tchildren" id="t-homelab">
+        <div class="hostrow" style="--depth:1" data-host="nas">
+          <span class="ic">📦</span><span class="nm">nas</span><span class="addr">10.1.50.10:22</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+        <!-- mid inline-rename, VS-Code style: label replaced by an edit field, not a dialog -->
+        <div class="rename-wrap" style="--depth:1">
+          <span class="ic">📦</span>
+          <input class="rename-input" id="renameInput" value="pihole-dns" spellcheck="false">
+          <span class="rename-flag">renaming · Enter/Esc</span>
+        </div>
+        <div class="hostrow" style="--depth:1" data-host="proxmox">
+          <span class="ic">📦</span><span class="nm">proxmox</span><span class="addr">10.1.50.6:8006</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+      </div>
+
+      <div class="tnode" style="--depth:0"><span class="tcaret" data-t="t-prod">▾</span><span class="ic">▾</span><span class="lbl">work/prod</span><span class="wsb">acme-api</span></div>
+      <div class="tchildren" id="t-prod">
+        <div class="hostrow force-hover" style="--depth:1" data-host="web1">
+          <span class="ic">🖥</span><span class="nm">web-1</span><span class="live"></span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+        <div class="hostrow" style="--depth:1" data-host="web2">
+          <span class="ic">🖥</span><span class="nm">web-2</span><span class="addr">web-2.acme.internal</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+        <div class="hostrow" style="--depth:1" data-host="dbhost">
+          <span class="ic">🖥</span><span class="nm">db-host</span><span class="addr">db-host.acme.internal</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+        <div class="hostrow" style="--depth:1" data-host="bastion">
+          <span class="ic">🖥</span><span class="nm">bastion</span><span class="addr">bastion.acme.io</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+      </div>
+
+      <div class="tnode" style="--depth:0"><span class="tcaret" data-t="t-staging">▸</span><span class="ic">▸</span><span class="lbl">work/staging</span><span class="wsb">acme-api</span></div>
+      <div class="tchildren collapsed" id="t-staging">
+        <div class="hostrow" style="--depth:1" data-host="staging">
+          <span class="ic">🖥</span><span class="nm">staging-web</span><span class="addr">staging.acme.io</span>
+          <span class="actions"><span class="aic" data-act="connect" title="Connect (Enter)">⚡</span><span class="aic" title="Rename (F2)">✎</span><span class="aic danger" title="Delete">🗑</span></span>
+        </div>
+      </div>`;
+
+    el.querySelectorAll('.tcaret[data-t]').forEach(c=>{
+      c.onclick = (e)=>{
+        e.stopPropagation();
+        const t = document.getElementById(c.dataset.t);
+        const collapsed = t.classList.toggle('collapsed');
+        c.textContent = collapsed ? '▸' : '▾';
+      };
+    });
+    el.querySelectorAll('.hostrow[data-host]').forEach(row=>{
+      row.addEventListener('click', (e)=>{
+        if(e.target.closest('.aic')) return;
+        connectHost(row.dataset.host);
+      });
+    });
+    el.querySelectorAll('.aic[data-act="connect"]').forEach(a=>{
+      a.addEventListener('click', (e)=>{ e.stopPropagation(); connectHost(a.closest('.hostrow').dataset.host); });
+    });
+  }
+
+  function renderRecent(){
+    document.getElementById('recentStrip').innerHTML = RECENT.map(key=>{
+      const h = HOSTS[key];
+      const live = order.includes(key) ? '<span class="hostrow live" style="display:inline-block"></span>' : '';
+      return `<div class="recent-card" data-host="${key}">
+        <div class="nm">${h.label}${live}</div>
+        <div class="addr">${h.addr}</div>
+        <div class="meta">${badgeHtml(h.badge)} · ${h.last}</div>
+      </div>`;
+    }).join('');
+    document.querySelectorAll('.recent-card').forEach(c=>c.onclick=()=>connectHost(c.dataset.host));
+  }
+
+  function renderHostsTable(){
+    document.getElementById('hostsBody').innerHTML = Object.keys(HOSTS).map(key=>{
+      const h = HOSTS[key];
+      const live = order.includes(key) ? '<span class="hostrow live" style="display:inline-block"></span>' : '';
+      return `<tr data-host="${key}">
+        <td class="name">🖥 ${h.label}${live}</td>
+        <td class="addr">${h.addr}</td>
+        <td class="folder">${h.folder}</td>
+        <td>${badgeHtml(h.badge)}</td>
+        <td>${h.last}</td>
+        <td class="actions"><span class="rowact">
+          <button class="btn sm primary" data-act="connect">⚡ Connect</button>
+          <button class="btn sm" title="Rename">✎</button>
+          <button class="btn sm danger" title="Delete">🗑</button>
+        </span></td>
+      </tr>`;
+    }).join('');
+    document.querySelectorAll('table.hosts tbody tr').forEach(tr=>{
+      tr.querySelector('[data-act="connect"]').onclick = ()=>connectHost(tr.dataset.host);
+    });
+  }
+
+  // ---- SESSION: sessionbar + file browser + terminal ----
+  function renderSessionBar(){
+    const h = HOSTS[active], s = SESSIONS[active];
+    document.getElementById('sessionbar').innerHTML = `
+      <span class="dot"></span>
+      <span class="conn">${h.addr}</span> ${badgeHtml(h.badge)}
+      <span class="sep">·</span><span class="meta">${s.auth}</span>
+      <span class="sep">·</span><span class="meta">up ${s.uptime}</span>
+      <div class="right"><button class="btn danger" id="btnDisconnect">← Disconnect</button></div>`;
+    document.getElementById('btnDisconnect').onclick = ()=>closeSession(active);
+    document.getElementById('fileHost').textContent = h.label;
+  }
+
+  function human(seg){ return seg==='' ? '/' : seg; }
+  function renderBreadcrumb(){
+    const s = SESSIONS[active];
+    const parts = s.path.split('/').filter(Boolean);
+    let acc = '';
+    const crumbs = [{label:'/', path:'/'}];
+    parts.forEach(p=>{ acc += '/'+p; crumbs.push({label:p, path:acc}); });
+    const el = document.getElementById('breadcrumb');
+    el.innerHTML = crumbs.map((c,i)=>{
+      const cur = c.path === s.path ? ' cur' : '';
+      const sep = i>0 ? '<span class="sl">/</span>' : '';
+      return `${sep}<span class="seg${cur}" data-path="${c.path}">${human(c.label)}</span>`;
+    }).join('');
+    el.querySelectorAll('.seg').forEach(seg=>seg.onclick=()=>{
+      const p = seg.dataset.path;
+      if(SESSIONS[active].fs[p]){ SESSIONS[active].path = p; renderAll(); }
+    });
+    document.getElementById('gopathInput').value = s.path;
+  }
+
+  function renderFileRows(){
+    const s = SESSIONS[active];
+    const entries = s.fs[s.path] || [];
+    const rows = entries.slice().sort((a,b)=> (a.t===b.t) ? a.n.localeCompare(b.n) : (a.t==='dir'?-1:1));
+    document.getElementById('filetbody').innerHTML = rows.map(e=>{
+      const icon = e.t==='dir' ? '📁' : '📄';
+      const hiddenCls = e.hidden ? ' hidden-row'+(showHidden?' show':'') : '';
+      return `<tr class="${hiddenCls.trim()}"><td class="name"><span class="fic">${icon}</span>${e.n}</td><td class="size num">${e.s}</td><td class="mtime num">${e.m}</td></tr>`;
+    }).join('');
+    const visible = rows.filter(e=>!e.hidden || showHidden).length;
+    document.getElementById('entrycount').textContent = `${visible} entries`;
+  }
+
+  function renderTerm(){
+    document.getElementById('term').innerHTML = SESSIONS[active].term;
+  }
+
+  function updateDockUi(){
+    const wrap = document.getElementById('splitSession');
+    wrap.classList.toggle('dockright', dockSide==='right');
+    const ghost = document.getElementById('dockGhost');
+    // ghost previews the OPPOSITE (target) side you'd move to on click
+    ghost.classList.toggle('rev', dockSide==='right');
+    document.getElementById('dockLabel').textContent = dockSide==='left' ? '⇄ dock right' : '⇄ dock left';
+  }
+
+  function renderAll(){
+    renderTabs();
+    renderTree();
+    renderRecent();
+    renderHostsTable();
+
+    document.getElementById('view-home').classList.toggle('active', active==='home');
+    document.getElementById('view-session').classList.toggle('active', active!=='home');
+
+    if(active!=='home'){
+      renderSessionBar();
+      renderTerm();
+      renderBreadcrumb();
+      renderFileRows();
+      updateDockUi();
+    }
+
+    document.getElementById('stActive').textContent = active==='home' ? '🏠 home' : `⌁ ${HOSTS[active].label} active`;
+    document.getElementById('stCount').textContent = `${order.length} sessions live · 1 global · ${Math.max(0,order.length-1)} workspace`;
+  }
+
+  // ---- file browser toolbar wiring ----
+  document.getElementById('btnUp').onclick = ()=>{
+    if(active==='home') return;
+    const s = SESSIONS[active];
+    const parts = s.path.split('/').filter(Boolean);
+    parts.pop();
+    const parent = '/'+parts.join('/');
+    const norm = parent==='' ? '/' : parent;
+    if(s.fs[norm]){ s.path = norm; renderAll(); }
+  };
+  document.getElementById('btnRefresh').onclick = ()=>{
+    const t = document.getElementById('btnRefresh');
+    t.style.transform='rotate(180deg)'; setTimeout(()=>t.style.transform='',180);
+  };
+  document.getElementById('btnGo').onclick = ()=>{
+    if(active==='home') return;
+    const v = document.getElementById('gopathInput').value.trim() || '/';
+    const s = SESSIONS[active];
+    if(s.fs[v]){ s.path = v; renderAll(); }
+    else { const inp=document.getElementById('gopathInput'); inp.style.borderColor='var(--danger)'; setTimeout(()=>inp.style.borderColor='',500); }
+  };
+  document.getElementById('gopathInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('btnGo').click(); });
+  const hiddenToggle = document.getElementById('hiddenToggle');
+  hiddenToggle.onclick = ()=>{
+    showHidden = !showHidden;
+    hiddenToggle.classList.toggle('on', showHidden);
+    renderFileRows();
+  };
+
+  // ---- dock-side toggle (persisted setting; also draggable in the real app) ----
+  document.getElementById('dockCtrl').onclick = ()=>{
+    dockSide = dockSide==='left' ? 'right' : 'left';
+    updateDockUi();
+  };
+
+  // ---- draggable dividers ----
+  function makeResizable(dividerId, targetEl, wrapId, opts){
+    const wrap = document.getElementById(wrapId);
+    const divider = document.getElementById(dividerId);
+    let dragging = false;
+    divider.addEventListener('pointerdown', e=>{ dragging = true; divider.classList.add('active'); divider.setPointerCapture(e.pointerId); });
+    divider.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const rect = wrap.getBoundingClientRect();
+      if(opts.mode==='px-left'){
+        let px = e.clientX - rect.left;
+        px = Math.min(opts.max, Math.max(opts.min, px));
+        targetEl.style.flex = `0 0 ${px}px`;
+      } else if(opts.mode==='pct'){
+        let pct = (e.clientX - rect.left) / rect.width * 100;
+        pct = Math.min(opts.max, Math.max(opts.min, pct));
+        targetEl.style.flex = `0 0 ${pct}%`;
+      }
+    });
+    ['pointerup','pointercancel'].forEach(ev=>divider.addEventListener(ev, ()=>{ dragging=false; divider.classList.remove('active'); }));
+  }
+  makeResizable('divHome', document.querySelector('.tree-sidebar'), 'view-home', {mode:'px-left', min:220, max:420});
+  makeResizable('divSession', document.getElementById('filesSidebar'), 'splitSession', {mode:'px-left', min:220, max:520});
+
+  renderAll();
+</script>
+</body>
+</html>
