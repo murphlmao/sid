@@ -47,11 +47,14 @@ async fn live_sshd_agent_exec_shell_sftp() {
     );
 
     // 3. open_shell → feed output through Vt100Screen → styled cells non-empty.
-    let mut shell = client
+    // `open_shell` returns the read/write halves separately (Bug 1 fix: a shared
+    // mutex across both meant a write awaiting flow-control window could starve the
+    // read loop) — write via the writer, read via the reader.
+    let (mut shell_reader, mut shell_writer) = client
         .open_shell("xterm-256color", 24, 80)
         .await
         .expect("open shell");
-    shell
+    shell_writer
         .write(b"printf '\\033[31mRED\\033[0m\\n'\n")
         .await
         .expect("shell write");
@@ -59,13 +62,13 @@ async fn live_sshd_agent_exec_shell_sftp() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     // Drive the screen through the trait object the GPUI view (Plan 3C) will hold.
     let mut screen: Box<dyn TerminalScreen> = Box::new(Vt100Screen::new(24, 80));
-    let bytes = shell.try_read().await.expect("shell read");
+    let bytes = shell_reader.try_read().await.expect("shell read");
     assert!(!bytes.is_empty(), "shell should have produced output");
     screen.feed(&bytes);
     let cells = screen.cells();
     let non_empty = cells.iter().flatten().any(|c| !c.text.is_empty());
     assert!(non_empty, "styled cell grid should have visible content");
-    shell.close().await.expect("shell close");
+    shell_writer.close().await.expect("shell close");
 
     // 4. sftp list("/tmp") returns entries.
     let mut sftp = client.open_sftp().await.expect("open sftp");

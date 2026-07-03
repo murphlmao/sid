@@ -116,11 +116,25 @@ pub struct SftpEntry {
     pub mode: u32,
 }
 
-/// An interactive shell session.
+/// The read half of an interactive shell session.
+///
+/// Split from the write half (see [`SshShellWriter`]) so a caller can hold the
+/// two behind independent locks: a single dedicated task owns the reader
+/// outright (no lock needed at all — see `sid/src/ui/session.rs`'s read loop),
+/// while the writer sits behind its own mutex for `send_input`/`resize`/
+/// `disconnect`'s mutual exclusion. Before this split, a single
+/// `Arc<Mutex<Box<dyn SshShell>>>` meant a write awaiting SSH flow-control
+/// window (e.g. during a large paste on a congested link) held the lock for the
+/// whole `.await` and starved the read loop — a real terminal freeze.
 #[async_trait]
-pub trait SshShell: Send + Sync {
-    async fn write(&mut self, bytes: &[u8]) -> Result<(), SshError>;
+pub trait SshShellReader: Send + Sync {
     async fn try_read(&mut self) -> Result<Vec<u8>, SshError>;
+}
+
+/// The write half of an interactive shell session: input, PTY resize, and close.
+#[async_trait]
+pub trait SshShellWriter: Send + Sync {
+    async fn write(&mut self, bytes: &[u8]) -> Result<(), SshError>;
     async fn resize(&mut self, rows: u16, cols: u16) -> Result<(), SshError>;
     async fn close(&mut self) -> Result<(), SshError>;
 }
@@ -148,12 +162,14 @@ pub trait SshClient: Send + Sync {
     async fn disconnect(&mut self) -> Result<(), SshError>;
     fn is_connected(&self) -> bool;
     async fn exec(&mut self, cmd: &str) -> Result<ExecResult, SshError>;
+    /// Open an interactive PTY shell, returning its read half and write half
+    /// separately — see [`SshShellReader`]/[`SshShellWriter`] for why they're split.
     async fn open_shell(
         &mut self,
         term: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<Box<dyn SshShell>, SshError>;
+    ) -> Result<(Box<dyn SshShellReader>, Box<dyn SshShellWriter>), SshError>;
     async fn open_sftp(&mut self) -> Result<Box<dyn SftpSession>, SshError>;
 }
 
@@ -162,20 +178,28 @@ mod tests {
     use super::*;
 
     // Object-safety: the connect flow (Plan 3C) holds an `SshClient` behind a
-    // `Box<dyn ...>`, so all three traits must stay object-safe. These are
+    // `Box<dyn ...>`, so all four traits must stay object-safe. These are
     // compile-only checks — if a trait gains a non-dispatchable method this
     // stops compiling.
     #[allow(dead_code)]
-    fn assert_object_safe(_c: &dyn SshClient, _s: &dyn SshShell, _f: &dyn SftpSession) {}
+    fn assert_object_safe(
+        _c: &dyn SshClient,
+        _r: &dyn SshShellReader,
+        _w: &dyn SshShellWriter,
+        _f: &dyn SftpSession,
+    ) {
+    }
 
     #[test]
     fn boxed_trait_objects_construct() {
         // Prove the boxed forms name real types (no allocation of a real impl).
         fn takes_client(_: Box<dyn SshClient>) {}
-        fn takes_shell(_: Box<dyn SshShell>) {}
+        fn takes_shell_reader(_: Box<dyn SshShellReader>) {}
+        fn takes_shell_writer(_: Box<dyn SshShellWriter>) {}
         fn takes_sftp(_: Box<dyn SftpSession>) {}
         let _ = takes_client;
-        let _ = takes_shell;
+        let _ = takes_shell_reader;
+        let _ = takes_shell_writer;
         let _ = takes_sftp;
     }
 

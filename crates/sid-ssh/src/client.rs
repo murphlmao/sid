@@ -12,7 +12,10 @@ use russh::{
     client::{Config, Handle, Handler},
     keys::{Algorithm, PublicKey},
 };
-use sid_core::ssh::{ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShell};
+use sid_core::ssh::{
+    ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShellReader,
+    SshShellWriter,
+};
 
 use crate::auth::authenticate;
 use crate::known_hosts::{self, Verdict};
@@ -275,7 +278,7 @@ impl SshClient for RusshClient {
         term: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<Box<dyn SshShell>, SshError> {
+    ) -> Result<(Box<dyn SshShellReader>, Box<dyn SshShellWriter>), SshError> {
         let handle = self.handle.as_mut().ok_or(SshError::NotConnected)?;
         let channel = handle
             .channel_open_session()
@@ -286,7 +289,8 @@ impl SshClient for RusshClient {
             .await
             .map_err(map_russh_error)?;
         channel.request_shell(true).await.map_err(map_russh_error)?;
-        Ok(Box::new(crate::shell::RusshShell::new(channel)))
+        let (reader, writer) = crate::shell::split(channel);
+        Ok((Box::new(reader), Box::new(writer)))
     }
 
     async fn open_sftp(&mut self) -> Result<Box<dyn SftpSession>, SshError> {

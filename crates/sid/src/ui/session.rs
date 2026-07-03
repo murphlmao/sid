@@ -29,7 +29,7 @@ use gpui::{
     SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred, div, font, point,
     prelude::*, px, rgb, rgba, uniform_list,
 };
-use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShell};
+use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use sid_secrets::SecretStore;
 use sid_ssh::RusshClientFactory;
@@ -61,7 +61,7 @@ const SIDEBAR_WIDTH: Pixels = px(320.);
 
 /// How often the read-loop hops onto the Tokio runtime to drain the shell's output buffer.
 // ponytail: fixed-interval poll, not event-driven — fine at ~30Hz for a terminal; revisit only
-// if `SshShell` grows a readable-notify.
+// if `SshShellReader` grows a readable-notify.
 const POLL_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Placeholder pane size until the viewport-driven resize computes the real one.
@@ -99,7 +99,12 @@ pub enum SessionStatus {
     Closed,
 }
 
-type SharedShell = Arc<AsyncMutex<Box<dyn SshShell>>>;
+// Only the writer is ever shared/locked — the reader is owned outright by
+// `start_read_loop`'s single task (moved in by value), so it needs no `Arc`/lock at
+// all. That asymmetry is the fix for the mutex-across-await freeze this module used
+// to have: a write awaiting SSH flow-control window could no longer hold a lock the
+// read loop needs, because there is no such shared lock anymore.
+type SharedShellWriter = Arc<AsyncMutex<Box<dyn SshShellWriter>>>;
 type SharedSftp = Arc<AsyncMutex<Box<dyn SftpSession>>>;
 type SharedClient = Arc<AsyncMutex<Box<dyn SshClient>>>;
 
@@ -130,7 +135,10 @@ pub struct SshSession {
 
     // ---- shell / terminal (Plan 3C) -----------------------------------------------------
     screen: Box<dyn TerminalScreen>,
-    shell: Option<SharedShell>,
+    /// The shell's write half only — `send_input`/`resize`/`disconnect` need mutual
+    /// exclusion among themselves, but must never serialize against the read loop, which
+    /// owns the read half outright (see [`Self::start_read_loop`]).
+    shell: Option<SharedShellWriter>,
     rows: u16,
     cols: u16,
     focus_handle: FocusHandle,
@@ -221,8 +229,13 @@ impl SshSession {
         let rows = self.rows;
         let cols = self.cols;
         cx.spawn(async move |this, cx| {
-            type Triple = (Box<dyn SshClient>, Box<dyn SshShell>, Box<dyn SftpSession>);
-            let connect_outcome: Result<Triple, String> = async {
+            type Quad = (
+                Box<dyn SshClient>,
+                Box<dyn SshShellReader>,
+                Box<dyn SshShellWriter>,
+                Box<dyn SftpSession>,
+            );
+            let connect_outcome: Result<Quad, String> = async {
                 let secret = secret?;
                 let (spec, auth) = connect_params(&host, secret)?;
                 let factory = RusshClientFactory::new(known_hosts_path);
@@ -230,20 +243,21 @@ impl SshSession {
                 let handle = ssh_runtime().spawn(async move {
                     client.connect(&spec, &auth).await?;
                     // Both channels open on the *same* client — one connection, one auth.
-                    let shell = client.open_shell("xterm-256color", rows, cols).await?;
+                    let (shell_reader, shell_writer) =
+                        client.open_shell("xterm-256color", rows, cols).await?;
                     let sftp = client.open_sftp().await?;
-                    Ok::<_, SshError>((client, shell, sftp))
+                    Ok::<_, SshError>((client, shell_reader, shell_writer, sftp))
                 });
                 match handle.await {
-                    Ok(Ok(triple)) => Ok(triple),
+                    Ok(Ok(quad)) => Ok(quad),
                     Ok(Err(e)) => Err(e.to_string()),
                     Err(join_err) => Err(format!("connect task panicked: {join_err}")),
                 }
             }
             .await;
 
-            let (client, shell, sftp) = match connect_outcome {
-                Ok(triple) => triple,
+            let (client, shell_reader, shell_writer, sftp) = match connect_outcome {
+                Ok(quad) => quad,
                 Err(err) => {
                     let _ = this.update(cx, |session, cx| {
                         session.status = SessionStatus::Failed(err);
@@ -255,13 +269,15 @@ impl SshSession {
 
             // The shell/sftp channels are live; mark the session Connected before the
             // (best-effort) initial listing, so a slow or failing `list` never blocks the
-            // terminal from being usable.
+            // terminal from being usable. Only the writer goes behind a shared lock — the
+            // reader is handed straight to `start_read_loop`, which moves it into its own
+            // task by value (see that method's doc comment).
             let _ = this.update(cx, |session, cx| {
                 session.client = Some(Arc::new(AsyncMutex::new(client)));
-                session.shell = Some(Arc::new(AsyncMutex::new(shell)));
+                session.shell = Some(Arc::new(AsyncMutex::new(shell_writer)));
                 session.status = SessionStatus::Connected;
                 session.needs_focus = true;
-                session.start_read_loop(cx);
+                session.start_read_loop(shell_reader, cx);
                 cx.notify();
             });
 
@@ -303,32 +319,46 @@ impl SshSession {
         .detach();
     }
 
-    fn start_read_loop(&mut self, cx: &mut Context<Self>) {
-        let Some(shell) = self.shell.clone() else {
-            return;
-        };
+    /// Poll the shell's read half on its own dedicated task, which owns it outright by
+    /// value — no `Arc`/lock at all, since nothing else ever touches it. This is the
+    /// other half of the mutex-across-await fix: before the `SshShell` trait split, this
+    /// loop shared one lock with `send_input`/`resize`, so a write awaiting SSH
+    /// flow-control window (e.g. mid-paste on a congested link) held that lock for its
+    /// whole `.await` and starved this loop — a real terminal freeze. Now the reader has
+    /// no lock to be starved behind.
+    fn start_read_loop(&mut self, reader: Box<dyn SshShellReader>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut reader = reader;
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
-                // `RusshShell::try_read` always returns `Ok` (it just drains a buffer — it
-                // never learns the channel closed), so `disconnect()` setting `status` is the
-                // only signal this loop gets; check it before every read rather than relying
-                // on the read ever erroring out. Without this, disconnecting while some other
-                // strong `Entity<SshSession>` handle keeps the session alive would leak this
-                // task polling forever.
+                // `SshShellReader::try_read` always returns `Ok` (it just drains a buffer —
+                // it never learns the channel closed), so `disconnect()` setting `status` is
+                // the only signal this loop gets; check it before every read rather than
+                // relying on the read ever erroring out. Without this, disconnecting while
+                // some other strong `Entity<SshSession>` handle keeps the session alive would
+                // leak this task polling forever.
                 let still_connected = this
                     .update(cx, |session, _cx| {
                         session.status == SessionStatus::Connected
                     })
                     .unwrap_or(false);
                 if !still_connected {
+                    // Dropping `reader` here runs `RusshShellReader::Drop`, which aborts its
+                    // background pump task — the read loop's own shutdown is what triggers
+                    // the adapter-internal one.
                     return;
                 }
-                let shell = shell.clone();
-                let read = ssh_runtime().spawn(async move { shell.lock().await.try_read().await });
-                let bytes = match read.await {
-                    Ok(Ok(bytes)) => bytes,
-                    Ok(Err(_)) | Err(_) => {
+                // Hand `reader` to the ssh_runtime task by value and get it back alongside
+                // the read's result — the same "loan it out, take it back" shape the
+                // sftp-listing task below already uses — so the loop keeps sole ownership
+                // across ticks with no lock in between.
+                let read = ssh_runtime().spawn(async move {
+                    let result = reader.try_read().await;
+                    (reader, result)
+                });
+                let (returned_reader, bytes) = match read.await {
+                    Ok((reader, Ok(bytes))) => (reader, bytes),
+                    Ok((_, Err(_))) | Err(_) => {
                         // Adapter error or a panicked join — the session is done either way.
                         let _ = this.update(cx, |session, cx| {
                             session.status = SessionStatus::Closed;
@@ -337,6 +367,7 @@ impl SshSession {
                         return;
                     }
                 };
+                reader = returned_reader;
                 let has_output = !bytes.is_empty();
                 let updated = this.update(cx, |session, cx| {
                     if has_output {
