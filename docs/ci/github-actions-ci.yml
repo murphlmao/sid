@@ -1,0 +1,90 @@
+# sid CI — kept lean per CLAUDE.md ("heavy CI" is deferred until the surface
+# stabilizes; this is the one piece of test automation Murphy asked for
+# explicitly). Three jobs, in increasing cost:
+#
+#   fast        — every push/PR. fmt + clippy + the default (non-#[ignore]d)
+#                 `cargo test --workspace`. No Docker, no network services.
+#   integration — Docker-backed: brings up postgres + a throwaway sshd
+#                 (docker/docker-compose.test.yml) and runs the `#[ignore]`d
+#                 suites in crates/sid-db and crates/sid-ssh against them via
+#                 scripts/test-integration.sh / scripts/test-ssh.sh — the
+#                 same scripts a developer runs locally, so CI and local
+#                 reproduce identically.
+#   smoke       — headless launch-survives check for the `sid` binary
+#                 (Xvfb + Lavapipe software Vulkan; NOT pixel/golden-image
+#                 diffing). `continue-on-error`: see
+#                 docs/design/2026-07-02-testing-strategy.md for why this
+#                 job is informational rather than a hard gate.
+#
+# See docs/design/2026-07-02-testing-strategy.md for the full rationale.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: fast (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test (default suite, no Docker)
+        run: cargo test --workspace
+
+  integration:
+    name: integration (docker postgres + sshd)
+    runs-on: ubuntu-latest
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: DB adapter — Docker Postgres integration suite
+        run: scripts/test-integration.sh
+
+      - name: SSH adapter — Docker sshd integration suite
+        run: scripts/test-ssh.sh
+
+  smoke:
+    name: smoke (headless launch-survives)
+    runs-on: ubuntu-latest
+    needs: fast
+    # `continue-on-error`, not because it's unreliable — locally it passed
+    # 4/4 clean runs (Xvfb + Lavapipe genuinely works) — but because this is
+    # its first exposure to GitHub's hosted runners, a different environment
+    # than where it was validated. See docs/design/2026-07-02-testing-strategy.md
+    # ("Executive decision: headless GPUI smoke"). Promote to a hard gate
+    # once it's shown green on hosted runners for a while.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + run the headless smoke container
+        run: |
+          docker build -f docker/headless-smoke/Dockerfile -t sid-headless-smoke .
+          docker run --rm sid-headless-smoke
