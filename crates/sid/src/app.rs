@@ -117,6 +117,12 @@ pub struct AppState {
     pub(crate) scopes: Vec<ScopeChoice>,
     hosts: Vec<Attributed<Host>>,
     pub(crate) error: Option<String>,
+    /// An informational status line (currently just the startup secret-backend
+    /// resolution message — see `AppState::new`'s `startup_message` param) — kept
+    /// separate from `error` so `ssh_tab`'s status line doesn't prefix it with
+    /// `error: ` the way a genuine failure is (cosmetic fix, perf audit follow-up:
+    /// the backend-resolution message is informational, not a failure).
+    pub(crate) status: Option<String>,
     /// The open host add/edit modal, if any.
     form: Option<Entity<HostForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
@@ -151,11 +157,18 @@ impl AppState {
     /// `secret_file` is `Some` exactly when the encrypted-file backend is effective
     /// (see `open_secrets`) — its presence, plus whether a vault already exists on
     /// disk, decides whether the startup unlock-or-create modal opens. `startup_message`
-    /// (which backend is live, plus any warning/recommendation) is surfaced through the
-    /// same error/status line store errors use — informational, not necessarily a
-    /// failure (Murphy wants to see which backend is live either way).
+    /// (which backend is live, plus any warning/recommendation) is informational, not
+    /// necessarily a failure (Murphy wants to see which backend is live either way) —
+    /// it lands in `self.status`, not `self.error` (see that field's doc comment).
+    ///
+    /// `seed_lists` is `open_store`'s `seed_if_empty` call, already read (and, on a
+    /// first launch, re-read post-seed) — see [`SeedLists`]'s doc comment. Consuming it
+    /// via [`Self::apply_seed_lists`] here means this constructor doesn't immediately
+    /// re-issue the same hosts/workspaces reads `seed_if_empty` just did (perf audit
+    /// finding #7).
     pub fn new(
         store: Store,
+        seed_lists: SeedLists,
         secrets: Box<dyn SecretStore>,
         secret_file: Option<Arc<EncryptedFileStore>>,
         startup_message: Option<String>,
@@ -173,6 +186,7 @@ impl AppState {
             scopes: Vec::new(),
             hosts: Vec::new(),
             error: None,
+            status: None,
             form: None,
             _form_subscription: None,
             armed_delete: None,
@@ -182,26 +196,39 @@ impl AppState {
             secret_unlock: None,
             _secret_unlock_subscription: None,
         };
-        state.reload_scopes();
-        state.refresh();
-        // Set after the initial refresh so it isn't wiped by the successful read; it
-        // stays visible until the next store event replaces it.
-        if startup_message.is_some() {
-            state.error = startup_message;
-        }
+        state.apply_seed_lists(seed_lists);
+        // Set after the initial seed-list apply so it isn't wiped by it; it stays
+        // visible until the next store event replaces `self.status`.
+        state.status = startup_message;
         if let Some(handle) = secret_file {
             state.open_secret_unlock(handle, window, cx);
         }
         state
     }
 
-    /// Rebuild the scope switcher entries: Global + each registered workspace.
-    fn reload_scopes(&mut self) {
+    /// Populate the initial scope switcher + host list from `seed_lists` — the reads
+    /// `open_store`'s `seed_if_empty` already performed — instead of re-issuing
+    /// `list_workspaces`/`read_hosts` here (perf audit finding #7). Builds the scope
+    /// switcher the same way the (pre-this-change) `reload_scopes` did, and the host
+    /// list the same way [`Self::refresh`] does, in the same order (workspaces first,
+    /// hosts second) so the error-handling priority matches exactly: a hosts-read
+    /// success clears `self.error` even over a stale workspaces-read error, matching
+    /// `refresh`'s existing "freshest word on `self.error`" contract — for the one case
+    /// both ever ran against, `Scope::Global` with `ViewFilters::default()`.
+    ///
+    /// At `Scope::Global`, `Store::read_hosts` is exactly `list_hosts()` mapped into
+    /// `Attributed { origin: Scope::Global, duplicate: false, .. }` — no workspace ever
+    /// enters the Global-scope composition (`sid_store::composer::compose` with
+    /// `workspace: None`) — so reusing `seed_lists.hosts` here is not an approximation,
+    /// it's the identical result `refresh()` would have read.
+    fn apply_seed_lists(&mut self, seed_lists: SeedLists) {
+        self.armed_delete = None;
+
         let mut scopes = vec![ScopeChoice {
             label: "Global".into(),
             scope: Scope::Global,
         }];
-        match self.store.global().list_workspaces() {
+        match seed_lists.workspaces {
             Ok(list) => {
                 for w in list {
                     scopes.push(ScopeChoice {
@@ -210,9 +237,27 @@ impl AppState {
                     });
                 }
             }
-            Err(e) => self.error = Some(e.to_string()),
+            Err(e) => self.error = Some(e),
         }
         self.scopes = scopes;
+
+        match seed_lists.hosts {
+            Ok(hosts) => {
+                self.hosts = hosts
+                    .into_iter()
+                    .map(|item| Attributed {
+                        item,
+                        origin: Scope::Global,
+                        duplicate: false,
+                    })
+                    .collect();
+                self.error = None;
+            }
+            Err(e) => {
+                self.hosts = Vec::new();
+                self.error = Some(e);
+            }
+        }
     }
 
     /// Re-query the composed host list for the current scope + filters. Any refresh
@@ -638,9 +683,15 @@ impl AppState {
         }
 
         let count = self.hosts.len();
-        let sub: SharedString = match &self.error {
-            Some(e) => format!("error: {e}").into(),
-            None => format!("{count} hosts · union of this scope, deduped").into(),
+        // A real error always wins (matches the pre-`status`-field priority); absent
+        // that, an informational `status` (e.g. the startup secret-backend line) shows
+        // plainly — no `error: ` prefix, since it isn't one. Cosmetic fix: this used to
+        // be `self.error` doing double duty for both, so a normal "secrets: OS keyring"
+        // notice rendered as "error: secrets: OS keyring".
+        let sub: SharedString = match (&self.error, &self.status) {
+            (Some(e), _) => format!("error: {e}").into(),
+            (None, Some(s)) => s.clone().into(),
+            (None, None) => format!("{count} hosts · union of this scope, deduped").into(),
         };
 
         div()
@@ -997,15 +1048,39 @@ pub fn data_dir() -> std::path::PathBuf {
 }
 
 /// Open the global store, seeding a small demo set on first run so the attributive
-/// composition is visible immediately.
-pub fn open_store() -> Store {
+/// composition is visible immediately. Also returns the post-seed hosts/workspaces
+/// lists `seed_if_empty` read while doing so — see [`SeedLists`] and
+/// [`AppState::apply_seed_lists`] (perf audit finding #7).
+pub fn open_store() -> (Store, SeedLists) {
     let dir = data_dir();
     let _ = std::fs::create_dir_all(&dir);
     // Distinct filename from the archived TUI POC's `sid.redb` (incompatible schema at the
     // same machine-global path) so the rebuild starts from a clean store.
     let store = Store::open(&dir.join("store.redb")).expect("open sid store");
-    seed_if_empty(&store, &dir);
-    store
+    let seed_lists = seed_if_empty(&store, &dir);
+    (store, seed_lists)
+}
+
+/// The hosts + workspaces lists `seed_if_empty` reads while checking whether the global
+/// store needs first-launch seeding — threaded back through `open_store` so
+/// `AppState::new` doesn't immediately re-read the same two tables (perf audit finding
+/// #7). Errors are converted to `String` (the same `e.to_string()`
+/// `reload_scopes`/`refresh` already do) since nothing downstream needs the original
+/// `StoreError`.
+///
+/// **Regression trap** (see `docs/design/2026-07-02-perf-audit.md` finding #7): these
+/// must be the lists AFTER any seeding `seed_if_empty` performs — never its pre-seed
+/// emptiness-check reads. On a first launch `list_hosts()`/`list_workspaces()` start
+/// empty and `seed_if_empty` then WRITES the demo rows; returning that pre-write
+/// snapshot would show a first-launch user an empty host list despite demo data
+/// landing on disk (`seed_if_empty`'s own tests cover both cases).
+///
+/// Deliberately does *not* carry a `connections` list — `DbTabState::new` (in
+/// `ui::db_tab`, out of this change's scope) still re-reads that table itself, so
+/// there'd be nothing to consume a third field.
+pub struct SeedLists {
+    pub(crate) hosts: Result<Vec<Host>, String>,
+    pub(crate) workspaces: Result<Vec<WorkspaceMeta>, String>,
 }
 
 /// Resolve and open the effective secret backend from the persisted
@@ -1076,15 +1151,22 @@ pub(crate) fn secret_status_message(
     msg
 }
 
-fn seed_if_empty(store: &Store, dir: &std::path::Path) {
-    let no_hosts = store
-        .global()
-        .list_hosts()
-        .map(|h| h.is_empty())
-        .unwrap_or(false);
-    let no_ws = store
-        .global()
-        .list_workspaces()
+/// Seed a small demo dataset into `store` on first run (see the module-level doc on
+/// `open_store`), and return the post-seed hosts/workspaces lists — see [`SeedLists`]'s
+/// doc comment for the regression trap this guards against.
+///
+/// The two initial reads below (`hosts_before`/`workspaces_before`) double as both the
+/// emptiness gate (unchanged from before this function returned anything) AND, in the
+/// common already-populated-store case, the returned lists themselves — nothing
+/// changed, so there is nothing to re-read. Only the (rare, first-launch-only) branch
+/// that actually writes seed rows re-reads those two tables, to fulfil the "post-seed"
+/// contract; the already-populated case pays zero extra reads.
+fn seed_if_empty(store: &Store, dir: &std::path::Path) -> SeedLists {
+    let hosts_before = store.global().list_hosts();
+    let no_hosts = hosts_before.as_ref().map(|h| h.is_empty()).unwrap_or(false);
+    let workspaces_before = store.global().list_workspaces();
+    let no_ws = workspaces_before
+        .as_ref()
         .map(|w| w.is_empty())
         .unwrap_or(false);
 
@@ -1120,7 +1202,10 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
     }
 
     if !(no_hosts && no_ws) {
-        return;
+        return SeedLists {
+            hosts: hosts_before.map_err(|e| e.to_string()),
+            workspaces: workspaces_before.map_err(|e| e.to_string()),
+        };
     }
 
     let global = |alias: &str, user: &str, host: &str| Host {
@@ -1154,6 +1239,14 @@ fn seed_if_empty(store: &Store, dir: &std::path::Path) {
     );
     let _ = store.write_host(&global("prod", "deploy", "prod.acme-api.internal"), &ws);
     let _ = store.write_host(&global("vps-1", "admin", "5.5.5.5"), &ws); // duplicates global vps-1
+
+    // Regression trap (see `SeedLists`'s doc comment): `hosts_before`/`workspaces_before`
+    // are now stale — they were read before the writes above landed. Re-read so the
+    // caller gets the lists INCLUDING the rows just seeded, not the pre-seed snapshot.
+    SeedLists {
+        hosts: store.global().list_hosts().map_err(|e| e.to_string()),
+        workspaces: store.global().list_workspaces().map_err(|e| e.to_string()),
+    }
 }
 
 // ---- row-action routing (pure, unit-tested) ---------------------------------
@@ -1264,6 +1357,96 @@ mod tests {
         assert_eq!(
             msg,
             "secrets: encrypted-file vault (locked — unlock to use)"
+        );
+    }
+}
+
+/// Perf audit finding #7's regression trap, guarded: `seed_if_empty` must return the
+/// POST-seed lists, never the pre-seed emptiness-check snapshot — a naive shortcut
+/// would show a first-launch user an empty host/workspace list despite demo data
+/// having just landed on disk.
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+
+    fn open_test_store(dir: &std::path::Path) -> Store {
+        Store::open(&dir.join("store.redb")).expect("open test store")
+    }
+
+    /// An already-populated store (the common case, and the far more frequent one
+    /// once the SSH slice is in daily use) trips `seed_if_empty`'s emptiness gate —
+    /// no demo rows get written, and the returned lists must be exactly what's
+    /// already on disk.
+    #[test]
+    fn seed_if_empty_returns_existing_lists_when_store_already_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+
+        let existing = Host {
+            alias: "existing".into(),
+            user: "u".into(),
+            host: "h".into(),
+            port: 22,
+            secret_ref: None,
+            auth: AuthMethod::default(),
+            folder: None,
+        };
+        store
+            .write_host(&existing, &Scope::Global)
+            .expect("seed a pre-existing host");
+        let ws_root = dir.path().join("ws");
+        std::fs::create_dir_all(&ws_root).unwrap();
+        let ws_id = WorkspaceId::from_root(&ws_root);
+        store
+            .register_workspace(&WorkspaceMeta {
+                id: ws_id,
+                root: ws_root,
+                name: "pre-existing-ws".into(),
+            })
+            .expect("seed a pre-existing workspace");
+
+        let seeded = seed_if_empty(&store, dir.path());
+
+        let hosts = seeded.hosts.expect("hosts read ok");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].alias, "existing");
+        let workspaces = seeded.workspaces.expect("workspaces read ok");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].name, "pre-existing-ws");
+
+        // No demo seeding should have piled on top of the already-populated store.
+        assert_eq!(store.global().list_hosts().unwrap().len(), 1);
+        assert_eq!(store.global().list_workspaces().unwrap().len(), 1);
+    }
+
+    /// The regression trap itself: on a brand-new store, `seed_if_empty` WRITES the
+    /// demo hosts/workspace *after* its own emptiness check — the returned lists must
+    /// reflect that write, not the empty pre-seed snapshot.
+    #[test]
+    fn seed_if_empty_returns_the_just_seeded_rows_on_a_fresh_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_test_store(dir.path());
+
+        let seeded = seed_if_empty(&store, dir.path());
+
+        let hosts = seeded.hosts.expect("hosts read ok");
+        assert!(
+            !hosts.is_empty(),
+            "a fresh store's seeded host list must not be empty \
+             (the naive pre-seed-snapshot bug this test guards against)"
+        );
+        let workspaces = seeded.workspaces.expect("workspaces read ok");
+        assert!(
+            !workspaces.is_empty(),
+            "a fresh store's seeded workspace list must not be empty"
+        );
+
+        // The returned lists must match what's now actually on disk, not just be
+        // non-empty by coincidence.
+        assert_eq!(hosts.len(), store.global().list_hosts().unwrap().len());
+        assert_eq!(
+            workspaces.len(),
+            store.global().list_workspaces().unwrap().len()
         );
     }
 }
