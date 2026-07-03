@@ -92,4 +92,58 @@ mod tests {
         let e = classify_stderr("", "");
         assert!(matches!(e, SvcError::Other(m) if m.is_empty()));
     }
+
+    #[test]
+    fn plain_permission_denied_text_is_permission_denied() {
+        // "Permission denied" (no "Access") is a distinct substring branch from
+        // "Access denied" — exercise it directly rather than relying on the
+        // "Access denied" case to stand in for the whole permission family.
+        let e = classify_stderr("Permission denied\n", "x.service");
+        assert!(matches!(e, SvcError::PermissionDenied(_)));
+    }
+
+    #[test]
+    fn operation_not_permitted_is_permission_denied() {
+        let e = classify_stderr("Operation not permitted\n", "x.service");
+        assert!(matches!(e, SvcError::PermissionDenied(_)));
+    }
+
+    #[test]
+    fn bare_not_found_substring_is_not_found() {
+        // Exercises the `"not found"` branch directly — the existing coverage only
+        // hit the sibling `"could not be found"` branch via a realistic systemd
+        // message. `"could not be found"` does NOT contain the literal substring
+        // `"not found"` (there's a `"be "` in between), so these are genuinely
+        // two different matches in `classify_stderr`, not one test standing in
+        // for both.
+        let e = classify_stderr("Unit foo.service not found\n", "foo.service");
+        match e {
+            SvcError::NotFound(name) => assert_eq!(name, "foo.service"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn not_found_with_no_target_unit_uses_trimmed_stderr_as_message() {
+        // `unit == ""` is the `list-units`-call shape: there's no single target,
+        // so the message falls back to the trimmed stderr text itself.
+        let e = classify_stderr("  some unit not found somewhere  \n", "");
+        match e {
+            SvcError::NotFound(name) => assert_eq!(name, "some unit not found somewhere"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn permission_denied_is_checked_before_not_found_when_both_match() {
+        // Adversarial stderr matching both branches' substrings: permission
+        // classification must win (it's checked first in `classify_stderr`) since
+        // "needs root" is the more actionable message for the caller than
+        // "unit not found".
+        let e = classify_stderr("Access denied: unit not found\n", "x.service");
+        assert!(
+            matches!(e, SvcError::PermissionDenied(_)),
+            "permission-denied branch takes precedence"
+        );
+    }
 }
