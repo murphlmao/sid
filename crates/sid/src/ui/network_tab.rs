@@ -268,6 +268,18 @@ impl NetworkTabState {
         self.visible_interfaces = visible.into_iter().filter(name_matches).cloned().collect();
         self.hidden_interfaces = hidden.into_iter().filter(name_matches).cloned().collect();
     }
+
+    /// Move keyboard focus into the shared filter [`TextInput`] — `Action::FocusFilter`'s
+    /// (`Ctrl+F`/`Ctrl+/`) target, dispatched from `app::dispatch_action`. A no-op before
+    /// the Network tab has painted once (`ensure_network_widgets` hasn't built `filter`
+    /// yet, e.g. `Ctrl+F` pressed while another primary tab is active — `dispatch_action`
+    /// already gates the call on `active_tab == Tab::Network`, but the tab could in
+    /// principle be active without ever having rendered).
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &App) {
+        if let Some(filter) = &self.filter {
+            filter.read(cx).focus(window);
+        }
+    }
 }
 
 /// Backs the ports [`Table`]. Constructed empty by `ensure_network_widgets`, then

@@ -46,6 +46,10 @@ pub enum Action {
     Settings,
     /// Toggle the keyboard cheat-sheet overlay.
     CheatSheet,
+    /// Focus the active tab's find/filter box. Currently wired to the Network tab's
+    /// shared filter `TextInput` only (`app::dispatch_action`); a no-op everywhere else
+    /// until later tabs grow their own filter input.
+    FocusFilter,
 }
 
 impl Action {
@@ -69,6 +73,7 @@ impl Action {
             Action::CloseSession => "Close SSH Session",
             Action::Settings => "Settings",
             Action::CheatSheet => "Keyboard Shortcuts",
+            Action::FocusFilter => "Find / Filter",
         }
     }
 }
@@ -89,6 +94,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::CloseSession,
     Action::Settings,
     Action::CheatSheet,
+    Action::FocusFilter,
 ];
 
 /// Whether the keyboard focus is currently inside a live SSH terminal pane — the one
@@ -261,6 +267,17 @@ pub fn default_bindings() -> Vec<Binding> {
         // fire while some other widget (a text field, most importantly) holds keyboard
         // focus, so a literal `?` typed anywhere is never stolen.
         binding(chord("?", false, None), NormalOnly, Action::CheatSheet),
+        // Find/filter: no terminal-focus fallback is bound (the tabs that currently wire
+        // this — Network — have no terminal), so plain `NormalOnly` is enough; inside a
+        // focused terminal both chords simply resolve to `None` and pass through as their
+        // usual shell control codes (`Ctrl+F` forward-char, `Ctrl+/` undo, in readline's
+        // emacs mode).
+        binding(
+            chord("f", true, Some(false)),
+            NormalOnly,
+            Action::FocusFilter,
+        ),
+        binding(chord("/", true, None), NormalOnly, Action::FocusFilter),
     ];
 
     for (n, digit) in [(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")] {
@@ -527,6 +544,31 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_f_and_ctrl_slash_focus_filter_outside_a_terminal() {
+        let bindings = default_bindings();
+        assert_eq!(
+            resolve(&ctrl("f"), FocusContext::Normal, &bindings),
+            Some(Action::FocusFilter)
+        );
+        assert_eq!(
+            resolve(&ctrl("/"), FocusContext::Normal, &bindings),
+            Some(Action::FocusFilter)
+        );
+    }
+
+    #[test]
+    fn ctrl_f_and_ctrl_slash_pass_through_inside_a_focused_terminal() {
+        let bindings = default_bindings();
+        // No `TerminalOnly` fallback is bound for either chord — unlike the
+        // command-palette/session letter accelerators, the tabs that currently wire
+        // `FocusFilter` (Network) have no terminal, so there's nothing to fall back to.
+        // `None` here means the keystroke reaches the PTY untouched, same as any other
+        // unbound-in-terminal shell control code.
+        assert_eq!(resolve(&ctrl("f"), FocusContext::Terminal, &bindings), None);
+        assert_eq!(resolve(&ctrl("/"), FocusContext::Terminal, &bindings), None);
+    }
+
+    #[test]
     fn cheat_sheet_bare_question_mark_only_in_normal_context() {
         let bindings = default_bindings();
         assert_eq!(
@@ -630,6 +672,13 @@ mod tests {
         assert_eq!(
             primary_shortcut(Action::PrimaryTab(3), &bindings).as_deref(),
             Some("Ctrl+3")
+        );
+        // `FocusFilter` has two `NormalOnly` bindings (`Ctrl+F`, `Ctrl+/`) and no
+        // `TerminalOnly` one at all — the first non-`TerminalOnly` binding registered
+        // wins, which is `Ctrl+F` (registration order in `default_bindings`).
+        assert_eq!(
+            primary_shortcut(Action::FocusFilter, &bindings).as_deref(),
+            Some("Ctrl+F")
         );
     }
 }
