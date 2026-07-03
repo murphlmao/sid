@@ -13,14 +13,16 @@
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, FontWeight, SharedString, Subscription, Window, anchored,
-    deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
+    ClickEvent, Context, Entity, FontWeight, KeyDownEvent, SharedString, Subscription, Window,
+    anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
+use crate::keymap::{self, Action, FocusContext};
+use crate::ui::command_palette::PaletteState;
 use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
@@ -164,6 +166,12 @@ pub struct AppState {
     secret_unlock: Option<Entity<SecretUnlockModal>>,
     /// Keeps the modal's event subscription alive exactly as long as it's open.
     _secret_unlock_subscription: Option<Subscription>,
+    /// The command palette's open/query/selection state (`Ctrl+K`) — `None` when
+    /// closed. `pub(crate)` so `ui::command_palette`'s `impl AppState` block (same
+    /// convention as `ui::db_tab`/`ui::ssh_home`) can read/mutate it directly.
+    pub(crate) palette: Option<PaletteState>,
+    /// The `?` keyboard cheat-sheet overlay's open state.
+    cheat_sheet_open: bool,
 }
 
 /// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
@@ -233,6 +241,8 @@ impl AppState {
             network,
             secret_unlock: None,
             _secret_unlock_subscription: None,
+            palette: None,
+            cheat_sheet_open: false,
         };
         state.apply_seed_lists(seed_lists);
         // Set after the initial seed-list apply so it isn't wiped by it; it stays
@@ -714,6 +724,285 @@ impl AppState {
             label = format!("{label} · dup").into();
         }
         (label, color)
+    }
+
+    // ---- keyboard-driven system (2026-07-02 plan) -----------------------------
+
+    /// Whether a modal that should own the keyboard exclusively is open (the host or DB
+    /// connection form, the secret-vault unlock/create modal). The root key dispatcher
+    /// stays out of the way entirely while one of these is up — `ui::command_palette`'s
+    /// `toggle_palette` already declines to open *over* one for the same reason.
+    pub(crate) fn blocking_modal_open(&self) -> bool {
+        self.form.is_some() || self.db.form.is_some() || self.secret_unlock.is_some()
+    }
+
+    /// Whether the active SSH session's terminal currently holds keyboard focus — the
+    /// one axis [`FocusContext`] is gated on (see that type's doc comment in `keymap.rs`
+    /// for why: a focused terminal needs first dibs on `Ctrl+<letter>`).
+    fn focus_context(&self, window: &mut Window, cx: &mut Context<Self>) -> FocusContext {
+        let terminal_focused = self
+            .active_session
+            .and_then(|ix| self.ssh_sessions.get(ix))
+            .is_some_and(|tab| {
+                tab.session
+                    .read(cx)
+                    .terminal_focus_handle()
+                    .is_focused(window)
+            });
+        if terminal_focused {
+            FocusContext::Terminal
+        } else {
+            FocusContext::Normal
+        }
+    }
+
+    /// The root-level key handler, registered with `.capture_key_down` on the outermost
+    /// element (see `Render::render` below) so it sees every keystroke **before** any
+    /// descendant — the terminal included — gets a chance at it. It only
+    /// `cx.stop_propagation()`s the keystrokes it actually claims; everything else
+    /// (including, deliberately, plain `Ctrl+<letter>` while a terminal is focused)
+    /// falls through untouched to whatever's actually focused.
+    fn handle_root_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocking_modal_open() {
+            return;
+        }
+
+        let key = event.keystroke.key.as_str();
+        let m = &event.keystroke.modifiers;
+        let plain_ctrl = m.control && !m.alt && !m.shift && !m.platform;
+
+        // While the palette is open, it claims its own navigation keys outright. These
+        // aren't `keymap` registry entries (they're palette-internal, not global
+        // actions reachable any other way), so they're special-cased here rather than
+        // resolved below.
+        if self.palette.is_some() {
+            match key {
+                "escape" => {
+                    cx.stop_propagation();
+                    self.close_palette(cx);
+                    return;
+                }
+                "enter" => {
+                    cx.stop_propagation();
+                    self.palette_confirm(window, cx);
+                    return;
+                }
+                "up" => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(-1, cx);
+                    return;
+                }
+                "down" => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(1, cx);
+                    return;
+                }
+                "n" if plain_ctrl => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(1, cx);
+                    return;
+                }
+                "p" if plain_ctrl => {
+                    cx.stop_propagation();
+                    self.palette_move_selection(-1, cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.cheat_sheet_open && key == "escape" {
+            cx.stop_propagation();
+            self.cheat_sheet_open = false;
+            cx.notify();
+            return;
+        }
+
+        let focus = self.focus_context(window, cx);
+        let Some(action) = keymap::resolve(&event.keystroke, focus, &keymap::default_bindings())
+        else {
+            return;
+        };
+
+        // The one rule `keymap::resolve`'s pure `(Keystroke, FocusContext)` lookup can't
+        // express on its own: the bare `?` cheat-sheet binding must never steal a
+        // literal `?` from whatever text field currently has focus. Every text-entry
+        // widget in this app calls `track_focus`, so "nothing at all is focused" is a
+        // safe, generic proxy for "you're not mid-typing somewhere" — it never swallows
+        // a real keystroke; the only cost is the cheat sheet occasionally staying closed
+        // when some non-text focus holder (e.g. a keyboard-navigable list) has focus.
+        if action == Action::CheatSheet && window.focused(cx).is_some() {
+            return;
+        }
+
+        cx.stop_propagation();
+        self.dispatch_action(action, window, cx);
+    }
+
+    /// Route a resolved [`Action`] to whatever it does. `handle_root_key_down` above and
+    /// the palette's `Enter` confirm (`ui::command_palette::palette_confirm`) are the
+    /// only two callers.
+    pub(crate) fn dispatch_action(
+        &mut self,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            Action::CommandPalette => self.toggle_palette(window, cx),
+            Action::PrimaryTab(n) => {
+                if let Some(ix) = (n as usize).checked_sub(1)
+                    && let Some(&tab) = Tab::ALL.get(ix)
+                {
+                    self.active_tab = tab;
+                    self.close_palette(cx);
+                    cx.notify();
+                }
+            }
+            Action::CycleTabForward => self.cycle_tabs(false, cx),
+            Action::CycleTabBack => self.cycle_tabs(true, cx),
+            Action::NewSession => {
+                if self.active_tab == Tab::Ssh {
+                    self.new_session(cx);
+                }
+            }
+            Action::CloseSession => {
+                if self.active_tab == Tab::Ssh
+                    && let Some(ix) = self.active_session
+                {
+                    self.close_session(ix, cx);
+                }
+            }
+            Action::Settings => {
+                // No dedicated Settings screen exists yet (Settings -> Keymap rebinding
+                // is explicitly deferred, per the plan) — `Tab::System` is the nearest
+                // stand-in until one is built.
+                self.active_tab = Tab::System;
+                self.close_palette(cx);
+                cx.notify();
+            }
+            Action::CheatSheet => {
+                self.cheat_sheet_open = !self.cheat_sheet_open;
+                self.close_palette(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// `Ctrl+Tab`/`Ctrl+Shift+Tab`: cycle session tabs while the SSH tab is active,
+    /// primary tabs everywhere else — the plan's "universal cycle".
+    fn cycle_tabs(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        if self.active_tab == Tab::Ssh {
+            self.active_session =
+                cycle_session_index(self.active_session, self.ssh_sessions.len(), backwards);
+        } else {
+            let len = Tab::ALL.len();
+            let current = Tab::ALL
+                .iter()
+                .position(|&t| t == self.active_tab)
+                .unwrap_or(0);
+            self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
+        }
+        cx.notify();
+    }
+
+    /// The `?` cheat-sheet overlay: one row per [`keymap::Action`] naming its default
+    /// shortcut. Same `deferred`/`anchored` backdrop pattern as every other overlay
+    /// here.
+    fn cheat_sheet_overlay(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if !self.cheat_sheet_open {
+            return None;
+        }
+        let bindings = keymap::default_bindings();
+        let viewport = window.viewport_size();
+        let rows: Vec<_> = keymap::ALL_ACTIONS
+            .iter()
+            .map(|&action| {
+                let shortcut = keymap::primary_shortcut(action, &bindings).unwrap_or_default();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .px_3()
+                    .py_1()
+                    .child(div().text_sm().text_color(rgb(FG)).child(action.label()))
+                    .child(div().text_sm().text_color(rgb(BRAND)).child(shortcut))
+            })
+            .collect();
+
+        Some(
+            deferred(
+                anchored().position(point(px(0.), px(0.))).child(
+                    div()
+                        .id("cheat-sheet-backdrop")
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .bg(rgba(0x000000a8))
+                        .child(
+                            div()
+                                .w(px(420.))
+                                .flex()
+                                .flex_col()
+                                .bg(rgb(TITLEBAR_BG))
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .rounded_md()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px_3()
+                                        .py_2()
+                                        .border_b_1()
+                                        .border_color(rgb(BORDER))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(FG))
+                                                .child("Keyboard Shortcuts"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("cheat-sheet-close")
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_md()
+                                                .cursor_pointer()
+                                                .text_color(rgb(FG_DIM))
+                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .child("✕ close")
+                                                .on_click(cx.listener(
+                                                    |this, _ev: &ClickEvent, _window, cx| {
+                                                        this.cheat_sheet_open = false;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(div().flex().flex_col().py_1().children(rows)),
+                        ),
+                ),
+            )
+            .with_priority(2),
+        )
     }
 
     // ---- rendering helpers --------------------------------------------------
@@ -1271,18 +1560,28 @@ impl Render for AppState {
             .with_priority(1)
         });
 
+        // Keyboard-driven system (2026-07-02 plan): the palette + cheat-sheet overlays,
+        // and the root-level key handler that opens/dispatches them. `capture_key_down`
+        // runs *before* any descendant (the terminal included) sees the keystroke — see
+        // `handle_root_key_down`'s doc comment for why that ordering is load-bearing.
+        let palette_overlay = self.palette_overlay(window, cx);
+        let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(BG))
             .text_color(rgb(FG))
+            .capture_key_down(cx.listener(Self::handle_root_key_down))
             .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
             .children(db_overlay)
             .children(secret_overlay)
+            .children(palette_overlay)
+            .children(cheat_sheet_overlay)
     }
 }
 
@@ -1553,6 +1852,38 @@ pub(crate) fn next_active_after_close(
     }
 }
 
+/// Wrap-around index cycling over `len` items (`Ctrl+Tab`/`Ctrl+Shift+Tab` on primary
+/// tabs). Same algorithm as `ui::text_input::next_focus_index` (the Tab/Shift+Tab form
+/// field cycler) — kept as its own tiny pure function here rather than reaching across
+/// the `ui` module's privacy boundary for a two-line formula.
+pub(crate) fn cycle_index(current: usize, len: usize, backwards: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if backwards {
+        if current == 0 { len - 1 } else { current - 1 }
+    } else {
+        (current + 1) % len
+    }
+}
+
+/// `Ctrl+Tab`/`Ctrl+Shift+Tab` on the SSH tab: cycle the virtual sequence [🏠 Home,
+/// session 0, session 1, ..., session `len - 1`] and back to Home — Home is its own stop,
+/// not skipped over between sessions. `len` is `ssh_sessions.len()`.
+pub(crate) fn cycle_session_index(
+    active: Option<usize>,
+    len: usize,
+    backwards: bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let total = len + 1; // + the Home slot
+    let current = active.map(|ix| ix + 1).unwrap_or(0);
+    let next = cycle_index(current, total, backwards);
+    if next == 0 { None } else { Some(next - 1) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1616,6 +1947,52 @@ mod tests {
     fn close_the_last_remaining_tab_goes_home() {
         // Closing the only tab (len_after 0) returns to 🏠 home.
         assert_eq!(next_active_after_close(Some(0), 0, 0), None);
+    }
+
+    // ---- keyboard-driven system: tab/session cycling (pure) ----------------------
+
+    #[test]
+    fn cycle_index_wraps_forward_and_backward() {
+        assert_eq!(cycle_index(0, 3, false), 1);
+        assert_eq!(cycle_index(2, 3, false), 0);
+        assert_eq!(cycle_index(0, 3, true), 2);
+        assert_eq!(cycle_index(2, 3, true), 1);
+        // Degenerate: nothing to cycle among.
+        assert_eq!(cycle_index(0, 0, false), 0);
+        assert_eq!(cycle_index(0, 0, true), 0);
+    }
+
+    #[test]
+    fn cycle_session_index_has_no_sessions_to_offer() {
+        // No live sessions: stays on Home regardless of direction.
+        assert_eq!(cycle_session_index(None, 0, false), None);
+        assert_eq!(cycle_session_index(None, 0, true), None);
+    }
+
+    #[test]
+    fn cycle_session_index_visits_home_as_its_own_stop() {
+        // [Home, 0, 1] forward from Home lands on session 0.
+        assert_eq!(cycle_session_index(None, 2, false), Some(0));
+        // Forward from the last session wraps back to Home, not straight to session 0.
+        assert_eq!(cycle_session_index(Some(1), 2, false), None);
+        // Backward from Home wraps to the last session.
+        assert_eq!(cycle_session_index(None, 2, true), Some(1));
+        // Backward from session 0 lands on Home.
+        assert_eq!(cycle_session_index(Some(0), 2, true), None);
+    }
+
+    #[test]
+    fn cycle_session_index_full_forward_loop_returns_to_start() {
+        let len = 3;
+        let mut active = None;
+        let mut seen = vec![active];
+        for _ in 0..(len + 1) {
+            active = cycle_session_index(active, len, false);
+            seen.push(active);
+        }
+        // Home -> 0 -> 1 -> 2 -> Home: a full loop of `len + 1` stops returns to start.
+        assert_eq!(seen.first(), seen.last());
+        assert_eq!(seen[0], None);
     }
 
     #[test]
