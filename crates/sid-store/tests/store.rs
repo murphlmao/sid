@@ -30,6 +30,7 @@ fn host(alias: &str, user: &str) -> Host {
         port: 22,
         secret_ref: None,
         auth: AuthMethod::default(),
+        folder: None,
     }
 }
 
@@ -40,6 +41,7 @@ fn connection(id: &str, name: &str) -> DbConnection {
         secret_ref: None,
         kind: DbKind::Postgres,
         name: name.into(),
+        folder: None,
     }
 }
 
@@ -412,5 +414,203 @@ fn connection_demote_refuses_when_workspace_already_has_the_id() {
     assert_eq!(
         w.iter().find(|a| a.item.id == "prod").unwrap().item.name,
         "Workspace"
+    );
+}
+
+// ---- rename + folder mutators ----
+
+#[test]
+fn rename_host_preserves_auth_secret_ref_and_folder() {
+    let (_d, s, _id) = setup();
+    let h = Host {
+        alias: "old".into(),
+        user: "u".into(),
+        host: "h".into(),
+        port: 22,
+        secret_ref: Some("ssh.old.key".into()),
+        auth: AuthMethod::Key { path: "/k".into() },
+        folder: Some("prod".into()),
+    };
+    s.write_host(&h, &Scope::Global).unwrap();
+
+    s.rename_host(&Scope::Global, "old", "new").unwrap();
+
+    assert!(
+        s.global().get_host("old").unwrap().is_none(),
+        "old alias no longer present"
+    );
+    let renamed = s.global().get_host("new").unwrap().unwrap();
+    assert_eq!(renamed.user, "u");
+    assert_eq!(renamed.secret_ref.as_deref(), Some("ssh.old.key"));
+    assert_eq!(renamed.auth, AuthMethod::Key { path: "/k".into() });
+    assert_eq!(renamed.folder.as_deref(), Some("prod"));
+}
+
+#[test]
+fn rename_host_refuses_when_target_alias_exists_in_same_layer() {
+    let (_d, s, _id) = setup();
+    s.write_host(&host("a", "u1"), &Scope::Global).unwrap();
+    s.write_host(&host("b", "u2"), &Scope::Global).unwrap();
+
+    assert!(matches!(
+        s.rename_host(&Scope::Global, "a", "b"),
+        Err(StoreError::Conflict(_))
+    ));
+    // Nothing lost or clobbered: both records survive, unchanged.
+    assert_eq!(s.global().get_host("a").unwrap().unwrap().user, "u1");
+    assert_eq!(s.global().get_host("b").unwrap().unwrap().user, "u2");
+}
+
+#[test]
+fn rename_host_refuses_a_noop_rename() {
+    let (_d, s, _id) = setup();
+    s.write_host(&host("a", "u"), &Scope::Global).unwrap();
+    assert!(matches!(
+        s.rename_host(&Scope::Global, "a", "a"),
+        Err(StoreError::Conflict(_))
+    ));
+}
+
+#[test]
+fn rename_host_errors_when_alias_missing_in_scope() {
+    let (_d, s, id) = setup();
+    assert!(s.rename_host(&Scope::Global, "nope", "new").is_err());
+    assert!(s.rename_host(&Scope::Workspace(id), "nope", "new").is_err());
+}
+
+#[test]
+fn rename_host_targets_only_its_own_layer() {
+    let (_d, s, id) = setup();
+    // A legitimate cross-layer duplicate: same alias, different values.
+    s.write_host(&host("dup", "global"), &Scope::Global)
+        .unwrap();
+    s.write_host(&host("dup", "workspace"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    s.rename_host(&Scope::Workspace(id.clone()), "dup", "dup2")
+        .unwrap();
+
+    // The workspace copy renamed...
+    let w = s
+        .read_hosts(
+            &Scope::Workspace(id.clone()),
+            ViewFilters {
+                collapse_duplicates: false,
+                hide_global: false,
+            },
+        )
+        .unwrap();
+    assert!(
+        w.iter()
+            .any(|a| a.item.alias == "dup2" && a.origin == Scope::Workspace(id.clone()))
+    );
+    // ...but the global "dup" is completely untouched — attributive, not shared identity.
+    assert_eq!(s.global().get_host("dup").unwrap().unwrap().user, "global");
+}
+
+#[test]
+fn rename_connection_updates_name_in_place() {
+    let (_d, s, _id) = setup();
+    s.write_connection(&connection("c1", "Old Name"), &Scope::Global)
+        .unwrap();
+
+    s.rename_connection(&Scope::Global, "c1", "New Name")
+        .unwrap();
+
+    let got = s.global().get_connection("c1").unwrap().unwrap();
+    assert_eq!(got.id, "c1", "identity is unchanged");
+    assert_eq!(got.name, "New Name");
+}
+
+#[test]
+fn rename_connection_errors_when_id_missing_in_scope() {
+    let (_d, s, id) = setup();
+    assert!(s.rename_connection(&Scope::Global, "nope", "x").is_err());
+    assert!(
+        s.rename_connection(&Scope::Workspace(id), "nope", "x")
+            .is_err()
+    );
+}
+
+#[test]
+fn rename_connection_targets_only_its_own_layer() {
+    let (_d, s, id) = setup();
+    s.write_connection(&connection("dup", "Global"), &Scope::Global)
+        .unwrap();
+    s.write_connection(
+        &connection("dup", "Workspace"),
+        &Scope::Workspace(id.clone()),
+    )
+    .unwrap();
+
+    s.rename_connection(&Scope::Workspace(id.clone()), "dup", "Renamed")
+        .unwrap();
+
+    assert_eq!(
+        s.global().get_connection("dup").unwrap().unwrap().name,
+        "Global",
+        "the global copy is untouched"
+    );
+    let w = s
+        .read_connections(&Scope::Workspace(id), ViewFilters::default())
+        .unwrap();
+    assert_eq!(
+        w.iter().find(|a| a.item.id == "dup").unwrap().item.name,
+        "Renamed"
+    );
+}
+
+#[test]
+fn folder_set_and_clear_round_trips_through_redb_and_toml() {
+    let (_d, s, id) = setup();
+    s.write_host(&host("g", "u"), &Scope::Global).unwrap();
+    s.write_host(&host("w", "u"), &Scope::Workspace(id.clone()))
+        .unwrap();
+    s.write_connection(&connection("c", "C"), &Scope::Workspace(id.clone()))
+        .unwrap();
+
+    // Set: global (redb) and workspace (TOML) both take the folder.
+    s.set_host_folder(&Scope::Global, "g", Some("prod".into()))
+        .unwrap();
+    s.set_host_folder(&Scope::Workspace(id.clone()), "w", Some("staging".into()))
+        .unwrap();
+    s.set_connection_folder(&Scope::Workspace(id.clone()), "c", Some("analytics".into()))
+        .unwrap();
+
+    assert_eq!(
+        s.global().get_host("g").unwrap().unwrap().folder.as_deref(),
+        Some("prod")
+    );
+    let root = s.global().get_workspace(id.as_str()).unwrap().unwrap().root;
+    let toml = std::fs::read_to_string(root.join(".sid").join("config.toml")).unwrap();
+    assert!(toml.contains("folder = \"staging\""));
+    assert!(toml.contains("folder = \"analytics\""));
+
+    // Clear: folder goes back to `None`, both in redb and in the committed TOML — an
+    // unset folder must not linger in the git-diffable file.
+    s.set_host_folder(&Scope::Global, "g", None).unwrap();
+    s.set_host_folder(&Scope::Workspace(id.clone()), "w", None)
+        .unwrap();
+    s.set_connection_folder(&Scope::Workspace(id.clone()), "c", None)
+        .unwrap();
+
+    assert_eq!(s.global().get_host("g").unwrap().unwrap().folder, None);
+    let toml_after = std::fs::read_to_string(root.join(".sid").join("config.toml")).unwrap();
+    assert!(
+        !toml_after.contains("folder"),
+        "an unset folder must not appear in the committed TOML"
+    );
+}
+
+#[test]
+fn set_folder_errors_when_record_missing_in_scope() {
+    let (_d, s, id) = setup();
+    assert!(
+        s.set_host_folder(&Scope::Global, "nope", Some("x".into()))
+            .is_err()
+    );
+    assert!(
+        s.set_connection_folder(&Scope::Workspace(id), "nope", Some("x".into()))
+            .is_err()
     );
 }

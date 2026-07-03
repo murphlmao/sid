@@ -2,8 +2,8 @@
 
 use sid_core::db::DbKind;
 use sid_store::{
-    AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, QuickAction, Settings, Store,
-    WorkspaceId, WorkspaceMeta,
+    AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, PanelSide, QuickAction, Settings,
+    Store, WorkspaceId, WorkspaceMeta,
 };
 
 fn open() -> (tempfile::TempDir, GlobalStore) {
@@ -20,6 +20,7 @@ fn host(alias: &str) -> Host {
         port: 22,
         secret_ref: None,
         auth: AuthMethod::default(),
+        folder: None,
     }
 }
 
@@ -82,6 +83,7 @@ fn connections_and_quick_actions_crud() {
         secret_ref: Some("db.pg.pw".into()),
         kind: DbKind::Postgres,
         name: "PG".into(),
+        folder: None,
     })
     .unwrap();
     let got = s.get_connection("pg").unwrap().unwrap();
@@ -127,6 +129,7 @@ fn settings_roundtrip() {
     let (_d, s) = open();
     let want = Settings {
         default_scope: DefaultScope::Workspace,
+        file_browser_side: PanelSide::Right,
     };
     s.set_settings(&want).unwrap();
     assert_eq!(s.get_settings().unwrap(), want);
@@ -140,6 +143,7 @@ fn settings_persist_across_reopen() {
         let s = GlobalStore::open(&path).unwrap();
         s.set_settings(&Settings {
             default_scope: DefaultScope::Global,
+            file_browser_side: PanelSide::Right,
         })
         .unwrap();
     }
@@ -147,6 +151,10 @@ fn settings_persist_across_reopen() {
     assert_eq!(
         reopened.get_settings().unwrap().default_scope,
         DefaultScope::Global
+    );
+    assert_eq!(
+        reopened.get_settings().unwrap().file_browser_side,
+        PanelSide::Right
     );
 }
 
@@ -158,10 +166,15 @@ fn facade_settings_passthrough() {
     store
         .set_settings(&Settings {
             default_scope: DefaultScope::Global,
+            file_browser_side: PanelSide::Right,
         })
         .unwrap();
     assert_eq!(
         store.settings().unwrap().default_scope,
         DefaultScope::Global
+    );
+    assert_eq!(
+        store.settings().unwrap().file_browser_side,
+        PanelSide::Right
     );
 }
