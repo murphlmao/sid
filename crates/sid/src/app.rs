@@ -18,7 +18,7 @@ use gpui::{
 };
 use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
 use sid_store::{
-    Attributed, AuthMethod, Host, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
+    Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
 use crate::ui::db_tab::DbTabState;
@@ -27,7 +27,8 @@ use crate::ui::host_form::{
 };
 use crate::ui::network_tab::NetworkTabState;
 use crate::ui::secret_unlock::{SecretUnlockEvent, SecretUnlockModal, SecretUnlockMode};
-use crate::ui::{SessionStatus, SshSession};
+use crate::ui::ssh_home::HomeTabState;
+use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 
 // ---- neutral grayscale palette (theming deferred) --------------------------
 const BG: u32 = 0x161618;
@@ -115,7 +116,10 @@ pub struct AppState {
     active_tab: Tab,
     pub(crate) filters: ViewFilters,
     pub(crate) scopes: Vec<ScopeChoice>,
-    hosts: Vec<Attributed<Host>>,
+    /// The composed host list for the active scope — `pub(crate)` so `ui::ssh_home`'s
+    /// tree sidebar can read it directly (same convention as `ui::db_tab`; see that
+    /// module's doc comment).
+    pub(crate) hosts: Vec<Attributed<Host>>,
     pub(crate) error: Option<String>,
     /// An informational status line (currently just the startup secret-backend
     /// resolution message — see `AppState::new`'s `startup_message` param) — kept
@@ -128,13 +132,25 @@ pub struct AppState {
     /// Keeps the form's event subscription alive exactly as long as the form is open.
     _form_subscription: Option<Subscription>,
     /// The row whose ✕ has been clicked once, keyed by (alias, origin) — the second
-    /// click on the same row executes the delete.
-    armed_delete: Option<(String, Scope)>,
-    /// The connected (or connecting/failed) SSH session, if a host's ⚡ connect has been
-    /// clicked — paired with a header label so the back-strip can show which host it is
-    /// without `SshSession` needing to expose that itself. `Some` swaps the SSH tab's
-    /// content from the host list to the split terminal + file-browser view (P3.5).
-    session: Option<(SharedString, Entity<SshSession>)>,
+    /// click on the same row executes the delete. `pub(crate)` so `ui::ssh_home`'s tree
+    /// rows share the exact same two-click state as the host-list rows below.
+    pub(crate) armed_delete: Option<(String, Scope)>,
+    /// Every live SSH session (ssh-v3): each fully independent (own client/reader/
+    /// writer/shell/sftp — the P3.5 split carries over unchanged per-session). Replaces
+    /// the old single-`Option` field now that MobaXterm-style multi-session tabs are the
+    /// SSH tab's whole shape.
+    pub(crate) ssh_sessions: Vec<SshTab>,
+    /// Which SSH session tab is active. `None` is the 🏠 Home tab (the connection
+    /// manager + saved-connections tree); `Some(ix)` indexes `ssh_sessions`.
+    pub(crate) active_session: Option<usize>,
+    /// Cached from `Settings.file_browser_side` at startup. New sessions open docked to
+    /// this side; the file panel's `⇄ dock` control (any open session) flips + persists
+    /// it and fans the update out to every live session — see `on_session_event`.
+    pub(crate) file_browser_side: PanelSide,
+    /// The SSH tab's Home-state view-local UI state (tree collapse/search/inline
+    /// rename+folder-edit) — lives in its own module (`ui::ssh_home`), same shape as
+    /// `db`/`network` below.
+    pub(crate) ssh_home: HomeTabState,
     /// Database tab state (W3): the connection list, its own add/edit modal, and (W5)
     /// the active query session. Lives in its own module (`ui::db_tab`) — see that
     /// file's second `impl AppState` block for the render/mutation methods that operate
@@ -148,6 +164,18 @@ pub struct AppState {
     secret_unlock: Option<Entity<SecretUnlockModal>>,
     /// Keeps the modal's event subscription alive exactly as long as it's open.
     _secret_unlock_subscription: Option<Subscription>,
+}
+
+/// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
+/// saved (alias, origin) row it was opened from (if any — `None` for an ephemeral
+/// quick-connect that was never saved, so the home tree's live-dot only tracks saved
+/// hosts), and the subscription that lets its `⇄ dock` toggle — fired as an event,
+/// since `SshSession` never touches `Store` itself — reach [`AppState::on_session_event`].
+pub(crate) struct SshTab {
+    pub(crate) label: SharedString,
+    pub(crate) session: Entity<SshSession>,
+    pub(crate) source: Option<(String, Scope)>,
+    _dock_toggle: Subscription,
 }
 
 impl AppState {
@@ -177,6 +205,13 @@ impl AppState {
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
         let network = NetworkTabState::new();
+        // Read before `store` moves into the struct literal below — `.settings()` only
+        // borrows. Falls back to `PanelSide::default()` (Left) on a read error, same as
+        // every other `Settings` read in this constructor's neighborhood.
+        let file_browser_side = store
+            .settings()
+            .map(|s| s.file_browser_side)
+            .unwrap_or_default();
         let mut state = Self {
             store,
             secrets,
@@ -190,7 +225,10 @@ impl AppState {
             form: None,
             _form_subscription: None,
             armed_delete: None,
-            session: None,
+            ssh_sessions: Vec::new(),
+            active_session: None,
+            file_browser_side,
+            ssh_home: HomeTabState::new(cx),
             db,
             network,
             secret_unlock: None,
@@ -261,8 +299,11 @@ impl AppState {
     }
 
     /// Re-query the composed host list for the current scope + filters. Any refresh
-    /// changes the row set, so a pending delete confirmation is disarmed.
-    fn refresh(&mut self) {
+    /// changes the row set, so a pending delete confirmation is disarmed. `pub(crate)`
+    /// so `ui::ssh_home`'s rename/folder-edit commits can reload the tree the same way
+    /// every other host-list mutation here does (same convention as `db_tab`'s
+    /// `refresh_db`).
+    pub(crate) fn refresh(&mut self) {
         self.armed_delete = None;
         match self.store.read_hosts(&self.scope, self.filters) {
             Ok(hosts) => {
@@ -332,8 +373,9 @@ impl AppState {
 
     /// ✕ (second click) Remove the record from **its origin layer**, then its secret
     /// from the keyring. Deleting a workspace copy un-shadows a global duplicate — that
-    /// is attributive behavior, not loss.
-    fn delete_row(
+    /// is attributive behavior, not loss. `pub(crate)` so `ui::ssh_home`'s tree rows
+    /// share this exact delete path (and `armed_delete` state) with the host-list rows.
+    pub(crate) fn delete_row(
         &mut self,
         alias: &str,
         origin: &Scope,
@@ -389,30 +431,113 @@ impl AppState {
         cx.notify();
     }
 
-    // ---- SSH session connect (P3.5 split session) ------------------------------
+    // ---- SSH multi-session tabs (ssh-v3) ----------------------------------------
 
-    /// ⚡ connect: open a combined [`SshSession`] for `host` — one connection backing both
-    /// the terminal and the file browser — and swap the SSH tab over to it. Only one
-    /// session is live at a time — connecting a second host disconnects the first rather
-    /// than leaking its background read-loop.
-    fn connect_host(&mut self, host: Host, cx: &mut Context<Self>) {
-        if let Some((_, old)) = self.session.take() {
-            old.update(cx, |session, _cx| session.disconnect());
-        }
-        let label: SharedString =
-            format!("{} — {}@{}:{}", host.alias, host.user, host.host, host.port).into();
+    /// ⚡ connect (or quick-connect): open a new, independent [`SshSession`] for `host`
+    /// and switch to it. ssh-v3 makes every session fully independent — connecting a
+    /// second (or third, …) host no longer disconnects any other open tab. `source`
+    /// identifies which saved (alias, origin) row this came from, for the home tree's
+    /// live-dot — `None` for an ephemeral quick-connect host that was never saved.
+    pub(crate) fn connect_host(
+        &mut self,
+        host: Host,
+        source: Option<(String, Scope)>,
+        cx: &mut Context<Self>,
+    ) {
+        let label: SharedString = format!("{}@{}", host.user, host.host).into();
         let known_hosts_path = data_dir().join("known_hosts");
-        let session = SshSession::open(host, self.secrets.as_ref(), known_hosts_path, cx);
-        self.session = Some((label, session));
+        let session = SshSession::open(
+            host,
+            self.secrets.as_ref(),
+            known_hosts_path,
+            self.file_browser_side,
+            cx,
+        );
+        let dock_toggle = cx.subscribe(&session, Self::on_session_event);
+        self.ssh_sessions.push(SshTab {
+            label,
+            session,
+            source,
+            _dock_toggle: dock_toggle,
+        });
+        self.active_session = Some(self.ssh_sessions.len() - 1);
         self.error = None;
         cx.notify();
     }
 
-    /// ← disconnect: close the shell + sftp + client (if still live) and return the SSH
-    /// tab to the host list, unchanged since the connect.
-    fn close_session(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, session)) = self.session.take() {
-            session.update(cx, |session, _cx| session.disconnect());
+    /// `＋`/`✕` on a live tab go through the SAME "back to home" verb the mockup uses —
+    /// `new_session` currently just means "show Home", same as [`Self::go_home`]. Kept
+    /// as its own method (rather than an alias) since the keyboard track (`Ctrl+T`?)
+    /// binds to this name specifically, and it may grow its own behavior later (e.g. a
+    /// picker) without every `＋` caller needing to change.
+    pub(crate) fn new_session(&mut self, cx: &mut Context<Self>) {
+        self.go_home(cx);
+    }
+
+    /// `🏠`: show the Home tab (the connection manager + saved-connections tree).
+    /// Doesn't touch any live session — switching to Home and back leaves every open
+    /// tab exactly as it was.
+    pub(crate) fn go_home(&mut self, cx: &mut Context<Self>) {
+        self.active_session = None;
+        cx.notify();
+    }
+
+    /// Click a session tab: make it active. A stale/out-of-range `ix` (shouldn't happen
+    /// — every caller derives `ix` from `ssh_sessions` itself) is a silent no-op rather
+    /// than a panic.
+    pub(crate) fn activate_session(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix < self.ssh_sessions.len() {
+            self.active_session = Some(ix);
+            cx.notify();
+        }
+    }
+
+    /// `✕` on a session tab: disconnect it (shell + sftp + client), remove its tab, and
+    /// fix up `active_session` — see [`next_active_after_close`] for the exact
+    /// close-left-of-active / close-active / close-last-tab-goes-home bookkeeping this
+    /// delegates to (pure, unit-tested).
+    pub(crate) fn close_session(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.ssh_sessions.len() {
+            return;
+        }
+        let tab = self.ssh_sessions.remove(ix);
+        tab.session.update(cx, |session, _cx| session.disconnect());
+        self.active_session =
+            next_active_after_close(self.active_session, ix, self.ssh_sessions.len());
+        cx.notify();
+    }
+
+    /// Routes every [`SshSessionEvent`] a live session fires. Currently just the `⇄
+    /// dock` toggle; `SshSession` never touches `Store` itself (see that event's doc
+    /// comment), so persisting the flip and fanning it out to every other open tab is
+    /// this method's job.
+    fn on_session_event(
+        &mut self,
+        _session: Entity<SshSession>,
+        event: &SshSessionEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SshSessionEvent::ToggleDockSide => self.toggle_dock_side(cx),
+        }
+    }
+
+    /// Flip `file_browser_side`, persist it to `Settings`, and push it to every live
+    /// session so all open tabs stay in sync with the one (global) setting — not just
+    /// the tab whose header was clicked.
+    fn toggle_dock_side(&mut self, cx: &mut Context<Self>) {
+        self.file_browser_side = match self.file_browser_side {
+            PanelSide::Left => PanelSide::Right,
+            PanelSide::Right => PanelSide::Left,
+        };
+        if let Ok(mut settings) = self.store.settings() {
+            settings.file_browser_side = self.file_browser_side;
+            let _ = self.store.set_settings(&settings);
+        }
+        let side = self.file_browser_side;
+        for tab in &self.ssh_sessions {
+            tab.session
+                .update(cx, |session, cx| session.set_dock_side(side, cx));
         }
         cx.notify();
     }
@@ -677,11 +802,139 @@ impl AppState {
             .children(tabs)
     }
 
+    /// The SSH tab, top to bottom: the session tab strip (🏠 · one tab per live
+    /// session · ＋), then either the Home view (tree sidebar + connection-manager
+    /// MAIN) or the active session's view (status strip + that `SshSession` entity,
+    /// which paints its own terminal/file-browser split).
     fn ssh_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some((label, session)) = self.session.clone() {
-            return self.session_pane(label, session, cx).into_any_element();
-        }
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .child(self.session_tab_strip(cx))
+            .child(match self.active_session {
+                None => div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .child(self.ssh_home_sidebar(cx).into_any_element())
+                    .child(self.ssh_connections_main(cx).into_any_element())
+                    .into_any_element(),
+                Some(ix) => self.ssh_session_view(ix, cx).into_any_element(),
+            })
+    }
 
+    /// The session tab strip (ssh-v3): `🏠` (leftmost, icon-only, always goes Home) ·
+    /// one `● user@host ×` tab per live session (click activates, `×` disconnects +
+    /// closes) · `＋` (also goes Home, ready for a new connection).
+    fn session_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let home_selected = self.active_session.is_none();
+        let home = div()
+            .id("ssh-tab-home")
+            .w(px(34.))
+            .h(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_t_md()
+            .cursor_pointer()
+            .text_color(rgb(if home_selected { ACTIVE_FG } else { FG_DIM }))
+            .bg(rgb(if home_selected { BG } else { TABSTRIP_BG }))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .child("🏠")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.go_home(cx)));
+
+        let tabs: Vec<_> = self
+            .ssh_sessions
+            .iter()
+            .enumerate()
+            .map(|(ix, tab)| {
+                let selected = self.active_session == Some(ix);
+                let dot = match tab.session.read(cx).status() {
+                    SessionStatus::Connected => "🟢",
+                    SessionStatus::Connecting => "🟡",
+                    SessionStatus::Failed(_) | SessionStatus::Closed => "🔴",
+                };
+                div()
+                    .id(("ssh-session-tab", ix))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .h(px(30.))
+                    .rounded_t_md()
+                    .bg(rgb(if selected { BG } else { TABSTRIP_BG }))
+                    .text_color(rgb(if selected { ACTIVE_FG } else { FG_DIM }))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .child(
+                        div()
+                            .id(("ssh-session-tab-label", ix))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .font_family(MONO)
+                            .cursor_pointer()
+                            .child(dot)
+                            .child(tab.label.clone())
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                this.activate_session(ix, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("ssh-session-tab-close", ix))
+                            .px_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(rgb(FG_DIM))
+                            .hover(|s| s.bg(rgb(ACTIVE_BG)).text_color(rgb(DANGER)))
+                            .child("×")
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                this.close_session(ix, cx);
+                            })),
+                    )
+            })
+            .collect();
+
+        let add = div()
+            .id("ssh-tab-add")
+            .w(px(30.))
+            .h(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_t_md()
+            .cursor_pointer()
+            .text_color(rgb(FG_DIM))
+            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .child("＋")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.new_session(cx)));
+
+        div()
+            .flex()
+            .flex_row()
+            .items_end()
+            .gap_1()
+            .px_2()
+            .pt_1()
+            .bg(rgb(TABSTRIP_BG))
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(home)
+            .children(tabs)
+            .child(add)
+    }
+
+    /// Home tab's MAIN pane: the connection manager (header + full host list) —
+    /// unchanged from the pre-ssh-v3 single-session SSH tab, just relocated out of
+    /// `ssh_tab` now that the session tab strip + tree sidebar (`ui::ssh_home`) wrap it.
+    fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.hosts.len();
         // A real error always wins (matches the pre-`status`-field priority); absent
         // that, an informational `status` (e.g. the startup secret-backend line) shows
@@ -735,18 +988,18 @@ impl AppState {
                 )
                 .flex_1(),
             )
-            .into_any_element()
     }
 
-    /// The connected view (P3.5): a disconnect strip showing `user@host` above the
-    /// [`SshSession`] entity, which paints its own connecting/failed/closed/split
-    /// (terminal + file panel) states.
-    fn session_pane(
-        &self,
-        label: SharedString,
-        session: Entity<SshSession>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// A session tab's view: a `← close tab` strip showing `user@host · status` above
+    /// the [`SshSession`] entity, which paints its own connecting/failed/closed/split
+    /// (terminal + file panel, docked per `file_browser_side`) states. `ix` must be a
+    /// valid `ssh_sessions` index — the only caller (`ssh_tab`) only reaches this arm
+    /// when `active_session == Some(ix)`, an invariant `activate_session`/
+    /// `close_session` both maintain.
+    fn ssh_session_view(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let tab = &self.ssh_sessions[ix];
+        let session = tab.session.clone();
+        let label = tab.label.clone();
         let status = match session.read(cx).status() {
             SessionStatus::Connecting => "connecting…",
             SessionStatus::Connected => "connected",
@@ -779,9 +1032,9 @@ impl AppState {
                             .cursor_pointer()
                             .bg(rgb(ACTIVE_BG))
                             .text_color(rgb(ACTIVE_FG))
-                            .child("← disconnect")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.close_session(cx);
+                            .child("← close tab")
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                this.close_session(ix, cx);
                             })),
                     )
                     .child(
@@ -843,13 +1096,14 @@ impl AppState {
             ))
         });
 
-        // ⚡ connect: opens a combined SshSession (terminal + file panel, P3.5) over this
-        // row's host.
+        // ⚡ connect: opens a new, independent SshSession (terminal + file panel) over
+        // this row's host and switches to it — ssh-v3 makes every session independent.
         let connect = {
             let host = host.clone();
+            let source = Some((host.alias.clone(), origin.clone()));
             action(("connect", ix), "⚡ connect".into(), BRAND).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
-                    this.connect_host(host.clone(), cx);
+                    this.connect_host(host.clone(), source.clone(), cx);
                 },
             ))
         };
@@ -1271,6 +1525,34 @@ pub(crate) fn delete_click_executes(
     armed == Some(clicked)
 }
 
+/// The new `active_session` after closing the tab at `closed_ix` (ssh-v3's session tab
+/// strip). Unlike the mockup's JS (which tracks the active tab by a stable key and so
+/// never needs to renumber it), `active_session` is a plain `Vec` index, so closing a
+/// tab **before** the active one must shift the active index down by one to keep
+/// pointing at the same still-open session — closing the active tab itself lands on the
+/// tab now at `max(0, closed_ix - 1)` (mirrors the mockup's `order[Math.max(0, ix-1)]`),
+/// or `None` (home) if that was the last tab; closing a tab **after** the active one, or
+/// while on home (`active == None`), leaves it untouched. `len_after` is
+/// `ssh_sessions.len()` **after** the removal (what the caller naturally has on hand).
+pub(crate) fn next_active_after_close(
+    active: Option<usize>,
+    closed_ix: usize,
+    len_after: usize,
+) -> Option<usize> {
+    let a = active?;
+    if a == closed_ix {
+        if len_after == 0 {
+            None
+        } else {
+            Some(closed_ix.saturating_sub(1).min(len_after - 1))
+        }
+    } else if a > closed_ix {
+        Some(a - 1)
+    } else {
+        Some(a)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1300,6 +1582,40 @@ mod tests {
         assert!(!delete_click_executes(None, &row));
         // …second click on the same row executes.
         assert!(delete_click_executes(Some(&row), &row));
+    }
+
+    // ---- ssh-v3 session-tab close bookkeeping (pure) -----------------------------
+
+    #[test]
+    fn close_on_home_leaves_active_untouched() {
+        // No session active (on 🏠): closing some tab never changes the active pointer.
+        assert_eq!(next_active_after_close(None, 0, 2), None);
+    }
+
+    #[test]
+    fn close_tab_after_active_keeps_active_index() {
+        // Active is tab 0; close tab 2 (after it) — index 0 still points at the same tab.
+        assert_eq!(next_active_after_close(Some(0), 2, 2), Some(0));
+    }
+
+    #[test]
+    fn close_tab_before_active_shifts_active_down_one() {
+        // Active is tab 2; close tab 0 (before it) — everything shifts, active is now 1.
+        assert_eq!(next_active_after_close(Some(2), 0, 2), Some(1));
+    }
+
+    #[test]
+    fn close_active_tab_lands_on_the_previous_tab() {
+        // Active is tab 2 of [0,1,2]; closing it (len_after 2) lands on tab 1.
+        assert_eq!(next_active_after_close(Some(2), 2, 2), Some(1));
+        // Closing active tab 0 (the leftmost) lands on the new tab 0 (max(0, -1) = 0).
+        assert_eq!(next_active_after_close(Some(0), 0, 2), Some(0));
+    }
+
+    #[test]
+    fn close_the_last_remaining_tab_goes_home() {
+        // Closing the only tab (len_after 0) returns to 🏠 home.
+        assert_eq!(next_active_after_close(Some(0), 0, 0), None);
     }
 
     #[test]

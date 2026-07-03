@@ -12,9 +12,10 @@ pub mod host_form;
 pub mod network_tab;
 pub mod secret_unlock;
 pub mod session;
+pub mod ssh_home;
 mod text_input;
 
-pub use session::{SessionStatus, SshSession};
+pub use session::{SessionStatus, SshSession, SshSessionEvent};
 pub use text_input::TextInput;
 
 use gpui::{App, KeyBinding, actions};
@@ -86,5 +87,19 @@ pub fn init(cx: &mut App) {
         // DB connection form bindings (W4), scoped the same way as the host form's.
         KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
         KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
+        // SSH home-tree inline rename / folder-edit bindings (ssh-v3), scoped to the
+        // row wrapper's own key context so Enter/Esc commit/cancel the in-place edit no
+        // matter which nested `TextInput` has focus — same ancestor-context trick the
+        // host form uses.
+        KeyBinding::new(
+            "escape",
+            ssh_home::InlineEditCancel,
+            Some(ssh_home::INLINE_EDIT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "enter",
+            ssh_home::InlineEditCommit,
+            Some(ssh_home::INLINE_EDIT_CONTEXT),
+        ),
     ]);
 }
