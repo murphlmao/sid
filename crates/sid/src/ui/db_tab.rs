@@ -169,17 +169,17 @@ pub struct DbTabState {
     /// consecutive-duplicate suppression — see [`push_history`].
     history: Vec<String>,
 
-    // ---- selector-right: folders / inline rename ------------------------------------
-    /// Which folders are collapsed in the connection rail, keyed by folder name.
+    // ---- connections panel (top of the unified left column): folders / inline rename --
+    /// Which folders are collapsed in the connections panel, keyed by folder name.
     /// Presence encodes "collapsed" (mirrors `schema_expanded`'s presence-encodes-state
     /// convention, inverted: there, presence means expanded — here it means collapsed,
     /// since a freshly-created folder should default to expanded/visible).
     collapsed_folders: HashSet<String>,
-    /// The connection rail's own focus handle — lazily created by `ensure_query_widgets`
+    /// The connections panel's own focus handle — lazily created by `ensure_query_widgets`
     /// (needs `Context`, unlike `DbTabState::new`). Focused on every row click so a
     /// subsequent F2 (with no text field focused) reaches [`AppState::begin_rename_active`]
-    /// via the rail's `on_key_down`.
-    rail_focus: Option<FocusHandle>,
+    /// via the panel's `on_key_down`.
+    conn_focus: Option<FocusHandle>,
     /// VS Code-style inline rename in progress on one connection row, if any — see
     /// [`AppState::begin_rename`]/[`AppState::commit_rename`]/[`AppState::cancel_rename`].
     renaming: Option<RenameState>,
@@ -413,9 +413,9 @@ fn schema_tree_rows(schema: &SchemaInfo, expanded: &HashSet<String>) -> Vec<Sche
     rows
 }
 
-// ---- selector-right: folder grouping (pure `connections -> rail rows` transform) --------
+// ---- connections panel: folder grouping (pure `connections -> panel rows` transform) ----
 
-/// One renderable row of the connection rail — a collapsible folder header, or a
+/// One renderable row of the connections panel — a collapsible folder header, or a
 /// connection nested under one (or sitting at the top level, when ungrouped). Pure data,
 /// mirroring [`SchemaRow`]'s split from rendering — [`group_connections`] is the one
 /// place the composed connection list becomes this flat, orderable row list.
@@ -426,7 +426,7 @@ enum ConnRow {
         expanded: bool,
         count: usize,
     },
-    /// A connection's id — the rail row re-looks this up in `self.db.connections` at
+    /// A connection's id — the panel row re-looks this up in `self.db.connections` at
     /// render time (rather than cloning the whole `Attributed<DbConnection>` in here) so
     /// this stays a plain identity list, matching how `active_id`/`armed_delete` already
     /// key rows by id rather than by index.
@@ -434,7 +434,7 @@ enum ConnRow {
 }
 
 /// Group `connections` by [`DbConnection::folder`] (one flat level — see that field's
-/// own doc comment) into the connection rail's row list: every ungrouped connection
+/// own doc comment) into the connections panel's row list: every ungrouped connection
 /// (`folder` absent, or present-but-blank) stays at the top level first — Murphy's
 /// "None → ungrouped top level" — followed by named folders in alphabetical order, each
 /// a collapsible header (collapsed when its name is in `collapsed`) with its members
@@ -564,7 +564,7 @@ impl DbTabState {
             export_menu_open: false,
             history: Vec::new(),
             collapsed_folders: HashSet::new(),
-            rail_focus: None,
+            conn_focus: None,
             renaming: None,
             folder_editing: None,
         };
@@ -601,12 +601,13 @@ impl AppState {
     pub(crate) fn db_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_query_widgets(window, cx);
 
-        // The saved-connection picker moved to the right-edge rail (`connection_rail`,
-        // built inside `query_pane`) — Murphy: "the database selector should be on the
-        // right side for the connection i want to start". This top strip is now just
-        // the tab's shared error line (still needed: promote/demote/delete/rename/
-        // folder-edit failures all land in `self.error`), collapsing to nothing when
-        // there is none rather than reserving dead space.
+        // The saved-connection picker lives in the unified left panel (`connection_panel`,
+        // built inside `query_pane`, stacked above the schema tree) — DBeaver-style, per
+        // Murphy: "connections on the left, like dbeaver" (an earlier pass had put this
+        // on a right-edge rail — that was a misread and has been reverted). This top
+        // strip is now just the tab's shared error line (still needed: promote/demote/
+        // delete/rename/folder-edit failures all land in `self.error`), collapsing to
+        // nothing when there is none rather than reserving dead space.
         let error_line = self.error.clone().map(|e| {
             div()
                 .px_4()
@@ -723,8 +724,8 @@ impl AppState {
     /// for `InputState::new`/`TableState::new`, which is why this can't happen in
     /// `DbTabState::new` (constructed before any window exists).
     fn ensure_query_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.db.rail_focus.is_none() {
-            self.db.rail_focus = Some(cx.focus_handle());
+        if self.db.conn_focus.is_none() {
+            self.db.conn_focus = Some(cx.focus_handle());
         }
         if self.db.sql.is_some() {
             return;
@@ -894,9 +895,8 @@ impl AppState {
             .p_3()
             .border_t_1()
             .border_color(rgb(BORDER))
-            .child(self.left_sidebar(cx))
+            .child(self.left_panel(cx))
             .child(editor_and_results)
-            .child(self.connection_rail(cx))
     }
 
     /// The "⭳ Export ▾" control: a button that toggles [`DbTabState::export_menu_open`],
@@ -976,16 +976,20 @@ impl AppState {
         }
     }
 
-    /// D1 + D4's left sidebar: the schema tree (claims most of the vertical space) atop
-    /// a fixed-height query-history panel — both live beside the editor/results per the
-    /// plan, sharing one column since a third side-by-side column would crowd the tab.
-    fn left_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The unified LEFT panel (DBeaver-style, Murphy: "connections on the left, like
+    /// dbeaver"): the saved-connections list ([`Self::connection_panel`]) on top, the
+    /// active connection's schema tree ([`Self::schema_tree_panel`], claiming most of
+    /// the remaining vertical space) below it, and D4's fixed-height query-history panel
+    /// at the bottom. One column, three stacked sections — a second side-by-side column
+    /// would crowd the tab.
+    fn left_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
-            .w(px(220.))
+            .w(px(260.))
             .h_full()
             .flex()
             .flex_col()
             .gap_2()
+            .child(self.connection_panel(cx))
             .child(self.schema_tree_panel(cx))
             .child(self.history_panel(cx))
     }
@@ -1288,15 +1292,16 @@ impl AppState {
             .child(body)
     }
 
-    /// The DBeaver-style connection selector, moved to the right edge (Murphy: "the
-    /// database selector should be on the right side for the connection i want to
-    /// start"). Groups the composed connection list by [`DbConnection::folder`] via
-    /// [`group_connections`] under a small `connections · N` / `＋` header. Also the
-    /// F2 target: focused on every row click (see [`Self::render_connection_row`]) so
-    /// F2 with no text field focused reaches [`Self::begin_rename_active`] — the
-    /// double-click-a-name path (also wired in `render_connection_row`) needs no focus
-    /// of its own.
-    fn connection_rail(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The DBeaver-style connections list — the top section of the unified left panel
+    /// ([`Self::left_panel`]), stacked directly above the active connection's schema
+    /// tree (Murphy: "connections on the left, like dbeaver"; an earlier pass had this
+    /// on a right-edge rail — reverted). Groups the composed connection list by
+    /// [`DbConnection::folder`] via [`group_connections`] under a small
+    /// `connections · N` / `＋` header. Also the F2 target: focused on every row click
+    /// (see [`Self::render_connection_row`]) so F2 with no text field focused reaches
+    /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
+    /// `render_connection_row`) needs no focus of its own.
+    fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let count = self.db.connections.len();
         let header = div()
             .flex()
@@ -1315,7 +1320,7 @@ impl AppState {
             )
             .child(
                 div()
-                    .id("db-rail-add")
+                    .id("db-conn-add")
                     .px_1()
                     .rounded_sm()
                     .cursor_pointer()
@@ -1337,7 +1342,7 @@ impl AppState {
                 .into_any_element()
         } else {
             div()
-                .id("db-rail-body")
+                .id("db-conn-body")
                 .flex()
                 .flex_col()
                 .flex_1()
@@ -1345,16 +1350,16 @@ impl AppState {
                 .children(
                     rows.into_iter()
                         .enumerate()
-                        .map(|(ix, row)| self.connection_rail_row(ix, row, cx)),
+                        .map(|(ix, row)| self.connection_panel_row(ix, row, cx)),
                 )
                 .into_any_element()
         };
 
-        let focus_handle = self.db.rail_focus.clone();
+        let focus_handle = self.db.conn_focus.clone();
         div()
-            .id("db-rail")
-            .w(px(240.))
-            .h_full()
+            .id("db-conn-panel")
+            .w_full()
+            .h(px(220.))
             .flex()
             .flex_col()
             .rounded_md()
@@ -1378,7 +1383,7 @@ impl AppState {
     /// connection looked up by id. A stale id (deleted mid-render, between
     /// `group_connections` snapshotting the list and this call) renders nothing —
     /// `refresh_db` drops it from the row list on the very next paint.
-    fn connection_rail_row(&self, ix: usize, row: ConnRow, cx: &mut Context<Self>) -> AnyElement {
+    fn connection_panel_row(&self, ix: usize, row: ConnRow, cx: &mut Context<Self>) -> AnyElement {
         match row {
             ConnRow::Folder {
                 name,
@@ -1422,12 +1427,12 @@ impl AppState {
         }
     }
 
-    /// One connection's row in the rail: its name (a live rename [`TextInput`] in
+    /// One connection's row in the panel: its name (a live rename [`TextInput`] in
     /// place, mid-rename) plus origin badge and `★` active marker, a DSN subtitle (a
     /// live folder-edit [`TextInput`] in place, mid-folder-edit), and the
     /// promote/demote/edit/📁/delete action strip. Structurally the pre-selector-move
-    /// row (W3's `db_connection_row`), restacked into the rail's narrower 240px column
-    /// and extended with the rename/folder affordances.
+    /// row (W3's `db_connection_row`), restacked into the panel's narrower column and
+    /// extended with the rename/folder affordances.
     fn render_connection_row(
         &self,
         ix: usize,
@@ -1643,18 +1648,18 @@ impl AppState {
                     this.db.schema_expanded.clear();
                 }
                 this.db.active_id = Some(click_id.clone());
-                // Selecting a row is also this rail's one focus entry point — F2
+                // Selecting a row is also this panel's one focus entry point — F2
                 // afterwards renames whatever just got selected (`begin_rename_active`).
                 // But a nested control's own click fires *before* this row-level one and
                 // bubbles up to here: the name's double-click (`begin_rename`), the 📁
                 // button (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`)
                 // each grab focus for their freshly-opened input/form — so only claim
-                // rail focus when none of those started, or this handler would steal it
+                // panel focus when none of those started, or this handler would steal it
                 // straight back and the inline editors would open unfocused.
                 let opening_editor = this.db.renaming.is_some()
                     || this.db.folder_editing.is_some()
                     || this.db.form.is_some();
-                if !opening_editor && let Some(fh) = this.db.rail_focus.clone() {
+                if !opening_editor && let Some(fh) = this.db.conn_focus.clone() {
                     window.focus(&fh);
                 }
                 this.refresh_schema(cx);
@@ -1690,8 +1695,8 @@ impl AppState {
     }
 
     /// Folder-header click (folders/grouping) — flip `name` between collapsed/expanded
-    /// in the rail. Presence-in-`collapsed_folders` encodes "collapsed" (see that
-    /// field's doc comment).
+    /// in the connections panel. Presence-in-`collapsed_folders` encodes "collapsed"
+    /// (see that field's doc comment).
     fn toggle_conn_folder(&mut self, name: &str, cx: &mut Context<Self>) {
         if !self.db.collapsed_folders.remove(name) {
             self.db.collapsed_folders.insert(name.to_string());
@@ -1720,9 +1725,9 @@ impl AppState {
         (label, color)
     }
 
-    // ---- selector-right: inline rename / folder edit (Tasks 2-3) ---------------------
+    // ---- connections panel: inline rename / folder edit (Tasks 2-3) -------------------
 
-    /// F2 (rail focused, see [`Self::connection_rail`]) — rename whichever connection
+    /// F2 (panel focused, see [`Self::connection_panel`]) — rename whichever connection
     /// is currently `active_id`. A no-op with nothing selected or the row since gone
     /// (rather than an error) — F2 with no selection is a plausible fumble, not a
     /// mistake worth surfacing.
@@ -1831,7 +1836,7 @@ impl AppState {
 
     /// Enter commits the in-progress folder edit via [`Store::set_connection_folder`] —
     /// a blank (post-trim) value clears the folder, moving the connection back to the
-    /// rail's ungrouped top level.
+    /// panel's ungrouped top level.
     fn commit_folder_edit(&mut self, cx: &mut Context<Self>) {
         let Some(state) = &self.db.folder_editing else {
             return;
