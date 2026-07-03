@@ -167,6 +167,55 @@ pub struct NetInterface {
     pub is_up: bool,
 }
 
+/// A point-in-time snapshot of host identity plus CPU/memory/load metrics, for the
+/// Systems tab's overview cards. Unlike [`ProcessInfo`] rows (a table refreshed
+/// wholesale), this is a single struct returned by [`SysProvider::overview`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::sys::SystemOverview;
+/// let ov = SystemOverview {
+///     hostname: "box".into(),
+///     kernel: "6.8.0".into(),
+///     os: "Ubuntu 24.04".into(),
+///     uptime_secs: 3_600,
+///     load_avg: (0.1, 0.2, 0.3),
+///     cpu_total_pct: 12.5,
+///     cpu_per_core: vec![10.0, 15.0],
+///     mem_total: 1_024,
+///     mem_used: 512,
+///     swap_total: 0,
+///     swap_used: 0,
+/// };
+/// assert_eq!(ov.cpu_per_core.len(), 2);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct SystemOverview {
+    /// The machine's hostname.
+    pub hostname: String,
+    /// Kernel version string (e.g. "6.8.0-48-generic").
+    pub kernel: String,
+    /// OS/distribution display string (e.g. "Ubuntu 24.04").
+    pub os: String,
+    /// Seconds since boot.
+    pub uptime_secs: u64,
+    /// 1/5/15-minute load averages, in that order.
+    pub load_avg: (f64, f64, f64),
+    /// Aggregate CPU percent across all cores (0..=100).
+    pub cpu_total_pct: f32,
+    /// Per-core CPU percent, one entry per logical core, in probe-reported order.
+    pub cpu_per_core: Vec<f32>,
+    /// Total RAM, in bytes.
+    pub mem_total: u64,
+    /// Used RAM, in bytes.
+    pub mem_used: u64,
+    /// Total swap, in bytes (0 if no swap is configured).
+    pub swap_total: u64,
+    /// Used swap, in bytes.
+    pub swap_used: u64,
+}
+
 /// Domain-shaped system error. Concrete impls map their library errors into this.
 ///
 /// # Examples
@@ -212,6 +261,7 @@ pub enum SysError {
 /// ```
 /// use sid_core::sys::{
 ///     ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider,
+///     SystemOverview,
 /// };
 ///
 /// struct Noop;
@@ -220,6 +270,21 @@ pub enum SysError {
 ///     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> { Ok(vec![]) }
 ///     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> { Ok(vec![]) }
 ///     fn kill_process(&mut self, _: Pid, _: Signal) -> Result<(), SysError> { Ok(()) }
+///     fn overview(&mut self) -> Result<SystemOverview, SysError> {
+///         Ok(SystemOverview {
+///             hostname: String::new(),
+///             kernel: String::new(),
+///             os: String::new(),
+///             uptime_secs: 0,
+///             load_avg: (0.0, 0.0, 0.0),
+///             cpu_total_pct: 0.0,
+///             cpu_per_core: vec![],
+///             mem_total: 0,
+///             mem_used: 0,
+///             swap_total: 0,
+///             swap_used: 0,
+///         })
+///     }
 /// }
 ///
 /// let mut n = Noop;
@@ -237,6 +302,17 @@ pub trait SysProvider: Send + Sync {
     /// List network interfaces, including loopback. Addresses include both IPv4 and
     /// IPv6.
     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError>;
+
+    /// Snapshot host identity plus CPU/memory/load metrics for the Systems tab's
+    /// overview cards (see [`SystemOverview`]).
+    ///
+    /// Like the `list_*` methods, implementations should keep a cached probe handle
+    /// between calls. CPU percentages are computed as a delta since the previous
+    /// refresh, so `cpu_total_pct`/`cpu_per_core` may read `0.0` on the very first
+    /// call and become meaningful from the second call onward — callers on a
+    /// recurring refresh loop (e.g. the Systems tab's 2s timer) see accurate values
+    /// after the first tick.
+    fn overview(&mut self) -> Result<SystemOverview, SysError>;
 
     /// Send `sig` to `pid`. Maps platform errors:
     /// - `EPERM`/`EACCES` → [`SysError::PermissionDenied`]
@@ -374,6 +450,21 @@ mod tests {
             }
             fn kill_process(&mut self, _: Pid, _: Signal) -> Result<(), SysError> {
                 Ok(())
+            }
+            fn overview(&mut self) -> Result<SystemOverview, SysError> {
+                Ok(SystemOverview {
+                    hostname: String::new(),
+                    kernel: String::new(),
+                    os: String::new(),
+                    uptime_secs: 0,
+                    load_avg: (0.0, 0.0, 0.0),
+                    cpu_total_pct: 0.0,
+                    cpu_per_core: vec![],
+                    mem_total: 0,
+                    mem_used: 0,
+                    swap_total: 0,
+                    swap_used: 0,
+                })
             }
         }
         let mut p = Bare;
