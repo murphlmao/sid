@@ -28,6 +28,11 @@ sid-sysinfo.workspace = true
 # named here. Not in `[workspace.dependencies]` (a plain path dep, like `sid-store`/
 # `sid-db`/`sid-secrets` below already are) — see the root `Cargo.toml`'s `members`.
 sid-svcctl = { path = "../sid-svcctl" }
+# Network tab v3 (Docker/Kubernetes sub-views): the one crate allowed to name
+# `sid-containers`'s concrete `DockerCliProvider::new()` / `KubectlCliProvider::new()`
+# constructors — same seam shape as `sid-sysinfo`/`sid-svcctl` above. `docker`/
+# `kubectl` themselves stay behind `sid_core::containers`, never named here.
+sid-containers.workspace = true
 # Adapter crates for Plan 3C (SSH terminal view + connect flow). `crates/sid` only ever
 # names the `sid_core` trait seam (`SshClient`/`SshShell`/`TerminalScreen`) plus the two
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/
