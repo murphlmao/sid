@@ -1584,6 +1584,40 @@ mod tests {
         assert!(delete_click_executes(Some(&row), &row));
     }
 
+    // ---- ssh-v3 session-tab close bookkeeping (pure) -----------------------------
+
+    #[test]
+    fn close_on_home_leaves_active_untouched() {
+        // No session active (on 🏠): closing some tab never changes the active pointer.
+        assert_eq!(next_active_after_close(None, 0, 2), None);
+    }
+
+    #[test]
+    fn close_tab_after_active_keeps_active_index() {
+        // Active is tab 0; close tab 2 (after it) — index 0 still points at the same tab.
+        assert_eq!(next_active_after_close(Some(0), 2, 2), Some(0));
+    }
+
+    #[test]
+    fn close_tab_before_active_shifts_active_down_one() {
+        // Active is tab 2; close tab 0 (before it) — everything shifts, active is now 1.
+        assert_eq!(next_active_after_close(Some(2), 0, 2), Some(1));
+    }
+
+    #[test]
+    fn close_active_tab_lands_on_the_previous_tab() {
+        // Active is tab 2 of [0,1,2]; closing it (len_after 2) lands on tab 1.
+        assert_eq!(next_active_after_close(Some(2), 2, 2), Some(1));
+        // Closing active tab 0 (the leftmost) lands on the new tab 0 (max(0, -1) = 0).
+        assert_eq!(next_active_after_close(Some(0), 0, 2), Some(0));
+    }
+
+    #[test]
+    fn close_the_last_remaining_tab_goes_home() {
+        // Closing the only tab (len_after 0) returns to 🏠 home.
+        assert_eq!(next_active_after_close(Some(0), 0, 0), None);
+    }
+
     #[test]
     fn tab_from_str_maps_known_names_case_insensitively() {
         assert!(matches!(tab_from_str("ssh"), Some(Tab::Ssh)));

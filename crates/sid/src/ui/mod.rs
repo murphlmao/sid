@@ -87,5 +87,11 @@ pub fn init(cx: &mut App) {
         // DB connection form bindings (W4), scoped the same way as the host form's.
         KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
         KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
+        // SSH home-tree inline rename / folder-edit bindings (ssh-v3), scoped to the
+        // row wrapper's own key context so Enter/Esc commit/cancel the in-place edit no
+        // matter which nested `TextInput` has focus — same ancestor-context trick the
+        // host form uses.
+        KeyBinding::new("escape", ssh_home::InlineEditCancel, Some(ssh_home::INLINE_EDIT_CONTEXT)),
+        KeyBinding::new("enter", ssh_home::InlineEditCommit, Some(ssh_home::INLINE_EDIT_CONTEXT)),
     ]);
 }
