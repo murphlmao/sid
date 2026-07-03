@@ -12,9 +12,10 @@ pub mod host_form;
 pub mod network_tab;
 pub mod secret_unlock;
 pub mod session;
+pub mod ssh_home;
 mod text_input;
 
-pub use session::{SessionStatus, SshSession};
+pub use session::{SessionStatus, SshSession, SshSessionEvent};
 pub use text_input::TextInput;
 
 use gpui::{App, KeyBinding, actions};

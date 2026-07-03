@@ -24,16 +24,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font,
-    FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels, Render, ShapedLine,
-    SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred, div, font, point,
-    prelude::*, px, rgb, rgba, uniform_list,
+    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels,
+    Render, ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred,
+    div, font, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use sid_secrets::SecretStore;
 use sid_ssh::RusshClientFactory;
-use sid_store::Host;
+use sid_store::{Host, PanelSide};
 use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -98,6 +98,19 @@ pub enum SessionStatus {
     Failed(String),
     Closed,
 }
+
+/// Events an [`SshSession`] fires up to its owner (`AppState`, ssh-v3). `SshSession`
+/// deliberately never touches `Store` itself — session.rs's whole surface is `sid_core`
+/// SSH trait types plus this crate's constructors, no store/scope knowledge, matching
+/// the plan's "keep session.rs store-free" ownership split — so persisting the flipped
+/// dock side to `Settings.file_browser_side` is `AppState`'s job; this event is just the
+/// notification that the header's `⇄ dock` control was clicked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SshSessionEvent {
+    ToggleDockSide,
+}
+
+impl EventEmitter<SshSessionEvent> for SshSession {}
 
 // Only the writer is ever shared/locked — the reader is owned outright by
 // `start_read_loop`'s single task (moved in by value), so it needs no `Arc`/lock at
@@ -171,6 +184,11 @@ pub struct SshSession {
     goto_input: Entity<TextInput>,
     /// `👁 view`'s open preview, if any (P5.3).
     preview: Option<Preview>,
+    /// Which side of the terminal the file sidebar renders on (ssh-v3). Initialized from
+    /// `Settings.file_browser_side` by whoever calls [`Self::open`]; `AppState` pushes
+    /// updates to every live session via [`Self::set_dock_side`] when the header's
+    /// `⇄ dock` control flips the (global, persisted) setting — see [`SshSessionEvent`].
+    dock_side: PanelSide,
 }
 
 impl SshSession {
@@ -184,6 +202,7 @@ impl SshSession {
         host: Host,
         secrets: &dyn SecretStore,
         known_hosts_path: PathBuf,
+        dock_side: PanelSide,
         cx: &mut App,
     ) -> Entity<Self> {
         // `secrets` is a borrowed trait object — not `'static`/`Send` — so it cannot cross
@@ -209,6 +228,7 @@ impl SshSession {
                 show_hidden: true,
                 goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
                 preview: None,
+                dock_side,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -410,6 +430,16 @@ impl SshSession {
         ssh_runtime().spawn(async move {
             let _ = shell.lock().await.resize(rows, cols).await;
         });
+    }
+
+    /// Apply a (globally) flipped dock side — called by `AppState` on every live session
+    /// after it persists the flip to `Settings.file_browser_side`, so all open tabs stay
+    /// in sync with the one setting, not just the tab whose header was clicked.
+    pub fn set_dock_side(&mut self, side: PanelSide, cx: &mut Context<Self>) {
+        if self.dock_side != side {
+            self.dock_side = side;
+            cx.notify();
+        }
     }
 
     /// Gracefully close everything this session opened, in one shot: the shell, the SFTP
@@ -736,19 +766,25 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 impl SshSession {
     /// The `Connected` view: file sidebar (fixed `SIDEBAR_WIDTH`) beside the terminal grid,
-    /// filling whatever space the parent gives it — the MobaXterm-style split.
+    /// filling whatever space the parent gives it — the MobaXterm-style split. Docks left
+    /// or right per `self.dock_side` (ssh-v3's `⇄ dock` toggle).
     fn render_split(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = self.file_sidebar(cx).into_any_element();
+        let terminal = div()
+            .flex_1()
+            .size_full()
+            .child(self.render_grid(window, cx))
+            .into_any_element();
+        let (first, second) = match self.dock_side {
+            PanelSide::Left => (sidebar, terminal),
+            PanelSide::Right => (terminal, sidebar),
+        };
         div()
             .flex()
             .flex_row()
             .size_full()
-            .child(self.file_sidebar(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .size_full()
-                    .child(self.render_grid(window, cx)),
-            )
+            .child(first)
+            .child(second)
     }
 
     /// The file panel: the [`toolbar`](Self::toolbar) above a scrollable, read-only listing
@@ -780,14 +816,18 @@ impl SshSession {
 
         let visible = self.visible_entries();
         let count = visible.len();
-        div()
+        let divider = match self.dock_side {
+            PanelSide::Left => div().border_r_1(),
+            PanelSide::Right => div().border_l_1(),
+        };
+        divider
             .w(SIDEBAR_WIDTH)
             .h_full()
             .flex()
             .flex_col()
             .bg(rgb(BG))
-            .border_r_1()
             .border_color(rgb(BORDER))
+            .child(self.sidebar_header(cx))
             .child(self.toolbar(cx))
             .when_some(self.file_error.clone(), |el, msg| {
                 el.child(status_line(&format!("file panel: {msg}")))
@@ -806,6 +846,49 @@ impl SshSession {
                 .flex_1(),
             )
             .into_any_element()
+    }
+
+    /// The sidebar's title row (ssh-v3): a "Files" label plus the `⇄ dock` control that
+    /// flips which side of the terminal this panel renders on. Doesn't touch `Store`
+    /// itself — clicking it just emits [`SshSessionEvent::ToggleDockSide`]; `AppState`
+    /// persists the flip to `Settings.file_browser_side` and fans it out to every open
+    /// session tab (see [`Self::set_dock_side`]).
+    fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let label = match self.dock_side {
+            PanelSide::Left => "⇄ dock right",
+            PanelSide::Right => "⇄ dock left",
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(FG_DIM))
+                    .child("Files"),
+            )
+            .child(
+                div()
+                    .id("session-dock-toggle")
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(rgb(FG_DIM))
+                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .child(label)
+                    .on_click(cx.listener(|_session, _ev: &ClickEvent, _window, cx| {
+                        cx.emit(SshSessionEvent::ToggleDockSide);
+                    })),
+            )
     }
 
     /// Toolbar: three stacked rows, each of which fits [`SIDEBAR_WIDTH`] on its own with no
