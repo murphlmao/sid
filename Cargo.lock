@@ -6622,6 +6622,7 @@ dependencies = [
  "sid-secrets",
  "sid-ssh",
  "sid-store",
+ "sid-svcctl",
  "sid-sysinfo",
  "sid-term",
  "tokio",
@@ -6688,6 +6689,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "sid-svcctl"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sid-core",
+ "tokio",
 ]
 
 [[package]]
@@ -7500,6 +7512,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
