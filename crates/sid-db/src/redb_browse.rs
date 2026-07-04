@@ -173,6 +173,13 @@ fn table_primary_key(name: &str) -> Vec<String> {
 /// fields — `hosts` dropped `folder`, `connections` dropped `kind`/`name`/`folder`
 /// entirely — so the redb browse engine silently hid columns that exist on the
 /// entity. [`dump_table`] must emit values in this exact order.
+///
+/// Round-D fix (same shape as BUG 6): `settings` only listed `default_scope`, hiding
+/// the other 3 [`sid_store::Settings`] fields (`file_browser_side`,
+/// `secret_keyring_enabled`, `secret_file_enabled`) from the browse engine entirely.
+/// `secret_file_enabled` stays listed even though it's currently dormant elsewhere —
+/// it's still a real, persisted field and this engine's job is to show what's stored,
+/// not to editorialize about which fields are "live".
 fn table_columns(name: &str) -> Vec<Column> {
     let cols: &[&str] = match name {
         "hosts" => &[
@@ -187,7 +194,12 @@ fn table_columns(name: &str) -> Vec<Column> {
         "connections" => &["id", "name", "kind", "dsn", "secret_ref", "folder"],
         "quick_actions" => &["label", "cmd"],
         "workspaces" => &["id", "root", "name"],
-        "settings" => &["default_scope"],
+        "settings" => &[
+            "default_scope",
+            "file_browser_side",
+            "secret_keyring_enabled",
+            "secret_file_enabled",
+        ],
         _ => &[],
     };
     cols.iter()
@@ -263,7 +275,12 @@ fn dump_table(store: &GlobalStore, table: &str) -> Result<(Vec<Column>, Vec<Row>
                 .get_settings()
                 .map_err(|e| DbError::Other(e.to_string()))?;
             vec![Row {
-                values: vec![format!("{:?}", s.default_scope)],
+                values: vec![
+                    format!("{:?}", s.default_scope),
+                    format!("{:?}", s.file_browser_side),
+                    s.secret_keyring_enabled.to_string(),
+                    s.secret_file_enabled.to_string(),
+                ],
             }]
         }
         _ => unreachable!("checked against TABLE_NAMES above"),
@@ -321,6 +338,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schema_introspect_settings_table_lists_all_four_fields() {
+        // Round-D fix: `settings` used to expose only `default_scope`, silently
+        // hiding the other 3 `sid_store::Settings` fields from the browse engine.
+        let (_dir, store) = seeded_store();
+        let client = RedbBrowseClient::wrap(store);
+        let schema = client.schema_introspect().await.unwrap();
+        let settings_table = schema
+            .tables
+            .iter()
+            .find(|t| t.name == "settings")
+            .expect("settings table listed");
+        let names: Vec<&str> = settings_table
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "default_scope",
+                "file_browser_side",
+                "secret_keyring_enabled",
+                "secret_file_enabled",
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn query_paged_dumps_seeded_hosts_table() {
         let (_dir, store) = seeded_store();
         let client = RedbBrowseClient::wrap(store);
@@ -350,6 +395,29 @@ mod tests {
                 "",
                 "analytics"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_paged_dumps_settings_table_with_all_four_fields() {
+        // Round-D fix: previously only `default_scope` was visible; the other 3
+        // `sid_store::Settings` fields (including the dormant-but-still-persisted
+        // `secret_file_enabled`) must show up too.
+        let (_dir, store) = seeded_store();
+        store
+            .set_settings(&sid_store::Settings {
+                default_scope: sid_store::DefaultScope::Global,
+                file_browser_side: sid_store::PanelSide::Right,
+                secret_keyring_enabled: false,
+                secret_file_enabled: true,
+            })
+            .unwrap();
+        let client = RedbBrowseClient::wrap(store);
+        let page = client.query_paged("settings", None, 10).await.unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].values,
+            vec!["Global", "Right", "false", "true"]
         );
     }
 
