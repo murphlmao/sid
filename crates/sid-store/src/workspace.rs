@@ -38,6 +38,58 @@ impl Default for WorkspaceConfig {
     }
 }
 
+impl WorkspaceConfig {
+    /// Diagnostic: identities that appear more than once in this loaded layer.
+    ///
+    /// TOML parses two `[[ssh.host]]` entries with the same `alias` (or two
+    /// `[[db.connection]]` entries with the same `id`) just fine — a normal git-merge
+    /// artifact (both sides add a host, merge keeps both blocks). [`WorkspaceStore::load`]
+    /// deliberately does NOT silently dedupe on read (that would be a silent data
+    /// decision on someone else's merge); every by-identity mutator instead treats a
+    /// duplicate-identity match losslessly-by-intent (see [`upsert_by_identity`]'s doc
+    /// comment). Callers of `load()` should surface this list as a warning so a human
+    /// resolves the merge deliberately — e.g. via the SSH tab's status/error line — rather
+    /// than an in-flight duplicate quietly waiting to be collapsed by the next unrelated
+    /// edit.
+    ///
+    /// Each entry is human-readable: `"<kind> '<identity>' appears Nx"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sid_store::workspace::WorkspaceConfig;
+    /// let cfg = WorkspaceConfig::default();
+    /// assert!(cfg.duplicates().is_empty());
+    /// ```
+    pub fn duplicates(&self) -> Vec<String> {
+        let mut out = duplicate_identities("ssh host", &self.ssh.host);
+        out.extend(duplicate_identities("db connection", &self.db.connection));
+        out
+    }
+}
+
+/// Identities appearing more than once in `items`, in first-seen order, formatted for
+/// [`WorkspaceConfig::duplicates`].
+fn duplicate_identities<T: Identity>(kind: &str, items: &[T]) -> Vec<String> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut order: Vec<&str> = Vec::new();
+    for item in items {
+        let id = item.identity();
+        let entry = counts.entry(id).or_insert(0);
+        if *entry == 0 {
+            order.push(id);
+        }
+        *entry += 1;
+    }
+    order
+        .into_iter()
+        .filter_map(|id| {
+            let n = counts[id];
+            (n > 1).then(|| format!("{kind} '{id}' appears {n}x"))
+        })
+        .collect()
+}
+
 /// The `[ssh]` table.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SshSection {
@@ -112,6 +164,10 @@ impl WorkspaceStore {
     }
 
     /// Remove a host by alias. Returns whether one was present.
+    ///
+    /// `retain` already drops EVERY entry matching `alias`, not just the first — so a
+    /// duplicate-alias layer (see [`WorkspaceConfig::duplicates`]) is removed in full
+    /// here, never leaving a stray duplicate behind.
     pub fn remove_host(&self, alias: &str) -> Result<bool> {
         let mut cfg = self.load()?;
         let before = cfg.ssh.host.len();
@@ -131,6 +187,9 @@ impl WorkspaceStore {
     }
 
     /// Remove a connection by id. Returns whether one was present.
+    ///
+    /// Same "removes every match, not just the first" behavior as
+    /// [`WorkspaceStore::remove_host`] — see its doc comment.
     pub fn remove_connection(&self, id: &str) -> Result<bool> {
         let mut cfg = self.load()?;
         let before = cfg.db.connection.len();
@@ -143,11 +202,33 @@ impl WorkspaceStore {
     }
 }
 
-/// Replace the element with the same [`Identity`] as `item`, or push `item` if none.
+/// Replace the element(s) sharing `item`'s [`Identity`] with the single new `item`, or
+/// push `item` if none matched.
+///
+/// The common case (0 or 1 existing match) replaces in place / appends, exactly as
+/// before. The duplicate-identity case (see [`WorkspaceConfig::duplicates`] — TOML
+/// happily parses two `[[ssh.host]]` blocks with the same alias, e.g. after a git
+/// merge) used to silently replace only the FIRST match via `.find()`, leaving the
+/// other duplicate(s) behind untouched and undiscoverable through this API. An
+/// explicit upsert is instead treated as the user's intent to resolve that ambiguity:
+/// every entry sharing the identity is removed and the single new value takes their
+/// place. This is a deliberate, lossy collapse — the same "an explicit edit wins"
+/// intent [`WorkspaceStore::remove_host`]/[`WorkspaceStore::remove_connection`] already
+/// apply by removing every match, not just the first.
 fn upsert_by_identity<T: Identity>(items: &mut Vec<T>, item: T) {
-    if let Some(slot) = items.iter_mut().find(|x| x.identity() == item.identity()) {
-        *slot = item;
-    } else {
-        items.push(item);
+    let matches: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| x.identity() == item.identity())
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [] => items.push(item),
+        [only] => items[*only] = item,
+        _ => {
+            let id = item.identity().to_string();
+            items.retain(|x| x.identity() != id);
+            items.push(item);
+        }
     }
 }
