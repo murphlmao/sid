@@ -433,8 +433,14 @@ impl HostForm {
 
     fn auth_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg_strong) =
-            (t.well, t.border, t.selection, t.accent, t.muted, t.fg_strong);
+        let (well, border, selection, accent, muted, fg_strong) = (
+            t.well,
+            t.border,
+            t.selection,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+        );
         let segments = [
             ("auth-agent", "agent", AuthChoice::Agent),
             ("auth-key", "key", AuthChoice::Key),
@@ -475,9 +481,8 @@ impl HostForm {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
         let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg) = (
-            t.well, t.border, t.selection, t.accent, t.muted, t.fg,
-        );
+        let (well, border, selection, accent, muted, fg) =
+            (t.well, t.border, t.selection, t.accent, t.muted, t.fg);
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -559,8 +564,14 @@ impl HostForm {
 
     fn buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (well, border, muted, selection, accent, fg_strong) =
-            (t.well, t.border, t.muted, t.selection, t.accent, t.fg_strong);
+        let (well, border, muted, selection, accent, fg_strong) = (
+            t.well,
+            t.border,
+            t.muted,
+            t.selection,
+            t.accent,
+            t.fg_strong,
+        );
         div()
             .flex()
             .flex_row()
@@ -612,8 +623,7 @@ impl Focusable for HostForm {
 impl Render for HostForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
-        let (surface, border, fg, muted, danger) =
-            (t.surface, t.border, t.fg, t.muted, t.danger);
+        let (surface, border, fg, muted, danger) = (t.surface, t.border, t.fg, t.muted, t.danger);
         let title = match &self.mode {
             FormMode::Add => "Add host",
             FormMode::Edit { .. } => "Edit host",
