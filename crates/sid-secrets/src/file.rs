@@ -1,5 +1,12 @@
 //! `EncryptedFileStore` — a dependency-less, passphrase-protected secret vault.
 //!
+//! **Dormant — not wired into the chain since 2026-07-03 (round D, §A).** Murphy
+//! rejected the passphrase-per-launch UX this backend implies: sid never prompts for a
+//! vault passphrase at startup anymore, and `resolve::resolve_secret_store`'s chain is
+//! keyring-or-memory only (see that function's module doc). The type and its crypto stay
+//! in this crate — reviewed, tested, and cheap to keep — in case a future design wants a
+//! peer persistent backend again; nothing outside this module constructs one today.
+//!
 //! The whole point of this backend is that it needs **nothing installed**: no OS
 //! keyring daemon, no system crypto library. Every crypto primitive is a pure-Rust
 //! RustCrypto crate (`argon2`, `chacha20poly1305`, `zeroize`, `getrandom`) — see this
