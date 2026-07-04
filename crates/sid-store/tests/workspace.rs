@@ -210,3 +210,157 @@ fn malformed_file_is_an_error() {
     let ws = WorkspaceStore::new(dir.path());
     assert!(ws.load().is_err());
 }
+
+// ---------------------------------------------------------------------
+// Round-D: duplicate-identity records (a normal git-merge artifact -- TOML parses two
+// `[[ssh.host]]`/`[[db.connection]]` blocks with the same alias/id just fine) must not
+// be silently dropped by the by-identity mutators.
+// ---------------------------------------------------------------------
+
+fn write_duplicate_alias_hosts(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join(".sid")).unwrap();
+    std::fs::write(
+        dir.join(".sid").join("config.toml"),
+        "version = 1\n\n\
+         [[ssh.host]]\n\
+         alias = \"dup\"\n\
+         user = \"alice\"\n\
+         host = \"a.internal\"\n\
+         port = 22\n\n\
+         [[ssh.host]]\n\
+         alias = \"dup\"\n\
+         user = \"bob\"\n\
+         host = \"b.internal\"\n\
+         port = 2222\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn load_does_not_silently_dedupe_a_merge_artifact_of_two_same_alias_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_alias_hosts(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+    let cfg = ws.load().unwrap();
+    assert_eq!(
+        cfg.ssh.host.len(),
+        2,
+        "load() must parse (and keep) both duplicate-alias entries, not error or dedupe"
+    );
+}
+
+#[test]
+fn duplicates_reports_the_duplicate_alias_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_alias_hosts(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+    let cfg = ws.load().unwrap();
+    let dups = cfg.duplicates();
+    assert_eq!(dups.len(), 1, "exactly one duplicated identity: {dups:?}");
+    assert!(
+        dups[0].contains("dup") && dups[0].contains('2'),
+        "diagnostic should name the alias and the count: {dups:?}"
+    );
+}
+
+#[test]
+fn duplicates_is_empty_for_a_layer_with_no_duplicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = WorkspaceStore::new(dir.path());
+    ws.upsert_host(&host("prod", None)).unwrap();
+    ws.upsert_connection(&connection("acme-pg")).unwrap();
+    assert!(ws.load().unwrap().duplicates().is_empty());
+}
+
+#[test]
+fn upsert_collapses_duplicate_alias_hosts_to_one_with_the_new_value() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_alias_hosts(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+
+    let mut resolved = host("dup", None);
+    resolved.user = "resolved-user".into();
+    ws.upsert_host(&resolved).unwrap();
+
+    let cfg = ws.load().unwrap();
+    assert_eq!(
+        cfg.ssh.host.len(),
+        1,
+        "an explicit upsert collapses the duplicate down to a single entry"
+    );
+    assert_eq!(cfg.ssh.host[0].user, "resolved-user");
+    assert!(cfg.duplicates().is_empty());
+}
+
+#[test]
+fn remove_removes_both_duplicate_alias_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_alias_hosts(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+
+    assert!(ws.remove_host("dup").unwrap());
+    assert!(
+        ws.load().unwrap().ssh.host.is_empty(),
+        "remove_host must remove EVERY duplicate-alias entry, not just the first"
+    );
+}
+
+fn write_duplicate_id_connections(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join(".sid")).unwrap();
+    std::fs::write(
+        dir.join(".sid").join("config.toml"),
+        "version = 1\n\n\
+         [[db.connection]]\n\
+         id = \"dup\"\n\
+         dsn = \"postgres://a\"\n\n\
+         [[db.connection]]\n\
+         id = \"dup\"\n\
+         dsn = \"postgres://b\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn load_does_not_silently_dedupe_a_merge_artifact_of_two_same_id_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_id_connections(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+    let cfg = ws.load().unwrap();
+    assert_eq!(cfg.db.connection.len(), 2);
+}
+
+#[test]
+fn duplicates_reports_the_duplicate_id_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_id_connections(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+    let dups = ws.load().unwrap().duplicates();
+    assert_eq!(dups.len(), 1);
+    assert!(dups[0].contains("dup") && dups[0].contains('2'));
+}
+
+#[test]
+fn upsert_collapses_duplicate_id_connections_to_one_with_the_new_value() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_id_connections(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+
+    let mut resolved = connection("dup");
+    resolved.dsn = "postgres://resolved".into();
+    ws.upsert_connection(&resolved).unwrap();
+
+    let cfg = ws.load().unwrap();
+    assert_eq!(cfg.db.connection.len(), 1);
+    assert_eq!(cfg.db.connection[0].dsn, "postgres://resolved");
+    assert!(cfg.duplicates().is_empty());
+}
+
+#[test]
+fn remove_removes_both_duplicate_id_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    write_duplicate_id_connections(dir.path());
+    let ws = WorkspaceStore::new(dir.path());
+
+    assert!(ws.remove_connection("dup").unwrap());
+    assert!(ws.load().unwrap().db.connection.is_empty());
+}
