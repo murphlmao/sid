@@ -30,7 +30,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::{Root, Theme};
 use sid_core::db::{
     DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo,
     TableInfo,
@@ -46,27 +46,10 @@ use crate::ui::db_conn_form::{
 };
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
+use crate::ui::theme;
 
-// DANGER matches app.rs's palette (used by the delete action's armed state).
-const DANGER: u32 = 0xd08a8a;
-
-// Dark-theme palette, aligned with `app.rs`. Kept local so `ui` stays self-contained
-// (same convention as `host_form.rs`).
-const BG: u32 = 0x161618;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const WS_FG: u32 = 0xa98bd0;
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
 const MONO: &str = "DejaVu Sans Mono";
-
-// W5: query pane palette (the editor/results border+fill), matching `db_conn_form.rs`'s
-// field styling so the tab reads as one surface.
-const FIELD_BG: u32 = 0x121215;
-const FIELD_BORDER: u32 = 0x33343a;
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
 /// (SQLite, Postgres, and the redb browse engine all accept a bare `select 1;`), so it
@@ -320,8 +303,10 @@ impl TableDelegate for ResultDelegate {
         row_ix: usize,
         col_ix: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, accent, selection) = (t.fg, t.accent, t.selection);
         let text = self.rows[row_ix]
             .values
             .get(col_ix)
@@ -345,8 +330,8 @@ impl TableDelegate for ResultDelegate {
                 .px_1()
                 .rounded_sm()
                 .cursor_pointer()
-                .text_color(rgb(BRAND))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .text_color(rgb(accent))
+                .hover(|s| s.bg(rgb(selection)))
                 .child("view")
                 .on_click(move |_ev, _window, cx| {
                     let Some(app) = &view_app else { return };
@@ -368,8 +353,8 @@ impl TableDelegate for ResultDelegate {
             .gap_1()
             .px_2()
             .cursor_pointer()
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
-            .child(div().flex_1().text_xs().text_color(rgb(FG)).child(text))
+            .hover(|s| s.bg(rgb(selection)))
+            .child(div().flex_1().text_xs().text_color(rgb(fg)).child(text))
             .children(view_button)
             .on_click(move |_ev, _window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
@@ -613,6 +598,8 @@ impl AppState {
     pub(crate) fn db_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_query_widgets(window, cx);
 
+        let t = theme::active(cx);
+        let (border, danger) = (t.border, t.danger);
         // The saved-connection picker lives in the unified left panel (`connection_panel`,
         // built inside `query_pane`, stacked above the schema tree) — DBeaver-style, per
         // Murphy: "connections on the left, like dbeaver" (an earlier pass had put this
@@ -625,9 +612,9 @@ impl AppState {
                 .px_4()
                 .py_2()
                 .border_b_1()
-                .border_color(rgb(BORDER))
+                .border_color(rgb(border))
                 .text_sm()
-                .text_color(rgb(DANGER))
+                .text_color(rgb(danger))
                 .child(format!("error: {e}"))
         });
 
@@ -655,6 +642,9 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
+        let t = theme::active(cx);
+        let (surface, border, fg, muted, selection) =
+            (t.surface, t.border, t.fg, t.muted, t.selection);
         let cell = self.db.cell_view.clone()?;
         let viewport = window.viewport_size();
 
@@ -675,9 +665,9 @@ impl AppState {
                                 .h(px(400.))
                                 .flex()
                                 .flex_col()
-                                .bg(rgb(BG))
+                                .bg(rgb(surface))
                                 .border_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(rgb(border))
                                 .rounded_md()
                                 .child(
                                     div()
@@ -688,11 +678,11 @@ impl AppState {
                                         .px_3()
                                         .py_2()
                                         .border_b_1()
-                                        .border_color(rgb(BORDER))
+                                        .border_color(rgb(border))
                                         .child(
                                             div()
                                                 .text_sm()
-                                                .text_color(rgb(FG))
+                                                .text_color(rgb(fg))
                                                 .child(cell.column.clone()),
                                         )
                                         .child(
@@ -702,8 +692,8 @@ impl AppState {
                                                 .py_1()
                                                 .rounded_md()
                                                 .cursor_pointer()
-                                                .text_color(rgb(FG_DIM))
-                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .text_color(rgb(muted))
+                                                .hover(|s| s.bg(rgb(selection)))
                                                 .child("✕ close")
                                                 .on_click(cx.listener(
                                                     |this, _ev: &ClickEvent, _window, cx| {
@@ -721,7 +711,7 @@ impl AppState {
                                         .p_3()
                                         .text_sm()
                                         .font_family(MONO)
-                                        .text_color(rgb(FG))
+                                        .text_color(rgb(fg))
                                         .child(cell.text.clone()),
                                 ),
                         ),
@@ -788,6 +778,10 @@ impl AppState {
     /// connection picker. Always rendered; Run/next-page are no-ops (surfaced as a
     /// status message) with no active connection rather than being conditionally absent.
     fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, danger, accent, selection, fg_strong, well) = (
+            t.border, t.muted, t.danger, t.accent, t.selection, t.fg_strong, t.well,
+        );
         let active_label: SharedString = match &self.db.active_id {
             Some(id) => self
                 .db
@@ -807,11 +801,11 @@ impl AppState {
         };
 
         let (status_text, status_color): (SharedString, u32) = match &self.db.status {
-            QueryStatus::Idle => ("".into(), FG_DIM),
-            QueryStatus::Err(e) => (format!("✗ {e}").into(), DANGER),
+            QueryStatus::Idle => ("".into(), muted),
+            QueryStatus::Err(e) => (format!("✗ {e}").into(), danger),
             QueryStatus::Ok {
                 rows, duration_ms, ..
-            } => (format!("✓ {rows} rows · {duration_ms} ms").into(), FG_DIM),
+            } => (format!("✓ {rows} rows · {duration_ms} ms").into(), muted),
         };
         let has_more = matches!(&self.db.status, QueryStatus::Ok { has_more: true, .. });
         let run_label = if self.db.running { "…" } else { "▶ Run" };
@@ -824,8 +818,8 @@ impl AppState {
                 .rounded_md()
                 .text_xs()
                 .cursor_pointer()
-                .text_color(rgb(BRAND))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .text_color(rgb(accent))
+                .hover(|s| s.bg(rgb(selection)))
                 .child("⭳ next page")
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                     this.next_page(cx);
@@ -837,8 +831,8 @@ impl AppState {
                 .h(px(140.))
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(FIELD_BORDER))
-                .bg(rgb(FIELD_BG))
+                .border_color(rgb(border))
+                .bg(rgb(well))
                 .child(Input::new(&sql))
         });
         let results_table = self
@@ -851,7 +845,7 @@ impl AppState {
             .db
             .notice
             .clone()
-            .map(|n| div().text_xs().text_color(rgb(FG_DIM)).child(n));
+            .map(|n| div().text_xs().text_color(rgb(muted)).child(n));
 
         let editor_and_results = div()
             .flex()
@@ -868,7 +862,7 @@ impl AppState {
                         div()
                             .flex_1()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child(active_label),
                     )
                     .children(next_page)
@@ -880,8 +874,8 @@ impl AppState {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .text_color(rgb(ACTIVE_FG))
-                            .bg(rgb(BRAND))
+                            .text_color(rgb(fg_strong))
+                            .bg(rgb(accent))
                             .hover(|s| s.opacity(0.85))
                             .child(run_label)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -909,7 +903,7 @@ impl AppState {
             .gap_2()
             .p_3()
             .border_t_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(self.left_panel(cx))
             .child(editor_and_results)
     }
@@ -923,6 +917,9 @@ impl AppState {
     /// of a window-pinned point, since this is a small trigger-attached menu, not a
     /// full-viewport modal.
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (accent, selection, border, surface, fg) =
+            (t.accent, t.selection, t.border, t.surface, t.fg);
         let button = div()
             .id("db-export-open")
             .px_2()
@@ -930,8 +927,8 @@ impl AppState {
             .rounded_md()
             .text_xs()
             .cursor_pointer()
-            .text_color(rgb(BRAND))
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .text_color(rgb(accent))
+            .hover(|s| s.bg(rgb(selection)))
             .child("⭳ Export ▾")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.db.export_menu_open = !this.db.export_menu_open;
@@ -953,8 +950,8 @@ impl AppState {
                             .flex_col()
                             .rounded_md()
                             .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(BG))
+                            .border_color(rgb(border))
+                            .bg(rgb(surface))
                             .py_1()
                             .children(ExportFormat::ALL.iter().enumerate().map(|(ix, fmt)| {
                                 let fmt = *fmt;
@@ -964,8 +961,8 @@ impl AppState {
                                     .py_1()
                                     .text_xs()
                                     .cursor_pointer()
-                                    .text_color(rgb(FG))
-                                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                    .text_color(rgb(fg))
+                                    .hover(|s| s.bg(rgb(selection)))
                                     .child(fmt.label())
                                     .on_click(cx.listener(
                                         move |this, _ev: &ClickEvent, _window, cx| {
@@ -1014,6 +1011,9 @@ impl AppState {
     /// show columns). Pure-from-cache: reads `self.db.schema`/`schema_expanded` only,
     /// never touches the runtime itself (that's `refresh_schema`'s job).
     fn schema_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, danger, accent, selection, well) =
+            (t.border, t.muted, t.danger, t.accent, t.selection, t.well);
         let header = div()
             .flex()
             .flex_row()
@@ -1022,14 +1022,14 @@ impl AppState {
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_xs().text_color(rgb(FG_DIM)).child("schema"))
+            .border_color(rgb(border))
+            .child(div().text_xs().text_color(rgb(muted)).child("SCHEMA"))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .child(self.diagram_button(cx))
                     .child(
                         div()
@@ -1037,8 +1037,8 @@ impl AppState {
                             .px_1()
                             .rounded_sm()
                             .cursor_pointer()
-                            .text_color(rgb(BRAND))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .text_color(rgb(accent))
+                            .hover(|s| s.bg(rgb(selection)))
                             .child(if self.db.schema_loading { "…" } else { "⟳" })
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.refresh_schema(window, cx);
@@ -1050,14 +1050,14 @@ impl AppState {
             div()
                 .p_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child("loading schema…")
                 .into_any_element()
         } else if let Some(err) = &self.db.schema_error {
             div()
                 .p_2()
                 .text_xs()
-                .text_color(rgb(DANGER))
+                .text_color(rgb(danger))
                 .child(format!("✗ {err}"))
                 .into_any_element()
         } else {
@@ -1069,7 +1069,7 @@ impl AppState {
                 div()
                     .p_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child("no schema loaded — select a connection")
                     .into_any_element()
             } else {
@@ -1094,8 +1094,8 @@ impl AppState {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(rgb(FIELD_BORDER))
-            .bg(rgb(FIELD_BG))
+            .border_color(rgb(border))
+            .bg(rgb(well))
             .child(header)
             .child(body)
     }
@@ -1106,17 +1106,19 @@ impl AppState {
     /// rather than hidden, matching this tab's convention of always-present, sometimes
     /// no-op controls (see `query_pane`'s doc comment on Run/next-page).
     fn diagram_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx);
+        let (accent, muted, selection) = (t.accent, t.muted, t.selection);
         let enabled = self.db.schema.is_some();
         let button = div()
             .id("db-diagram-open")
             .px_1()
             .rounded_sm()
-            .text_color(rgb(if enabled { BRAND } else { FG_DIM }))
+            .text_color(rgb(if enabled { accent } else { muted }))
             .child("diagram");
         if enabled {
             button
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .hover(|s| s.bg(rgb(selection)))
                 .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                     this.open_diagram_window(window, cx);
                 }))
@@ -1184,7 +1186,10 @@ impl AppState {
                 ..Default::default()
             },
             move |window, cx| {
-                Theme::change(ThemeMode::Dark, Some(window), cx);
+                // Same sync as main.rs's startup window — the sid `Theme` global is
+                // process-wide, so this pop-out follows whatever the user has active.
+                let mode = theme::component_mode(theme::active(cx));
+                Theme::change(mode, Some(window), cx);
                 let view = cx.new(|_cx| DiagramView::new(schema, graph, app, main_window));
                 cx.new(|cx| Root::new(view, window, cx))
             },
@@ -1194,6 +1199,8 @@ impl AppState {
     /// One [`SchemaRow`]'s rendering — a table header (chevron toggles expand, name
     /// inserts `SELECT * FROM <table>`) or an indented column leaf.
     fn schema_tree_row(&self, ix: usize, row: SchemaRow, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx);
+        let (fg, muted, selection) = (t.fg, t.muted, t.selection);
         match row {
             SchemaRow::Table {
                 display_name,
@@ -1214,7 +1221,7 @@ impl AppState {
                             .id(("db-schema-toggle", ix))
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child(if expanded { "▾" } else { "▸" })
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 this.toggle_schema_table(&chevron_name, cx);
@@ -1226,8 +1233,8 @@ impl AppState {
                             .flex_1()
                             .cursor_pointer()
                             .text_xs()
-                            .text_color(rgb(FG))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .text_color(rgb(fg))
+                            .hover(|s| s.bg(rgb(selection)))
                             .child(display_name.clone())
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                                 this.insert_select_star(&insert_name, window, cx);
@@ -1241,7 +1248,7 @@ impl AppState {
                 .pr_2()
                 .py_1()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(name)
                 .into_any_element(),
         }
@@ -1250,21 +1257,24 @@ impl AppState {
     /// D4: the query-history panel — most-recent-first, click an entry to reload it
     /// (unmodified) into the SQL editor.
     fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, fg, selection, well) =
+            (t.border, t.muted, t.fg, t.selection, t.well);
         let entries = self.db.history.clone();
         let header = div()
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .text_xs()
-            .text_color(rgb(FG_DIM))
-            .child("history");
+            .text_color(rgb(muted))
+            .child("HISTORY");
 
         let body: AnyElement = if entries.is_empty() {
             div()
                 .p_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child("no queries run yet")
                 .into_any_element()
         } else {
@@ -1288,8 +1298,8 @@ impl AppState {
                         .py_1()
                         .cursor_pointer()
                         .text_xs()
-                        .text_color(rgb(FG))
-                        .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                        .text_color(rgb(fg))
+                        .hover(|s| s.bg(rgb(selection)))
                         .child(label)
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                             this.reload_history_entry(&full, window, cx);
@@ -1304,8 +1314,8 @@ impl AppState {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(rgb(FIELD_BORDER))
-            .bg(rgb(FIELD_BG))
+            .border_color(rgb(border))
+            .bg(rgb(well))
             .child(header)
             .child(body)
     }
@@ -1320,6 +1330,9 @@ impl AppState {
     /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
     /// `render_connection_row`) needs no focus of its own.
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, accent, selection, well) =
+            (t.border, t.muted, t.accent, t.selection, t.well);
         let count = self.db.connections.len();
         let header = div()
             .flex()
@@ -1329,11 +1342,11 @@ impl AppState {
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(format!("connections · {count}")),
             )
             .child(
@@ -1342,8 +1355,8 @@ impl AppState {
                     .px_1()
                     .rounded_sm()
                     .cursor_pointer()
-                    .text_color(rgb(BRAND))
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .text_color(rgb(accent))
+                    .hover(|s| s.bg(rgb(selection)))
                     .child("+")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.open_add_db_form(window, cx);
@@ -1355,7 +1368,7 @@ impl AppState {
             div()
                 .p_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child("no connections yet")
                 .into_any_element()
         } else {
@@ -1382,8 +1395,8 @@ impl AppState {
             .flex_col()
             .rounded_md()
             .border_1()
-            .border_color(rgb(FIELD_BORDER))
-            .bg(rgb(FIELD_BG))
+            .border_color(rgb(border))
+            .bg(rgb(well))
             .when_some(focus_handle, |el, fh| {
                 el.track_focus(&fh).on_key_down(cx.listener(
                     |this, ev: &KeyDownEvent, window, cx| {
@@ -1402,6 +1415,8 @@ impl AppState {
     /// `group_connections` snapshotting the list and this call) renders nothing —
     /// `refresh_db` drops it from the row list on the very next paint.
     fn connection_panel_row(&self, ix: usize, row: ConnRow, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx);
+        let (muted, selection) = (t.muted, t.selection);
         match row {
             ConnRow::Folder {
                 name,
@@ -1418,17 +1433,17 @@ impl AppState {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
-                    .child(div().text_xs().text_color(rgb(FG_DIM)).child(if expanded {
+                    .hover(|s| s.bg(rgb(selection)))
+                    .child(div().text_xs().text_color(rgb(muted)).child(if expanded {
                         "▾"
                     } else {
                         "▸"
                     }))
-                    .child(div().flex_1().text_xs().text_color(rgb(FG_DIM)).child(name))
+                    .child(div().flex_1().text_xs().text_color(rgb(muted)).child(name))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child(count.to_string()),
                     )
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
@@ -1457,6 +1472,10 @@ impl AppState {
         a: &Attributed<DbConnection>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let t = theme::active(cx);
+        let (bg, border, fg, muted, selection, fg_strong, accent, danger) = (
+            t.bg, t.border, t.fg, t.muted, t.selection, t.fg_strong, t.accent, t.danger,
+        );
         let conn = a.item.clone();
         let display_name: SharedString = if conn.name.is_empty() {
             conn.id.clone().into()
@@ -1464,7 +1483,7 @@ impl AppState {
             conn.name.clone().into()
         };
         let subtitle: SharedString = format!("{} · {}", conn.kind.label(), conn.dsn).into();
-        let (badge, badge_color) = self.db_origin_badge(a);
+        let (badge, badge_color) = self.db_origin_badge(a, cx);
         let is_active = self.db.active_id.as_deref() == Some(conn.id.as_str());
         let click_id = conn.id.clone();
         let origin = a.origin.clone();
@@ -1486,7 +1505,7 @@ impl AppState {
                 .text_xs()
                 .cursor_pointer()
                 .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .hover(|s| s.bg(rgb(selection)))
                 .child(label)
         };
 
@@ -1494,7 +1513,7 @@ impl AppState {
         let promote = can_promote(&origin).then(|| {
             let id = conn.id.clone();
             let origin = origin.clone();
-            action(("db-promote", ix), "⤒".into(), FG_DIM).on_click(cx.listener(
+            action(("db-promote", ix), "⤒".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.promote_db_row(&id, &origin, cx);
                 },
@@ -1504,7 +1523,7 @@ impl AppState {
         // ⤓ demote: global-origin rows while a workspace scope is active.
         let demote = can_demote(&origin, &self.scope).then(|| {
             let id = conn.id.clone();
-            action(("db-demote", ix), "⤓".into(), FG_DIM).on_click(cx.listener(
+            action(("db-demote", ix), "⤓".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.demote_db_row(&id, cx);
                 },
@@ -1515,7 +1534,7 @@ impl AppState {
         let edit = {
             let conn = conn.clone();
             let origin = origin.clone();
-            action(("db-edit", ix), "✎".into(), FG_DIM).on_click(cx.listener(
+            action(("db-edit", ix), "✎".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.open_edit_db_form(conn.clone(), origin.clone(), window, cx);
                 },
@@ -1528,7 +1547,7 @@ impl AppState {
             let id = conn.id.clone();
             let origin = origin.clone();
             let current = conn.folder.clone();
-            action(("db-folder-edit", ix), "folder".into(), FG_DIM).on_click(cx.listener(
+            action(("db-folder-edit", ix), "folder".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.begin_folder_edit(&id, &origin, current.as_deref(), window, cx);
                 },
@@ -1542,9 +1561,9 @@ impl AppState {
             let origin = origin.clone();
             let secret_ref = conn.secret_ref.clone();
             let (label, color) = if armed {
-                ("✕ confirm?", DANGER)
+                ("✕ confirm?", danger)
             } else {
-                ("✕", FG_DIM)
+                ("✕", muted)
             };
             action(("db-delete", ix), label.into(), color).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
@@ -1594,7 +1613,7 @@ impl AppState {
                 .flex_1()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(if is_active { ACTIVE_FG } else { FG }))
+                .text_color(rgb(if is_active { fg_strong } else { fg }))
                 .child(display_name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                     // Double-click (VS Code convention) starts the inline rename; a
@@ -1637,7 +1656,7 @@ impl AppState {
             div()
                 .font_family(MONO)
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(subtitle)
                 .into_any_element()
         };
@@ -1651,9 +1670,9 @@ impl AppState {
             .px_2()
             .py_2()
             .cursor_pointer()
-            .bg(rgb(if is_active { ACTIVE_BG } else { BG }))
+            .bg(rgb(if is_active { selection } else { bg }))
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if this.db.active_id.as_deref() != Some(click_id.as_str()) {
                     // Switching connections: drop the previous connection's schema
@@ -1719,7 +1738,7 @@ impl AppState {
                     .child(name_area)
                     .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
                     .when(is_active, |el| {
-                        el.child(div().text_xs().text_color(rgb(BRAND)).child("★"))
+                        el.child(div().text_xs().text_color(rgb(accent)).child("★"))
                     }),
             )
             .child(subtitle_area)
@@ -1729,7 +1748,7 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .justify_end()
-                    .gap_1()
+                    .gap_2()
                     .children(promote)
                     .children(demote)
                     .child(folder_btn)
@@ -1750,10 +1769,12 @@ impl AppState {
     }
 
     /// Badge label + color for a connection's origin layer — the `DbConnection` mirror
-    /// of `AppState::origin_badge`.
-    fn db_origin_badge(&self, a: &Attributed<DbConnection>) -> (SharedString, u32) {
+    /// of `AppState::origin_badge` (same accent/success split — see that method's doc
+    /// comment for why `success` stands in for a second accent tone).
+    fn db_origin_badge(&self, a: &Attributed<DbConnection>, cx: &Context<Self>) -> (SharedString, u32) {
+        let t = theme::active(cx);
         let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("global".into(), BRAND),
+            Scope::Global => ("global".into(), t.accent),
             Scope::Workspace(id) => {
                 let name = self
                     .scopes
@@ -1761,7 +1782,7 @@ impl AppState {
                     .find(|c| matches!(&c.scope, Scope::Workspace(w) if w == id))
                     .map(|c| c.label.clone())
                     .unwrap_or_else(|| "workspace".into());
-                (name, WS_FG)
+                (name, t.success)
             }
         };
         if a.duplicate {
