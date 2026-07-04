@@ -25,16 +25,8 @@ use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, delete_click_executes};
 use crate::ui::TextInput;
+use crate::ui::theme;
 
-// Dark-theme palette, aligned with `app.rs`/`session.rs`. Kept local so `ui` stays
-// self-contained (same convention as `db_tab.rs`/`host_form.rs`).
-const BG: u32 = 0x161618;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
 const MONO: &str = "DejaVu Sans Mono";
 
 /// The saved-connections tree's fixed sidebar width (Home state only — the session
@@ -230,6 +222,8 @@ impl AppState {
     /// The Home tab's SIDEBAR (ssh-v3): quick-connect/filter box above the
     /// folder-grouped saved-connections tree.
     pub(crate) fn ssh_home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (bg, border) = (t.bg, t.border);
         let query = self.ssh_home.search.read(cx).content().to_string();
         let filtered = filter_hosts(&self.hosts, &query);
         let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
@@ -257,9 +251,9 @@ impl AppState {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(BG))
+            .bg(rgb(bg))
             .border_r_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(self.sidebar_header(cx))
             .child(self.quick_connect_box(cx))
             .child(
@@ -414,6 +408,9 @@ impl AppState {
     /// add-connection entry point (`main`'s button, the tab-strip `+`, this tree's
     /// empty-space context menu) — see `AppState::open_add_form`.
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, selection, fg_strong) =
+            (t.border, t.muted, t.selection, t.fg_strong);
         div()
             .flex()
             .flex_row()
@@ -422,8 +419,13 @@ impl AppState {
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_xs().text_color(rgb(FG_DIM)).child("Connections"))
+            .border_color(rgb(border))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(muted))
+                    .child("CONNECTIONS"),
+            )
             .child(
                 div()
                     .id("ssh-home-add-connection")
@@ -432,8 +434,8 @@ impl AppState {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .bg(rgb(ACTIVE_BG))
-                    .text_color(rgb(FG))
+                    .bg(rgb(selection))
+                    .text_color(rgb(fg_strong))
                     .child("+ Add connection")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.open_add_form(window, cx);
@@ -442,6 +444,9 @@ impl AppState {
     }
 
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (border, muted, accent, fg_strong, danger) =
+            (t.border, t.muted, t.accent, t.fg_strong, t.danger);
         let search = self.ssh_home.search.clone();
         // Fixed-width, never squeezed by a long placeholder/typed value — see the `go`
         // doc comment on the sibling input wrapper below for why the input side needs
@@ -456,8 +461,8 @@ impl AppState {
             .rounded_md()
             .text_xs()
             .cursor_pointer()
-            .bg(rgb(BRAND))
-            .text_color(rgb(0xffffff))
+            .bg(rgb(accent))
+            .text_color(rgb(fg_strong))
             .child("⏎")
             .on_click(
                 cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
@@ -470,7 +475,7 @@ impl AppState {
             .px_2()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 div()
                     .flex()
@@ -497,11 +502,11 @@ impl AppState {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child("saved hosts below · double-click a name to rename"),
             );
         if let Some(err) = &self.ssh_home.quick_error {
-            col = col.child(div().text_xs().text_color(rgb(DANGER)).child(err.clone()));
+            col = col.child(div().text_xs().text_color(rgb(danger)).child(err.clone()));
         }
         col
     }
@@ -542,6 +547,8 @@ impl AppState {
         collapsed: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (muted, selection) = (t.muted, t.selection);
         let caret = if collapsed { "▸" } else { "▾" };
         let owned = folder.to_string();
         div()
@@ -554,8 +561,8 @@ impl AppState {
             .py_1()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(FG_DIM))
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .text_color(rgb(muted))
+            .hover(|s| s.bg(rgb(selection)))
             .child(caret)
             .child(folder.to_string())
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
@@ -577,6 +584,9 @@ impl AppState {
         a: &Attributed<Host>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (fg, muted, selection, accent, danger, success) =
+            (t.fg, t.muted, t.selection, t.accent, t.danger, t.success);
         let host = a.item.clone();
         let origin = a.origin.clone();
 
@@ -603,7 +613,7 @@ impl AppState {
                 .text_xs()
                 .cursor_pointer()
                 .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .hover(|s| s.bg(rgb(selection)))
                 .child(label)
         };
         let row_id = row_hash(&host.alias, &origin);
@@ -611,7 +621,7 @@ impl AppState {
         let connect = {
             let host = host.clone();
             let key = key.clone();
-            action(("ssh-tree-connect", row_id), "»".into(), BRAND).on_click(cx.listener(
+            action(("ssh-tree-connect", row_id), "»".into(), accent).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.connect_host(host.clone(), Some(key.clone()), window, cx);
                 },
@@ -620,7 +630,7 @@ impl AppState {
         let rename = {
             let alias = host.alias.clone();
             let origin = origin.clone();
-            action(("ssh-tree-rename", row_id), "✎".into(), FG_DIM).on_click(cx.listener(
+            action(("ssh-tree-rename", row_id), "✎".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.start_rename(alias.clone(), origin.clone(), window, cx);
                 },
@@ -630,7 +640,7 @@ impl AppState {
             let alias = host.alias.clone();
             let origin = origin.clone();
             let current = host.folder.clone();
-            action(("ssh-tree-folder", row_id), "folder".into(), FG_DIM).on_click(cx.listener(
+            action(("ssh-tree-folder", row_id), "folder".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.start_folder_edit(
                         alias.clone(),
@@ -646,9 +656,9 @@ impl AppState {
             let secret_ref = host.secret_ref.clone();
             let key = key.clone();
             let (label, color): (SharedString, u32) = if armed {
-                ("✕?".into(), DANGER)
+                ("✕?".into(), danger)
             } else {
-                ("✕".into(), FG_DIM)
+                ("✕".into(), muted)
             };
             action(("ssh-tree-delete", row_id), label, color).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
@@ -692,10 +702,10 @@ impl AppState {
             .flex_row()
             .items_center()
             .gap_2()
-            .px_2()
-            .py_1()
+            .px_3()
+            .py_2()
             .rounded_md()
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .hover(|s| s.bg(rgb(selection)))
             // Records this row as the tree's right-click target — read by the tree's
             // single `context_menu` (see `HomeTabState::right_click_target`'s doc
             // comment for why every row can't just have its own `.context_menu`).
@@ -711,7 +721,7 @@ impl AppState {
                 div()
                     .w(px(12.))
                     .text_xs()
-                    .text_color(rgb(if is_live { 0x52c78e } else { FG_DIM }))
+                    .text_color(rgb(if is_live { success } else { muted }))
                     .child(if is_live { "●" } else { "○" }),
             )
             .child(
@@ -723,11 +733,11 @@ impl AppState {
                     .min_w(px(0.))
                     .cursor_pointer()
                     .on_click(label_click)
-                    .child(div().text_xs().text_color(rgb(FG)).truncate().child(alias))
+                    .child(div().text_xs().text_color(rgb(fg)).truncate().child(alias))
                     .child(
                         div()
                             .font_family(MONO)
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .truncate()
                             .child(addr)
                             .text_size(px(10.)),
@@ -738,7 +748,7 @@ impl AppState {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .child(connect)
                     .child(rename)
                     .child(folder_btn)
@@ -752,6 +762,7 @@ impl AppState {
         edit: &InlineEdit,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let accent = theme::active(cx).accent;
         let (input, flag): (Entity<TextInput>, &'static str) = match edit {
             InlineEdit::Rename { input, .. } => (input.clone(), "renaming · Enter/Esc"),
             InlineEdit::Folder { input, .. } => (input.clone(), "folder · Enter/Esc"),
@@ -762,8 +773,8 @@ impl AppState {
             .flex_row()
             .items_center()
             .gap_2()
-            .px_2()
-            .py_1()
+            .px_3()
+            .py_2()
             .on_action(cx.listener(|this, _ev: &InlineEditCommit, _window, cx| {
                 this.commit_inline_edit(cx);
             }))
@@ -774,7 +785,7 @@ impl AppState {
             // in-progress rename/folder value must not bleed into the "renaming ·
             // Enter/Esc" flag beside it.
             .child(div().flex_1().min_w(px(0.)).overflow_hidden().child(input))
-            .child(div().text_xs().text_color(rgb(BRAND)).child(flag))
+            .child(div().text_xs().text_color(rgb(accent)).child(flag))
     }
 
     /// F2/double-click: start renaming `alias`'s label in place (VS Code style).
