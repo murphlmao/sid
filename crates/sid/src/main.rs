@@ -42,10 +42,15 @@ fn main() {
             // Install the persisted theme as the process-wide palette global before
             // any window renders; the settings screen swaps it live via the same
             // `theme::install` + a refresh.
-            let theme_name = store
-                .settings()
-                .map(|s| s.theme)
-                .unwrap_or_else(|_| "cosmos".into());
+            // `SID_THEME` overrides the persisted theme for this run only (never
+            // written back) — the capture harness's hook for shooting every palette
+            // against a hermetic store, same convention as `SID_START_TAB`.
+            let theme_name = std::env::var("SID_THEME").unwrap_or_else(|_| {
+                store
+                    .settings()
+                    .map(|s| s.theme)
+                    .unwrap_or_else(|_| "cosmos".into())
+            });
             ui::theme::install(&theme_name, cx);
             cx.open_window(
                 WindowOptions {
