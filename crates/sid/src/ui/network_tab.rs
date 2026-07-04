@@ -79,17 +79,7 @@ use sid_sysinfo::SysinfoProvider;
 use super::TextInput;
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-
-// Dark-theme palette, aligned with `app.rs`/`db_tab.rs`. Kept local so `ui` stays
-// self-contained (same convention as `db_tab.rs`).
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
-const OK_GREEN: u32 = 0x8ad08a;
+use crate::ui::theme;
 
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -493,6 +483,8 @@ impl TableDelegate for PortsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, muted, danger, selection) = (t.fg, t.muted, t.danger, t.selection);
         // Borrow, not clone (perf audit finding #6) — every field this fn reads is
         // either `Copy` (`protocol`, `pid`) or already individually `.clone()`d below
         // where a `String` needs to move into a label/closure, so cloning the whole
@@ -511,14 +503,14 @@ impl TableDelegate for PortsDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG))
+                    .text_color(rgb(fg))
                     .child(label)
             }
             1 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(port.port.to_string()),
             2 => {
                 let label: SharedString = if port.local_addr.is_empty() {
@@ -530,7 +522,7 @@ impl TableDelegate for PortsDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
             3 => {
@@ -543,7 +535,7 @@ impl TableDelegate for PortsDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
             4 => {
@@ -556,7 +548,7 @@ impl TableDelegate for PortsDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG))
+                    .text_color(rgb(fg))
                     .child(label)
             }
             _ => {
@@ -565,14 +557,14 @@ impl TableDelegate for PortsDelegate {
                         .id(cell_id)
                         .px_2()
                         .text_xs()
-                        .text_color(rgb(FG_DIM))
+                        .text_color(rgb(muted))
                         .child("—");
                 };
                 let armed = kill_click_executes(self.armed_kill, pid);
                 let (label, color) = if armed {
-                    ("kill?", DANGER)
+                    ("kill?", danger)
                 } else {
-                    ("kill", FG_DIM)
+                    ("kill", muted)
                 };
                 div()
                     .id(cell_id)
@@ -582,7 +574,7 @@ impl TableDelegate for PortsDelegate {
                     .text_xs()
                     .cursor_pointer()
                     .text_color(rgb(color))
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .hover(|s| s.bg(rgb(selection)))
                     .child(label)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         if kill_click_executes(this.delegate().armed_kill, pid) {
@@ -744,6 +736,8 @@ impl TableDelegate for ServicesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, muted, danger, selection) = (t.fg, t.muted, t.danger, t.selection);
         // Borrow, not clone (perf audit finding #6) — `active` is `Copy`, and every
         // `String` field this fn needs already gets its own `.clone()` below.
         let svc = &self.services[row_ix];
@@ -753,15 +747,15 @@ impl TableDelegate for ServicesDelegate {
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(svc.name.clone()),
             1 => {
-                let (label, color) = svc_state_badge(svc.active);
+                let (label, tone) = svc_state_badge(svc.active);
                 div()
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(color))
+                    .text_color(rgb(tone_color(tone, cx)))
                     .child(label)
             }
             2 => {
@@ -774,7 +768,7 @@ impl TableDelegate for ServicesDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
             3 => {
@@ -787,7 +781,7 @@ impl TableDelegate for ServicesDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
             _ => {
@@ -804,9 +798,9 @@ impl TableDelegate for ServicesDelegate {
                             let armed =
                                 action_click_executes(&self.armed_action, &svc.name, action);
                             let (display, color): (SharedString, u32) = if armed {
-                                (format!("{label}?").into(), DANGER)
+                                (format!("{label}?").into(), danger)
                             } else {
-                                (label.into(), FG_DIM)
+                                (label.into(), muted)
                             };
                             let name = svc.name.clone();
                             div()
@@ -817,7 +811,7 @@ impl TableDelegate for ServicesDelegate {
                                 .text_xs()
                                 .cursor_pointer()
                                 .text_color(rgb(color))
-                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                .hover(|s| s.bg(rgb(selection)))
                                 .child(display)
                                 .on_click(cx.listener(
                                     move |this, _ev: &ClickEvent, _window, cx| {
@@ -926,8 +920,10 @@ impl TableDelegate for DockerDelegate {
         row_ix: usize,
         col_ix: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, muted) = (t.fg, t.muted);
         let container = &self.containers[row_ix];
         let cell_id = ("docker-cell", row_ix * 8 + col_ix);
         match col_ix {
@@ -935,28 +931,28 @@ impl TableDelegate for DockerDelegate {
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(container.name.clone()),
             1 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(container.image.clone()),
             2 => {
-                let (label, color) = docker_state_badge(&container.state);
+                let (label, tone) = docker_state_badge(&container.state);
                 div()
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(color))
+                    .text_color(rgb(tone_color(tone, cx)))
                     .child(label.to_string())
             }
             3 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(container.status.clone()),
             _ => {
                 let label: SharedString = if container.ports.is_empty() {
@@ -968,7 +964,7 @@ impl TableDelegate for DockerDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
         }
@@ -1061,8 +1057,10 @@ impl TableDelegate for KubePodsDelegate {
         row_ix: usize,
         col_ix: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, muted, danger) = (t.fg, t.muted, t.danger);
         let pod = &self.pods[row_ix];
         let cell_id = ("kube-cell", row_ix * 8 + col_ix);
         match col_ix {
@@ -1070,31 +1068,31 @@ impl TableDelegate for KubePodsDelegate {
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(pod.namespace.clone()),
             1 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(pod.name.clone()),
             2 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(pod.ready.clone()),
             3 => {
-                let (label, color) = kube_phase_badge(&pod.phase);
+                let (label, tone) = kube_phase_badge(&pod.phase);
                 div()
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(color))
+                    .text_color(rgb(tone_color(tone, cx)))
                     .child(label.to_string())
             }
             4 => {
-                let color = if pod.restarts > 0 { DANGER } else { FG_DIM };
+                let color = if pod.restarts > 0 { danger } else { muted };
                 div()
                     .id(cell_id)
                     .px_2()
@@ -1112,7 +1110,7 @@ impl TableDelegate for KubePodsDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(label)
             }
         }
@@ -1125,6 +1123,9 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let t = theme::active(cx);
+        let (border, accent, selection, muted, danger) =
+            (t.border, t.accent, t.selection, t.muted, t.danger);
         self.ensure_network_widgets(window, cx);
         if !self.network.loaded {
             self.network.loaded = true;
@@ -1267,6 +1268,7 @@ impl AppState {
                     graceful_absence_notice(
                         "docker not installed — no daemon reachable",
                         "install Docker and start the daemon to see containers here",
+                        cx,
                     )
                     .into_any_element()
                 } else {
@@ -1288,6 +1290,7 @@ impl AppState {
                     graceful_absence_notice(
                         "kubectl not installed — no cluster",
                         "install kubectl and configure a context to see pods here",
+                        cx,
                     )
                     .into_any_element()
                 } else {
@@ -1321,7 +1324,7 @@ impl AppState {
                     .px_4()
                     .py_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .child(self.network_sub_tab_strip(cx))
                     .children(filter.map(|f| div().flex_1().max_w(px(280.)).child(f)))
                     .child(
@@ -1332,8 +1335,8 @@ impl AppState {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .text_color(rgb(BRAND))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .text_color(rgb(accent))
+                            .hover(|s| s.bg(rgb(selection)))
                             .child(refresh_label)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                 match this.network.sub_tab {
@@ -1352,7 +1355,7 @@ impl AppState {
                     .px_4()
                     .py_1()
                     .text_sm()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(sub),
             )
             .child(body)
@@ -1361,7 +1364,7 @@ impl AppState {
                     .px_4()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(DANGER))
+                    .text_color(rgb(danger))
                     .child(format!("✗ {e}"))
             }))
             .children(action_error.map(|e| {
@@ -1369,7 +1372,7 @@ impl AppState {
                     .px_4()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(DANGER))
+                    .text_color(rgb(danger))
                     .child(format!("✗ {e}"))
             }))
             .into_any_element()
@@ -1378,6 +1381,8 @@ impl AppState {
     /// The `[Ports] [Services] [Interfaces]` segmented control — mirrors `app.rs`'s
     /// main `tab_strip` / `host_form.rs`'s `auth_selector`.
     fn network_sub_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (selection, border, fg_strong, muted) = (t.selection, t.border, t.fg_strong, t.muted);
         let active = self.network.sub_tab;
         div()
             .flex()
@@ -1392,8 +1397,8 @@ impl AppState {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(if is_active { ACTIVE_BG } else { BORDER }))
-                    .text_color(rgb(if is_active { ACTIVE_FG } else { FG_DIM }))
+                    .bg(rgb(if is_active { selection } else { border }))
+                    .text_color(rgb(if is_active { fg_strong } else { muted }))
                     .child(tab.label())
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.network.sub_tab = tab;
@@ -1406,6 +1411,8 @@ impl AppState {
     /// fresh `list_services` call (`svc_loaded` reset) — the two scopes are disjoint
     /// unit sets, not a filter over one cached list.
     fn svc_scope_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let scopes = [(SvcScope::System, "system"), (SvcScope::User, "user")];
         div()
             .flex()
@@ -1415,8 +1422,8 @@ impl AppState {
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_xs().text_color(rgb(FG_DIM)).child("scope"))
+            .border_color(rgb(border))
+            .child(div().text_xs().text_color(rgb(muted)).child("scope"))
             .children(scopes.iter().enumerate().map(|(ix, &(scope, label))| {
                 let active = self.network.svc_scope == scope;
                 div()
@@ -1426,8 +1433,8 @@ impl AppState {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(if active { ACTIVE_BG } else { BORDER }))
-                    .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                    .bg(rgb(if active { selection } else { border }))
+                    .text_color(rgb(if active { fg_strong } else { muted }))
                     .child(label)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.set_svc_scope(scope, cx);
@@ -1441,6 +1448,8 @@ impl AppState {
     /// [`Self::svc_scope_toggle`]'s shape; empty when no contexts are configured
     /// (kubectl installed but nothing set up yet — a valid non-`NotInstalled` state).
     fn kube_context_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let contexts = self.network.kube_contexts.clone();
         let selected = self.network.kube_selected_context.clone();
         div()
@@ -1451,13 +1460,13 @@ impl AppState {
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_xs().text_color(rgb(FG_DIM)).child("context"))
+            .border_color(rgb(border))
+            .child(div().text_xs().text_color(rgb(muted)).child("context"))
             .when(contexts.is_empty(), |el| {
                 el.child(
                     div()
                         .text_xs()
-                        .text_color(rgb(FG_DIM))
+                        .text_color(rgb(muted))
                         .child("no kube contexts configured"),
                 )
             })
@@ -1483,8 +1492,8 @@ impl AppState {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(if active { ACTIVE_BG } else { BORDER }))
-                    .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                    .bg(rgb(if active { selection } else { border }))
+                    .text_color(rgb(if active { fg_strong } else { muted }))
                     .child(label)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.select_kube_context(Some(name.clone()), cx);
@@ -1500,6 +1509,8 @@ impl AppState {
     /// `self.network.interfaces` on every render — the cache is kept current on every
     /// refresh and every filter keystroke, so this never shows a stale count.
     fn interfaces_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, fg) = (t.border, t.muted, t.fg);
         let default_name = self.network.default_route.clone();
         let visible = &self.network.visible_interfaces;
         let hidden = &self.network.hidden_interfaces;
@@ -1514,11 +1525,11 @@ impl AppState {
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .children(
                 visible
                     .iter()
-                    .map(|iface| render_iface_row(iface, default_for_rows.as_deref())),
+                    .map(|iface| render_iface_row(iface, default_for_rows.as_deref(), cx)),
             )
             .when(hidden_count > 0, |el| {
                 let toggle_label: SharedString = format!(
@@ -1536,8 +1547,8 @@ impl AppState {
                         .py_1()
                         .cursor_pointer()
                         .text_xs()
-                        .text_color(rgb(FG_DIM))
-                        .hover(|s| s.text_color(rgb(FG)))
+                        .text_color(rgb(muted))
+                        .hover(|s| s.text_color(rgb(fg)))
                         .child(toggle_label)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                             this.network.interfaces_expanded = !this.network.interfaces_expanded;
@@ -1548,7 +1559,7 @@ impl AppState {
                     el2.children(
                         hidden
                             .iter()
-                            .map(|iface| render_iface_row(iface, default_name.as_deref())),
+                            .map(|iface| render_iface_row(iface, default_name.as_deref(), cx)),
                     )
                 })
             })
@@ -2109,13 +2120,32 @@ fn filter_services<'a>(services: &'a [ServiceInfo], query: &str) -> Vec<&'a Serv
         .collect()
 }
 
-/// Badge label + color for a service's active state.
-fn svc_state_badge(state: SvcActiveState) -> (&'static str, u32) {
+/// A state badge's coarse semantic tone, resolved to an actual theme color only at
+/// render time ([`tone_color`]) — keeps [`svc_state_badge`]/[`docker_state_badge`]/
+/// [`kube_phase_badge`] pure and unit-testable without a `Window`/`App`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    Ok,
+    Danger,
+    Muted,
+}
+
+fn tone_color(tone: Tone, cx: &App) -> u32 {
+    let t = theme::active(cx);
+    match tone {
+        Tone::Ok => t.success,
+        Tone::Danger => t.danger,
+        Tone::Muted => t.muted,
+    }
+}
+
+/// Badge label + tone for a service's active state.
+fn svc_state_badge(state: SvcActiveState) -> (&'static str, Tone) {
     match state {
-        SvcActiveState::Active => ("active", OK_GREEN),
-        SvcActiveState::Failed => ("failed", DANGER),
-        SvcActiveState::Inactive => ("inactive", FG_DIM),
-        SvcActiveState::Other => ("other", FG_DIM),
+        SvcActiveState::Active => ("active", Tone::Ok),
+        SvcActiveState::Failed => ("failed", Tone::Danger),
+        SvcActiveState::Inactive => ("inactive", Tone::Muted),
+        SvcActiveState::Other => ("other", Tone::Muted),
     }
 }
 
@@ -2206,13 +2236,13 @@ fn filter_pods<'a>(pods: &'a [KubePod], query: &str) -> Vec<&'a KubePod> {
 /// (`docker ps`'s `.State`: `"running"`, `"exited"`, `"paused"`, `"restarting"`, ...).
 /// Unrecognized values pass through verbatim with the dim "other" color rather than
 /// erroring — same "still render the row" rule as `svc_state_badge`.
-fn docker_state_badge(state: &str) -> (&str, u32) {
+fn docker_state_badge(state: &str) -> (&str, Tone) {
     match state {
-        "running" => ("running", OK_GREEN),
-        "exited" | "dead" => ("exited", FG_DIM),
-        "paused" => ("paused", FG_DIM),
-        "restarting" => ("restarting", DANGER),
-        other => (other, FG_DIM),
+        "running" => ("running", Tone::Ok),
+        "exited" | "dead" => ("exited", Tone::Muted),
+        "paused" => ("paused", Tone::Muted),
+        "restarting" => ("restarting", Tone::Danger),
+        other => (other, Tone::Muted),
     }
 }
 
@@ -2241,7 +2271,7 @@ fn cmp_container_image(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
 
 /// Lifecycle rank used by [`cmp_container_state`]: `running < paused < restarting <
 /// (exited/dead) < anything unrecognized` — matches [`docker_state_badge`]'s known
-/// values, with the transient `restarting` state (already flagged `DANGER` there)
+/// values, with the transient `restarting` state (already flagged `Tone::Danger` there)
 /// placed ahead of the terminal `exited`/`dead` states.
 fn docker_state_rank(state: &str) -> u8 {
     match state {
@@ -2269,15 +2299,15 @@ fn cmp_container_ports(a: &ContainerInfo, b: &ContainerInfo) -> Ordering {
     a.ports.join(", ").cmp(&b.ports.join(", "))
 }
 
-/// Badge label + color for a Kubernetes pod's phase (`status.phase`).
-fn kube_phase_badge(phase: &str) -> (&str, u32) {
+/// Badge label + tone for a Kubernetes pod's phase (`status.phase`).
+fn kube_phase_badge(phase: &str) -> (&str, Tone) {
     match phase {
-        "Running" => ("Running", OK_GREEN),
-        "Succeeded" => ("Succeeded", OK_GREEN),
-        "Pending" => ("Pending", FG_DIM),
-        "Failed" => ("Failed", DANGER),
-        "Unknown" => ("Unknown", DANGER),
-        other => (other, FG_DIM),
+        "Running" => ("Running", Tone::Ok),
+        "Succeeded" => ("Succeeded", Tone::Ok),
+        "Pending" => ("Pending", Tone::Muted),
+        "Failed" => ("Failed", Tone::Danger),
+        "Unknown" => ("Unknown", Tone::Danger),
+        other => (other, Tone::Muted),
     }
 }
 
@@ -2341,9 +2371,11 @@ fn cmp_pod_node(a: &KubePod, b: &KubePod) -> Ordering {
 /// Two-tier graceful-absence notice, reusing the same "dim status line + secondary
 /// detail line" shape already used for the Ports/Services error paths (`sub` line +
 /// `kill_error`/`action_error` line in `network_tab`) — here both tiers are
-/// intentionally dim (not `DANGER`-colored), since "docker/kubectl isn't set up" is an
+/// intentionally dim (not danger-toned), since "docker/kubectl isn't set up" is an
 /// expected, common local-machine state, not a failure.
-fn graceful_absence_notice(headline: &str, detail: &str) -> impl IntoElement + use<> {
+fn graceful_absence_notice(headline: &str, detail: &str, cx: &App) -> impl IntoElement + use<> {
+    let t = theme::active(cx);
+    let (fg, muted) = (t.fg, t.muted);
     div()
         .flex()
         .flex_col()
@@ -2355,13 +2387,13 @@ fn graceful_absence_notice(headline: &str, detail: &str) -> impl IntoElement + u
             div()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(headline.to_string()),
         )
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(detail.to_string()),
         )
 }
@@ -2405,7 +2437,13 @@ fn partition_interfaces<'a>(
 /// Render one interfaces-strip row: name (+ ★ if default route) · addrs · up/down ·
 /// rx/tx (humanized). Free function (not `&self`) so it's shared between the visible
 /// and expanded-hidden groups in `interfaces_strip`.
-fn render_iface_row(iface: &NetInterface, default_name: Option<&str>) -> impl IntoElement + use<> {
+fn render_iface_row(
+    iface: &NetInterface,
+    default_name: Option<&str>,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let t = theme::active(cx);
+    let (fg, muted, accent) = (t.fg, t.muted, t.accent);
     let is_default = default_name == Some(iface.name.as_str());
     let addrs: SharedString = if iface.addrs.is_empty() {
         "no addrs".into()
@@ -2413,9 +2451,9 @@ fn render_iface_row(iface: &NetInterface, default_name: Option<&str>) -> impl In
         iface.addrs.join(", ").into()
     };
     let (status_label, status_color) = if iface.is_up {
-        ("up", BRAND)
+        ("up", accent)
     } else {
-        ("down", FG_DIM)
+        ("down", muted)
     };
     let throughput: SharedString = format!(
         "↓{} ↑{}",
@@ -2433,17 +2471,17 @@ fn render_iface_row(iface: &NetInterface, default_name: Option<&str>) -> impl In
                 .w(px(120.))
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(iface.name.clone()),
         )
         .when(is_default, |el| {
-            el.child(div().text_xs().text_color(rgb(BRAND)).child("★"))
+            el.child(div().text_xs().text_color(rgb(accent)).child("★"))
         })
         .child(
             div()
                 .flex_1()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(addrs),
         )
         .child(
@@ -2452,7 +2490,7 @@ fn render_iface_row(iface: &NetInterface, default_name: Option<&str>) -> impl In
                 .text_color(rgb(status_color))
                 .child(status_label),
         )
-        .child(div().text_xs().text_color(rgb(FG_DIM)).child(throughput))
+        .child(div().text_xs().text_color(rgb(muted)).child(throughput))
 }
 
 /// Human-readable byte count (binary units, one decimal place above `B`) — e.g. "340 B",
