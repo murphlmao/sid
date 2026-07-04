@@ -149,6 +149,15 @@ pub struct DbTabState {
     /// True while a `schema_introspect` task is in flight — guards re-entrant
     /// selection/⟳ clicks the same way `running` guards Run.
     schema_loading: bool,
+    /// Monotonic staleness guard for schema fetches: bumped at every fetch spawn and on
+    /// every connection switch; a completion applies only if its captured value still
+    /// matches, so an in-flight fetch for a previously-selected connection can never
+    /// overwrite the newer selection's schema/graph (bug-hunt round D, HIGH).
+    schema_generation: u64,
+    /// The query-path mirror of `schema_generation`, guarding `run_query`/`next_page`
+    /// completions (and, through `last_page`, what CSV export sees) against landing
+    /// under a different connection than the one they were started for.
+    query_generation: u64,
     schema_error: Option<String>,
     /// Which tables are expanded (columns visible), keyed by [`table_display_name`].
     /// Cleared whenever the active connection changes or the schema is re-fetched.
@@ -558,6 +567,8 @@ impl DbTabState {
             schema: None,
             schema_graph: None,
             schema_loading: false,
+            schema_generation: 0,
+            query_generation: 0,
             schema_error: None,
             schema_expanded: HashSet::new(),
             cell_view: None,
@@ -1650,6 +1661,33 @@ impl AppState {
                     this.db.schema_graph = None;
                     this.db.schema_error = None;
                     this.db.schema_expanded.clear();
+                    // ...and invalidate everything still in flight for the previous
+                    // connection: bumping both generations makes any pending
+                    // fetch_schema/run_query completion a guarded no-op, so its result
+                    // can never land under this newly-selected connection (bug-hunt
+                    // round D, HIGH). The query pane resets with it — results, status,
+                    // paging cursor and export cache all belonged to the old
+                    // connection.
+                    this.db.schema_generation += 1;
+                    this.db.query_generation += 1;
+                    this.db.schema_loading = false;
+                    this.db.running = false;
+                    this.db.status = QueryStatus::Idle;
+                    this.db.last_sql = None;
+                    this.db.next_cursor = None;
+                    this.db.last_page = None;
+                    if let Some(results) = this.db.results.clone() {
+                        results.update(cx, |state, cx| {
+                            state.delegate_mut().set_page(QueryPage {
+                                columns: Vec::new(),
+                                rows: Vec::new(),
+                                next_cursor: None,
+                                duration_ms: 0,
+                            });
+                            state.refresh(cx);
+                            cx.notify();
+                        });
+                    }
                 }
                 this.db.active_id = Some(click_id.clone());
                 // Selecting a row is also this panel's one focus entry point — F2
@@ -2154,11 +2192,19 @@ impl AppState {
         self.db.next_cursor = None;
         self.db.last_sql = Some(sql.clone());
         push_history(&mut self.db.history, sql.clone(), HISTORY_CAP);
+        self.db.query_generation += 1;
+        let generation = self.db.query_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
             let outcome = run_first_page(factory, conn, secret, cached, sql).await;
             let _ = this.update(cx, |this, cx| {
+                if this.db.query_generation != generation {
+                    // Stale: the user switched connections (or started a newer run)
+                    // while this query was in flight — its result must not land under
+                    // the current selection.
+                    return;
+                }
                 this.db.running = false;
                 match outcome {
                     Ok((client, page)) => {
@@ -2188,6 +2234,8 @@ impl AppState {
         };
 
         self.db.running = true;
+        self.db.query_generation += 1;
+        let generation = self.db.query_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
@@ -2199,6 +2247,11 @@ impl AppState {
                 Err(join_err) => Err(format!("query task panicked: {join_err}")),
             };
             let _ = this.update(cx, |this, cx| {
+                if this.db.query_generation != generation {
+                    // Stale: superseded by a connection switch or a newer run — see
+                    // `run_query`'s identical guard.
+                    return;
+                }
                 this.db.running = false;
                 match outcome {
                     Ok(page) => this.apply_query_page(&page, cx),
@@ -2288,11 +2341,20 @@ impl AppState {
 
         self.db.schema_loading = true;
         self.db.schema_error = None;
+        self.db.schema_generation += 1;
+        let generation = self.db.schema_generation;
         cx.notify();
 
         cx.spawn(async move |this, cx| {
             let outcome = fetch_schema(factory, conn, secret, cached).await;
             let _ = this.update(cx, |this, cx| {
+                if this.db.schema_generation != generation {
+                    // Stale: the user selected another connection (which bumped the
+                    // generation and blanked the tree) or a newer refresh superseded
+                    // this one — applying would overwrite the newer selection's schema
+                    // with a wrong-connection one (bug-hunt round D, HIGH).
+                    return;
+                }
                 this.db.schema_loading = false;
                 match outcome {
                     Ok((client, schema, graph)) => {
