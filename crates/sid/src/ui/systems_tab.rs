@@ -30,8 +30,24 @@
 //! `sid-sysinfo`'s `kill` module, behind that one trait method (see `sid_sysinfo::
 //! kill::kill_process`'s doc comment). [`ProcessesDelegate`] only adds the two-click
 //! confirm UI state on top, mirroring `network_tab.rs`'s `PortsDelegate::kill`.
+//!
+//! ## Config files (Round E §D)
+//!
+//! The tab also grows a small config-file manager below the processes table: pinned
+//! paths (persisted globally via `sid_store::PinnedFile` — see [`AppState::refresh_config_files`])
+//! plus a fixed "common" candidate list, existence-filtered against this machine. Unlike
+//! the overview/processes half of this file, pins *are* persisted (through `AppState::store`,
+//! same as every other tab's writes) — only the overview/processes state itself stays
+//! ephemeral. Clicking a row opens the editor modal in [`super::config_editor`]; this
+//! module owns just the two lists, the pin/unpin affordances, and the "pin a file…" input.
+//!
+//! Every colour here reads [`theme::active`] at render time (never cached across frames)
+//! — this file was the first to drop its own local hex-const palette in favour of the
+//! shared [`Theme`] tokens (round E §B's mapping: `BORDER→border`, `FG→fg`,
+//! `FG_DIM→muted`, `ACTIVE_BG→selection`, `BRAND→accent`, `DANGER→danger`, `WARN→warning`).
 
 use std::cmp::Ordering;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,21 +57,14 @@ use gpui::{
 };
 use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
+use sid_store::PinnedFile;
 use sid_sysinfo::SysinfoProvider;
 
 use super::TextInput;
 use crate::app::{AppState, Tab};
+use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
-
-// Dark-theme palette, aligned with `app.rs`/`network_tab.rs`. Kept local so `ui` stays
-// self-contained (same convention as those files).
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
-const WARN: u32 = 0xd0c88a;
+use crate::ui::theme::{self, Theme};
 
 /// Systems tab state. See the module doc comment for why this holds no store/scope.
 pub struct SystemsTabState {
@@ -89,6 +98,26 @@ pub struct SystemsTabState {
     /// Kept alive so the `cx.observe(&filter, ..)` subscription isn't dropped —
     /// mirrors `NetworkTabState::_filter_sub`.
     _filter_sub: Option<Subscription>,
+    /// The config-files area (Round E §D): unlike everything above, these ARE
+    /// persisted (through `AppState::store`, global-only — see `PinnedFile`'s doc
+    /// comment). Set once at first paint and after every pin/unpin
+    /// (`AppState::refresh_config_files`).
+    pinned: Vec<PinnedFile>,
+    /// The fixed "common" candidate list (`CURATED_TEMPLATES`), existence-filtered
+    /// against this machine and with anything already pinned excluded (no point
+    /// showing a row twice).
+    curated: Vec<String>,
+    /// Set once the config-files area has done its first pinned/curated refresh.
+    config_loaded: bool,
+    /// The "pin a file…" free-text input. Submits on Enter (`.on_key_down`, same
+    /// technique `db_tab.rs`'s inline rename/folder-edit rows use) rather than a
+    /// change-event subscription — there's nothing to react to until the user commits.
+    pin_input: Option<Entity<TextInput>>,
+    /// Inline error under the pin input (e.g. a nonexistent path) — cleared on the
+    /// next successful pin or edit.
+    pin_error: Option<String>,
+    /// The open config-file editor modal, if any — see `super::config_editor`.
+    pub(crate) editor: Option<ConfigEditorState>,
 }
 
 impl SystemsTabState {
@@ -103,6 +132,12 @@ impl SystemsTabState {
             table: None,
             filter: None,
             _filter_sub: None,
+            pinned: Vec::new(),
+            curated: Vec::new(),
+            config_loaded: false,
+            pin_input: None,
+            pin_error: None,
+            editor: None,
         }
     }
 }
@@ -287,6 +322,7 @@ impl TableDelegate for ProcessesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let theme = theme::active(cx).clone();
         let proc = &self.processes[row_ix];
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index, same trick `network_tab.rs`'s delegates use.
@@ -296,25 +332,25 @@ impl TableDelegate for ProcessesDelegate {
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(theme.fg))
                 .child(format!("{:.1}%", proc.cpu_pct)),
             1 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(theme.muted))
                 .child(humanize_bytes(proc.rss_bytes)),
             2 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(theme.muted))
                 .child(proc.pid.as_u32().to_string()),
             3 => div()
                 .id(cell_id)
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG))
+                .text_color(rgb(theme.fg))
                 .child(proc.name.clone()),
             4 => {
                 let label: SharedString =
@@ -323,16 +359,16 @@ impl TableDelegate for ProcessesDelegate {
                     .id(cell_id)
                     .px_2()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(theme.muted))
                     .child(label)
             }
             _ => {
                 let pid = proc.pid;
                 let armed = self.armed_kill == Some(pid);
                 let (label, color) = if armed {
-                    ("kill?", DANGER)
+                    ("kill?", theme.danger)
                 } else {
-                    ("kill", FG_DIM)
+                    ("kill", theme.muted)
                 };
                 div()
                     .id(cell_id)
@@ -342,7 +378,7 @@ impl TableDelegate for ProcessesDelegate {
                     .text_xs()
                     .cursor_pointer()
                     .text_color(rgb(color))
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .hover(|s| s.bg(rgb(theme.selection)))
                     .child(label)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         if this.delegate().armed_kill == Some(pid) {
@@ -368,6 +404,10 @@ impl AppState {
             self.systems.loaded = true;
             self.refresh_systems(cx);
         }
+        if !self.systems.config_loaded {
+            self.systems.config_loaded = true;
+            self.refresh_config_files(cx);
+        }
         // Restart the periodic loop whenever it isn't running — see
         // `SystemsTabState::refresh_loop_running`'s doc comment: the loop only ever
         // clears this itself while the tab is inactive, so "not running" here always
@@ -377,6 +417,7 @@ impl AppState {
             self.start_systems_refresh_loop(cx);
         }
 
+        let theme = theme::active(cx).clone();
         let filter = self.systems.filter.clone();
         let refresh_label = if self.systems.refreshing {
             "…"
@@ -396,7 +437,7 @@ impl AppState {
             None => format!("{proc_count} processes").into(),
         };
 
-        let overview = overview_section(self.systems.overview.as_ref());
+        let overview = overview_section(&theme, self.systems.overview.as_ref());
 
         let kill_error = self
             .systems
@@ -405,11 +446,15 @@ impl AppState {
             .and_then(|t| t.read(cx).delegate().kill_error.clone());
 
         let table = self.systems.table.clone();
+        let config_files = self.config_files_section(&theme, cx);
+        let editor_overlay = self.config_editor_overlay(window, cx);
 
         div()
             .flex()
             .flex_col()
             .flex_1()
+            .p_4()
+            .gap_3()
             .child(overview)
             .child(
                 div()
@@ -417,10 +462,9 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .gap_3()
-                    .px_4()
                     .py_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(theme.border))
                     .children(filter.map(|f| div().flex_1().max_w(px(280.)).child(f)))
                     .child(
                         div()
@@ -430,8 +474,8 @@ impl AppState {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .text_color(rgb(BRAND))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                            .text_color(rgb(theme.accent))
+                            .hover(|s| s.bg(rgb(theme.selection)))
                             .child(refresh_label)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                 this.refresh_systems(cx);
@@ -440,27 +484,27 @@ impl AppState {
             )
             .child(
                 div()
-                    .px_4()
                     .py_1()
                     .text_sm()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(theme.muted))
                     .child(sub),
             )
             .children(table.map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true))))
             .children(kill_error.map(|e| {
                 div()
-                    .px_4()
                     .py_1()
                     .text_xs()
-                    .text_color(rgb(DANGER))
+                    .text_color(rgb(theme.danger))
                     .child(format!("✗ {e}"))
             }))
+            .child(config_files)
+            .children(editor_overlay)
             .into_any_element()
     }
 
-    /// Lazily build the processes table and the shared filter input on first paint of
-    /// the Systems tab. Idempotent (checked every render) — mirrors `network_tab.rs`'s
-    /// `ensure_network_widgets`.
+    /// Lazily build the processes table, the shared filter input, and the "pin a
+    /// file…" input on first paint of the Systems tab. Idempotent (checked every
+    /// render) — mirrors `network_tab.rs`'s `ensure_network_widgets`.
     fn ensure_systems_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.systems.table.is_none() {
             let provider = self.systems.provider.clone();
@@ -477,6 +521,9 @@ impl AppState {
             });
             self.systems.filter = Some(filter);
             self.systems._filter_sub = Some(sub);
+        }
+        if self.systems.pin_input.is_none() {
+            self.systems.pin_input = Some(cx.new(|cx| TextInput::new(cx, "pin a file… (~/ ok)")));
         }
     }
 
@@ -584,18 +631,321 @@ impl AppState {
     }
 }
 
+// ---- config files (Round E §D) -----------------------------------------------------
+
+/// The Round E §D curated candidate list, in the spec's fixed display order. Callers
+/// tilde-expand ([`expand_tilde`]) and existence-filter ([`filter_existing`]) before
+/// rendering — this is just the template list, so it's a plain data constant rather
+/// than something that needs its own test.
+const CURATED_TEMPLATES: &[&str] = &[
+    "/etc/fstab",
+    "/etc/hosts",
+    "/etc/environment",
+    "/etc/pacman.conf",
+    "/etc/ssh/sshd_config",
+    "/etc/ssh/ssh_config",
+    "/etc/sudoers",
+    "~/.ssh/config",
+    "~/.gitconfig",
+    "~/.zshrc",
+    "~/.bashrc",
+    "~/.profile",
+    "~/.config/hypr/hyprland.conf",
+    "~/.config/kitty/kitty.conf",
+    "~/.config/waybar/config.jsonc",
+];
+
+impl AppState {
+    /// Re-read the pinned list from the store and re-filter the curated candidates
+    /// against this machine. Called once at first paint of the config-files area and
+    /// after every pin/unpin — see `SystemsTabState::config_loaded`'s doc comment.
+    pub(crate) fn refresh_config_files(&mut self, cx: &mut Context<Self>) {
+        self.systems.pinned = self.store.list_pinned_files().unwrap_or_default();
+        let home = home_dir();
+        self.systems.curated =
+            filter_existing(&curated_candidates(&home), |p| Path::new(p).exists());
+        cx.notify();
+    }
+
+    /// The "pin a file…" input's submit action (Enter, or the small "+ pin" affordance):
+    /// tilde-expand, reject a nonexistent path inline, else pin + clear the input.
+    fn submit_pin(&mut self, cx: &mut Context<Self>) {
+        let raw = self
+            .systems
+            .pin_input
+            .as_ref()
+            .map(|i| i.read(cx).content().to_string())
+            .unwrap_or_default();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let expanded = expand_tilde(trimmed, &home_dir());
+        if !Path::new(&expanded).exists() {
+            self.systems.pin_error = Some(format!("{expanded}: no such file"));
+            cx.notify();
+            return;
+        }
+        if let Err(e) = self.store.pin_file(&expanded) {
+            self.systems.pin_error = Some(e.to_string());
+            cx.notify();
+            return;
+        }
+        self.systems.pin_error = None;
+        if let Some(input) = self.systems.pin_input.clone() {
+            input.update(cx, |i, cx| i.reset(cx));
+        }
+        self.refresh_config_files(cx);
+    }
+
+    fn unpin_config_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let _ = self.store.unpin_file(&path);
+        self.refresh_config_files(cx);
+    }
+
+    /// The config-files area: pinned section on top, then the existence-filtered
+    /// "common" list (anything already pinned is excluded from it — no point showing a
+    /// row twice), then the "pin a file…" input. Each row (outside its own pin/unpin
+    /// affordance) opens [`AppState::open_config_editor`] on click.
+    fn config_files_section(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let pinned_paths: Vec<String> =
+            self.systems.pinned.iter().map(|p| p.path.clone()).collect();
+        let common: Vec<String> = exclude_pinned(&self.systems.curated, &pinned_paths);
+
+        let section_header = |label: &'static str| {
+            div()
+                .text_xs()
+                .text_color(rgb(theme.muted))
+                .mb_2()
+                .child(label.to_uppercase())
+        };
+
+        // Eagerly collected (rather than left as lazy iterators): `config_file_row`
+        // needs `cx` on every call, and two still-lazy iterators both holding a
+        // closure over it would be two live mutable borrows of `cx` at once.
+        let pinned_rows: Vec<AnyElement> = pinned_paths
+            .iter()
+            .enumerate()
+            .map(|(ix, path)| {
+                self.config_file_row(theme, ("cfg-pinned", ix), path, true, cx)
+                    .into_any_element()
+            })
+            .collect();
+        let common_rows: Vec<AnyElement> = common
+            .iter()
+            .enumerate()
+            .map(|(ix, path)| {
+                self.config_file_row(theme, ("cfg-common", ix), path, false, cx)
+                    .into_any_element()
+            })
+            .collect();
+
+        let pin_error = self.systems.pin_error.clone().map(|e| {
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(rgb(theme.danger))
+                .child(e)
+        });
+        let pin_input = self.systems.pin_input.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .pt_3()
+            .border_t_1()
+            .border_color(rgb(theme.border))
+            .when(!pinned_paths.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(section_header("pinned"))
+                        .children(pinned_rows),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(section_header("common"))
+                    .children(common_rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .children(pin_input.map(|i| div().flex_1().max_w(px(360.)).child(i)))
+                            .child(
+                                div()
+                                    .id("cfg-pin-submit")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .text_color(rgb(theme.accent))
+                                    .hover(|s| s.bg(rgb(theme.selection)))
+                                    .child("+ pin")
+                                    .on_click(cx.listener(
+                                        |this, _ev: &ClickEvent, _window, cx| {
+                                            this.submit_pin(cx);
+                                        },
+                                    )),
+                            ),
+                    )
+                    .children(pin_error),
+            )
+    }
+
+    /// One pinned/common row: filename (`fg_strong`) + muted full path, and a
+    /// pin/unpin text affordance that `cx.stop_propagation()`s so it never also
+    /// triggers the row's own open-editor click.
+    fn config_file_row(
+        &self,
+        theme: &Theme,
+        id: (&'static str, usize),
+        path: &str,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let file_name = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        let (affordance_label, affordance_color) = if pinned {
+            ("unpin", theme.muted)
+        } else {
+            ("pin", theme.accent)
+        };
+        let toggle_path = path.to_string();
+        let open_path = PathBuf::from(path.to_string());
+
+        div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .py_2()
+            .px_3()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme.selection)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(theme.fg_strong))
+                            .child(file_name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme.muted))
+                            .child(path.to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("cfg-toggle", id.1))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(rgb(affordance_color))
+                    .hover(|s| s.bg(rgb(theme.border)))
+                    .child(affordance_label)
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        if pinned {
+                            this.unpin_config_file(toggle_path.clone(), cx);
+                        } else if let Err(e) = this.store.pin_file(&toggle_path) {
+                            this.systems.pin_error = Some(e.to_string());
+                            cx.notify();
+                        } else {
+                            this.refresh_config_files(cx);
+                        }
+                    })),
+            )
+            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                this.open_config_editor(open_path.clone(), window, cx);
+            }))
+    }
+}
+
+/// `$HOME`, falling back to `/tmp` — no `dirs` crate for one env-var read, matching
+/// `db_tab.rs`'s `downloads_dir`/`session.rs`'s `downloads_dir` convention.
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+}
+
+/// Tilde-expand a leading `~` (home-relative) component: `~/x` -> `{home}/x`, a bare
+/// `~` -> `home`. Any other path (relative or absolute, no leading `~`) is returned
+/// unchanged. `home` is injected so this is unit-tested without touching `$HOME`.
+fn expand_tilde(path: &str, home: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else if path == "~" {
+        home.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// [`CURATED_TEMPLATES`], tilde-expanded against `home`. Does no I/O — callers
+/// existence-filter with [`filter_existing`] before rendering.
+fn curated_candidates(home: &str) -> Vec<String> {
+    CURATED_TEMPLATES
+        .iter()
+        .map(|p| expand_tilde(p, home))
+        .collect()
+}
+
+/// Existence-filter `candidates` through `exists`, preserving order. `exists` is
+/// injectable so this is unit-tested with a fake predicate instead of the real
+/// filesystem.
+fn filter_existing<F: Fn(&str) -> bool>(candidates: &[String], exists: F) -> Vec<String> {
+    candidates.iter().filter(|p| exists(p)).cloned().collect()
+}
+
+/// Drop anything already in `pinned` from `curated` — the "common" list never repeats
+/// a row that's already shown, pinned, up top.
+fn exclude_pinned(curated: &[String], pinned: &[String]) -> Vec<String> {
+    curated
+        .iter()
+        .filter(|p| !pinned.iter().any(|pinned_path| pinned_path == *p))
+        .cloned()
+        .collect()
+}
+
 // ---- overview card rendering ------------------------------------------------------
 
 /// The top overview strip: one host/kernel/uptime/load line, then CPU total + per-core
 /// bars and memory/swap bars side by side. Renders a dim "loading…" line instead while
 /// the first probe is still in flight (`overview` is `None`).
-fn overview_section(overview: Option<&SystemOverview>) -> AnyElement {
+fn overview_section(theme: &Theme, overview: Option<&SystemOverview>) -> AnyElement {
     let Some(ov) = overview else {
         return div()
-            .px_4()
             .py_3()
             .text_sm()
-            .text_color(rgb(FG_DIM))
+            .text_color(rgb(theme.muted))
             .child("loading system overview…")
             .into_any_element();
     };
@@ -613,12 +963,12 @@ fn overview_section(overview: Option<&SystemOverview>) -> AnyElement {
     .into();
 
     let swap_card: AnyElement = if ov.swap_total > 0 {
-        mem_card("Swap", ov.swap_used, ov.swap_total).into_any_element()
+        mem_card(theme, "Swap", ov.swap_used, ov.swap_total).into_any_element()
     } else {
         div()
             .flex_1()
             .text_xs()
-            .text_color(rgb(FG_DIM))
+            .text_color(rgb(theme.muted))
             .child("Swap — none configured")
             .into_any_element()
     };
@@ -627,18 +977,17 @@ fn overview_section(overview: Option<&SystemOverview>) -> AnyElement {
         .flex()
         .flex_col()
         .gap_2()
-        .px_4()
         .py_3()
         .border_b_1()
-        .border_color(rgb(BORDER))
-        .child(div().text_sm().text_color(rgb(FG)).child(host_line))
+        .border_color(rgb(theme.border))
+        .child(div().text_sm().text_color(rgb(theme.fg)).child(host_line))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .gap_6()
-                .child(cpu_card(ov))
-                .child(mem_card("Memory", ov.mem_used, ov.mem_total))
+                .child(cpu_card(theme, ov))
+                .child(mem_card(theme, "Memory", ov.mem_used, ov.mem_total))
                 .child(swap_card),
         )
         .into_any_element()
@@ -647,7 +996,7 @@ fn overview_section(overview: Option<&SystemOverview>) -> AnyElement {
 /// CPU card: aggregate percent + a thin horizontal bar, then one thin vertical bar per
 /// logical core underneath (visual density over per-core numeric labels — this is an
 /// overview card, not the processes table).
-fn cpu_card(ov: &SystemOverview) -> impl IntoElement {
+fn cpu_card(theme: &Theme, ov: &SystemOverview) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -659,32 +1008,31 @@ fn cpu_card(ov: &SystemOverview) -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .child(div().text_xs().text_color(rgb(FG_DIM)).child("CPU"))
+                .child(div().text_xs().text_color(rgb(theme.muted)).child("CPU"))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(FG))
+                        .text_color(rgb(theme.fg))
                         .child(format!("{:.1}%", ov.cpu_total_pct)),
                 ),
         )
         .child(horizontal_bar(
+            theme,
             ov.cpu_total_pct / 100.0,
-            bar_color(ov.cpu_total_pct),
+            bar_color(ov.cpu_total_pct, theme),
         ))
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_1()
-                .mt_1()
-                .children(ov.cpu_per_core.iter().map(|&pct| vertical_core_bar(pct))),
+            div().flex().flex_row().flex_wrap().gap_1().mt_1().children(
+                ov.cpu_per_core
+                    .iter()
+                    .map(|&pct| vertical_core_bar(theme, pct)),
+            ),
         )
 }
 
 /// Memory/swap card: `label` · `used / total` (humanized bytes) + a thin horizontal
 /// bar. Shared by both the Memory and (when swap is configured) Swap cards.
-fn mem_card(label: &'static str, used: u64, total: u64) -> impl IntoElement {
+fn mem_card(theme: &Theme, label: &'static str, used: u64, total: u64) -> impl IntoElement {
     let pct = if total == 0 {
         0.0
     } else {
@@ -701,31 +1049,31 @@ fn mem_card(label: &'static str, used: u64, total: u64) -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .child(div().text_xs().text_color(rgb(FG_DIM)).child(label))
-                .child(div().text_xs().text_color(rgb(FG)).child(format!(
+                .child(div().text_xs().text_color(rgb(theme.muted)).child(label))
+                .child(div().text_xs().text_color(rgb(theme.fg)).child(format!(
                     "{} / {}",
                     humanize_bytes(used),
                     humanize_bytes(total)
                 ))),
         )
-        .child(horizontal_bar(pct / 100.0, bar_color(pct)))
+        .child(horizontal_bar(theme, pct / 100.0, bar_color(pct, theme)))
 }
 
 /// A thin horizontal filled bar: a dim track the full width of its container, with a
 /// colored fill proportional to `fraction` (clamped to `0.0..=1.0`).
-fn horizontal_bar(fraction: f32, color: u32) -> impl IntoElement {
+fn horizontal_bar(theme: &Theme, fraction: f32, color: u32) -> impl IntoElement {
     let frac = fraction.clamp(0.0, 1.0);
     div()
         .w_full()
         .h(px(6.))
         .rounded_sm()
-        .bg(rgb(BORDER))
+        .bg(rgb(theme.border))
         .child(div().h_full().rounded_sm().bg(rgb(color)).w(relative(frac)))
 }
 
 /// A thin vertical filled bar (one per CPU core): a dim track of fixed height, with a
 /// colored fill anchored to the bottom, proportional to `pct` (0..=100, clamped).
-fn vertical_core_bar(pct: f32) -> impl IntoElement {
+fn vertical_core_bar(theme: &Theme, pct: f32) -> impl IntoElement {
     let frac = (pct / 100.0).clamp(0.0, 1.0);
     div()
         .w(px(5.))
@@ -734,25 +1082,25 @@ fn vertical_core_bar(pct: f32) -> impl IntoElement {
         .flex_col()
         .justify_end()
         .rounded_sm()
-        .bg(rgb(BORDER))
+        .bg(rgb(theme.border))
         .child(
             div()
                 .w_full()
                 .rounded_sm()
-                .bg(rgb(bar_color(pct)))
+                .bg(rgb(bar_color(pct, theme)))
                 .h(relative(frac)),
         )
 }
 
-/// Bar fill color by load: calm (`BRAND`) under 70%, `WARN` 70..90%, `DANGER` at/above
-/// 90% — same three-tier convention as the rest of the app's status colors.
-fn bar_color(pct: f32) -> u32 {
+/// Bar fill color by load: calm (`accent`) under 70%, `warning` 70..90%, `danger`
+/// at/above 90% — same three-tier convention as the rest of the app's status colors.
+fn bar_color(pct: f32, theme: &Theme) -> u32 {
     if pct >= 90.0 {
-        DANGER
+        theme.danger
     } else if pct >= 70.0 {
-        WARN
+        theme.warning
     } else {
-        BRAND
+        theme.accent
     }
 }
 
@@ -973,11 +1321,78 @@ mod tests {
 
     #[test]
     fn bar_color_thresholds() {
-        assert_eq!(bar_color(0.0), BRAND);
-        assert_eq!(bar_color(69.9), BRAND);
-        assert_eq!(bar_color(70.0), WARN);
-        assert_eq!(bar_color(89.9), WARN);
-        assert_eq!(bar_color(90.0), DANGER);
-        assert_eq!(bar_color(100.0), DANGER);
+        let t = theme::cosmos();
+        assert_eq!(bar_color(0.0, &t), t.accent);
+        assert_eq!(bar_color(69.9, &t), t.accent);
+        assert_eq!(bar_color(70.0, &t), t.warning);
+        assert_eq!(bar_color(89.9, &t), t.warning);
+        assert_eq!(bar_color(90.0, &t), t.danger);
+        assert_eq!(bar_color(100.0, &t), t.danger);
+    }
+
+    // ---- config files (Round E §D) -------------------------------------------------
+
+    #[test]
+    fn expand_tilde_home_relative() {
+        assert_eq!(
+            expand_tilde("~/.ssh/config", "/home/murphy"),
+            "/home/murphy/.ssh/config"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_bare_tilde_is_home() {
+        assert_eq!(expand_tilde("~", "/home/murphy"), "/home/murphy");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_and_relative_paths_alone() {
+        assert_eq!(expand_tilde("/etc/hosts", "/home/murphy"), "/etc/hosts");
+        assert_eq!(
+            expand_tilde("relative/path", "/home/murphy"),
+            "relative/path"
+        );
+        // A `~` not followed by `/` (e.g. `~murphy/x`) is not a home-relative path this
+        // helper understands — left unchanged rather than guessed at.
+        assert_eq!(expand_tilde("~murphy/x", "/home/murphy"), "~murphy/x");
+    }
+
+    #[test]
+    fn curated_candidates_are_all_tilde_expanded() {
+        let candidates = curated_candidates("/home/murphy");
+        assert_eq!(candidates.len(), CURATED_TEMPLATES.len());
+        assert!(candidates.contains(&"/home/murphy/.ssh/config".to_string()));
+        assert!(candidates.contains(&"/etc/fstab".to_string()));
+        assert!(!candidates.iter().any(|p| p.starts_with('~')));
+    }
+
+    #[test]
+    fn filter_existing_keeps_only_what_the_predicate_marks_present() {
+        let candidates = vec!["/etc/hosts".to_string(), "/etc/nope".to_string()];
+        let got = filter_existing(&candidates, |p| p == "/etc/hosts");
+        assert_eq!(got, vec!["/etc/hosts".to_string()]);
+    }
+
+    #[test]
+    fn filter_existing_preserves_order() {
+        let candidates = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let got = filter_existing(&candidates, |_| true);
+        assert_eq!(got, candidates);
+    }
+
+    #[test]
+    fn exclude_pinned_drops_already_pinned_entries() {
+        let curated = vec!["/etc/hosts".to_string(), "/etc/fstab".to_string()];
+        let pinned = vec!["/etc/hosts".to_string()];
+        assert_eq!(
+            exclude_pinned(&curated, &pinned),
+            vec!["/etc/fstab".to_string()]
+        );
+    }
+
+    #[test]
+    fn exclude_pinned_is_a_no_op_when_nothing_is_pinned() {
+        let curated = vec!["/etc/hosts".to_string(), "/etc/fstab".to_string()];
+        assert_eq!(exclude_pinned(&curated, &[]), curated);
     }
 }

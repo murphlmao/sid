@@ -160,8 +160,6 @@ pub fn install(name: &str, cx: &mut App) {
 
 /// The active theme. Elements call this at render time — never cache the result
 /// across frames, or a theme switch won't take until some unrelated re-render.
-// dead_code: see THEME_NAMES above.
-#[allow(dead_code)]
 pub fn active(cx: &App) -> &Theme {
     cx.global::<Theme>()
 }
