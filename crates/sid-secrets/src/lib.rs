@@ -3,11 +3,16 @@
 //! Secrets never live in the committed config or the redb store. A config record holds
 //! only an opaque [`SecretId`] (`secret_ref`); the actual bytes live behind a
 //! [`SecretStore`]. This crate defines that trait plus three implementations:
-//! [`MemorySecretStore`] (non-persistent, tests + final fallback), [`keyring::KeyringStore`]
-//! (the OS Secret Service), and [`file::EncryptedFileStore`] (a dependency-less
-//! passphrase-protected vault — a peer to the keyring, not a lesser fallback).
-//! [`resolve::resolve_secret_store`] is the entry point that picks between them per the
-//! user's toggles plus a startup keyring durability probe.
+//! [`MemorySecretStore`] (non-persistent, tests + the runtime fallback),
+//! [`keyring::KeyringStore`] (the OS Secret Service), and [`file::EncryptedFileStore`] (a
+//! dependency-less passphrase-protected vault). [`resolve::resolve_secret_store`] is the
+//! entry point that picks the effective backend per the user's toggle plus a startup
+//! keyring durability probe.
+//!
+//! **2026-07-03 (round D, §A):** `file::EncryptedFileStore` is dormant — reviewed and
+//! tested, but not wired into [`resolve::resolve_secret_store`]'s chain since Murphy
+//! rejected the passphrase-per-launch UX. The runtime chain is keyring-or-memory only;
+//! see that function's module doc for the replacement (a connect-time password prompt).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -47,9 +52,9 @@ pub enum SecretError {
     #[error("secret backend: {0}")]
     Backend(String),
     /// [`file::EncryptedFileStore`] exists but hasn't been unlocked this session (or
-    /// hasn't been created yet). The app should show the unlock/create modal
-    /// (`ui::secret_unlock` in the `sid` crate) and retry the operation after
-    /// [`file::EncryptedFileStore::unlock`] or `::create` succeeds.
+    /// hasn't been created yet). Dormant since round D §A — `file::EncryptedFileStore`
+    /// is no longer wired into [`resolve::resolve_secret_store`]'s chain, so nothing in
+    /// the `sid` crate produces this variant anymore; kept for `file.rs`'s own tests.
     #[error("secret vault is locked — unlock it first")]
     Locked,
 }

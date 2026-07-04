@@ -251,8 +251,13 @@ pub struct Settings {
     /// Absent in v1/v2 stores — defaults to `true`.
     #[serde(default = "default_secret_backend_enabled")]
     pub secret_keyring_enabled: bool,
-    /// Whether the dependency-less encrypted-file vault is a candidate secret backend.
-    /// Absent in v1/v2 stores — defaults to `true`.
+    /// **Ignored/dormant since round D §A (2026-07-03).** Used to gate the
+    /// dependency-less encrypted-file vault as a candidate secret backend;
+    /// `sid_secrets::resolve_secret_store`'s chain no longer reads it (keyring-or-memory
+    /// only — see that function's module doc). Kept in the struct rather than removed:
+    /// `Settings` is postcard-encoded positionally, so deleting a field would misread
+    /// every later field in every already-persisted value. Absent in v1/v2 stores —
+    /// defaults to `true`.
     #[serde(default = "default_secret_backend_enabled")]
     pub secret_file_enabled: bool,
 }
