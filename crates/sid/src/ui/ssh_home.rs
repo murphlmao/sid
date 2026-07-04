@@ -348,10 +348,12 @@ impl AppState {
             let this = this.clone();
             let host = host.clone();
             let key = key.clone();
-            move |_ev, _window, cx| {
+            move |_ev, window, cx| {
                 let host = host.clone();
                 let key = key.clone();
-                this.update(cx, |state, cx| state.connect_host(host, Some(key), cx));
+                this.update(cx, |state, cx| {
+                    state.connect_host(host, Some(key), window, cx)
+                });
             }
         }))
         .item(PopupMenuItem::new("Rename").on_click({
@@ -457,7 +459,9 @@ impl AppState {
             .bg(rgb(BRAND))
             .text_color(rgb(0xffffff))
             .child("⏎")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.quick_connect(cx)));
+            .on_click(
+                cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
+            );
 
         let mut col = div()
             .flex()
@@ -506,7 +510,7 @@ impl AppState {
     /// ephemeral (unsaved) session for it — `source: None`, so the tree's live-dot only
     /// ever tracks saved hosts. A non-matching query (most partial input, since the same
     /// box doubles as a filter) surfaces a short error instead of silently doing nothing.
-    fn quick_connect(&mut self, cx: &mut Context<Self>) {
+    fn quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.ssh_home.search.read(cx).content().to_string();
         match parse_quick_connect(&text) {
             Some((user, host, port)) => {
@@ -521,7 +525,7 @@ impl AppState {
                     auth: sid_store::AuthMethod::default(),
                     folder: None,
                 };
-                self.connect_host(host_rec, None, cx);
+                self.connect_host(host_rec, None, window, cx);
                 self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
             }
             None => {
@@ -608,8 +612,8 @@ impl AppState {
             let host = host.clone();
             let key = key.clone();
             action(("ssh-tree-connect", row_id), "»".into(), BRAND).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.connect_host(host.clone(), Some(key.clone()), cx);
+                move |this, _ev: &ClickEvent, window, cx| {
+                    this.connect_host(host.clone(), Some(key.clone()), window, cx);
                 },
             ))
         };
@@ -672,7 +676,12 @@ impl AppState {
                         cx,
                     );
                 } else {
-                    this.connect_host(host_for_connect.clone(), Some(key_for_connect.clone()), cx);
+                    this.connect_host(
+                        host_for_connect.clone(),
+                        Some(key_for_connect.clone()),
+                        window,
+                        cx,
+                    );
                 }
             })
         };

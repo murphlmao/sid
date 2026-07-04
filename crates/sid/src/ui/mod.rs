@@ -11,7 +11,7 @@ pub mod db_diagram;
 pub mod db_tab;
 pub mod host_form;
 pub mod network_tab;
-pub mod secret_unlock;
+pub mod password_prompt;
 pub mod session;
 pub mod ssh_home;
 mod text_input;
@@ -88,6 +88,17 @@ pub fn init(cx: &mut App) {
         // DB connection form bindings (W4), scoped the same way as the host form's.
         KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
         KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
+        // Connect-time password prompt (round-D §A.4), scoped the same way.
+        KeyBinding::new(
+            "escape",
+            password_prompt::PasswordPromptCancel,
+            Some("PasswordPrompt"),
+        ),
+        KeyBinding::new(
+            "enter",
+            password_prompt::PasswordPromptSubmit,
+            Some("PasswordPrompt"),
+        ),
         // SSH home-tree inline rename / folder-edit bindings (ssh-v3), scoped to the
         // row wrapper's own key context so Enter/Esc commit/cancel the in-place edit no
         // matter which nested `TextInput` has focus — same ancestor-context trick the
