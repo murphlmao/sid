@@ -22,19 +22,7 @@ use gpui::{
 };
 
 use super::TextInput;
-
-// Dark-theme palette, aligned with `app.rs`/`host_form.rs`. Kept local so `ui` stays
-// self-contained (same convention as every other modal here).
-const PANEL_BG: u32 = 0x1d1d20;
-const BORDER: u32 = 0x2c2c30;
-const FIELD_BG: u32 = 0x121215;
-const FIELD_BORDER: u32 = 0x33343a;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
+use crate::ui::theme;
 
 actions!(
     password_prompt,
@@ -104,6 +92,11 @@ impl Focusable for PasswordPromptModal {
 
 impl Render for PasswordPromptModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (surface, border, well, fg, muted, danger, selection, accent, fg_strong) = (
+            t.surface, t.border, t.well, t.fg, t.muted, t.danger, t.selection, t.accent,
+            t.fg_strong,
+        );
         let title: SharedString = format!("password for {}", self.label).into();
 
         div()
@@ -119,20 +112,20 @@ impl Render for PasswordPromptModal {
             .w(px(380.))
             .p_4()
             .rounded_lg()
-            .bg(rgb(PANEL_BG))
+            .bg(rgb(surface))
             .border_1()
-            .border_color(rgb(BORDER))
-            .text_color(rgb(FG))
+            .border_color(rgb(border))
+            .text_color(rgb(fg))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(FG)).child(title))
+                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child("esc cancels · enter connects"),
                     ),
             )
@@ -141,14 +134,14 @@ impl Render for PasswordPromptModal {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_xs().text_color(rgb(FG_DIM)).child(
+                    .child(div().text_xs().text_color(rgb(muted)).child(
                         "no OS keyring — this password is used once and held only \
                              for this session",
                     ))
                     .child(self.password.clone()),
             )
             .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(DANGER)).child(err))
+                el.child(div().text_sm().text_color(rgb(danger)).child(err))
             })
             .child(
                 div()
@@ -164,10 +157,10 @@ impl Render for PasswordPromptModal {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(FIELD_BG))
+                            .bg(rgb(well))
                             .border_1()
-                            .border_color(rgb(FIELD_BORDER))
-                            .text_color(rgb(FG_DIM))
+                            .border_color(rgb(border))
+                            .text_color(rgb(muted))
                             .child("Cancel")
                             .on_click(cx.listener(|_this, _ev, _window, cx| {
                                 cx.emit(PasswordPromptEvent::Cancel);
@@ -181,10 +174,10 @@ impl Render for PasswordPromptModal {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(ACTIVE_BG))
+                            .bg(rgb(selection))
                             .border_1()
-                            .border_color(rgb(BRAND))
-                            .text_color(rgb(ACTIVE_FG))
+                            .border_color(rgb(accent))
+                            .text_color(rgb(fg_strong))
                             .child("Connect")
                             .on_click(cx.listener(|this, _ev, _window, cx| this.submit(cx))),
                     ),
