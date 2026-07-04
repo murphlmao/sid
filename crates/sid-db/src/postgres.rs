@@ -877,7 +877,7 @@ mod tests {
         let client = factory
             .open(OpenParams {
                 kind: DbKind::Postgres,
-                dsn: test_dsn().into(),
+                dsn: test_dsn(),
                 password: None,
                 sqlite_mode: None,
             })
@@ -899,7 +899,7 @@ mod tests {
         let client = factory
             .open(OpenParams {
                 kind: DbKind::Postgres,
-                dsn: test_dsn().into(),
+                dsn: test_dsn(),
                 password: None,
                 sqlite_mode: None,
             })
