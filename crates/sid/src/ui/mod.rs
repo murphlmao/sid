@@ -6,6 +6,7 @@
 //! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
 pub mod command_palette;
+pub mod config_editor;
 pub mod db_conn_form;
 pub mod db_diagram;
 pub mod db_tab;
@@ -115,6 +116,14 @@ pub fn init(cx: &mut App) {
             "enter",
             ssh_home::InlineEditCommit,
             Some(ssh_home::INLINE_EDIT_CONTEXT),
+        ),
+        // Config-file editor modal (round-e §D), scoped the same way — the multi-line
+        // gpui-component `Input` inside it propagates an unhandled Escape (see that
+        // crate's `InputState::escape`) up to this ancestor context.
+        KeyBinding::new(
+            "escape",
+            config_editor::ConfigEditorCancel,
+            Some("ConfigEditor"),
         ),
     ]);
 }

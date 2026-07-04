@@ -614,3 +614,26 @@ fn set_folder_errors_when_record_missing_in_scope() {
             .is_err()
     );
 }
+
+#[test]
+fn pinned_files_facade_roundtrip() {
+    // Global-only by design (Round E §D) — the facade takes no `Scope`, unlike every
+    // host/connection method above.
+    let (_d, s, _id) = setup();
+    assert!(s.list_pinned_files().unwrap().is_empty());
+
+    s.pin_file("/etc/hosts").unwrap();
+    s.pin_file("/etc/fstab").unwrap();
+    let mut paths: Vec<String> = s
+        .list_pinned_files()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    paths.sort();
+    assert_eq!(paths, vec!["/etc/fstab", "/etc/hosts"]);
+
+    assert!(s.unpin_file("/etc/fstab").unwrap());
+    assert!(!s.unpin_file("/etc/fstab").unwrap(), "already gone");
+    assert_eq!(s.list_pinned_files().unwrap().len(), 1);
+}
