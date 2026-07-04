@@ -31,23 +31,8 @@ use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
 use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
+use crate::ui::theme;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-
-// ---- neutral grayscale palette (theming deferred) --------------------------
-const BG: u32 = 0x161618;
-const TITLEBAR_BG: u32 = 0x1d1d20;
-const TABSTRIP_BG: u32 = 0x1a1a1d;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const WS_FG: u32 = 0xa98bd0;
-const ROW_ALT: u32 = 0x1c1c20;
-const DANGER: u32 = 0xd08a8a;
-const SUCCESS: u32 = 0x8ad08a;
-const WARN: u32 = 0xd0c88a;
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
@@ -906,9 +891,15 @@ impl AppState {
     }
 
     /// Badge label + color for an item's origin layer.
-    fn origin_badge(&self, a: &Attributed<Host>) -> (SharedString, u32) {
+    ///
+    /// Global uses the theme's `accent`; workspace uses `success` — the theme has no
+    /// second accent tone, and `success` reads as a clearly distinct hue from `accent`
+    /// in every built-in (cosmos pairs a pale cyan-blue against the red accent, an echo
+    /// of the pre-sweep brand blue).
+    fn origin_badge(&self, a: &Attributed<Host>, cx: &Context<Self>) -> (SharedString, u32) {
+        let t = theme::active(cx);
         let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("global".into(), BRAND),
+            Scope::Global => ("global".into(), t.accent),
             Scope::Workspace(id) => {
                 let name = self
                     .scopes
@@ -916,7 +907,7 @@ impl AppState {
                     .find(|c| matches!(&c.scope, Scope::Workspace(w) if w == id))
                     .map(|c| c.label.clone())
                     .unwrap_or_else(|| "workspace".into());
-                (name, WS_FG)
+                (name, t.success)
             }
         };
         if a.duplicate {
@@ -1148,6 +1139,9 @@ impl AppState {
         if !self.cheat_sheet_open {
             return None;
         }
+        let t = theme::active(cx);
+        let (fg, accent, surface, border, muted, selection) =
+            (t.fg, t.accent, t.surface, t.border, t.muted, t.selection);
         let bindings = keymap::default_bindings();
         let viewport = window.viewport_size();
         let rows: Vec<_> = keymap::ALL_ACTIONS
@@ -1161,9 +1155,9 @@ impl AppState {
                     .justify_between()
                     .gap_4()
                     .px_3()
-                    .py_1()
-                    .child(div().text_sm().text_color(rgb(FG)).child(action.label()))
-                    .child(div().text_sm().text_color(rgb(BRAND)).child(shortcut))
+                    .py_2()
+                    .child(div().text_sm().text_color(rgb(fg)).child(action.label()))
+                    .child(div().text_sm().text_color(rgb(accent)).child(shortcut))
             })
             .collect();
 
@@ -1184,9 +1178,9 @@ impl AppState {
                                 .w(px(420.))
                                 .flex()
                                 .flex_col()
-                                .bg(rgb(TITLEBAR_BG))
+                                .bg(rgb(surface))
                                 .border_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(rgb(border))
                                 .rounded_md()
                                 .child(
                                     div()
@@ -1197,12 +1191,12 @@ impl AppState {
                                         .px_3()
                                         .py_2()
                                         .border_b_1()
-                                        .border_color(rgb(BORDER))
+                                        .border_color(rgb(border))
                                         .child(
                                             div()
                                                 .text_sm()
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(FG))
+                                                .text_color(rgb(fg))
                                                 .child("Keyboard Shortcuts"),
                                         )
                                         .child(
@@ -1212,8 +1206,8 @@ impl AppState {
                                                 .py_1()
                                                 .rounded_md()
                                                 .cursor_pointer()
-                                                .text_color(rgb(FG_DIM))
-                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .text_color(rgb(muted))
+                                                .hover(|s| s.bg(rgb(selection)))
                                                 .child("✕ close")
                                                 .on_click(cx.listener(
                                                     |this, _ev: &ClickEvent, _window, cx| {
@@ -1234,6 +1228,15 @@ impl AppState {
     // ---- rendering helpers --------------------------------------------------
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (surface, border, accent, muted, fg_strong, selection) = (
+            t.surface,
+            t.border,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+            t.selection,
+        );
         let current = self.scope.clone();
         let buttons: Vec<_> = self
             .scopes
@@ -1249,8 +1252,8 @@ impl AppState {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(if active { ACTIVE_BG } else { TITLEBAR_BG }))
-                    .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                    .bg(rgb(if active { selection } else { surface }))
+                    .text_color(rgb(if active { fg_strong } else { muted }))
                     .child(choice.label.clone())
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
                         this.set_scope(target.clone());
@@ -1267,20 +1270,23 @@ impl AppState {
             .w_full()
             .h(px(44.))
             .px_4()
-            .bg(rgb(TITLEBAR_BG))
+            .bg(rgb(surface))
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 div()
-                    .text_color(rgb(BRAND))
+                    .text_color(rgb(accent))
                     .font_weight(FontWeight::BOLD)
                     .child("✦ sid"),
             )
-            .child(div().text_xs().text_color(rgb(FG_DIM)).child("scope"))
+            .child(div().text_xs().text_color(rgb(muted)).child("scope"))
             .children(buttons)
     }
 
     fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (surface, border, accent, muted, fg_strong) =
+            (t.surface, t.border, t.accent, t.muted, t.fg_strong);
         let active = self.active_tab;
         let tabs: Vec<_> = Tab::ALL
             .iter()
@@ -1293,9 +1299,9 @@ impl AppState {
                     .py_2()
                     .text_sm()
                     .cursor_pointer()
-                    .text_color(rgb(if is_active { ACTIVE_FG } else { FG_DIM }))
+                    .text_color(rgb(if is_active { fg_strong } else { muted }))
                     .border_b_2()
-                    .border_color(rgb(if is_active { BRAND } else { TABSTRIP_BG }))
+                    .border_color(rgb(if is_active { accent } else { surface }))
                     .child(tab.label())
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.active_tab = tab;
@@ -1318,9 +1324,9 @@ impl AppState {
             .w_full()
             .h(px(40.))
             .px_2()
-            .bg(rgb(TABSTRIP_BG))
+            .bg(rgb(surface))
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .children(tabs)
             .child(div().flex_1()) // spacer — pushes the warning badge to the far right
             .children(self.secret_status_badge(cx))
@@ -1338,6 +1344,8 @@ impl AppState {
         if !self.secrets_degraded {
             return None;
         }
+        let t = theme::active(cx);
+        let (warning, border, surface, fg) = (t.warning, t.border, t.surface, t.fg);
         let badge = div()
             .id("secret-status-badge")
             .px_2()
@@ -1346,7 +1354,11 @@ impl AppState {
             .text_xs()
             .font_weight(FontWeight::BOLD)
             .cursor_pointer()
-            .bg(rgb(WARN))
+            .bg(rgb(warning))
+            // Deliberately not a theme token: a near-black label reads clearly against
+            // every theme's `warning` tone (they're all mid-brightness ambers), which a
+            // theme-following text color could not guarantee (e.g. cosmos-light's `bg`
+            // is a light off-white — unreadable on the same amber pill).
             .text_color(rgb(0x1a1a1a))
             .child("!")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
@@ -1368,10 +1380,10 @@ impl AppState {
                             .p_3()
                             .rounded_md()
                             .border_1()
-                            .border_color(rgb(BORDER))
-                            .bg(rgb(TITLEBAR_BG))
+                            .border_color(rgb(border))
+                            .bg(rgb(surface))
                             .text_xs()
-                            .text_color(rgb(FG))
+                            .text_color(rgb(fg))
                             .child(self.secrets_status_detail.clone()),
                     ),
             )
@@ -1404,7 +1416,7 @@ impl AppState {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .children(self.ssh_status_bar())
+                    .children(self.ssh_status_bar(cx))
                     .child(
                         div()
                             .flex()
@@ -1432,8 +1444,10 @@ impl AppState {
     /// Round-D §A dropped the startup secrets-backend notice this bar used to double as
     /// (a persistent "secrets: …" line) — a degraded backend now shows as the small
     /// warning badge at the tab strip's right end instead (see `secret_status_badge`).
-    fn ssh_status_bar(&self) -> Option<impl IntoElement> {
+    fn ssh_status_bar(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let e = self.error.as_ref()?;
+        let t = theme::active(cx);
+        let (border, surface, danger) = (t.border, t.surface, t.danger);
         let text: SharedString = format!("error: {e}").into();
         Some(
             div()
@@ -1441,10 +1455,10 @@ impl AppState {
                 .px_4()
                 .py_1()
                 .border_b_1()
-                .border_color(rgb(BORDER))
-                .bg(rgb(TABSTRIP_BG))
+                .border_color(rgb(border))
+                .bg(rgb(surface))
                 .text_xs()
-                .text_color(rgb(DANGER))
+                .text_color(rgb(danger))
                 .truncate()
                 .child(text),
         )
@@ -1454,6 +1468,18 @@ impl AppState {
     /// one `● user@host ×` tab per live session (click activates, `×` disconnects +
     /// closes) · `+` (also goes Home, ready for a new connection).
     fn session_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (bg, surface, border, muted, fg_strong, selection, success, warning, danger) = (
+            t.bg,
+            t.surface,
+            t.border,
+            t.muted,
+            t.fg_strong,
+            t.selection,
+            t.success,
+            t.warning,
+            t.danger,
+        );
         let home_selected = self.active_session.is_none();
         let home = div()
             .id("ssh-tab-home")
@@ -1466,10 +1492,10 @@ impl AppState {
             .justify_center()
             .rounded_t_md()
             .cursor_pointer()
-            .text_color(rgb(if home_selected { ACTIVE_FG } else { FG_DIM }))
-            .bg(rgb(if home_selected { BG } else { TABSTRIP_BG }))
+            .text_color(rgb(if home_selected { fg_strong } else { muted }))
+            .bg(rgb(if home_selected { bg } else { surface }))
             .border_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child("home")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| this.go_home(window, cx)));
 
@@ -1480,9 +1506,9 @@ impl AppState {
             .map(|(ix, tab)| {
                 let selected = self.active_session == Some(ix);
                 let dot_color = match tab.session.read(cx).status() {
-                    SessionStatus::Connected => SUCCESS,
-                    SessionStatus::Connecting => WARN,
-                    SessionStatus::Failed(_) | SessionStatus::Closed => DANGER,
+                    SessionStatus::Connected => success,
+                    SessionStatus::Connecting => warning,
+                    SessionStatus::Failed(_) | SessionStatus::Closed => danger,
                 };
                 let dot = div().text_color(rgb(dot_color)).child("●");
                 div()
@@ -1494,10 +1520,10 @@ impl AppState {
                     .px_2()
                     .h(px(30.))
                     .rounded_t_md()
-                    .bg(rgb(if selected { BG } else { TABSTRIP_BG }))
-                    .text_color(rgb(if selected { ACTIVE_FG } else { FG_DIM }))
+                    .bg(rgb(if selected { bg } else { surface }))
+                    .text_color(rgb(if selected { fg_strong } else { muted }))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .child(
                         div()
                             .id(("ssh-session-tab-label", ix))
@@ -1521,8 +1547,8 @@ impl AppState {
                             .rounded_md()
                             .text_xs()
                             .cursor_pointer()
-                            .text_color(rgb(FG_DIM))
-                            .hover(|s| s.bg(rgb(ACTIVE_BG)).text_color(rgb(DANGER)))
+                            .text_color(rgb(muted))
+                            .hover(|s| s.bg(rgb(selection)).text_color(rgb(danger)))
                             .child("×")
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                                 this.close_session(ix, window, cx);
@@ -1540,8 +1566,8 @@ impl AppState {
             .justify_center()
             .rounded_t_md()
             .cursor_pointer()
-            .text_color(rgb(FG_DIM))
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .text_color(rgb(muted))
+            .hover(|s| s.bg(rgb(selection)))
             .child("+")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                 // Already on Home: `new_session`/`go_home` would be a no-op with no
@@ -1564,9 +1590,9 @@ impl AppState {
             .gap_1()
             .px_2()
             .pt_1()
-            .bg(rgb(TABSTRIP_BG))
+            .bg(rgb(surface))
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(home)
             .children(tabs)
             .child(add)
@@ -1581,6 +1607,8 @@ impl AppState {
     /// [sidebar | main] split, so a long message can't collide with `+ Add host` below
     /// (see that method's doc comment for why).
     fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let count = self.hosts.len();
         let sub: SharedString = format!("{count} hosts · union of this scope, deduped").into();
 
@@ -1597,13 +1625,13 @@ impl AppState {
                     .px_4()
                     .py_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.))
                             .text_sm()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .truncate()
                             .child(sub),
                     )
@@ -1615,8 +1643,8 @@ impl AppState {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(ACTIVE_BG))
-                            .text_color(rgb(ACTIVE_FG))
+                            .bg(rgb(selection))
+                            .text_color(rgb(fg_strong))
                             .child("+ Add host")
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.open_add_form(window, cx);
@@ -1642,6 +1670,8 @@ impl AppState {
     /// when `active_session == Some(ix)`, an invariant `activate_session`/
     /// `close_session` both maintain.
     fn ssh_session_view(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let tab = &self.ssh_sessions[ix];
         let session = tab.session.clone();
         let label = tab.label.clone();
@@ -1666,7 +1696,7 @@ impl AppState {
                     .px_4()
                     .py_2()
                     .border_b_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .child(
                         div()
                             .id("session-disconnect")
@@ -1675,8 +1705,8 @@ impl AppState {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(ACTIVE_BG))
-                            .text_color(rgb(ACTIVE_FG))
+                            .bg(rgb(selection))
+                            .text_color(rgb(fg_strong))
                             .child("← close tab")
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                                 this.close_session(ix, window, cx);
@@ -1686,7 +1716,7 @@ impl AppState {
                         div()
                             .flex_1()
                             .text_sm()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child(header),
                     ),
             )
@@ -1694,12 +1724,23 @@ impl AppState {
     }
 
     fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (bg, surface, border, fg, muted, selection, accent, danger) = (
+            t.bg,
+            t.surface,
+            t.border,
+            t.fg,
+            t.muted,
+            t.selection,
+            t.accent,
+            t.danger,
+        );
         let a = &self.hosts[ix];
         let host = a.item.clone();
         let origin = a.origin.clone();
         let alias: SharedString = host.alias.clone().into();
         let subtitle: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
-        let (badge, badge_color) = self.origin_badge(a);
+        let (badge, badge_color) = self.origin_badge(a, cx);
         let alt = ix % 2 == 1;
         let armed = delete_click_executes(
             self.armed_delete.as_ref(),
@@ -1716,7 +1757,7 @@ impl AppState {
                 .text_xs()
                 .cursor_pointer()
                 .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .hover(|s| s.bg(rgb(selection)))
                 .child(label)
         };
 
@@ -1724,7 +1765,7 @@ impl AppState {
         let promote = can_promote(&origin).then(|| {
             let alias = host.alias.clone();
             let origin = origin.clone();
-            action(("promote", ix), "⤒".into(), FG_DIM).on_click(cx.listener(
+            action(("promote", ix), "⤒".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.promote_row(&alias, &origin, cx);
                 },
@@ -1734,7 +1775,7 @@ impl AppState {
         // ⤓ demote: global-origin rows while a workspace scope is active.
         let demote = can_demote(&origin, &self.scope).then(|| {
             let alias = host.alias.clone();
-            action(("demote", ix), "⤓".into(), FG_DIM).on_click(cx.listener(
+            action(("demote", ix), "⤓".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
                     this.demote_row(&alias, cx);
                 },
@@ -1746,7 +1787,7 @@ impl AppState {
         let connect = {
             let host = host.clone();
             let source = Some((host.alias.clone(), origin.clone()));
-            action(("connect", ix), "connect".into(), BRAND).on_click(cx.listener(
+            action(("connect", ix), "connect".into(), accent).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.connect_host(host.clone(), source.clone(), window, cx);
                 },
@@ -1757,7 +1798,7 @@ impl AppState {
         let edit = {
             let host = host.clone();
             let origin = origin.clone();
-            action(("edit", ix), "✎".into(), FG_DIM).on_click(cx.listener(
+            action(("edit", ix), "✎".into(), muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, window, cx| {
                     this.open_edit_form(host.clone(), origin.clone(), window, cx);
                 },
@@ -1771,9 +1812,9 @@ impl AppState {
             let origin = origin.clone();
             let secret_ref = host.secret_ref.clone();
             let (label, color) = if armed {
-                ("✕ confirm?", DANGER)
+                ("✕ confirm?", danger)
             } else {
-                ("✕", FG_DIM)
+                ("✕", muted)
             };
             action(("delete", ix), label.into(), color).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| {
@@ -1795,9 +1836,9 @@ impl AppState {
             .w_full()
             .px_4()
             .py_2()
-            .bg(rgb(if alt { ROW_ALT } else { BG }))
+            .bg(rgb(if alt { surface } else { bg }))
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 div()
                     .flex()
@@ -1808,7 +1849,7 @@ impl AppState {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(FG))
+                            .text_color(rgb(fg))
                             .child(alias),
                     )
                     .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
@@ -1818,7 +1859,7 @@ impl AppState {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_1()
+                            .gap_2()
                             .children(promote)
                             .children(demote)
                             .child(connect)
@@ -1830,18 +1871,19 @@ impl AppState {
                 div()
                     .font_family(MONO)
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(subtitle),
             )
     }
 
-    fn placeholder(&self, tab: Tab) -> impl IntoElement {
+    fn placeholder(&self, tab: Tab, cx: &Context<Self>) -> impl IntoElement {
+        let muted = theme::active(cx).muted;
         div()
             .flex()
             .flex_1()
             .items_center()
             .justify_center()
-            .text_color(rgb(FG_DIM))
+            .text_color(rgb(muted))
             .child(format!("{} — coming next", tab.label()))
     }
 }
@@ -1860,7 +1902,7 @@ impl Render for AppState {
             // `settings_tab` needs no lazy widget construction, so it takes `&self`
             // rather than `&mut self` like the tabs above.
             Tab::Settings => self.settings_tab(cx),
-            other => self.placeholder(other).into_any_element(),
+            other => self.placeholder(other, cx).into_any_element(),
         };
 
         // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
@@ -1928,12 +1970,14 @@ impl Render for AppState {
         let palette_overlay = self.palette_overlay(window, cx);
         let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
 
+        let t = theme::active(cx);
+        let (bg, fg) = (t.bg, t.fg);
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(BG))
-            .text_color(rgb(FG))
+            .bg(rgb(bg))
+            .text_color(rgb(fg))
             .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(Self::handle_root_key_down))
             .child(self.titlebar(cx))

@@ -27,20 +27,16 @@ use gpui::{
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
     Pixels, Point, Render, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
-    UnderlineStyle, Window, div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size,
+    UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::theme;
 use super::{
     Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
     SelectRight, SelectToEnd, SelectToHome, ShowCharacterPalette, WordLeft, WordRight,
 };
 
-// Dark-theme palette, aligned with `app.rs`. Kept local so `ui` stays self-contained.
-const FIELD_BG: u32 = 0x121215;
-const FIELD_BORDER: u32 = 0x33343a;
-const FIELD_FG: u32 = 0xdcdce0;
-const CURSOR: u32 = 0x5a9ad0;
 /// The masking glyph rendered in place of each real grapheme.
 const BULLET: char = '\u{2022}';
 
@@ -637,6 +633,11 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let active_theme = theme::active(cx);
+        let cursor_color = active_theme.accent;
+        // A translucent accent wash for the drag-selection highlight.
+        let selection_color = rgba((active_theme.accent << 8) | 0x30);
+        let placeholder_color: gpui::Hsla = rgb(active_theme.faint).into();
         let input = self.input.read(cx);
         let content = input.content.clone();
         let masked = input.masked;
@@ -645,7 +646,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color): (SharedString, _) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 1., 0.28))
+            (input.placeholder.clone(), placeholder_color)
         } else {
             (display_string(&content, masked).into(), style.color)
         };
@@ -707,7 +708,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(CURSOR),
+                    rgb(cursor_color),
                 )),
             )
         } else {
@@ -719,7 +720,7 @@ impl Element for TextElement {
                         point(bounds.left() + line.x_for_index(sel_start), bounds.top()),
                         point(bounds.left() + line.x_for_index(sel_end), bounds.bottom()),
                     ),
-                    rgba(0x3a7ad930),
+                    selection_color,
                 )),
                 None,
             )
@@ -775,6 +776,8 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (well, border, fg) = (t.well, t.border, t.fg);
         div()
             .flex()
             .key_context("TextInput")
@@ -801,11 +804,11 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(rgb(FIELD_BG))
+            .bg(rgb(well))
             .border_1()
-            .border_color(rgb(FIELD_BORDER))
+            .border_color(rgb(border))
             .rounded_md()
-            .text_color(rgb(FIELD_FG))
+            .text_color(rgb(fg))
             .line_height(px(22.))
             .text_size(px(14.))
             .child(

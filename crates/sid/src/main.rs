@@ -15,7 +15,7 @@ mod ssh_connect;
 mod ui;
 
 use gpui::{Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
-use gpui_component::{Theme, ThemeMode};
+use gpui_component::Theme;
 
 fn main() {
     Application::new()
@@ -57,7 +57,12 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    Theme::change(ThemeMode::Dark, Some(window), cx);
+                    // Keep gpui-component's own theming system (a separate layer the
+                    // borrowed `Input`/`Table` widgets read) in sync with the active sid
+                    // theme, instead of hardcoding Dark — cosmos-light is the one built-in
+                    // that needs `ThemeMode::Light` here.
+                    let mode = ui::theme::component_mode(ui::theme::active(cx));
+                    Theme::change(mode, Some(window), cx);
                     // `gpui-component`'s `Input`/`Table` (W5) reach for a
                     // `gpui_component::Root` ancestor at render time — without it,
                     // rendering panics (`root.rs`'s `window.root::<Root>().expect(..)`).

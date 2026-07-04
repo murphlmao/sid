@@ -33,19 +33,7 @@ use sid_store::{DbConnection, DefaultScope, Scope};
 use super::TextInput;
 use super::text_input::next_focus_index;
 use crate::db_registry::DbRegistry;
-
-// Dark-theme palette, aligned with `app.rs`/`host_form.rs`. Kept local so `ui` stays
-// self-contained (same convention as `host_form.rs`).
-const PANEL_BG: u32 = 0x1d1d20;
-const FIELD_BG: u32 = 0x121215;
-const BORDER: u32 = 0x2c2c30;
-const FIELD_BORDER: u32 = 0x33343a;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
+use crate::ui::theme;
 
 actions!(
     db_conn_form,
@@ -458,42 +446,59 @@ impl DbConnForm {
 
     // ---- render pieces ------------------------------------------------------
 
-    fn field_label(text: impl Into<SharedString>) -> impl IntoElement {
-        div().text_xs().text_color(rgb(FG_DIM)).child(text.into())
+    fn field_label(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+        let muted = theme::active(cx).muted;
+        div().text_xs().text_color(rgb(muted)).child(text.into())
     }
 
-    fn field(&self, label: &'static str, input: &Entity<TextInput>) -> impl IntoElement + use<> {
+    fn field(
+        &self,
+        label: &'static str,
+        input: &Entity<TextInput>,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label(label))
+            .child(Self::field_label(label, cx))
             .child(input.clone())
     }
 
     /// The engine row in edit mode: static text, visibly locked (see the module doc's
     /// "engine locked in edit" note).
-    fn locked_kind(&self) -> impl IntoElement + use<> {
+    fn locked_kind(&self, cx: &App) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, muted) = (t.well, t.border, t.muted);
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label("engine — locked while editing"))
+            .child(Self::field_label("engine — locked while editing", cx))
             .child(
                 div()
                     .px(px(8.))
                     .py(px(6.))
                     .rounded_md()
-                    .bg(rgb(FIELD_BG))
+                    .bg(rgb(well))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .text_sm()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(self.kind.label()),
             )
     }
 
     fn kind_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, selection, accent, muted, fg_strong) = (
+            t.well,
+            t.border,
+            t.selection,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+        );
         let kinds: Vec<DbKind> = self
             .registry
             .kinds()
@@ -504,12 +509,12 @@ impl DbConnForm {
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label("engine"))
+            .child(Self::field_label("engine", cx))
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .gap_2()
                     .children(kinds.into_iter().enumerate().map(|(ix, k)| {
                         let active = self.kind == k;
                         div()
@@ -519,10 +524,10 @@ impl DbConnForm {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(if active { ACTIVE_BG } else { FIELD_BG }))
+                            .bg(rgb(if active { selection } else { well }))
                             .border_1()
-                            .border_color(rgb(if active { BRAND } else { FIELD_BORDER }))
-                            .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                            .border_color(rgb(if active { accent } else { border }))
+                            .text_color(rgb(if active { fg_strong } else { muted }))
                             .child(k.label())
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 this.set_kind(k, cx);
@@ -536,6 +541,15 @@ impl DbConnForm {
     /// helper line when `secrets_degraded` (round-D §A.5) — every other field is
     /// unaffected, same as before this change.
     fn field_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx);
+        let (well, border, selection, accent, muted, fg_strong) = (
+            t.well,
+            t.border,
+            t.selection,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+        );
         let (field, widget) = &self.fields[ix];
         let label = field.label.clone();
         let password_hint =
@@ -547,10 +561,10 @@ impl DbConnForm {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(Self::field_label(label))
+                .child(Self::field_label(label, cx))
                 .child(input.clone())
                 .when_some(password_hint, |el, hint| {
-                    el.child(div().text_xs().text_color(rgb(FG_DIM)).child(hint))
+                    el.child(div().text_xs().text_color(rgb(muted)).child(hint))
                 })
                 .into_any_element(),
             FieldWidget::Choice { options, selected } => {
@@ -559,8 +573,8 @@ impl DbConnForm {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Self::field_label(label))
-                    .child(div().flex().flex_row().gap_1().children(
+                    .child(Self::field_label(label, cx))
+                    .child(div().flex().flex_row().gap_2().children(
                         options.iter().cloned().enumerate().map(|(opt_ix, opt)| {
                             let active = opt_ix == selected;
                             div()
@@ -570,10 +584,10 @@ impl DbConnForm {
                                 .rounded_md()
                                 .text_sm()
                                 .cursor_pointer()
-                                .bg(rgb(if active { ACTIVE_BG } else { FIELD_BG }))
+                                .bg(rgb(if active { selection } else { well }))
                                 .border_1()
-                                .border_color(rgb(if active { BRAND } else { FIELD_BORDER }))
-                                .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                                .border_color(rgb(if active { accent } else { border }))
+                                .text_color(rgb(if active { fg_strong } else { muted }))
                                 .child(opt)
                                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                                     if let Some((_, FieldWidget::Choice { selected, .. })) =
@@ -593,6 +607,9 @@ impl DbConnForm {
     fn save_to_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
+        let t = theme::active(cx);
+        let (well, border, selection, accent, muted, fg) =
+            (t.well, t.border, t.selection, t.accent, t.muted, t.fg);
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -611,21 +628,21 @@ impl DbConnForm {
                 .py_1()
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(if selected { BRAND } else { FIELD_BORDER }))
-                .bg(rgb(if selected { ACTIVE_BG } else { FIELD_BG }))
+                .border_color(rgb(if selected { accent } else { border }))
+                .bg(rgb(if selected { selection } else { well }))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(if selected { BRAND } else { FG_DIM }))
+                        .text_color(rgb(if selected { accent } else { muted }))
                         .child(if selected { "●" } else { "○" }),
                 )
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(if enabled { FG } else { FG_DIM }))
+                        .text_color(rgb(if enabled { fg } else { muted }))
                         .child(title),
                 )
-                .child(div().text_xs().text_color(rgb(FG_DIM)).child(note))
+                .child(div().text_xs().text_color(rgb(muted)).child(note))
                 .when(enabled, |el| {
                     el.cursor_pointer()
                         .on_click(cx.listener(move |this, _ev, _window, cx| {
@@ -645,7 +662,7 @@ impl DbConnForm {
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label(label))
+            .child(Self::field_label(label, cx))
             .child(
                 div()
                     .flex()
@@ -673,6 +690,15 @@ impl DbConnForm {
     }
 
     fn buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, muted, selection, accent, fg_strong) = (
+            t.well,
+            t.border,
+            t.muted,
+            t.selection,
+            t.accent,
+            t.fg_strong,
+        );
         div()
             .flex()
             .flex_row()
@@ -686,10 +712,10 @@ impl DbConnForm {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(FIELD_BG))
+                    .bg(rgb(well))
                     .border_1()
-                    .border_color(rgb(FIELD_BORDER))
-                    .text_color(rgb(FG_DIM))
+                    .border_color(rgb(border))
+                    .text_color(rgb(muted))
                     .child("Cancel")
                     .on_click(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                         cx.emit(DbConnFormEvent::Cancel);
@@ -703,10 +729,10 @@ impl DbConnForm {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(ACTIVE_BG))
+                    .bg(rgb(selection))
                     .border_1()
-                    .border_color(rgb(BRAND))
-                    .text_color(rgb(ACTIVE_FG))
+                    .border_color(rgb(accent))
+                    .text_color(rgb(fg_strong))
                     .child("Save")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx))),
             )
@@ -723,6 +749,8 @@ impl Focusable for DbConnForm {
 
 impl Render for DbConnForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (surface, border, fg, muted, danger) = (t.surface, t.border, t.fg, t.muted, t.danger);
         let title = match &self.mode {
             FormMode::Add => "Add connection",
             FormMode::Edit { .. } => "Edit connection",
@@ -745,32 +773,32 @@ impl Render for DbConnForm {
             .w(px(460.))
             .p_4()
             .rounded_lg()
-            .bg(rgb(PANEL_BG))
+            .bg(rgb(surface))
             .border_1()
-            .border_color(rgb(BORDER))
-            .text_color(rgb(FG))
+            .border_color(rgb(border))
+            .text_color(rgb(fg))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(FG)).child(title))
+                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child("esc cancels · enter saves"),
                     ),
             )
-            .child(self.field("name", &self.name))
+            .child(self.field("name", &self.name, cx))
             .child(match &self.mode {
                 FormMode::Add => self.kind_selector(cx).into_any_element(),
-                FormMode::Edit { .. } => self.locked_kind().into_any_element(),
+                FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),
             })
             .children(field_rows)
             .child(self.save_to_selector(cx))
             .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(DANGER)).child(err))
+                el.child(div().text_sm().text_color(rgb(danger)).child(err))
             })
             .child(self.buttons(cx))
     }
