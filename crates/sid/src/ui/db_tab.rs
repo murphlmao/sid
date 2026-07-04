@@ -780,7 +780,13 @@ impl AppState {
     fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (border, muted, danger, accent, selection, fg_strong, well) = (
-            t.border, t.muted, t.danger, t.accent, t.selection, t.fg_strong, t.well,
+            t.border,
+            t.muted,
+            t.danger,
+            t.accent,
+            t.selection,
+            t.fg_strong,
+            t.well,
         );
         let active_label: SharedString = match &self.db.active_id {
             Some(id) => self
@@ -1258,8 +1264,7 @@ impl AppState {
     /// (unmodified) into the SQL editor.
     fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (border, muted, fg, selection, well) =
-            (t.border, t.muted, t.fg, t.selection, t.well);
+        let (border, muted, fg, selection, well) = (t.border, t.muted, t.fg, t.selection, t.well);
         let entries = self.db.history.clone();
         let header = div()
             .px_2()
@@ -1474,7 +1479,14 @@ impl AppState {
     ) -> AnyElement {
         let t = theme::active(cx);
         let (bg, border, fg, muted, selection, fg_strong, accent, danger) = (
-            t.bg, t.border, t.fg, t.muted, t.selection, t.fg_strong, t.accent, t.danger,
+            t.bg,
+            t.border,
+            t.fg,
+            t.muted,
+            t.selection,
+            t.fg_strong,
+            t.accent,
+            t.danger,
         );
         let conn = a.item.clone();
         let display_name: SharedString = if conn.name.is_empty() {
@@ -1771,7 +1783,11 @@ impl AppState {
     /// Badge label + color for a connection's origin layer — the `DbConnection` mirror
     /// of `AppState::origin_badge` (same accent/success split — see that method's doc
     /// comment for why `success` stands in for a second accent tone).
-    fn db_origin_badge(&self, a: &Attributed<DbConnection>, cx: &Context<Self>) -> (SharedString, u32) {
+    fn db_origin_badge(
+        &self,
+        a: &Attributed<DbConnection>,
+        cx: &Context<Self>,
+    ) -> (SharedString, u32) {
         let t = theme::active(cx);
         let (mut label, color): (SharedString, u32) = match &a.origin {
             Scope::Global => ("global".into(), t.accent),

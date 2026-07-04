@@ -94,7 +94,14 @@ impl Render for PasswordPromptModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
         let (surface, border, well, fg, muted, danger, selection, accent, fg_strong) = (
-            t.surface, t.border, t.well, t.fg, t.muted, t.danger, t.selection, t.accent,
+            t.surface,
+            t.border,
+            t.well,
+            t.fg,
+            t.muted,
+            t.danger,
+            t.selection,
+            t.accent,
             t.fg_strong,
         );
         let title: SharedString = format!("password for {}", self.label).into();

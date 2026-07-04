@@ -409,8 +409,7 @@ impl AppState {
     /// empty-space context menu) — see `AppState::open_add_form`.
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) =
-            (t.border, t.muted, t.selection, t.fg_strong);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         div()
             .flex()
             .flex_row()
@@ -420,12 +419,7 @@ impl AppState {
             .py_1()
             .border_b_1()
             .border_color(rgb(border))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child("CONNECTIONS"),
-            )
+            .child(div().text_xs().text_color(rgb(muted)).child("CONNECTIONS"))
             .child(
                 div()
                     .id("ssh-home-add-connection")

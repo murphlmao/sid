@@ -1212,8 +1212,14 @@ impl AppState {
 
     fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
-        let (surface, border, accent, muted, fg_strong, selection) =
-            (t.surface, t.border, t.accent, t.muted, t.fg_strong, t.selection);
+        let (surface, border, accent, muted, fg_strong, selection) = (
+            t.surface,
+            t.border,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+            t.selection,
+        );
         let current = self.scope.clone();
         let buttons: Vec<_> = self
             .scopes
@@ -1447,7 +1453,14 @@ impl AppState {
     fn session_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
         let (bg, surface, border, muted, fg_strong, selection, success, warning, danger) = (
-            t.bg, t.surface, t.border, t.muted, t.fg_strong, t.selection, t.success, t.warning,
+            t.bg,
+            t.surface,
+            t.border,
+            t.muted,
+            t.fg_strong,
+            t.selection,
+            t.success,
+            t.warning,
             t.danger,
         );
         let home_selected = self.active_session.is_none();
@@ -1578,8 +1591,7 @@ impl AppState {
     /// (see that method's doc comment for why).
     fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) =
-            (t.border, t.muted, t.selection, t.fg_strong);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let count = self.hosts.len();
         let sub: SharedString = format!("{count} hosts · union of this scope, deduped").into();
 
@@ -1642,8 +1654,7 @@ impl AppState {
     /// `close_session` both maintain.
     fn ssh_session_view(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) =
-            (t.border, t.muted, t.selection, t.fg_strong);
+        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
         let tab = &self.ssh_sessions[ix];
         let session = tab.session.clone();
         let label = tab.label.clone();
@@ -1698,7 +1709,14 @@ impl AppState {
     fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (bg, surface, border, fg, muted, selection, accent, danger) = (
-            t.bg, t.surface, t.border, t.fg, t.muted, t.selection, t.accent, t.danger,
+            t.bg,
+            t.surface,
+            t.border,
+            t.fg,
+            t.muted,
+            t.selection,
+            t.accent,
+            t.danger,
         );
         let a = &self.hosts[ix];
         let host = a.item.clone();

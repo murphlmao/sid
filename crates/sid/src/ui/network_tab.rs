@@ -2477,13 +2477,7 @@ fn render_iface_row(
         .when(is_default, |el| {
             el.child(div().text_xs().text_color(rgb(accent)).child("★"))
         })
-        .child(
-            div()
-                .flex_1()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(addrs),
-        )
+        .child(div().flex_1().text_xs().text_color(rgb(muted)).child(addrs))
         .child(
             div()
                 .text_xs()

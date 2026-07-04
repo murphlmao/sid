@@ -446,8 +446,7 @@ impl DiagramView {
                 vec![
                     edge_label(("diagram-edge-many", ix), from_anchor, "∞", accent)
                         .into_any_element(),
-                    edge_label(("diagram-edge-one", ix), to_anchor, "1", accent)
-                        .into_any_element(),
+                    edge_label(("diagram-edge-one", ix), to_anchor, "1", accent).into_any_element(),
                 ]
             })
             .collect()
@@ -464,7 +463,13 @@ impl DiagramView {
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (surface, selection_bg, border, fg, muted, accent, success) = (
-            t.surface, t.selection, t.border, t.fg, t.muted, t.accent, t.success,
+            t.surface,
+            t.selection,
+            t.border,
+            t.fg,
+            t.muted,
+            t.accent,
+            t.success,
         );
         let pos = self.positions.get(&table.key).copied().unwrap_or_default();
         let height = box_height(table.columns.len());
