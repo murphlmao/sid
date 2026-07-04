@@ -22,18 +22,7 @@ use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
 use super::TextInput;
 use super::text_input::next_focus_index;
-
-// Dark-theme palette, aligned with `app.rs`. Kept local so `ui` stays self-contained.
-const PANEL_BG: u32 = 0x1d1d20;
-const FIELD_BG: u32 = 0x121215;
-const BORDER: u32 = 0x2c2c30;
-const FIELD_BORDER: u32 = 0x33343a;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
-const DANGER: u32 = 0xd08a8a;
+use crate::ui::theme;
 
 actions!(
     host_form,
@@ -400,41 +389,58 @@ impl HostForm {
 
     // ---- render pieces ------------------------------------------------------
 
-    fn field_label(text: impl Into<SharedString>) -> impl IntoElement {
-        div().text_xs().text_color(rgb(FG_DIM)).child(text.into())
+    fn field_label(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+        let muted = theme::active(cx).muted;
+        div().text_xs().text_color(rgb(muted)).child(text.into())
     }
 
-    fn field(&self, label: &'static str, input: &Entity<TextInput>) -> impl IntoElement + use<> {
+    fn field(
+        &self,
+        label: &'static str,
+        input: &Entity<TextInput>,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label(label))
+            .child(Self::field_label(label, cx))
             .child(input.clone())
     }
 
     /// The alias row in edit mode: static text, visibly locked.
-    fn locked_alias(&self, alias: &str) -> impl IntoElement + use<> {
+    fn locked_alias(&self, alias: &str, cx: &App) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, muted) = (t.well, t.border, t.muted);
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label("alias — locked while editing"))
+            .child(Self::field_label("alias — locked while editing", cx))
             .child(
                 div()
                     .px(px(8.))
                     .py(px(6.))
                     .rounded_md()
-                    .bg(rgb(FIELD_BG))
+                    .bg(rgb(well))
                     .border_1()
-                    .border_color(rgb(BORDER))
+                    .border_color(rgb(border))
                     .text_sm()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(SharedString::from(alias.to_string())),
             )
     }
 
     fn auth_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, selection, accent, muted, fg_strong) = (
+            t.well,
+            t.border,
+            t.selection,
+            t.accent,
+            t.muted,
+            t.fg_strong,
+        );
         let segments = [
             ("auth-agent", "agent", AuthChoice::Agent),
             ("auth-key", "key", AuthChoice::Key),
@@ -444,12 +450,12 @@ impl HostForm {
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label("auth"))
+            .child(Self::field_label("auth", cx))
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .gap_2()
                     .children(segments.map(|(id, label, choice)| {
                         let active = self.auth == choice;
                         div()
@@ -459,10 +465,10 @@ impl HostForm {
                             .rounded_md()
                             .text_sm()
                             .cursor_pointer()
-                            .bg(rgb(if active { ACTIVE_BG } else { FIELD_BG }))
+                            .bg(rgb(if active { selection } else { well }))
                             .border_1()
-                            .border_color(rgb(if active { BRAND } else { FIELD_BORDER }))
-                            .text_color(rgb(if active { ACTIVE_FG } else { FG_DIM }))
+                            .border_color(rgb(if active { accent } else { border }))
+                            .text_color(rgb(if active { fg_strong } else { muted }))
                             .child(label)
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
                                 this.set_auth(choice, cx);
@@ -474,6 +480,9 @@ impl HostForm {
     fn save_to_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
+        let t = theme::active(cx);
+        let (well, border, selection, accent, muted, fg) =
+            (t.well, t.border, t.selection, t.accent, t.muted, t.fg);
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -492,21 +501,21 @@ impl HostForm {
                 .py_1()
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(if selected { BRAND } else { FIELD_BORDER }))
-                .bg(rgb(if selected { ACTIVE_BG } else { FIELD_BG }))
+                .border_color(rgb(if selected { accent } else { border }))
+                .bg(rgb(if selected { selection } else { well }))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(if selected { BRAND } else { FG_DIM }))
+                        .text_color(rgb(if selected { accent } else { muted }))
                         .child(if selected { "●" } else { "○" }),
                 )
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(if enabled { FG } else { FG_DIM }))
+                        .text_color(rgb(if enabled { fg } else { muted }))
                         .child(title),
                 )
-                .child(div().text_xs().text_color(rgb(FG_DIM)).child(note))
+                .child(div().text_xs().text_color(rgb(muted)).child(note))
                 .when(enabled, |el| {
                     el.cursor_pointer()
                         .on_click(cx.listener(move |this, _ev, _window, cx| {
@@ -526,7 +535,7 @@ impl HostForm {
             .flex()
             .flex_col()
             .gap_1()
-            .child(Self::field_label(label))
+            .child(Self::field_label(label, cx))
             .child(
                 div()
                     .flex()
@@ -554,6 +563,15 @@ impl HostForm {
     }
 
     fn buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (well, border, muted, selection, accent, fg_strong) = (
+            t.well,
+            t.border,
+            t.muted,
+            t.selection,
+            t.accent,
+            t.fg_strong,
+        );
         div()
             .flex()
             .flex_row()
@@ -567,10 +585,10 @@ impl HostForm {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(FIELD_BG))
+                    .bg(rgb(well))
                     .border_1()
-                    .border_color(rgb(FIELD_BORDER))
-                    .text_color(rgb(FG_DIM))
+                    .border_color(rgb(border))
+                    .text_color(rgb(muted))
                     .child("Cancel")
                     .on_click(cx.listener(|_this, _ev, _window, cx| {
                         cx.emit(HostFormEvent::Cancel);
@@ -584,10 +602,10 @@ impl HostForm {
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
-                    .bg(rgb(ACTIVE_BG))
+                    .bg(rgb(selection))
                     .border_1()
-                    .border_color(rgb(BRAND))
-                    .text_color(rgb(ACTIVE_FG))
+                    .border_color(rgb(accent))
+                    .text_color(rgb(fg_strong))
                     .child("Save")
                     .on_click(cx.listener(|this, _ev, _window, cx| this.submit(cx))),
             )
@@ -604,6 +622,8 @@ impl Focusable for HostForm {
 
 impl Render for HostForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (surface, border, fg, muted, danger) = (t.surface, t.border, t.fg, t.muted, t.danger);
         let title = match &self.mode {
             FormMode::Add => "Add host",
             FormMode::Edit { .. } => "Edit host",
@@ -623,43 +643,43 @@ impl Render for HostForm {
             .w(px(460.))
             .p_4()
             .rounded_lg()
-            .bg(rgb(PANEL_BG))
+            .bg(rgb(surface))
             .border_1()
-            .border_color(rgb(BORDER))
-            .text_color(rgb(FG))
+            .border_color(rgb(border))
+            .text_color(rgb(fg))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(FG)).child(title))
+                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child("esc cancels · enter saves"),
                     ),
             )
             .child(match &self.mode {
-                FormMode::Add => self.field("alias", &self.alias).into_any_element(),
+                FormMode::Add => self.field("alias", &self.alias, cx).into_any_element(),
                 FormMode::Edit { original, .. } => {
-                    self.locked_alias(&original.alias).into_any_element()
+                    self.locked_alias(&original.alias, cx).into_any_element()
                 }
             })
-            .child(self.field("user", &self.user))
-            .child(self.field("host", &self.host))
-            .child(self.field("port", &self.port))
+            .child(self.field("user", &self.user, cx))
+            .child(self.field("host", &self.host, cx))
+            .child(self.field("port", &self.port, cx))
             .child(self.auth_selector(cx))
             .when(self.auth == AuthChoice::Key, |el| {
-                el.child(self.field("key path", &self.key_path))
-                    .child(self.field("passphrase", &self.passphrase))
+                el.child(self.field("key path", &self.key_path, cx))
+                    .child(self.field("passphrase", &self.passphrase, cx))
             })
             .when(self.auth == AuthChoice::Password, |el| {
-                el.child(self.field("password", &self.password))
+                el.child(self.field("password", &self.password, cx))
             })
             .child(self.save_to_selector(cx))
             .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(DANGER)).child(err))
+                el.child(div().text_sm().text_color(rgb(danger)).child(err))
             })
             .child(self.buttons(cx))
     }

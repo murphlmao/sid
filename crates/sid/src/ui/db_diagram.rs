@@ -18,20 +18,7 @@ use sid_core::db::{SchemaGraph, SchemaInfo};
 
 use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
-
-// ---- palette (kept local — see `db_tab.rs`'s convention for why) --------------------------
-
-const BG: u32 = 0x161618;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const BOX_BG: u32 = 0x1c1c20;
-const HEADER_BG: u32 = 0x232327;
-const BRAND: u32 = 0x5a9ad0;
-const ACCENT: u32 = 0xe0b35a;
-const FK_TINT: u32 = 0x8bb0d0;
-const EDGE_DIM: u32 = 0x3a3a40;
-const EDGE_BRIGHT: u32 = 0xe0b35a;
+use crate::ui::theme;
 
 // ---- layout geometry ------------------------------------------------------------------------
 
@@ -337,7 +324,9 @@ impl DiagramView {
     /// The header bar: table/relationship counts, and — when the backend hasn't wired
     /// up `schema_graph` yet (or the engine genuinely has no FKs) — a subtle hint
     /// rather than a diagram that silently looks broken.
-    fn header(&self) -> impl IntoElement + use<> {
+    fn header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted) = (t.border, t.muted);
         let summary = format!(
             "{} tables · {} relationships",
             self.tables.len(),
@@ -356,9 +345,9 @@ impl DiagramView {
             .px_3()
             .py_2()
             .border_b_1()
-            .border_color(rgb(BORDER))
-            .child(div().text_sm().text_color(rgb(FG_DIM)).child(summary))
-            .children(hint.map(|h| div().text_xs().text_color(rgb(FG_DIM)).child(h)))
+            .border_color(rgb(border))
+            .child(div().text_sm().text_color(rgb(muted)).child(summary))
+            .children(hint.map(|h| div().text_xs().text_color(rgb(muted)).child(h)))
     }
 
     /// The FK-lines layer. A `canvas()` sized to the scrollable content (see
@@ -375,7 +364,12 @@ impl DiagramView {
         &self,
         content_size: (f32, f32),
         table_bounds: HashMap<String, Bounds<Pixels>>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
+        // Copied out (not borrowed) — the canvas closures below are `'static` and can't
+        // hold a reference back into the active theme global.
+        let t = theme::active(cx);
+        let (edge_dim, edge_bright) = (t.border, t.accent);
         let edges: Vec<(String, String)> = self
             .edges
             .iter()
@@ -398,7 +392,7 @@ impl DiagramView {
                         &table_bounds,
                         from_key,
                         to_key,
-                        EDGE_DIM,
+                        edge_dim,
                         window,
                     );
                 }
@@ -410,7 +404,7 @@ impl DiagramView {
                                 &table_bounds,
                                 from_key,
                                 to_key,
-                                EDGE_BRIGHT,
+                                edge_bright,
                                 window,
                             );
                         }
@@ -431,7 +425,12 @@ impl DiagramView {
     ///
     /// Takes `table_bounds` by reference (borrowed from `render`'s single per-frame
     /// build — see [`Self::edges_canvas`]'s doc comment) rather than computing its own.
-    fn edge_labels(&self, table_bounds: &HashMap<String, Bounds<Pixels>>) -> Vec<AnyElement> {
+    fn edge_labels(
+        &self,
+        table_bounds: &HashMap<String, Bounds<Pixels>>,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let accent = theme::active(cx).accent;
         self.edges
             .iter()
             .filter(|e| !e.self_ref)
@@ -445,8 +444,9 @@ impl DiagramView {
                 };
                 let (from_anchor, to_anchor) = edge_anchors(from, to);
                 vec![
-                    edge_label(("diagram-edge-many", ix), from_anchor, "∞").into_any_element(),
-                    edge_label(("diagram-edge-one", ix), to_anchor, "1").into_any_element(),
+                    edge_label(("diagram-edge-many", ix), from_anchor, "∞", accent)
+                        .into_any_element(),
+                    edge_label(("diagram-edge-one", ix), to_anchor, "1", accent).into_any_element(),
                 ]
             })
             .collect()
@@ -461,6 +461,16 @@ impl DiagramView {
         table: &DiagramTable,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (surface, selection_bg, border, fg, muted, accent, success) = (
+            t.surface,
+            t.selection,
+            t.border,
+            t.fg,
+            t.muted,
+            t.accent,
+            t.success,
+        );
         let pos = self.positions.get(&table.key).copied().unwrap_or_default();
         let height = box_height(table.columns.len());
         let selected = self.selected.as_deref() == Some(table.key.as_str());
@@ -476,7 +486,7 @@ impl DiagramView {
             .gap_1()
             .px_2()
             .py_1()
-            .bg(rgb(HEADER_BG))
+            .bg(rgb(selection_bg))
             .rounded_t_md()
             .cursor_pointer()
             .child(
@@ -484,13 +494,13 @@ impl DiagramView {
                     .flex_1()
                     .font_weight(FontWeight::BOLD)
                     .text_sm()
-                    .text_color(rgb(FG))
+                    .text_color(rgb(fg))
                     .child(table.key.clone()),
             )
             .children((self_ref_count > 0).then(|| {
                 div()
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(format!("↺ {self_ref_count}"))
             }))
             .on_mouse_down(
@@ -521,8 +531,8 @@ impl DiagramView {
                     .px_2()
                     .cursor_pointer()
                     .text_xs()
-                    .text_color(rgb(if is_fk { FK_TINT } else { FG_DIM }))
-                    .hover(|s| s.bg(rgb(HEADER_BG)))
+                    .text_color(rgb(if is_fk { success } else { muted }))
+                    .hover(|s| s.bg(rgb(selection_bg)))
                     .child(label)
                     // Task 2: click a column to seed a `WHERE` filter scaffold in the
                     // main window's editor (Murphy: "i like the filter option when we
@@ -539,7 +549,7 @@ impl DiagramView {
             div()
                 .px_2()
                 .text_xs()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(format!("+{more} more"))
                 .into_any_element()
         });
@@ -553,9 +563,9 @@ impl DiagramView {
             .h(px(height))
             .flex()
             .flex_col()
-            .bg(rgb(BOX_BG))
+            .bg(rgb(surface))
             .border_1()
-            .border_color(rgb(if selected { ACCENT } else { BORDER }))
+            .border_color(rgb(if selected { accent } else { border }))
             .rounded_md()
             .child(header)
             .child(
@@ -573,13 +583,14 @@ impl DiagramView {
 
 impl Render for DiagramView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bg = theme::active(cx).bg;
         let content_size = self.content_size();
         // Perf audit finding #2: build once per render, not once per call site.
         // `edge_labels` only ever needs to *read* it, so that call comes first
         // (borrowing); `edges_canvas`'s `canvas()` closure is `'static`, so it takes
         // ownership last, once nothing else needs the map.
         let table_bounds = self.table_bounds();
-        let edge_labels = self.edge_labels(&table_bounds);
+        let edge_labels = self.edge_labels(&table_bounds, cx);
         // Indices, not an iterator over `&self.tables` — `table_box` re-borrows
         // `self.tables[ix]` itself, since it also needs `&mut self` (via `cx.listener`)
         // in the same call, and an active `&self.tables` iterator would conflict with that.
@@ -595,7 +606,7 @@ impl Render for DiagramView {
             .relative()
             .w(px(content_size.0))
             .h(px(content_size.1))
-            .child(self.edges_canvas(content_size, table_bounds))
+            .child(self.edges_canvas(content_size, table_bounds, cx))
             .children(boxes)
             .children(edge_labels);
 
@@ -604,8 +615,8 @@ impl Render for DiagramView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(BG))
-            .child(self.header())
+            .bg(rgb(bg))
+            .child(self.header(cx))
             .child(
                 div()
                     .id("diagram-scroll")
@@ -754,6 +765,7 @@ fn edge_label(
     id: (&'static str, usize),
     anchor: Point<Pixels>,
     glyph: &'static str,
+    color: u32,
 ) -> impl IntoElement + use<> {
     div()
         .id(id)
@@ -761,7 +773,7 @@ fn edge_label(
         .left(px(f32::from(anchor.x) - 5.0))
         .top(px(f32::from(anchor.y) - 8.0))
         .text_xs()
-        .text_color(rgb(BRAND))
+        .text_color(rgb(color))
         .child(glyph)
 }
 

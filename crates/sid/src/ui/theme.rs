@@ -170,12 +170,15 @@ pub fn is_light(theme: &Theme) -> bool {
     (theme.bg >> 16 & 0xff) > 128
 }
 
-/// gpui-component's own chrome mode that matches `theme` — `Light` for a light
-/// sid palette, `Dark` otherwise. The settings screen's live theme switch
-/// (`ui::settings_tab::AppState::set_theme`) calls this right after [`install`]
-/// so gpui-component's own widgets (the SQL editor, tables, …) never end up
-/// mismatched against the active sid palette; `main.rs`'s startup path is
-/// expected to reuse it too (round-E §B.3) once that track lands.
+/// The `gpui-component` `ThemeMode` matching `theme` — `Light` for a light sid
+/// palette, `Dark` otherwise. `gpui-component` (the `Input`/`Table` widgets the SQL
+/// editor and results grid borrow) layers its own theming system on top of gpui and
+/// knows nothing about sid's tokens, so every window that mounts a
+/// `gpui_component::Root` must call
+/// `gpui_component::Theme::change(component_mode(theme::active(cx)), ..)` before
+/// first paint — see `main.rs`'s startup window, `db_tab.rs`'s
+/// relationships-diagram pop-out, and the settings screen's live switch
+/// (`ui::settings_tab::AppState::set_theme`).
 pub fn component_mode(theme: &Theme) -> ThemeMode {
     if is_light(theme) {
         ThemeMode::Light
