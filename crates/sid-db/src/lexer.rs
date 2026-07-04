@@ -202,6 +202,57 @@ fn snap_to_char_boundary(s: &str, mut idx: usize) -> usize {
     idx
 }
 
+/// Strip trailing SQL trivia — a trailing `;` and any whitespace/comments around it —
+/// from the end of `input`, using [`tokenize`] rather than a naive `str` scan so a `--`
+/// or `;` that's actually inside a string literal (or an identifier, or a block comment)
+/// is never mistaken for one of these.
+///
+/// Repeats: `"SELECT 1 ;  ; "` strips down to `"SELECT 1"` (both semicolons, and the
+/// whitespace/comments between/after them, are removed).
+///
+/// Deliberately does NOT strip a trailing comment that isn't preceded by a `;` — e.g.
+/// `"SELECT 1\n-- note"` is returned unchanged. That's not a gap: a caller wrapping this
+/// text in its own SQL (e.g. `query_paged`'s `SELECT * FROM ( .. ) AS sid_sub LIMIT ..`
+/// subquery) is expected to put its own trailing tail on a fresh line, since a `--`
+/// comment only ever runs to the next newline — see `crates/sid-db/src/postgres.rs`'s
+/// `query_paged` and `crates/sid-db/src/sqlite.rs`'s `query_paged` for the motivating bug
+/// (a trailing line comment in the caller's SQL silently ate the wrapper's own closing
+/// `) .. LIMIT .. OFFSET ..` tail when it was appended on the same line).
+///
+/// # Examples
+///
+/// ```
+/// use sid_db::lexer::strip_trailing_trivia;
+/// assert_eq!(strip_trailing_trivia("SELECT 1;"), "SELECT 1");
+/// assert_eq!(strip_trailing_trivia("SELECT 1; -- trailing note"), "SELECT 1");
+/// assert_eq!(strip_trailing_trivia("SELECT ';'"), "SELECT ';'");
+/// ```
+pub fn strip_trailing_trivia(input: &str) -> &str {
+    let tokens = tokenize(input);
+    let mut end = input.len();
+    let mut i = tokens.len();
+    loop {
+        while i > 0
+            && matches!(
+                tokens[i - 1].kind,
+                TokenKind::Whitespace | TokenKind::Comment
+            )
+        {
+            i -= 1;
+        }
+        if i > 0
+            && tokens[i - 1].kind == TokenKind::Punctuation
+            && tokens[i - 1].text.as_ref() == ";"
+        {
+            i -= 1;
+            end = tokens[i].offset;
+            continue;
+        }
+        break;
+    }
+    &input[..end]
+}
+
 fn is_keyword(ident: &str) -> bool {
     let upper: String = ident.chars().map(|c| c.to_ascii_uppercase()).collect();
     KEYWORDS.binary_search(&upper.as_str()).is_ok()
@@ -357,6 +408,80 @@ mod tests {
         let toks = tokenize("my_table");
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0].kind, TokenKind::Identifier);
+    }
+
+    #[test]
+    fn strip_trailing_trivia_removes_a_trailing_semicolon() {
+        assert_eq!(strip_trailing_trivia("SELECT 1;"), "SELECT 1");
+    }
+
+    #[test]
+    fn strip_trailing_trivia_removes_semicolon_then_line_comment() {
+        // Round-D bug repro: `; -- note` used to leave the `;` embedded mid-wrapper.
+        assert_eq!(
+            strip_trailing_trivia("SELECT 1 AS one; -- trailing comment"),
+            "SELECT 1 AS one"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_removes_a_run_of_semicolons_and_whitespace() {
+        assert_eq!(strip_trailing_trivia("SELECT 1 ;  ; "), "SELECT 1 ");
+    }
+
+    #[test]
+    fn strip_trailing_trivia_removes_semicolon_before_trailing_block_comment() {
+        assert_eq!(
+            strip_trailing_trivia("SELECT 1; /* trailing */"),
+            "SELECT 1"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_does_not_touch_a_semicolon_inside_a_string_literal() {
+        // The trailing `;` is INSIDE the string literal's own token, not a separate
+        // Punctuation token, so it must survive untouched.
+        assert_eq!(
+            strip_trailing_trivia("SELECT 'trailing;'"),
+            "SELECT 'trailing;'"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_does_not_touch_a_line_comment_marker_inside_a_string_literal() {
+        assert_eq!(
+            strip_trailing_trivia("SELECT '--not a comment'"),
+            "SELECT '--not a comment'"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_leaves_a_bare_trailing_comment_alone_with_no_semicolon() {
+        // No trailing `;` before the comment -- deliberately NOT stripped (see the
+        // function's doc comment: the newline-separated wrapper tail handles this case
+        // instead).
+        assert_eq!(
+            strip_trailing_trivia("SELECT 1 AS one\n-- trailing comment"),
+            "SELECT 1 AS one\n-- trailing comment"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_leaves_a_trailing_block_comment_alone_with_no_semicolon() {
+        assert_eq!(
+            strip_trailing_trivia("SELECT 1 AS one /* trailing */"),
+            "SELECT 1 AS one /* trailing */"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_trivia_of_empty_input_is_empty() {
+        assert_eq!(strip_trailing_trivia(""), "");
+    }
+
+    #[test]
+    fn strip_trailing_trivia_of_only_a_semicolon_is_empty() {
+        assert_eq!(strip_trailing_trivia(";"), "");
     }
 
     // Property-based: the module doc's robustness contract (terminates, never
