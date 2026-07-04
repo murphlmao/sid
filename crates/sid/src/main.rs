@@ -31,14 +31,14 @@ fn main() {
             // `app::SeedLists`) — threaded to `AppState::new` below so it doesn't
             // immediately re-read the same two tables (perf audit finding #7).
             let (store, seed_lists) = app::open_store();
-            // Secret backend bootstrap: resolves keyring vs. encrypted-file vault vs.
-            // in-memory from the persisted `Settings` toggles (see `app::open_secrets`).
-            // The status message (which backend is live, plus any warning) is surfaced
-            // in the app's status line (and echoed to stderr for headless debugging).
-            let (secrets, secret_file, secrets_status) = app::open_secrets(&store);
-            if let Some(status) = &secrets_status {
-                eprintln!("sid: {status}");
-            }
+            // Secret backend bootstrap: resolves keyring vs. in-memory from the
+            // persisted `Settings.secret_keyring_enabled` toggle (see
+            // `app::open_secrets`; round-D §A dropped the encrypted-file backend from
+            // the chain). The status text (which backend is live, plus any warning) is
+            // echoed to stderr for headless debugging, and shown in-app only when
+            // degraded (the tab strip's warning badge — see `app::AppState::new`).
+            let (secrets, secrets_degraded, secrets_status) = app::open_secrets(&store);
+            eprintln!("sid: {secrets_status}");
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -55,9 +55,8 @@ fn main() {
                             store,
                             seed_lists,
                             secrets,
-                            secret_file,
+                            secrets_degraded,
                             secrets_status,
-                            window,
                             cx,
                         )
                     });
