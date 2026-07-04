@@ -24,12 +24,17 @@
 //!   `System` refresh.
 //! - `kill_process`: no `sysinfo` state read or written; signal delivery
 //!   goes through `nix::sys::signal::kill` directly.
+//! - `overview`: refreshes CPU usage + memory on the same cached `System` used by
+//!   `list_processes` (see `overview.rs`'s module doc for the CPU% warm-up caveat).
 
-use sid_core::sys::{ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider};
+use sid_core::sys::{
+    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider, SystemOverview,
+};
 
 pub mod default_route;
 mod interfaces;
 mod kill;
+mod overview;
 mod ports;
 mod processes;
 
@@ -83,6 +88,10 @@ impl SysProvider for SysinfoProvider {
 
     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
         interfaces::list_interfaces(&mut self.inner)
+    }
+
+    fn overview(&mut self) -> Result<SystemOverview, SysError> {
+        overview::overview(&mut self.inner)
     }
 
     fn kill_process(&mut self, pid: Pid, sig: Signal) -> Result<(), SysError> {
