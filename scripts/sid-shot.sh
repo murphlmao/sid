@@ -2,7 +2,7 @@
 # sid-shot.sh — launch sid, screenshot a given tab, clean up.
 #
 # Usage:
-#   scripts/sid-shot.sh [--tab ssh|database|network|workspaces|system] [--real]
+#   scripts/sid-shot.sh [--tab ssh|database|network|workspaces|system|settings] [--real]
 #                        [--keep] [--out PATH] [--wait SECS]
 #
 # Hermetic by default: runs against a throwaway XDG_DATA_HOME/XDG_STATE_HOME/
@@ -37,7 +37,7 @@ POLL_TIMEOUT=15
 
 usage() {
     cat <<'EOF' >&2
-Usage: scripts/sid-shot.sh [--tab ssh|database|network|workspaces|system] [--real] [--keep] [--out PATH] [--wait SECS]
+Usage: scripts/sid-shot.sh [--tab ssh|database|network|workspaces|system|settings] [--real] [--keep] [--out PATH] [--wait SECS]
 EOF
 }
 
@@ -76,9 +76,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$TAB" in
-    ssh | database | network | workspaces | system) ;;
+    ssh | database | network | workspaces | system | settings) ;;
     *)
-        echo "sid-shot: invalid --tab '$TAB' (want ssh|database|network|workspaces|system)" >&2
+        echo "sid-shot: invalid --tab '$TAB' (want ssh|database|network|workspaces|system|settings)" >&2
         exit 1
         ;;
 esac
