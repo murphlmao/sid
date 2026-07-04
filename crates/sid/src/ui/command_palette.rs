@@ -22,16 +22,7 @@ use gpui::{
 use crate::app::AppState;
 use crate::keymap::{self, Action};
 use crate::ui::TextInput;
-
-// Dark-theme palette, aligned with `app.rs`/`host_form.rs`. Kept local so `ui` stays
-// self-contained (same convention as every other view module here).
-const PANEL_BG: u32 = 0x1d1d20;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const BRAND: u32 = 0x5a9ad0;
+use crate::ui::theme;
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list
@@ -213,6 +204,8 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
+        let t = theme::active(cx);
+        let (surface, border, muted) = (t.surface, t.border, t.muted);
         let palette = self.palette.as_ref()?;
         let query_text = palette.query.read(cx).content().to_string();
         let entries = self.palette_entries(&query_text);
@@ -230,7 +223,7 @@ impl AppState {
                 .px_3()
                 .py_4()
                 .text_sm()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child("no matches")
         });
 
@@ -254,16 +247,16 @@ impl AppState {
                                 .max_h(px(420.))
                                 .flex()
                                 .flex_col()
-                                .bg(rgb(PANEL_BG))
+                                .bg(rgb(surface))
                                 .border_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(rgb(border))
                                 .rounded_md()
                                 .child(
                                     div()
                                         .px_2()
                                         .py_2()
                                         .border_b_1()
-                                        .border_color(rgb(BORDER))
+                                        .border_color(rgb(border))
                                         .child(query_input),
                                 )
                                 .child(
@@ -290,6 +283,9 @@ impl AppState {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (surface, muted, selection_bg, fg_strong, fg, accent) =
+            (t.surface, t.muted, t.selection, t.fg_strong, t.fg, t.accent);
         div()
             .id(("palette-row", ix))
             .flex()
@@ -299,8 +295,8 @@ impl AppState {
             .px_3()
             .py_1()
             .cursor_pointer()
-            .bg(rgb(if selected { ACTIVE_BG } else { PANEL_BG }))
-            .text_color(rgb(if selected { ACTIVE_FG } else { FG }))
+            .bg(rgb(if selected { selection_bg } else { surface }))
+            .text_color(rgb(if selected { fg_strong } else { fg }))
             .child(
                 div()
                     .flex()
@@ -311,14 +307,14 @@ impl AppState {
                         entry
                             .subtitle
                             .clone()
-                            .map(|s| div().text_xs().text_color(rgb(FG_DIM)).child(s)),
+                            .map(|s| div().text_xs().text_color(rgb(muted)).child(s)),
                     ),
             )
             .children(
                 entry
                     .shortcut
                     .clone()
-                    .map(|s| div().text_xs().text_color(rgb(BRAND)).child(s)),
+                    .map(|s| div().text_xs().text_color(rgb(accent)).child(s)),
             )
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if let Some(palette) = &mut this.palette {
