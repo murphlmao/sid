@@ -13,6 +13,7 @@ pub mod host_form;
 pub mod network_tab;
 pub mod password_prompt;
 pub mod session;
+pub mod settings_tab;
 pub mod ssh_home;
 pub mod systems_tab;
 mod text_input;
