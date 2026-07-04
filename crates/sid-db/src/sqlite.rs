@@ -147,9 +147,17 @@ impl DbClient for SqliteClient {
                 // works for a single SELECT statement — multi-statement input
                 // or non-SELECT input will fail or behave oddly. The query
                 // editor is expected to send one SELECT at a time.
-                let trimmed = sql.trim().trim_end_matches(';');
+                //
+                // Round-D fix: same wrapper-tail-swallowed-by-a-trailing-comment bug
+                // as `PostgresClient::query_paged` (crates/sid-db/src/postgres.rs) —
+                // SQLite's dialect also treats `--`/`; --` the same way. Use the
+                // lexer-backed `strip_trailing_trivia` (safe against `--`/`;` inside
+                // string literals) instead of a naive `trim_end_matches(';')`, and put
+                // the wrapper tail on its own line so even a bare trailing comment
+                // with no `;` can't reach it.
+                let stripped = crate::lexer::strip_trailing_trivia(&sql);
                 let wrapped =
-                    format!("SELECT * FROM ( {trimmed} ) LIMIT {page_size} OFFSET {offset}");
+                    format!("SELECT * FROM ( {stripped}\n) LIMIT {page_size} OFFSET {offset}");
                 let mut stmt = guard.prepare(&wrapped).map_err(map_rusqlite_error)?;
                 let columns: Vec<Column> = stmt
                     .columns()

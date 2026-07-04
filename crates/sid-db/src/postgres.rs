@@ -261,10 +261,22 @@ impl DbClient for PostgresClient {
         // trailing second statement after `;`) or non-SELECT input will fail
         // or behave oddly — the query editor is expected to send one SELECT
         // at a time; this is not a general-purpose SQL splitter.
-        let trimmed = sql.trim().trim_end_matches(';');
+        //
+        // Round-D fix: a naive `trim().trim_end_matches(';')` doesn't understand SQL —
+        // a trailing `--` line comment (or a `; -- comment` paste artifact) in the
+        // caller's SQL isn't touched by either call, so when the wrapper tail used to
+        // be appended on the SAME line, the comment silently ate the wrapper's own
+        // closing `) AS sid_sub LIMIT .. OFFSET ..` and produced a misleading "syntax
+        // error at end of input". `strip_trailing_trivia` uses the real lexer (safe
+        // against `--`/`;` inside string literals) to drop a trailing `;` and its
+        // surrounding trivia, AND the tail is put on its own line below — belt and
+        // braces: even a bare trailing comment with no `;` (which the lexer helper
+        // deliberately leaves alone, see its doc comment) can't reach the tail once
+        // there's a newline in between.
+        let stripped = crate::lexer::strip_trailing_trivia(sql);
         const WRAP_PREFIX: &str = "SELECT * FROM ( ";
         let wrapped =
-            format!("{WRAP_PREFIX}{trimmed} ) AS sid_sub LIMIT {page_size} OFFSET {offset}");
+            format!("{WRAP_PREFIX}{stripped}\n) AS sid_sub LIMIT {page_size} OFFSET {offset}");
         // BUG 5: Postgres reports a syntax error's position relative to `wrapped`
         // (the string it actually parsed), not the caller's original `sql` — an
         // uncorrected offset can run past `sql.len()`. `adjust_wrapped_syntax_offset`

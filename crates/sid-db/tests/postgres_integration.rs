@@ -244,3 +244,48 @@ async fn schema_graph_matches_fixture_exactly() {
         Some(&vec!["id".to_string()])
     );
 }
+
+// ---------------------------------------------------------------------
+// Round-D bug hunt: trailing SQL comments used to swallow `query_paged`'s own
+// `sid_sub` wrapper tail (adopted from the round-D probe branch's
+// `probe_roundd.rs` — see crates/sid-db/src/lexer.rs's `strip_trailing_trivia`
+// and `PostgresClient::query_paged`'s round-D fix comment).
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn trailing_line_comment_no_longer_swallows_the_wrapper_tail() {
+    // Previously: `query_paged` appended its `) AS sid_sub LIMIT .. OFFSET ..` tail on
+    // the SAME line as the end of the caller's (trimmed) SQL. A `--` line comment as the
+    // last content of otherwise-valid SQL ate that tail and produced a misleading
+    // "syntax error at end of input" — a very ordinary pattern (SQL pasted from docs/an
+    // ORM, or a commented-out clause left at the end of a query). Fixed by putting the
+    // wrapper tail on its own line.
+    let client = open_client().await;
+    let sql = "SELECT 1 AS one\n-- trailing comment";
+    let page = client
+        .query_paged(sql, None, 10)
+        .await
+        .expect("a trailing line comment must not break the sid_sub wrapper");
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].values[0], "1");
+}
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn trailing_semicolon_then_line_comment_no_longer_swallows_the_wrapper_tail() {
+    // Same root cause via the common paste artifact of a trailing `;` followed by a
+    // comment: the old `trim_end_matches(';')` doesn't understand SQL at all, so it left
+    // the embedded `;` in place (itself a syntax error inside the wrapper's subquery
+    // parens) AND the trailing comment still ate the wrapper tail. Fixed by
+    // `strip_trailing_trivia` (lexer-backed: strips the `;` and the comment after it)
+    // plus the tail-on-its-own-line belt-and-braces change.
+    let client = open_client().await;
+    let sql = "SELECT 1 AS one; -- trailing comment after semicolon";
+    let page = client
+        .query_paged(sql, None, 10)
+        .await
+        .expect("a trailing `; -- comment` must not break the sid_sub wrapper");
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].values[0], "1");
+}

@@ -199,6 +199,16 @@ pub struct NetworkTabState {
     /// as `svc_loaded`/`docker_loaded`).
     kube_loaded: bool,
     kube_refreshing: bool,
+    /// Bumped by every pods-fetch spawn (`refresh_network_kube`'s pods leg and
+    /// `refresh_network_kube_pods`), and captured alongside the fetch. Round-D fix: a
+    /// context switch used to call `refresh_network_kube_pods`, which early-returned
+    /// (dropping the new fetch entirely) whenever `kube_refreshing` was already true —
+    /// clicking a second context while the first fetch was still in flight silently
+    /// stranded the table on the old context. The completion handler now applies its
+    /// pods result only when `kube_fetch_generation` still matches what it captured at
+    /// spawn time (see [`should_apply_pods`]), so a superseded fetch's late arrival is
+    /// dropped instead of clobbering the newer selection.
+    kube_fetch_generation: u64,
     /// `true` when the last probe returned `KubeError::NotInstalled` (covers both "no
     /// `kubectl` binary" and "no cluster reachable" — see `sid_core::containers::
     /// KubeError`'s doc comment) — the Kubernetes sub-tab renders the graceful
@@ -246,6 +256,7 @@ impl NetworkTabState {
             kube_pods_table: None,
             kube_loaded: false,
             kube_refreshing: false,
+            kube_fetch_generation: 0,
             kube_not_installed: false,
             kube_error: None,
             filter: None,
@@ -1875,6 +1886,8 @@ impl AppState {
         self.network.kube_refreshing = true;
         self.network.kube_error = None;
         self.network.kube_not_installed = false;
+        self.network.kube_fetch_generation += 1;
+        let generation = self.network.kube_fetch_generation;
         cx.notify();
 
         let provider = self.network.kube_provider.clone();
@@ -1889,8 +1902,17 @@ impl AppState {
             });
             let outcome = handle.await;
             let _ = this.update(cx, |this, cx| {
-                this.network.kube_refreshing = false;
                 this.network.kube_loaded = true;
+                // Round-D generation guard: a context switch (`select_kube_context`)
+                // may have started AFTER this fetch and already be the current
+                // generation by the time this completes. Drop this stale result
+                // instead of clobbering whatever the newer fetch already applied —
+                // `kube_refreshing` is left for the current generation's own
+                // completion to clear.
+                if !should_apply_pods(this.network.kube_fetch_generation, generation) {
+                    return;
+                }
+                this.network.kube_refreshing = false;
                 match outcome {
                     Ok((contexts_res, pods_res)) => {
                         this.apply_kube_contexts(contexts_res);
@@ -1911,12 +1933,19 @@ impl AppState {
     /// user clicks a different context chip. Doesn't re-fetch `kube_contexts` (the
     /// context list itself didn't change, just which context the pods table is scoped
     /// to).
+    ///
+    /// Deliberately does NOT early-return on `kube_refreshing` (round-D fix): its only
+    /// caller, `select_kube_context`, must always spawn a fresh fetch for the newly
+    /// selected context even if a previous fetch is still in flight — otherwise a
+    /// second context click during that window used to be silently dropped, stranding
+    /// the pods table on the old context. Correctness against a stale in-flight fetch
+    /// is via the generation guard (`kube_fetch_generation`/[`should_apply_pods`]), not
+    /// reentrancy prevention.
     pub(crate) fn refresh_network_kube_pods(&mut self, cx: &mut Context<Self>) {
-        if self.network.kube_refreshing {
-            return;
-        }
         self.network.kube_refreshing = true;
         self.network.kube_error = None;
+        self.network.kube_fetch_generation += 1;
+        let generation = self.network.kube_fetch_generation;
         cx.notify();
 
         let provider = self.network.kube_provider.clone();
@@ -1928,6 +1957,9 @@ impl AppState {
                 ssh_runtime().spawn(async move { provider.list_pods(selected.as_deref()).await });
             let outcome = handle.await;
             let _ = this.update(cx, |this, cx| {
+                if !should_apply_pods(this.network.kube_fetch_generation, generation) {
+                    return;
+                }
                 this.network.kube_refreshing = false;
                 match outcome {
                     Ok(pods_res) => this.apply_kube_pods(pods_res, table.as_ref(), cx),
@@ -1952,6 +1984,16 @@ impl AppState {
         self.network.kube_selected_context = name;
         self.refresh_network_kube_pods(cx);
     }
+}
+
+/// Whether a completed Kubernetes pods fetch should still be applied to the table: only
+/// when its captured generation still matches the current one. `select_kube_context`
+/// (via `refresh_network_kube_pods`) and `refresh_network_kube` each bump
+/// `kube_fetch_generation` before spawning their own fetch, so a fetch that finishes
+/// AFTER being superseded by a newer one reports a stale `fetched_gen` here and its
+/// result is dropped rather than clobbering the newer selection's pods with stale data.
+fn should_apply_pods(current_gen: u64, fetched_gen: u64) -> bool {
+    current_gen == fetched_gen
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
@@ -2505,6 +2547,19 @@ mod tests {
         assert!(!kill_click_executes(None, pid));
         assert!(kill_click_executes(Some(pid), pid));
         assert!(!kill_click_executes(Some(pid), other));
+    }
+
+    #[test]
+    fn should_apply_pods_matches_only_the_current_generation() {
+        // The fetch that's still current when it completes wins.
+        assert!(should_apply_pods(1, 1));
+        // Round-D bug: a context switch bumps the generation before its own fetch
+        // completes -- an OLDER fetch (still carrying the stale generation it
+        // captured at spawn time) arriving late must be dropped, not applied.
+        assert!(!should_apply_pods(2, 1));
+        // A fetch somehow reporting a generation ahead of the current one (should
+        // never happen since the counter only increases) is also not "current".
+        assert!(!should_apply_pods(1, 2));
     }
 
     #[test]
