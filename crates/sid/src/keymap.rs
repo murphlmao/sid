@@ -24,8 +24,9 @@ use gpui::Keystroke;
 pub enum Action {
     /// Open (or, if already open, close) the fuzzy command palette.
     CommandPalette,
-    /// Switch to primary tab `1..=5` (SSH, Database, Network, Workspaces, System, in
-    /// that order — see `app::Tab::ALL`). Any other value is simply never bound.
+    /// Switch to primary tab `1..=6` (SSH, Database, Network, Workspaces, System,
+    /// Settings, in that order — see `app::Tab::ALL`). Any other value is simply
+    /// never bound.
     PrimaryTab(u8),
     /// Cycle forward through the primary tabs — always, even while the SSH tab is
     /// active. (Session tabs have their own dedicated cycle below; letting `Ctrl+Tab`
@@ -41,8 +42,9 @@ pub enum Action {
     NewSession,
     /// SSH shell: close the active session tab.
     CloseSession,
-    /// Open Settings. No dedicated screen exists yet — v1 stands in with `Tab::System`;
-    /// Settings → Keymap itself (rebinding UI) is deferred, per the plan.
+    /// Open Settings (`Tab::Settings` — round-E §C). A second way in besides
+    /// `PrimaryTab(6)`/`Ctrl+6`; Settings → Keymap itself (rebinding UI) stays
+    /// deferred, per the plan.
     Settings,
     /// Toggle the keyboard cheat-sheet overlay.
     CheatSheet,
@@ -64,6 +66,7 @@ impl Action {
             Action::PrimaryTab(3) => "Go to Network",
             Action::PrimaryTab(4) => "Go to Workspaces",
             Action::PrimaryTab(5) => "Go to System",
+            Action::PrimaryTab(6) => "Go to Settings",
             Action::PrimaryTab(_) => "Go to tab",
             Action::CycleTabForward => "Next Tab",
             Action::CycleTabBack => "Previous Tab",
@@ -86,6 +89,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::PrimaryTab(3),
     Action::PrimaryTab(4),
     Action::PrimaryTab(5),
+    Action::PrimaryTab(6),
     Action::CycleTabForward,
     Action::CycleTabBack,
     Action::CycleSessionForward,
@@ -280,7 +284,7 @@ pub fn default_bindings() -> Vec<Binding> {
         binding(chord("/", true, None), NormalOnly, Action::FocusFilter),
     ];
 
-    for (n, digit) in [(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")] {
+    for (n, digit) in [(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5"), (6, "6")] {
         bindings.push(binding(
             chord(digit, true, Some(false)),
             Global,
@@ -423,9 +427,9 @@ mod tests {
     // ---- plain lookup ---------------------------------------------------------
 
     #[test]
-    fn ctrl_1_through_5_switch_primary_tabs_in_both_contexts() {
+    fn ctrl_1_through_6_switch_primary_tabs_in_both_contexts() {
         let bindings = default_bindings();
-        for (digit, n) in [("1", 1), ("2", 2), ("3", 3), ("4", 4), ("5", 5)] {
+        for (digit, n) in [("1", 1), ("2", 2), ("3", 3), ("4", 4), ("5", 5), ("6", 6)] {
             assert_eq!(
                 resolve(&ctrl(digit), FocusContext::Normal, &bindings),
                 Some(Action::PrimaryTab(n))

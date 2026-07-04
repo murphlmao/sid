@@ -18,6 +18,7 @@
 //! error — a store written by a future sid with more themes must still open here).
 
 use gpui::{App, Global};
+use gpui_component::ThemeMode;
 
 /// A complete semantic palette. Fields are `0xRRGGBB` for [`gpui::rgb`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,9 +136,6 @@ pub fn cosmos_light() -> Theme {
 }
 
 /// Every built-in, in the order the settings screen's picker lists them.
-// dead_code: consumed by the settings screen + theme sweep landing right after this
-// module — remove the allow with the first consumer.
-#[allow(dead_code)]
 pub const THEME_NAMES: &[&str] = &["cosmos", "void", "dusk", "cosmos-light"];
 
 /// Resolve a persisted theme name. Unknown names fall back to [`cosmos`] — a store
@@ -160,10 +158,30 @@ pub fn install(name: &str, cx: &mut App) {
 
 /// The active theme. Elements call this at render time — never cache the result
 /// across frames, or a theme switch won't take until some unrelated re-render.
-// dead_code: see THEME_NAMES above.
-#[allow(dead_code)]
 pub fn active(cx: &App) -> &Theme {
     cx.global::<Theme>()
+}
+
+/// Whether `theme` reads as a light palette — background luminance over the
+/// midpoint. Only `cosmos-light` currently qualifies, but this is computed from
+/// the palette's own colors (not name-matched) so a future light built-in needs
+/// no second place updated.
+pub fn is_light(theme: &Theme) -> bool {
+    (theme.bg >> 16 & 0xff) > 128
+}
+
+/// gpui-component's own chrome mode that matches `theme` — `Light` for a light
+/// sid palette, `Dark` otherwise. The settings screen's live theme switch
+/// (`ui::settings_tab::AppState::set_theme`) calls this right after [`install`]
+/// so gpui-component's own widgets (the SQL editor, tables, …) never end up
+/// mismatched against the active sid palette; `main.rs`'s startup path is
+/// expected to reuse it too (round-E §B.3) once that track lands.
+pub fn component_mode(theme: &Theme) -> ThemeMode {
+    if is_light(theme) {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +228,21 @@ mod tests {
             assert!(lum(t.fg) > lum(t.bg) + 120, "{}: fg readable", t.name);
             assert!(lum(t.muted) > lum(t.bg) + 80, "{}: muted readable", t.name);
         }
+    }
+
+    #[test]
+    fn is_light_flags_only_the_light_palette() {
+        assert!(is_light(&cosmos_light()));
+        assert!(!is_light(&cosmos()));
+        assert!(!is_light(&void()));
+        assert!(!is_light(&dusk()));
+    }
+
+    #[test]
+    fn component_mode_follows_is_light() {
+        assert_eq!(component_mode(&cosmos_light()), ThemeMode::Light);
+        assert_eq!(component_mode(&cosmos()), ThemeMode::Dark);
+        assert_eq!(component_mode(&void()), ThemeMode::Dark);
+        assert_eq!(component_mode(&dusk()), ThemeMode::Dark);
     }
 }

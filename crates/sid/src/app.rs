@@ -28,6 +28,7 @@ use crate::ui::host_form::{
 };
 use crate::ui::network_tab::NetworkTabState;
 use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
+use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
@@ -62,15 +63,17 @@ pub(crate) enum Tab {
     Network,
     Workspaces,
     System,
+    Settings,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [
+    const ALL: [Tab; 6] = [
         Tab::Ssh,
         Tab::Database,
         Tab::Network,
         Tab::Workspaces,
         Tab::System,
+        Tab::Settings,
     ];
 
     fn label(self) -> &'static str {
@@ -80,13 +83,14 @@ impl Tab {
             Tab::Network => "Network",
             Tab::Workspaces => "Workspaces",
             Tab::System => "System",
+            Tab::Settings => "Settings",
         }
     }
 }
 
 /// Map a tab name (case-insensitive) to a [`Tab`] — `ssh|database|network|workspaces|
-/// system`, anything else is `None`. Pure/string-in so it's unit-testable without env
-/// fiddling; [`tab_from_env`] is the thin env-reading wrapper around it.
+/// system|settings`, anything else is `None`. Pure/string-in so it's unit-testable
+/// without env fiddling; [`tab_from_env`] is the thin env-reading wrapper around it.
 fn tab_from_str(name: &str) -> Option<Tab> {
     match name.to_lowercase().as_str() {
         "ssh" => Some(Tab::Ssh),
@@ -94,6 +98,7 @@ fn tab_from_str(name: &str) -> Option<Tab> {
         "network" => Some(Tab::Network),
         "workspaces" => Some(Tab::Workspaces),
         "system" => Some(Tab::System),
+        "settings" => Some(Tab::Settings),
         _ => None,
     }
 }
@@ -136,10 +141,12 @@ pub struct AppState {
     /// `ui::db_conn_form` construction sites (here and in `ui::db_tab`) can read it.
     pub(crate) secrets_degraded: bool,
     /// The full secret-backend status line (`secret_status_message`'s output: backend,
-    /// warning, recommendation) — shown in the warning badge's popover on click. Set
-    /// once at startup; nothing currently changes the backend mid-session, so this
-    /// never needs to be refreshed after `AppState::new`.
-    secrets_status_detail: String,
+    /// warning, recommendation) — shown in the warning badge's popover on click, and
+    /// (round-E §C) under the Settings screen's keyring toggle. Set once at startup;
+    /// nothing currently changes the backend mid-session, so this never needs to be
+    /// refreshed after `AppState::new`. `pub(crate)` so `ui::settings_tab`'s Behavior
+    /// section can read it directly, same convention as `secrets_degraded` above.
+    pub(crate) secrets_status_detail: String,
     /// Whether the warning badge's popover is open.
     secret_badge_open: bool,
     /// The open host add/edit modal, if any.
@@ -178,6 +185,13 @@ pub struct AppState {
     /// same "no store/scope/secrets" shape as `network`. Lives in its own module
     /// (`ui::systems_tab`).
     pub(crate) systems: SystemsTabState,
+    /// Settings tab state (round-E §C): a cached snapshot of the persisted
+    /// `Settings` (unlike `network`/`systems`, this tab does read/write the store
+    /// directly — the cache exists purely so `render` never re-reads it, per this
+    /// module's own "render never does I/O" rule) plus a surfaced write-failure
+    /// line. Lives in its own module (`ui::settings_tab`), same "second `impl
+    /// AppState` block" convention as `db`/`network`/`systems`.
+    pub(crate) settings: SettingsTabState,
     /// The open connect-time password prompt (SSH connect, DB run/schema-refresh), if
     /// any — see `open_password_prompt`.
     password_prompt: Option<Entity<PasswordPromptModal>>,
@@ -282,6 +296,10 @@ impl AppState {
             .settings()
             .map(|s| s.file_browser_side)
             .unwrap_or_default();
+        // Also reads (and caches) `Settings` — see `SettingsTabState`'s doc comment for
+        // why the Settings screen keeps its own snapshot rather than re-reading
+        // `store.settings()` from `render`.
+        let settings = SettingsTabState::new(&store);
         let mut state = Self {
             store,
             secrets,
@@ -304,6 +322,7 @@ impl AppState {
             db,
             network,
             systems,
+            settings,
             password_prompt: None,
             _password_prompt_subscription: None,
             pending_secret_prompt: None,
@@ -1062,12 +1081,10 @@ impl AppState {
                 }
             }
             Action::Settings => {
-                // No dedicated Settings screen exists yet (Settings -> Keymap rebinding
-                // is explicitly deferred, per the plan). `Tab::System` now renders a real
-                // host-overview/processes view (Round D §C), not a placeholder — it is
-                // still just a stand-in *landing spot* for this action, not an actual
-                // settings surface; nothing here exposes keymap/preferences UI.
-                self.active_tab = Tab::System;
+                // Round-E §C: a real Settings screen now lives at `Tab::Settings`
+                // (Theme/Behavior/Keyboard/Storage) — Settings -> Keymap rebinding
+                // itself stays deferred, per the plan; everything else here is live.
+                self.active_tab = Tab::Settings;
                 self.close_palette(cx);
                 self.refocus_stable_target(window, cx);
                 cx.notify();
@@ -1840,6 +1857,9 @@ impl Render for AppState {
             Tab::Network => self.network_tab(window, cx),
             // `systems_tab` needs `window` for the same reason (`TableState::new`).
             Tab::System => self.systems_tab(window, cx),
+            // `settings_tab` needs no lazy widget construction, so it takes `&self`
+            // rather than `&mut self` like the tabs above.
+            Tab::Settings => self.settings_tab(cx),
             other => self.placeholder(other).into_any_element(),
         };
 
@@ -2326,8 +2346,17 @@ mod tests {
         assert!(matches!(tab_from_str("NETWORK"), Some(Tab::Network)));
         assert!(matches!(tab_from_str("Workspaces"), Some(Tab::Workspaces)));
         assert!(matches!(tab_from_str("SYSTEM"), Some(Tab::System)));
+        assert!(matches!(tab_from_str("settings"), Some(Tab::Settings)));
+        assert!(matches!(tab_from_str("SETTINGS"), Some(Tab::Settings)));
         assert!(tab_from_str("bogus").is_none());
         assert!(tab_from_str("").is_none());
+    }
+
+    #[test]
+    fn tab_all_appends_settings_as_the_sixth_tab() {
+        assert_eq!(Tab::ALL.len(), 6);
+        assert_eq!(Tab::ALL[5], Tab::Settings);
+        assert_eq!(Tab::Settings.label(), "Settings");
     }
 
     #[test]
