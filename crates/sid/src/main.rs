@@ -42,6 +42,10 @@ fn main() {
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // Wayland app_id (X11 WM_CLASS): without it the window has an
+                    // EMPTY class, so compositor windowrules, taskbars, and the
+                    // capture harness (scripts/sid-cap.sh) can't target sid.
+                    app_id: Some("sid".into()),
                     ..Default::default()
                 },
                 |window, cx| {
