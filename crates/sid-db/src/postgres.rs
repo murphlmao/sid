@@ -751,6 +751,16 @@ pub(crate) fn pg_type_to_column_type(t: &tokio_postgres::types::Type) -> ColumnT
 mod tests {
     use super::*;
 
+    /// The docker-compose test Postgres (see `docker/docker-compose.test.yml`), same
+    /// env-overridable DSN the `tests/postgres_*.rs` integration files use — these two
+    /// in-crate `#[ignore]`d live tests predate that infra and used to point at a bare
+    /// dev-machine `localhost:5432` nothing provides anymore.
+    fn test_dsn() -> String {
+        std::env::var("SID_TEST_PG_DSN").unwrap_or_else(|_| {
+            "postgres://sid_test:sid_test_pw@localhost:55432/sid_test?sslmode=disable".to_string()
+        })
+    }
+
     #[test]
     fn adjust_wrapped_syntax_offset_subtracts_prefix_and_clamps() {
         const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
@@ -867,7 +877,7 @@ mod tests {
         let client = factory
             .open(OpenParams {
                 kind: DbKind::Postgres,
-                dsn: "postgres://postgres@localhost:5432/postgres".into(),
+                dsn: test_dsn().into(),
                 password: None,
                 sqlite_mode: None,
             })
@@ -889,7 +899,7 @@ mod tests {
         let client = factory
             .open(OpenParams {
                 kind: DbKind::Postgres,
-                dsn: "postgres://postgres@localhost:5432/postgres".into(),
+                dsn: test_dsn().into(),
                 password: None,
                 sqlite_mode: None,
             })
