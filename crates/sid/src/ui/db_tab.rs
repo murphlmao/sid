@@ -32,7 +32,8 @@ use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
 use gpui_component::{Root, Theme, ThemeMode};
 use sid_core::db::{
-    DbClient, DbError, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
+    DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo,
+    TableInfo,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
@@ -737,7 +738,9 @@ impl AppState {
                 .rows(8)
                 .default_value(DEMO_SQL)
         });
-        self.db._sql_subscription = Some(cx.subscribe(&sql, Self::on_sql_event));
+        // `subscribe_in` (not `subscribe`) so `on_sql_event` gets a `&mut Window` — it
+        // now needs one to open the connect-time password prompt via `run_query`.
+        self.db._sql_subscription = Some(cx.subscribe_in(&sql, window, Self::on_sql_event));
         self.db.sql = Some(sql);
         // D2: hand the results table's delegate a weak handle back to `AppState` so a
         // cell's `view` click (which only sees `&mut App`, not `AppState` — see
@@ -760,12 +763,13 @@ impl AppState {
     /// acted on here.
     fn on_sql_event(
         &mut self,
-        _sql: Entity<InputState>,
+        _sql: &Entity<InputState>,
         event: &InputEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let InputEvent::PressEnter { secondary: true } = event {
-            self.run_query(cx);
+            self.run_query(window, cx);
         }
     }
 
@@ -869,8 +873,8 @@ impl AppState {
                             .bg(rgb(BRAND))
                             .hover(|s| s.opacity(0.85))
                             .child(run_label)
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.run_query(cx);
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.run_query(window, cx);
                             })),
                     )
                     // Far right, after Run (Murphy: "download as csv should be on the
@@ -1025,8 +1029,8 @@ impl AppState {
                             .text_color(rgb(BRAND))
                             .hover(|s| s.bg(rgb(ACTIVE_BG)))
                             .child(if self.db.schema_loading { "…" } else { "⟳" })
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.refresh_schema(cx);
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.refresh_schema(window, cx);
                             })),
                     ),
             );
@@ -1662,7 +1666,7 @@ impl AppState {
                 if !opening_editor && let Some(fh) = this.db.conn_focus.clone() {
                     window.focus(&fh);
                 }
-                this.refresh_schema(cx);
+                this.refresh_schema(window, cx);
                 cx.notify();
             }))
             .child(
@@ -1870,7 +1874,9 @@ impl AppState {
             .unwrap_or_default();
         let workspace = self.active_workspace();
         let registry = self.db.registry.clone();
-        let form = cx.new(|cx| DbConnForm::new_add(cx, registry, workspace, default_scope));
+        let degraded = self.secrets_degraded;
+        let form =
+            cx.new(|cx| DbConnForm::new_add(cx, registry, workspace, default_scope, degraded));
         self.open_db_form(form, window, cx);
     }
 
@@ -1885,7 +1891,9 @@ impl AppState {
         self.db.armed_delete = None;
         let workspace = self.active_workspace();
         let registry = self.db.registry.clone();
-        let form = cx.new(|cx| DbConnForm::new_edit(cx, registry, conn, origin, workspace));
+        let degraded = self.secrets_degraded;
+        let form =
+            cx.new(|cx| DbConnForm::new_edit(cx, registry, conn, origin, workspace, degraded));
         self.open_db_form(form, window, cx);
     }
 
@@ -2071,7 +2079,13 @@ impl AppState {
     /// reuse (or open) its client, and fetch the first page. No-ops into a status
     /// message when nothing is selected/typed rather than disabling the button — keeps
     /// the click handler unconditional (simpler than threading `can_run` through render).
-    fn run_query(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Round-D §A.4: a dangling `secret_ref` on a connection whose engine needs a
+    /// password (Postgres) opens the connect-time password prompt instead of failing
+    /// outright — see [`needs_password_prompt`] and
+    /// [`AppState::on_password_prompt_event`](crate::app::AppState::on_password_prompt_event).
+    /// `pub(crate)` so that handler can retry this directly.
+    pub(crate) fn run_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.db.running {
             return;
         }
@@ -2100,7 +2114,25 @@ impl AppState {
             cx.notify();
             return;
         }
-        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+        let secret_result = resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref());
+        if needs_password_prompt(conn.kind, &secret_result) {
+            let secret_ref = conn
+                .secret_ref
+                .clone()
+                .expect("needs_password_prompt only fires on a dangling (thus Some) secret_ref");
+            let label: SharedString = conn.name.clone().into();
+            self.open_password_prompt(
+                label,
+                crate::app::PendingSecretPrompt::Db {
+                    secret_ref,
+                    retry: DbRetry::RunQuery,
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        let secret = match secret_result {
             Ok(s) => s,
             Err(e) => {
                 self.db.status = QueryStatus::Err(e);
@@ -2205,7 +2237,10 @@ impl AppState {
     /// (never inline in render). Reuses the already-open client the same way
     /// `run_query` does — connecting twice for one connection would be wasteful and
     /// could surprise a single-connection-limited engine (e.g. a locked SQLite file).
-    fn refresh_schema(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// Round-D §A.4: same dangling-ref-on-Postgres prompt treatment as `run_query` —
+    /// see that method's doc comment. `pub(crate)` for the same reason.
+    pub(crate) fn refresh_schema(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.db.active_id.clone() else {
             return;
         };
@@ -2218,7 +2253,25 @@ impl AppState {
         else {
             return;
         };
-        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+        let secret_result = resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref());
+        if needs_password_prompt(conn.kind, &secret_result) {
+            let secret_ref = conn
+                .secret_ref
+                .clone()
+                .expect("needs_password_prompt only fires on a dangling (thus Some) secret_ref");
+            let label: SharedString = conn.name.clone().into();
+            self.open_password_prompt(
+                label,
+                crate::app::PendingSecretPrompt::Db {
+                    secret_ref,
+                    retry: DbRetry::RefreshSchema,
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+        let secret = match secret_result {
             Ok(s) => s,
             Err(e) => {
                 self.db.schema_error = Some(e);
@@ -2293,7 +2346,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.insert_select_star(table, window, cx);
-        self.run_query(cx);
+        self.run_query(window, cx);
     }
 
     /// Task 2 — diagram click-through, COLUMN row click: seed (not run) the editor with
@@ -2463,6 +2516,24 @@ fn resolve_db_secret(
     }
 }
 
+/// Which DB action a connect-time password prompt (round-D §A.4) should retry once its
+/// password lands in the secret store — see [`AppState::run_query`]/
+/// [`AppState::refresh_schema`] and `crate::app::PendingSecretPrompt::Db`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DbRetry {
+    RunQuery,
+    RefreshSchema,
+}
+
+/// Whether a DB action should pause for the connect-time password prompt instead of
+/// surfacing [`resolve_db_secret`]'s error outright: only when the lookup failed (a
+/// dangling `secret_ref`) **and** the connection's engine actually authenticates with a
+/// password. `Sqlite`/`Redb` never do (a dangling ref there is a plain configuration
+/// error, not a prompt-fixable one) — only `Postgres` does today.
+pub(crate) fn needs_password_prompt(kind: DbKind, secret: &Result<Option<String>, String>) -> bool {
+    kind == DbKind::Postgres && secret.is_err()
+}
+
 // ---- D4: query history (ring cap + consecutive dedup) -------------------------------------
 
 /// Push `sql` onto `history` (most-recent-last), capping length at `cap` by dropping the
@@ -2613,6 +2684,30 @@ mod query_secret_tests {
     fn dangling_ref_is_an_error() {
         let secrets = MemorySecretStore::default();
         assert!(resolve_db_secret(&secrets, Some("db-missing")).is_err());
+    }
+
+    // ---- needs_password_prompt (round-D §A.4) ------------------------------------
+
+    #[test]
+    fn postgres_dangling_ref_needs_a_prompt() {
+        let dangling: Result<Option<String>, String> = Err("dangling secret_ref".into());
+        assert!(needs_password_prompt(DbKind::Postgres, &dangling));
+    }
+
+    #[test]
+    fn postgres_with_a_resolved_secret_never_prompts() {
+        assert!(!needs_password_prompt(
+            DbKind::Postgres,
+            &Ok(Some("hunter2".to_string()))
+        ));
+        assert!(!needs_password_prompt(DbKind::Postgres, &Ok(None)));
+    }
+
+    #[test]
+    fn sqlite_and_redb_never_prompt_even_on_a_dangling_ref() {
+        let dangling: Result<Option<String>, String> = Err("dangling secret_ref".into());
+        assert!(!needs_password_prompt(DbKind::Sqlite, &dangling));
+        assert!(!needs_password_prompt(DbKind::Redb, &dangling));
     }
 }
 

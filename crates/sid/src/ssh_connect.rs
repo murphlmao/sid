@@ -38,6 +38,20 @@ pub fn resolve_secret(secrets: &dyn SecretStore, host: &Host) -> Result<Option<V
     }
 }
 
+/// Whether an SSH connect attempt should pause for the connect-time password prompt
+/// (round-D §A.4) instead of surfacing [`resolve_secret`]'s error — or [`connect_params`]'
+/// "no secret was resolved" error — outright.
+///
+/// Only `AuthMethod::Password` ever hard-requires a secret to proceed: `Agent` never
+/// needs one, and `Key`'s passphrase is optional (a dangling passphrase ref already
+/// degrades to `Ok(None)` in `resolve_secret`), so neither ever prompts. `secret` is
+/// whatever `resolve_secret` returned for this host — `Err` (a dangling `secret_ref`)
+/// and `Ok(None)` (no `secret_ref` recorded at all) both count as "nothing concretely
+/// usable"; only `Ok(Some(_))` skips the prompt.
+pub fn needs_password_prompt(auth: &AuthMethod, secret: &Result<Option<Vec<u8>>, String>) -> bool {
+    matches!(auth, AuthMethod::Password) && !matches!(secret, Ok(Some(_)))
+}
+
 /// Map a stored host + its resolved secret into the adapter's connect inputs.
 ///
 /// `AuthMethod::Agent` ignores `secret` entirely (the running ssh-agent supplies keys).
@@ -194,5 +208,44 @@ mod tests {
             resolve_secret(&store, &h).unwrap(),
             Some(b"s3cret".to_vec())
         );
+    }
+
+    // ---- needs_password_prompt (round-D §A.4) ------------------------------------
+
+    #[test]
+    fn password_auth_with_a_concrete_secret_never_prompts() {
+        assert!(!needs_password_prompt(
+            &AuthMethod::Password,
+            &Ok(Some(b"hunter2".to_vec()))
+        ));
+    }
+
+    #[test]
+    fn password_auth_with_no_secret_at_all_needs_a_prompt() {
+        assert!(needs_password_prompt(&AuthMethod::Password, &Ok(None)));
+    }
+
+    #[test]
+    fn password_auth_with_a_dangling_ref_needs_a_prompt() {
+        let err: Result<Option<Vec<u8>>, String> = Err("dangling secret_ref".into());
+        assert!(needs_password_prompt(&AuthMethod::Password, &err));
+    }
+
+    #[test]
+    fn agent_auth_never_prompts_regardless_of_secret() {
+        assert!(!needs_password_prompt(&AuthMethod::Agent, &Ok(None)));
+        assert!(!needs_password_prompt(
+            &AuthMethod::Agent,
+            &Err("whatever".into())
+        ));
+    }
+
+    #[test]
+    fn key_auth_never_prompts_regardless_of_secret() {
+        let key = AuthMethod::Key {
+            path: "~/.ssh/id_ed25519".into(),
+        };
+        assert!(!needs_password_prompt(&key, &Ok(None)));
+        assert!(!needs_password_prompt(&key, &Err("whatever".into())));
     }
 }
