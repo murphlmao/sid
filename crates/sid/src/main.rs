@@ -39,6 +39,14 @@ fn main() {
             // degraded (the tab strip's warning badge — see `app::AppState::new`).
             let (secrets, secrets_degraded, secrets_status) = app::open_secrets(&store);
             eprintln!("sid: {secrets_status}");
+            // Install the persisted theme as the process-wide palette global before
+            // any window renders; the settings screen swaps it live via the same
+            // `theme::install` + a refresh.
+            let theme_name = store
+                .settings()
+                .map(|s| s.theme)
+                .unwrap_or_else(|_| "cosmos".into());
+            ui::theme::install(&theme_name, cx);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),

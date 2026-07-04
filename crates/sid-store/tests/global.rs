@@ -132,6 +132,7 @@ fn settings_roundtrip() {
         file_browser_side: PanelSide::Right,
         secret_keyring_enabled: true,
         secret_file_enabled: true,
+        theme: "cosmos".into(),
     };
     s.set_settings(&want).unwrap();
     assert_eq!(s.get_settings().unwrap(), want);
@@ -148,6 +149,7 @@ fn settings_persist_across_reopen() {
             file_browser_side: PanelSide::Right,
             secret_keyring_enabled: true,
             secret_file_enabled: true,
+            theme: "cosmos".into(),
         })
         .unwrap();
     }
@@ -173,6 +175,7 @@ fn facade_settings_passthrough() {
             file_browser_side: PanelSide::Right,
             secret_keyring_enabled: true,
             secret_file_enabled: true,
+            theme: "cosmos".into(),
         })
         .unwrap();
     assert_eq!(
@@ -196,6 +199,7 @@ fn settings_secret_backend_toggles_default_true_and_round_trip_false() {
         file_browser_side: PanelSide::Left,
         secret_keyring_enabled: false,
         secret_file_enabled: false,
+        theme: "cosmos".into(),
     };
     s.set_settings(&want).unwrap();
     let got = s.get_settings().unwrap();

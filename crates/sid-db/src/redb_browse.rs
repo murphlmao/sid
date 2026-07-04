@@ -199,6 +199,7 @@ fn table_columns(name: &str) -> Vec<Column> {
             "file_browser_side",
             "secret_keyring_enabled",
             "secret_file_enabled",
+            "theme",
         ],
         _ => &[],
     };
@@ -280,6 +281,7 @@ fn dump_table(store: &GlobalStore, table: &str) -> Result<(Vec<Column>, Vec<Row>
                     format!("{:?}", s.file_browser_side),
                     s.secret_keyring_enabled.to_string(),
                     s.secret_file_enabled.to_string(),
+                    s.theme.clone(),
                 ],
             }]
         }
@@ -338,9 +340,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_introspect_settings_table_lists_all_four_fields() {
+    async fn schema_introspect_settings_table_lists_all_five_fields() {
         // Round-D fix: `settings` used to expose only `default_scope`, silently
-        // hiding the other 3 `sid_store::Settings` fields from the browse engine.
+        // hiding the other `sid_store::Settings` fields from the browse engine.
         let (_dir, store) = seeded_store();
         let client = RedbBrowseClient::wrap(store);
         let schema = client.schema_introspect().await.unwrap();
@@ -361,6 +363,7 @@ mod tests {
                 "file_browser_side",
                 "secret_keyring_enabled",
                 "secret_file_enabled",
+                "theme",
             ]
         );
     }
@@ -399,8 +402,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_paged_dumps_settings_table_with_all_four_fields() {
-        // Round-D fix: previously only `default_scope` was visible; the other 3
+    async fn query_paged_dumps_settings_table_with_all_five_fields() {
+        // Round-D fix: previously only `default_scope` was visible; the other
         // `sid_store::Settings` fields (including the dormant-but-still-persisted
         // `secret_file_enabled`) must show up too.
         let (_dir, store) = seeded_store();
@@ -410,6 +413,7 @@ mod tests {
                 file_browser_side: sid_store::PanelSide::Right,
                 secret_keyring_enabled: false,
                 secret_file_enabled: true,
+                theme: "cosmos".into(),
             })
             .unwrap();
         let client = RedbBrowseClient::wrap(store);
@@ -417,7 +421,7 @@ mod tests {
         assert_eq!(page.rows.len(), 1);
         assert_eq!(
             page.rows[0].values,
-            vec!["Global", "Right", "false", "true"]
+            vec!["Global", "Right", "false", "true", "cosmos"]
         );
     }
 
