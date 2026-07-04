@@ -409,3 +409,19 @@ impl Identity for QuickAction {
         &self.label
     }
 }
+
+/// A pinned config-file path (Round E §D, Systems tab). Machine-local and **global
+/// only** — the path itself is the identity, so pinning is idempotent. Workspace-scoped
+/// pins (e.g. a repo pinning its own `.env`) are future work; every pin lives in the
+/// global layer regardless of the active workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedFile {
+    /// Absolute filesystem path (already tilde-expanded by the caller).
+    pub path: String,
+}
+
+impl Identity for PinnedFile {
+    fn identity(&self) -> &str {
+        &self.path
+    }
+}

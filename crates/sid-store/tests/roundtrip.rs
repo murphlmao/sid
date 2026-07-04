@@ -2,7 +2,7 @@
 
 use sid_core::db::DbKind;
 use sid_store::codec::{decode_versioned, encode_versioned};
-use sid_store::{AuthMethod, DbConnection, Host, QuickAction, Scope, WorkspaceId};
+use sid_store::{AuthMethod, DbConnection, Host, PinnedFile, QuickAction, Scope, WorkspaceId};
 
 fn sample_host() -> Host {
     Host {
@@ -104,6 +104,15 @@ fn quick_action_roundtrip() {
     };
     let (_, got): (u8, QuickAction) = decode_versioned(&encode_versioned(1, &q).unwrap()).unwrap();
     assert_eq!(got, q);
+}
+
+#[test]
+fn pinned_file_roundtrip() {
+    let p = PinnedFile {
+        path: "/etc/ssh/sshd_config".into(),
+    };
+    let (_, got): (u8, PinnedFile) = decode_versioned(&encode_versioned(1, &p).unwrap()).unwrap();
+    assert_eq!(got, p);
 }
 
 #[test]
