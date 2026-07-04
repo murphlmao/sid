@@ -379,7 +379,18 @@ impl AppState {
         match self.store.read_hosts(&self.scope, self.filters) {
             Ok(hosts) => {
                 self.hosts = hosts;
-                self.error = None;
+                // Surface duplicate-identity records in the focused workspace's
+                // committed config (a git-merge artifact) on the status line — the
+                // store keeps them losslessly, but an explicit edit collapses the
+                // copies to one, and the user should know that before it happens.
+                self.error = match self.store.workspace_duplicates(&self.scope) {
+                    Ok(dups) if !dups.is_empty() => Some(format!(
+                        "workspace config has duplicate entries: {} — editing one \
+                         collapses its copies to the edited value",
+                        dups.join(", ")
+                    )),
+                    _ => None,
+                };
             }
             Err(e) => {
                 self.hosts = Vec::new();

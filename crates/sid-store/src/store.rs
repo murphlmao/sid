@@ -102,6 +102,18 @@ impl Store {
         }
     }
 
+    /// Duplicate-identity diagnostics for `scope`'s workspace layer (always empty for
+    /// Global — redb keys can't collide): identities appearing more than once in the
+    /// committed `.sid/config.toml`, a normal git-merge artifact. Callers surface these
+    /// as a warning; an explicit edit of such an identity collapses its copies to one
+    /// (see `WorkspaceConfig::duplicates`).
+    pub fn workspace_duplicates(&self, scope: &Scope) -> Result<Vec<String>> {
+        match scope {
+            Scope::Global => Ok(Vec::new()),
+            Scope::Workspace(id) => Ok(self.workspace_store(id)?.load()?.duplicates()),
+        }
+    }
+
     /// Write a host into the named layer.
     pub fn write_host(&self, host: &Host, scope: &Scope) -> Result<()> {
         match scope {
