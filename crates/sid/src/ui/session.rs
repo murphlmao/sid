@@ -38,16 +38,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::TextInput;
-
-// ---- neutral grayscale palette, matches app.rs's/terminal.rs's/sftp.rs's -----------------
-const BG: u32 = 0x161618;
-const BORDER: u32 = 0x2c2c30;
-const FG: u32 = 0xdcdce0;
-const FG_DIM: u32 = 0x8a8a90;
-const ACTIVE_BG: u32 = 0x33343a;
-const ACTIVE_FG: u32 = 0xffffff;
-const ROW_ALT: u32 = 0x1c1c20;
-const BRAND: u32 = 0x5a9ad0;
+use crate::ui::theme;
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
@@ -804,6 +795,8 @@ impl SshSession {
     /// call that could change them already ran, off gpui's executor, before `cx.notify()`
     /// scheduled this render.
     fn file_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (bg, border, muted) = (t.bg, t.border, t.muted);
         if self.sidebar_collapsed {
             return div()
                 .id("session-sidebar-expand")
@@ -813,10 +806,10 @@ impl SshSession {
                 .pt_1()
                 .justify_center()
                 .cursor_pointer()
-                .bg(rgb(BG))
+                .bg(rgb(bg))
                 .border_r_1()
-                .border_color(rgb(BORDER))
-                .text_color(rgb(FG_DIM))
+                .border_color(rgb(border))
+                .text_color(rgb(muted))
                 .child("»")
                 .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
                     session.sidebar_collapsed = false;
@@ -836,12 +829,12 @@ impl SshSession {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(BG))
-            .border_color(rgb(BORDER))
+            .bg(rgb(bg))
+            .border_color(rgb(border))
             .child(self.sidebar_header(cx))
             .child(self.toolbar(cx))
             .when_some(self.file_error.clone(), |el, msg| {
-                el.child(status_line(&format!("file panel: {msg}")))
+                el.child(status_line(&format!("file panel: {msg}"), cx))
             })
             .child(
                 uniform_list(
@@ -865,6 +858,8 @@ impl SshSession {
     /// persists the flip to `Settings.file_browser_side` and fans it out to every open
     /// session tab (see [`Self::set_dock_side`]).
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, selection) = (t.border, t.muted, t.selection);
         let label = match self.dock_side {
             PanelSide::Left => "⇄ dock right",
             PanelSide::Right => "⇄ dock left",
@@ -877,13 +872,13 @@ impl SshSession {
             .px_2()
             .py_1()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 div()
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(FG_DIM))
-                    .child("Files"),
+                    .text_color(rgb(muted))
+                    .child("FILES"),
             )
             .child(
                 div()
@@ -893,8 +888,8 @@ impl SshSession {
                     .rounded_md()
                     .text_xs()
                     .cursor_pointer()
-                    .text_color(rgb(FG_DIM))
-                    .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                    .text_color(rgb(muted))
+                    .hover(|s| s.bg(rgb(selection)))
                     .child(label)
                     .on_click(cx.listener(|_session, _ev: &ClickEvent, _window, cx| {
                         cx.emit(SshSessionEvent::ToggleDockSide);
@@ -912,6 +907,9 @@ impl SshSession {
     /// - Row 3: `↑ up` / `⟳ refresh` / the hidden-files toggle on the left, the entry count
     ///   right-aligned.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (border, muted, selection, accent, fg_strong) =
+            (t.border, t.muted, t.selection, t.accent, t.fg_strong);
         let icon_button = |id: (&'static str, usize), label: String| {
             div()
                 .id(id)
@@ -920,8 +918,8 @@ impl SshSession {
                 .rounded_md()
                 .text_xs()
                 .cursor_pointer()
-                .text_color(rgb(FG_DIM))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .text_color(rgb(muted))
+                .hover(|s| s.bg(rgb(selection)))
                 .child(label)
         };
         let up = icon_button(("session-up", 0), "↑".to_string())
@@ -944,8 +942,8 @@ impl SshSession {
             .rounded_md()
             .text_xs()
             .cursor_pointer()
-            .bg(rgb(BRAND))
-            .text_color(rgb(ACTIVE_FG))
+            .bg(rgb(accent))
+            .text_color(rgb(fg_strong))
             .child("Go")
             .on_click(
                 cx.listener(|session, _ev: &ClickEvent, _window, cx| session.goto_submit(cx)),
@@ -954,7 +952,7 @@ impl SshSession {
             .id("session-sidebar-collapse")
             .px_2()
             .cursor_pointer()
-            .text_color(rgb(FG_DIM))
+            .text_color(rgb(muted))
             .child("«")
             .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
                 session.sidebar_collapsed = true;
@@ -966,7 +964,7 @@ impl SshSession {
             .flex()
             .flex_col()
             .border_b_1()
-            .border_color(rgb(BORDER))
+            .border_color(rgb(border))
             .child(
                 // Row 1: breadcrumb + collapse.
                 div()
@@ -1025,7 +1023,7 @@ impl SshSession {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(FG_DIM))
+                            .text_color(rgb(muted))
                             .child(format!("{count} entries")),
                     ),
             )
@@ -1065,14 +1063,16 @@ impl SshSession {
         target: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (fg, muted, selection) = (t.fg, t.muted, t.selection);
         let is_current = target == self.path;
         div()
             .id(("session-crumb", ix))
             .px_1()
             .rounded_md()
             .cursor_pointer()
-            .text_color(rgb(if is_current { FG } else { FG_DIM }))
-            .hover(|s| s.bg(rgb(ACTIVE_BG)))
+            .text_color(rgb(if is_current { fg } else { muted }))
+            .hover(|s| s.bg(rgb(selection)))
             .child(label)
             .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
                 session.go_to(target.clone(), cx);
@@ -1093,6 +1093,9 @@ impl SshSession {
         ix: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (fg, muted, selection, accent, surface, bg) =
+            (t.fg, t.muted, t.selection, t.accent, t.surface, t.bg);
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
         let glyph = if is_dir { "▸" } else { "·" };
@@ -1112,8 +1115,8 @@ impl SshSession {
                 .flex_1()
                 .truncate()
                 .cursor_pointer()
-                .text_color(rgb(FG))
-                .hover(|s| s.text_color(rgb(BRAND)))
+                .text_color(rgb(fg))
+                .hover(|s| s.text_color(rgb(accent)))
                 .child(name.clone())
                 .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
                     session.enter_dir(&enter_name, cx);
@@ -1123,7 +1126,7 @@ impl SshSession {
             div()
                 .flex_1()
                 .truncate()
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(name.clone())
                 .into_any_element()
         };
@@ -1135,8 +1138,8 @@ impl SshSession {
                 .rounded_md()
                 .text_xs()
                 .cursor_pointer()
-                .text_color(rgb(BRAND))
-                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                .text_color(rgb(accent))
+                .hover(|s| s.bg(rgb(selection)))
                 .child(label)
         };
 
@@ -1147,7 +1150,7 @@ impl SshSession {
             div()
                 .flex()
                 .flex_row()
-                .gap_1()
+                .gap_2()
                 .child(
                     action_button(("session-view", ix), "view").on_click(cx.listener(
                         move |session, _ev: &ClickEvent, _window, cx| {
@@ -1179,10 +1182,10 @@ impl SshSession {
             .gap_2()
             .w_full()
             .px_3()
-            .py_1()
+            .py_2()
             .text_sm()
-            .bg(rgb(if alt { ROW_ALT } else { BG }))
-            .child(div().w(px(14.)).text_color(rgb(FG_DIM)).child(glyph))
+            .bg(rgb(if alt { surface } else { bg }))
+            .child(div().w(px(14.)).text_color(rgb(muted)).child(glyph))
             .child(name_el)
             .child(
                 div()
@@ -1190,7 +1193,7 @@ impl SshSession {
                     .truncate()
                     .font_family(MONO)
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(size),
             )
             .child(
@@ -1199,7 +1202,7 @@ impl SshSession {
                     .truncate()
                     .font_family(MONO)
                     .text_xs()
-                    .text_color(rgb(FG_DIM))
+                    .text_color(rgb(muted))
                     .child(mtime),
             )
             .children(file_buttons)
@@ -1213,11 +1216,15 @@ impl SshSession {
     /// real size back out of the canvas's own paint bounds and reconciles
     /// `self.rows`/`self.cols` against it.
     fn render_grid(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx);
+        // The terminal viewport is a recessed editor-like surface (spec: "input/editor/
+        // terminal backgrounds -> well"), not the general window/panel plane — it reads
+        // as visually inset from the chrome around it.
+        let default_fg: Hsla = rgb(t.fg).into();
+        let default_bg: Hsla = rgb(t.well).into();
         let cells = self.screen.cells();
         let (cursor_row, cursor_col) = self.screen.cursor_position();
         let base_font = font(MONO);
-        let default_fg: Hsla = rgb(FG).into();
-        let default_bg: Hsla = rgb(BG).into();
 
         // Measure one monospace glyph — its width/the line height are the grid's cell size,
         // used both to paint rows and (in the canvas below) to turn the pane's real pixel
@@ -1261,7 +1268,7 @@ impl SshSession {
 
         div()
             .size_full()
-            .bg(rgb(BG))
+            .bg(default_bg)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|session, event: &KeyDownEvent, window, _cx| {
                 if let Some(bytes) = key_to_bytes(&event.keystroke) {
@@ -1310,6 +1317,9 @@ impl SshSession {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
+        let t = theme::active(cx);
+        let (fg, muted, surface, border, selection) =
+            (t.fg, t.muted, t.surface, t.border, t.selection);
         let preview = self.preview.clone()?;
         let viewport = window.viewport_size();
 
@@ -1321,14 +1331,14 @@ impl SshSession {
                 .p_3()
                 .text_sm()
                 .font_family(MONO)
-                .text_color(rgb(FG))
+                .text_color(rgb(fg))
                 .child(text)
                 .into_any_element(),
             PreviewContent::Notice(msg) => div()
                 .flex_1()
                 .p_3()
                 .text_sm()
-                .text_color(rgb(FG_DIM))
+                .text_color(rgb(muted))
                 .child(msg)
                 .into_any_element(),
         };
@@ -1350,9 +1360,9 @@ impl SshSession {
                                 .h(px(480.))
                                 .flex()
                                 .flex_col()
-                                .bg(rgb(BG))
+                                .bg(rgb(surface))
                                 .border_1()
-                                .border_color(rgb(BORDER))
+                                .border_color(rgb(border))
                                 .rounded_md()
                                 .child(
                                     div()
@@ -1363,11 +1373,11 @@ impl SshSession {
                                         .px_3()
                                         .py_2()
                                         .border_b_1()
-                                        .border_color(rgb(BORDER))
+                                        .border_color(rgb(border))
                                         .child(
                                             div()
                                                 .text_sm()
-                                                .text_color(rgb(FG))
+                                                .text_color(rgb(fg))
                                                 .child(preview.name.clone()),
                                         )
                                         .child(
@@ -1377,8 +1387,8 @@ impl SshSession {
                                                 .py_1()
                                                 .rounded_md()
                                                 .cursor_pointer()
-                                                .text_color(rgb(FG_DIM))
-                                                .hover(|s| s.bg(rgb(ACTIVE_BG)))
+                                                .text_color(rgb(muted))
+                                                .hover(|s| s.bg(rgb(selection)))
                                                 .child("✕ close")
                                                 .on_click(cx.listener(
                                                     |session, _ev: &ClickEvent, _window, cx| {
@@ -1403,11 +1413,11 @@ impl Render for SshSession {
             window.focus(&self.focus_handle);
         }
         let content = match &self.status {
-            SessionStatus::Connecting => message_pane("Connecting…").into_any_element(),
+            SessionStatus::Connecting => message_pane("Connecting…", cx).into_any_element(),
             SessionStatus::Failed(err) => {
-                message_pane(&format!("Connection failed: {err}")).into_any_element()
+                message_pane(&format!("Connection failed: {err}"), cx).into_any_element()
             }
-            SessionStatus::Closed => message_pane("Session closed.").into_any_element(),
+            SessionStatus::Closed => message_pane("Session closed.", cx).into_any_element(),
             SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
         };
         let overlay = self.preview_overlay(window, cx);
@@ -1456,24 +1466,26 @@ fn key_to_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
     keystroke.key_char.as_ref().map(|s| s.as_bytes().to_vec())
 }
 
-fn message_pane(text: &str) -> impl IntoElement {
+fn message_pane(text: &str, cx: &App) -> impl IntoElement {
+    let t = theme::active(cx);
     div()
         .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgb(BG))
-        .text_color(rgb(FG_DIM))
+        .bg(rgb(t.bg))
+        .text_color(rgb(t.muted))
         .font_family(MONO)
         .child(text.to_string())
 }
 
-fn status_line(text: &str) -> impl IntoElement {
+fn status_line(text: &str, cx: &App) -> impl IntoElement {
+    let muted = theme::active(cx).muted;
     div()
         .px_3()
         .py_1()
         .text_xs()
-        .text_color(rgb(FG_DIM))
+        .text_color(rgb(muted))
         .child(text.to_string())
 }
 
