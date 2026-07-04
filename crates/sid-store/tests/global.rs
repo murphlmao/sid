@@ -2,8 +2,8 @@
 
 use sid_core::db::DbKind;
 use sid_store::{
-    AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, PanelSide, QuickAction, Settings,
-    Store, WorkspaceId, WorkspaceMeta,
+    AuthMethod, DbConnection, DefaultScope, GlobalStore, Host, PanelSide, PinnedFile, QuickAction,
+    Settings, Store, WorkspaceId, WorkspaceMeta,
 };
 
 fn open() -> (tempfile::TempDir, GlobalStore) {
@@ -98,6 +98,42 @@ fn connections_and_quick_actions_crud() {
     })
     .unwrap();
     assert_eq!(s.list_quick_actions().unwrap().len(), 1);
+}
+
+#[test]
+fn pinned_files_pin_list_unpin() {
+    let (_d, s) = open();
+    assert!(s.list_pinned_files().unwrap().is_empty());
+
+    s.pin_file(&PinnedFile {
+        path: "/etc/hosts".into(),
+    })
+    .unwrap();
+    s.pin_file(&PinnedFile {
+        path: "/etc/fstab".into(),
+    })
+    .unwrap();
+    let mut paths: Vec<String> = s
+        .list_pinned_files()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    paths.sort();
+    assert_eq!(paths, vec!["/etc/fstab", "/etc/hosts"]);
+
+    // Re-pinning an already-pinned path is a harmless overwrite, not a duplicate.
+    s.pin_file(&PinnedFile {
+        path: "/etc/hosts".into(),
+    })
+    .unwrap();
+    assert_eq!(s.list_pinned_files().unwrap().len(), 2);
+
+    assert!(s.unpin_file("/etc/hosts").unwrap());
+    assert!(!s.unpin_file("/etc/hosts").unwrap(), "already gone");
+    let remaining = s.list_pinned_files().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].path, "/etc/fstab");
 }
 
 #[test]

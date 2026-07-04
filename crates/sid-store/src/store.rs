@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use crate::composer::{ViewFilters, compose};
-use crate::entities::{DbConnection, Host, Settings};
+use crate::entities::{DbConnection, Host, PinnedFile, Settings};
 use crate::error::{Result, StoreError};
 use crate::global::GlobalStore;
 use crate::scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
@@ -45,6 +45,24 @@ impl Store {
     /// Persist the machine-local [`Settings`].
     pub fn set_settings(&self, s: &Settings) -> Result<()> {
         self.global.set_settings(s)
+    }
+
+    /// List every pinned config-file path (Round E §D). Global-only — see
+    /// [`PinnedFile`]'s doc comment; a workspace-scoped pin list is future work.
+    pub fn list_pinned_files(&self) -> Result<Vec<PinnedFile>> {
+        self.global.list_pinned_files()
+    }
+
+    /// Pin `path` (idempotent — see [`GlobalStore::pin_file`]).
+    pub fn pin_file(&self, path: &str) -> Result<()> {
+        self.global.pin_file(&PinnedFile {
+            path: path.to_string(),
+        })
+    }
+
+    /// Unpin `path`, returning whether it was pinned.
+    pub fn unpin_file(&self, path: &str) -> Result<bool> {
+        self.global.unpin_file(path)
     }
 
     /// Register (or update) a workspace so scoped reads/writes can resolve its file.

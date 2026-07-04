@@ -16,8 +16,8 @@ use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
-    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, QuickAction,
-    Settings, SettingsV1, SettingsV2, SettingsV3,
+    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, PinnedFile,
+    QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -27,6 +27,10 @@ const CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("connecti
 const QUICK_ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("quick_actions");
 const WORKSPACES: TableDefinition<&str, &[u8]> = TableDefinition::new("workspaces");
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
+/// Pinned config-file paths (Round E §D) — global-only (see [`PinnedFile`]'s doc
+/// comment). Follows the [`QUICK_ACTIONS`] table's shape exactly: no versioning, keyed
+/// by the entity's own identity.
+const PINNED_FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("pinned_files");
 
 /// The single key under which [`Settings`] lives in the [`SETTINGS`] table.
 const SETTINGS_KEY: &str = "settings";
@@ -68,6 +72,7 @@ impl GlobalStore {
         write_table(&txn, QUICK_ACTIONS, "open quick_actions")?;
         write_table(&txn, WORKSPACES, "open workspaces")?;
         write_table(&txn, SETTINGS, "open settings")?;
+        write_table(&txn, PINNED_FILES, "open pinned_files")?;
         txn.commit()
             .map_err(|e| StoreError::Storage(format!("commit: {e}")))?;
         Ok(Self { db })
@@ -222,6 +227,20 @@ impl GlobalStore {
     }
     pub fn remove_quick_action(&self, label: &str) -> Result<bool> {
         self.remove(QUICK_ACTIONS, label)
+    }
+
+    // ---- pinned config files (Round E §D; global-only — see `PinnedFile`'s doc
+    // comment) ----
+    pub fn list_pinned_files(&self) -> Result<Vec<PinnedFile>> {
+        self.list(PINNED_FILES)
+    }
+    /// Pin `p`. Idempotent — re-pinning an already-pinned path is a harmless overwrite
+    /// (the identity is the path itself, so there is nothing else to update).
+    pub fn pin_file(&self, p: &PinnedFile) -> Result<()> {
+        self.upsert(PINNED_FILES, p.identity(), p)
+    }
+    pub fn unpin_file(&self, path: &str) -> Result<bool> {
+        self.remove(PINNED_FILES, path)
     }
 
     // ---- workspace registry (metadata; the config lives in each repo's file) ----
