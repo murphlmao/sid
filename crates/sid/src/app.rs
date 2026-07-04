@@ -10,25 +10,24 @@
 //! the `save to:` dialog) and the secret lifecycle against the [`SecretStore`]. Other tabs
 //! are placeholders for later slices.
 
-use std::sync::Arc;
-
 use gpui::{
-    ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString, Subscription,
-    Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
+    ClickEvent, Context, Corner, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
+    Subscription, Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
 };
-use sid_secrets::{BackendKind, EncryptedFileStore, SecretId, SecretStore};
+use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
     Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
 use crate::keymap::{self, Action, FocusContext};
+use crate::ssh_connect;
 use crate::ui::command_palette::PaletteState;
 use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
     HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
 use crate::ui::network_tab::NetworkTabState;
-use crate::ui::secret_unlock::{SecretUnlockEvent, SecretUnlockModal, SecretUnlockMode};
+use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 
@@ -125,12 +124,20 @@ pub struct AppState {
     /// module's doc comment).
     pub(crate) hosts: Vec<Attributed<Host>>,
     pub(crate) error: Option<String>,
-    /// An informational status line (currently just the startup secret-backend
-    /// resolution message — see `AppState::new`'s `startup_message` param) — kept
-    /// separate from `error` so `ssh_tab`'s status line doesn't prefix it with
-    /// `error: ` the way a genuine failure is (cosmetic fix, perf audit follow-up:
-    /// the backend-resolution message is informational, not a failure).
-    pub(crate) status: Option<String>,
+    /// Whether the effective secret backend is degraded (memory fallback — the keyring
+    /// is disabled, or it failed the startup probe). Drives the warning badge at the
+    /// tab strip's right end (see `secret_status_badge`) and the memory-aware password
+    /// helper copy in the host/DB forms (round-D §A.5); a healthy keyring renders
+    /// nothing and shows the normal copy. `pub(crate)` so `ui::host_form`/
+    /// `ui::db_conn_form` construction sites (here and in `ui::db_tab`) can read it.
+    pub(crate) secrets_degraded: bool,
+    /// The full secret-backend status line (`secret_status_message`'s output: backend,
+    /// warning, recommendation) — shown in the warning badge's popover on click. Set
+    /// once at startup; nothing currently changes the backend mid-session, so this
+    /// never needs to be refreshed after `AppState::new`.
+    secrets_status_detail: String,
+    /// Whether the warning badge's popover is open.
+    secret_badge_open: bool,
     /// The open host add/edit modal, if any.
     form: Option<Entity<HostForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
@@ -163,11 +170,16 @@ pub struct AppState {
     /// Network tab state (inc-1): live/ephemeral ports + interfaces view, no store/
     /// scope/secrets. Lives in its own module (`ui::network_tab`), same shape as `db`.
     pub(crate) network: NetworkTabState,
-    /// The open secret-vault unlock/create modal, if the encrypted-file backend is
-    /// effective and not yet unlocked (see `open_secret_unlock`).
-    secret_unlock: Option<Entity<SecretUnlockModal>>,
+    /// The open connect-time password prompt (SSH connect, DB run/schema-refresh), if
+    /// any — see `open_password_prompt`.
+    password_prompt: Option<Entity<PasswordPromptModal>>,
     /// Keeps the modal's event subscription alive exactly as long as it's open.
-    _secret_unlock_subscription: Option<Subscription>,
+    _password_prompt_subscription: Option<Subscription>,
+    /// What submitting `password_prompt` resumes — which connect/query attempt to
+    /// retry, and (for a pre-existing `secret_ref`) where to `secrets.put` the entered
+    /// password so a normal retry finds it. `None` whenever `password_prompt` is
+    /// `None`.
+    pending_secret_prompt: Option<PendingSecretPrompt>,
     /// The command palette's open/query/selection state (`Ctrl+K`) — `None` when
     /// closed. `pub(crate)` so `ui::command_palette`'s `impl AppState` block (same
     /// convention as `ui::db_tab`/`ui::ssh_home`) can read/mutate it directly.
@@ -202,16 +214,42 @@ pub(crate) struct SshTab {
     _dock_toggle: Subscription,
 }
 
+/// What submitting the connect-time [`PasswordPromptModal`] resumes (round-D §A.4) —
+/// captured when the prompt opens, consumed exactly once in
+/// [`AppState::on_password_prompt_event`]. `pub(crate)` — `ui::db_tab`'s
+/// `AppState::run_query`/`refresh_schema` construct the `Db` variant directly.
+pub(crate) enum PendingSecretPrompt {
+    /// An SSH connect (`connect_host`) whose host uses `Password` auth but had no
+    /// concretely resolvable secret (missing entirely, or a dangling `secret_ref`).
+    /// The password is spliced straight into the retried connect attempt; if `host`
+    /// already carries a `secret_ref`, it's also `secrets.put` under that id first so
+    /// the rest of the session remembers it.
+    Ssh {
+        host: Host,
+        source: Option<(String, Scope)>,
+    },
+    /// A DB action (`run_query`/`refresh_schema`) whose active connection's
+    /// `secret_ref` was dangling. The password is `secrets.put` under `secret_ref`
+    /// (always `Some` in this variant — see `db_tab::needs_password_prompt`'s doc
+    /// comment), then `retry` is re-run so the normal resolve path picks it up.
+    Db {
+        secret_ref: String,
+        retry: crate::ui::db_tab::DbRetry,
+    },
+}
+
 impl AppState {
     /// Build the app state over an open store + resolved secret backend and load the
     /// initial (Global) view.
     ///
-    /// `secret_file` is `Some` exactly when the encrypted-file backend is effective
-    /// (see `open_secrets`) — its presence, plus whether a vault already exists on
-    /// disk, decides whether the startup unlock-or-create modal opens. `startup_message`
-    /// (which backend is live, plus any warning/recommendation) is informational, not
-    /// necessarily a failure (Murphy wants to see which backend is live either way) —
-    /// it lands in `self.status`, not `self.error` (see that field's doc comment).
+    /// `secrets_degraded`/`secrets_status` come from `open_secrets`: whether the
+    /// effective backend is memory (vs. a healthy keyring), and the full status text
+    /// (backend, warning, recommendation) — the former gates the warning badge (see
+    /// `secret_status_badge`), the latter feeds its popover. Round-D §A dropped the
+    /// startup unlock-or-create modal entirely (the encrypted-file backend is no longer
+    /// wired into `sid_secrets::resolve_secret_store`'s chain) and the persistent
+    /// "secrets: …" banner along with it — a degraded backend now shows as this small
+    /// badge instead of taking over the SSH tab's status line.
     ///
     /// `seed_lists` is `open_store`'s `seed_if_empty` call, already read (and, on a
     /// first launch, re-read post-seed) — see [`SeedLists`]'s doc comment. Consuming it
@@ -222,9 +260,8 @@ impl AppState {
         store: Store,
         seed_lists: SeedLists,
         secrets: Box<dyn SecretStore>,
-        secret_file: Option<Arc<EncryptedFileStore>>,
-        startup_message: Option<String>,
-        window: &mut Window,
+        secrets_degraded: bool,
+        secrets_status: String,
         cx: &mut Context<Self>,
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
@@ -245,7 +282,9 @@ impl AppState {
             scopes: Vec::new(),
             hosts: Vec::new(),
             error: None,
-            status: None,
+            secrets_degraded,
+            secrets_status_detail: secrets_status,
+            secret_badge_open: false,
             form: None,
             _form_subscription: None,
             armed_delete: None,
@@ -255,19 +294,14 @@ impl AppState {
             ssh_home: HomeTabState::new(cx),
             db,
             network,
-            secret_unlock: None,
-            _secret_unlock_subscription: None,
+            password_prompt: None,
+            _password_prompt_subscription: None,
+            pending_secret_prompt: None,
             palette: None,
             cheat_sheet_open: false,
             root_focus: cx.focus_handle(),
         };
         state.apply_seed_lists(seed_lists);
-        // Set after the initial seed-list apply so it isn't wiped by it; it stays
-        // visible until the next store event replaces `self.status`.
-        state.status = startup_message;
-        if let Some(handle) = secret_file {
-            state.open_secret_unlock(handle, window, cx);
-        }
         state
     }
 
@@ -382,7 +416,8 @@ impl AppState {
             .map(|s| s.default_scope)
             .unwrap_or_default();
         let workspace = self.active_workspace();
-        let form = cx.new(|cx| HostForm::new_add(cx, workspace, default_scope));
+        let degraded = self.secrets_degraded;
+        let form = cx.new(|cx| HostForm::new_add(cx, workspace, default_scope, degraded));
         self.open_form(form, window, cx);
     }
 
@@ -400,7 +435,8 @@ impl AppState {
     ) {
         self.armed_delete = None;
         let workspace = self.active_workspace();
-        let form = cx.new(|cx| HostForm::new_edit(cx, host, origin, workspace));
+        let degraded = self.secrets_degraded;
+        let form = cx.new(|cx| HostForm::new_edit(cx, host, origin, workspace, degraded));
         self.open_form(form, window, cx);
     }
 
@@ -466,26 +502,47 @@ impl AppState {
 
     // ---- SSH multi-session tabs (ssh-v3) ----------------------------------------
 
-    /// connect (or quick-connect): open a new, independent [`SshSession`] for `host`
-    /// and switch to it. ssh-v3 makes every session fully independent — connecting a
-    /// second (or third, …) host no longer disconnects any other open tab. `source`
-    /// identifies which saved (alias, origin) row this came from, for the home tree's
-    /// live-dot — `None` for an ephemeral quick-connect host that was never saved.
+    /// connect (or quick-connect): resolve `host`'s secret and, if it's concretely
+    /// available (or none is needed), open a new, independent [`SshSession`] and switch
+    /// to it — ssh-v3 makes every session fully independent, so connecting a second (or
+    /// third, …) host no longer disconnects any other open tab. `source` identifies
+    /// which saved (alias, origin) row this came from, for the home tree's live-dot —
+    /// `None` for an ephemeral quick-connect host that was never saved.
+    ///
+    /// Round-D §A.4: a `Password`-auth host with nothing concretely resolvable (missing
+    /// entirely, or a dangling `secret_ref`) opens the connect-time password prompt
+    /// instead of failing outright — see [`ssh_connect::needs_password_prompt`] and
+    /// [`Self::on_password_prompt_event`].
     pub(crate) fn connect_host(
         &mut self,
         host: Host,
         source: Option<(String, Scope)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let secret = ssh_connect::resolve_secret(self.secrets.as_ref(), &host);
+        if ssh_connect::needs_password_prompt(&host.auth, &secret) {
+            let label: SharedString = format!("{}@{}", host.user, host.host).into();
+            self.open_password_prompt(label, PendingSecretPrompt::Ssh { host, source }, window, cx);
+            return;
+        }
+        self.finish_connect(host, source, secret, cx);
+    }
+
+    /// The connect-or-open half of [`Self::connect_host`], split out so the password
+    /// prompt's submit handler ([`Self::on_password_prompt_event`]) can resume here
+    /// directly with a one-shot password, bypassing a second `resolve_secret` call that
+    /// would just fail the same way again.
+    fn finish_connect(
+        &mut self,
+        host: Host,
+        source: Option<(String, Scope)>,
+        secret: Result<Option<Vec<u8>>, String>,
         cx: &mut Context<Self>,
     ) {
         let label: SharedString = format!("{}@{}", host.user, host.host).into();
         let known_hosts_path = data_dir().join("known_hosts");
-        let session = SshSession::open(
-            host,
-            self.secrets.as_ref(),
-            known_hosts_path,
-            self.file_browser_side,
-            cx,
-        );
+        let session = SshSession::open(host, secret, known_hosts_path, self.file_browser_side, cx);
         let dock_toggle = cx.subscribe(&session, Self::on_session_event);
         self.ssh_sessions.push(SshTab {
             label,
@@ -650,52 +707,79 @@ impl AppState {
         }
     }
 
-    // ---- secret vault unlock/create (encrypted-file backend) ------------------
+    // ---- connect-time password prompt (round-D §A.4) --------------------------
 
-    /// Prompt for the encrypted-file vault's passphrase: unlock mode if a vault file
-    /// already exists, create mode (with confirmation) otherwise. `// ponytail:`
-    /// startup-only per the v1 simplification documented in `ui::secret_unlock` — if
-    /// the user cancels, the backend just stays locked for the rest of the session
-    /// (every subsequent `secrets.*` call returns `SecretError::Locked`, which reads
-    /// fine as a plain error wherever it surfaces) rather than re-prompting.
-    fn open_secret_unlock(
+    /// Open the connect-time password prompt: `label` names what it's for ("password
+    /// for {label}"), `pending` says what submitting it resumes. Mirrors
+    /// `open_form`/`open_db_form`'s subscribe-then-store shape exactly, including the
+    /// `subscribe_in` (not `subscribe`) choice — `on_password_prompt_event` needs a
+    /// `&mut Window` to refocus `root_focus` on close (see that field's doc comment).
+    /// `pub(crate)` so `ui::db_tab`'s `AppState::run_query`/`refresh_schema` can open it
+    /// the same way `connect_host` does.
+    pub(crate) fn open_password_prompt(
         &mut self,
-        handle: Arc<EncryptedFileStore>,
+        label: SharedString,
+        pending: PendingSecretPrompt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mode = if handle.exists() {
-            SecretUnlockMode::Unlock
-        } else {
-            SecretUnlockMode::Create
-        };
-        let modal = cx.new(|cx| SecretUnlockModal::new(cx, handle, mode));
+        let modal = cx.new(|cx| PasswordPromptModal::new(cx, label));
         modal.read(cx).focus_first(window, cx);
-        // `subscribe_in`, not `subscribe` — see `open_form`'s doc comment on why
-        // `on_secret_unlock_event` needs a `&mut Window` to refocus on close.
-        self._secret_unlock_subscription =
-            Some(cx.subscribe_in(&modal, window, Self::on_secret_unlock_event));
-        self.secret_unlock = Some(modal);
+        self._password_prompt_subscription =
+            Some(cx.subscribe_in(&modal, window, Self::on_password_prompt_event));
+        self.password_prompt = Some(modal);
+        self.pending_secret_prompt = Some(pending);
         cx.notify();
     }
 
-    fn close_secret_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.secret_unlock = None;
-        self._secret_unlock_subscription = None;
+    fn close_password_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.password_prompt = None;
+        self._password_prompt_subscription = None;
+        self.pending_secret_prompt = None;
         window.focus(&self.root_focus);
         cx.notify();
     }
 
-    fn on_secret_unlock_event(
+    /// `Cancel` leaves the triggering connect/query attempt failed — nothing retries on
+    /// its own. `Submit` puts the password under the pending action's `secret_ref`
+    /// (SSH: only if the host already had one; DB: always, per
+    /// `PendingSecretPrompt::Db`'s doc comment) and resumes whatever was waiting.
+    /// Plaintext only ever goes two places from here: `secrets.put` and the immediate
+    /// retried connect/query attempt — never logged, never written to config.
+    fn on_password_prompt_event(
         &mut self,
-        _modal: &Entity<SecretUnlockModal>,
-        event: &SecretUnlockEvent,
+        _modal: &Entity<PasswordPromptModal>,
+        event: &PasswordPromptEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match event {
-            SecretUnlockEvent::Cancel | SecretUnlockEvent::Done => {
-                self.close_secret_unlock(window, cx)
+        let PasswordPromptEvent::Submit(password) = event else {
+            self.close_password_prompt(window, cx);
+            return;
+        };
+        let password = password.clone();
+        let Some(pending) = self.pending_secret_prompt.take() else {
+            self.close_password_prompt(window, cx);
+            return;
+        };
+        self.close_password_prompt(window, cx);
+        match pending {
+            PendingSecretPrompt::Ssh { host, source } => {
+                if let Some(secret_ref) = host.secret_ref.clone() {
+                    let _ = self
+                        .secrets
+                        .put(&SecretId::new(secret_ref), password.as_bytes());
+                }
+                self.finish_connect(host, source, Ok(Some(password.into_bytes())), cx);
+            }
+            PendingSecretPrompt::Db { secret_ref, retry } => {
+                let _ = self
+                    .secrets
+                    .put(&SecretId::new(secret_ref), password.as_bytes());
+                match retry {
+                    crate::ui::db_tab::DbRetry::RunQuery => self.run_query(window, cx),
+                    crate::ui::db_tab::DbRetry::RefreshSchema => self.refresh_schema(window, cx),
+                }
             }
         }
     }
@@ -797,11 +881,11 @@ impl AppState {
     // ---- keyboard-driven system (2026-07-02 plan) -----------------------------
 
     /// Whether a modal that should own the keyboard exclusively is open (the host or DB
-    /// connection form, the secret-vault unlock/create modal). The root key dispatcher
+    /// connection form, the connect-time password prompt). The root key dispatcher
     /// stays out of the way entirely while one of these is up — `ui::command_palette`'s
     /// `toggle_palette` already declines to open *over* one for the same reason.
     pub(crate) fn blocking_modal_open(&self) -> bool {
-        self.form.is_some() || self.db.form.is_some() || self.secret_unlock.is_some()
+        self.form.is_some() || self.db.form.is_some() || self.password_prompt.is_some()
     }
 
     /// Whether the active SSH session's terminal currently holds keyboard focus — the
@@ -1182,6 +1266,70 @@ impl AppState {
             .border_b_1()
             .border_color(rgb(BORDER))
             .children(tabs)
+            .child(div().flex_1()) // spacer — pushes the warning badge to the far right
+            .children(self.secret_status_badge(cx))
+    }
+
+    /// Round-D §A's warning badge: a small yellow `!` pill at the primary tab strip's
+    /// right end, rendered only while `secrets_degraded` is true (memory fallback — a
+    /// healthy keyring renders nothing at all, here or anywhere else). Replaces the old
+    /// persistent "secrets: …" status line: nothing takes up permanent screen space
+    /// unless something is actually degraded. Click toggles a small popover — anchored
+    /// at the badge's own flow position (`Corner::TopRight`, same trigger-attached
+    /// pattern as `db_tab`'s export menu), not a full-viewport modal — showing the full
+    /// `secret_status_message` text (backend, warning, recommendation).
+    fn secret_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if !self.secrets_degraded {
+            return None;
+        }
+        let badge = div()
+            .id("secret-status-badge")
+            .px_2()
+            .py(px(2.))
+            .rounded_full()
+            .text_xs()
+            .font_weight(FontWeight::BOLD)
+            .cursor_pointer()
+            .bg(rgb(WARN))
+            .text_color(rgb(0x1a1a1a))
+            .child("!")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.secret_badge_open = !this.secret_badge_open;
+                cx.notify();
+            }));
+
+        let popover = self.secret_badge_open.then(|| {
+            deferred(
+                anchored()
+                    .anchor(Corner::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        div()
+                            .id("secret-status-popover")
+                            .occlude()
+                            .mt_1()
+                            .max_w(px(360.))
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .bg(rgb(TITLEBAR_BG))
+                            .text_xs()
+                            .text_color(rgb(FG))
+                            .child(self.secrets_status_detail.clone()),
+                    ),
+            )
+            .with_priority(2)
+        });
+
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(badge)
+                .children(popover),
+        )
     }
 
     /// The SSH tab, top to bottom: the session tab strip (home · one tab per live
@@ -1215,22 +1363,22 @@ impl AppState {
             })
     }
 
-    /// The SSH Home tab's status/error notice: a **full-width bar** between the session
-    /// tab strip and the [sidebar | main] split — never inside either side. This used to
+    /// The SSH Home tab's error notice: a **full-width bar** between the session tab
+    /// strip and the [sidebar | main] split — never inside either side. This used to
     /// live inside `ssh_connections_main`'s own header, sharing a row with that pane's
-    /// `+ Add host` button; a long message (the startup secrets-backend notice — e.g.
-    /// "secrets: encrypted-file vault … OS keyring unavailable …" — routinely runs past
-    /// a single pane's width) had nowhere to go but visually collide with that button,
-    /// and since the header row sits at the same height as the sidebar's quick-connect
-    /// box, it read as overlapping the sidebar too. `.truncate()` (clip + ellipsis, not
-    /// wrap) keeps it to one line no matter how long the message is. `None` — the common
-    /// case once past startup with no error — renders nothing.
+    /// `+ Add host` button; a long message routinely ran past a single pane's width and
+    /// had nowhere to go but visually collide with that button, and since the header row
+    /// sits at the same height as the sidebar's quick-connect box, it read as
+    /// overlapping the sidebar too. `.truncate()` (clip + ellipsis, not wrap) keeps it to
+    /// one line no matter how long the message is. `None` — the common case with no
+    /// error — renders nothing.
+    ///
+    /// Round-D §A dropped the startup secrets-backend notice this bar used to double as
+    /// (a persistent "secrets: …" line) — a degraded backend now shows as the small
+    /// warning badge at the tab strip's right end instead (see `secret_status_badge`).
     fn ssh_status_bar(&self) -> Option<impl IntoElement> {
-        let (text, color): (SharedString, u32) = match (&self.error, &self.status) {
-            (Some(e), _) => (format!("error: {e}").into(), DANGER),
-            (None, Some(s)) => (s.clone().into(), FG_DIM),
-            (None, None) => return None,
-        };
+        let e = self.error.as_ref()?;
+        let text: SharedString = format!("error: {e}").into();
         Some(
             div()
                 .w_full()
@@ -1240,7 +1388,7 @@ impl AppState {
                 .border_color(rgb(BORDER))
                 .bg(rgb(TABSTRIP_BG))
                 .text_xs()
-                .text_color(rgb(color))
+                .text_color(rgb(DANGER))
                 .truncate()
                 .child(text),
         )
@@ -1543,8 +1691,8 @@ impl AppState {
             let host = host.clone();
             let source = Some((host.alias.clone(), origin.clone()));
             action(("connect", ix), "connect".into(), BRAND).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.connect_host(host.clone(), source.clone(), cx);
+                move |this, _ev: &ClickEvent, window, cx| {
+                    this.connect_host(host.clone(), source.clone(), window, cx);
                 },
             ))
         };
@@ -1692,9 +1840,9 @@ impl Render for AppState {
             )
             .with_priority(1)
         });
-        // The secret-vault unlock/create modal — the exact mirror of `overlay` above,
-        // over `self.secret_unlock` instead of `self.form`.
-        let secret_overlay = self.secret_unlock.clone().map(|modal| {
+        // The connect-time password prompt — the exact mirror of `overlay` above, over
+        // `self.password_prompt` instead of `self.form`.
+        let password_prompt_overlay = self.password_prompt.clone().map(|modal| {
             let viewport = window.viewport_size();
             deferred(
                 anchored().position(point(px(0.), px(0.))).child(
@@ -1732,7 +1880,7 @@ impl Render for AppState {
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
             .children(db_overlay)
-            .children(secret_overlay)
+            .children(password_prompt_overlay)
             .children(palette_overlay)
             .children(cheat_sheet_overlay)
     }
@@ -1790,53 +1938,32 @@ pub struct SeedLists {
 }
 
 /// Resolve and open the effective secret backend from the persisted
-/// [`sid_store::Settings`] toggles (`secret_keyring_enabled`/`secret_file_enabled`) via
+/// [`sid_store::Settings::secret_keyring_enabled`] toggle via
 /// [`sid_secrets::resolve_secret_store`]: keyring (if enabled & the startup probe
-/// passes) → encrypted-file (if enabled) → memory.
+/// passes), else memory (round-D §A — the encrypted-file backend is no longer a
+/// candidate; `Settings::secret_file_enabled` is dormant, see its doc comment).
 ///
-/// Returns the store every secret call site uses, the encrypted-file handle when that
-/// backend is effective (so `AppState::new` can drive the unlock/create modal — see
-/// `AppState::open_secret_unlock`), and a status message for the header/error line:
-/// which backend is live, plus any warning/recommendation. The message is always
-/// `Some(..)` — Murphy wants to see which backend is live even when nothing's wrong,
-/// not just when something degrades.
-pub fn open_secrets(
-    store: &Store,
-) -> (
-    Box<dyn sid_secrets::SecretStore>,
-    Option<Arc<EncryptedFileStore>>,
-    Option<String>,
-) {
+/// Returns the store every secret call site uses, whether the effective backend is
+/// degraded (memory — feeds `AppState::secrets_degraded`, which gates the tab strip's
+/// warning badge), and the full status text for that badge's popover: which backend is
+/// live, plus any warning/recommendation.
+pub fn open_secrets(store: &Store) -> (Box<dyn sid_secrets::SecretStore>, bool, String) {
     let settings = store.settings().unwrap_or_default();
     let toggles = sid_secrets::SecretBackendToggles {
         keyring_enabled: settings.secret_keyring_enabled,
-        file_enabled: settings.secret_file_enabled,
     };
-    let vault_path = data_dir().join("secrets.vault");
-    let resolved =
-        sid_secrets::resolve_secret_store(toggles, vault_path, sid_secrets::probe_keyring);
+    let resolved = sid_secrets::resolve_secret_store(toggles, sid_secrets::probe_keyring);
 
-    let (label, file_handle) = match &resolved.effective {
-        BackendKind::Keyring => ("OS keyring".to_string(), None),
-        BackendKind::EncryptedFile(handle) => {
-            let state = if handle.exists() {
-                "locked — unlock to use"
-            } else {
-                "new — set a passphrase"
-            };
-            (
-                format!("encrypted-file vault ({state})"),
-                Some(handle.clone()),
-            )
-        }
-        BackendKind::Memory => ("in-memory (no persistence)".to_string(), None),
+    let (label, degraded) = match resolved.effective {
+        sid_secrets::BackendKind::Keyring => ("OS keyring".to_string(), false),
+        sid_secrets::BackendKind::Memory => ("in-memory (no persistence)".to_string(), true),
     };
     let message = secret_status_message(
         &label,
         resolved.warning.as_deref(),
         resolved.recommendation.as_deref(),
     );
-    (resolved.store, file_handle, Some(message))
+    (resolved.store, degraded, message)
 }
 
 /// Compose the startup status line for the resolved secret backend: which backend is
@@ -2201,11 +2328,16 @@ mod tests {
 
     #[test]
     fn secret_status_message_warning_without_recommendation() {
-        let msg =
-            secret_status_message("encrypted-file vault (locked — unlock to use)", None, None);
+        // The current keyring-or-memory chain always pairs a warning with a
+        // recommendation, but the pure formatter must not rely on that.
+        let msg = secret_status_message(
+            "in-memory (no persistence)",
+            Some("the OS keyring is disabled"),
+            None,
+        );
         assert_eq!(
             msg,
-            "secrets: encrypted-file vault (locked — unlock to use)"
+            "secrets: in-memory (no persistence) — the OS keyring is disabled"
         );
     }
 }

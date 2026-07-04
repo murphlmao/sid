@@ -135,7 +135,7 @@ impl AppState {
             PaletteTarget::Connection(ix) => {
                 if let Some(a) = self.hosts.get(ix).cloned() {
                     let source = Some((a.item.alias.clone(), a.origin.clone()));
-                    self.connect_host(a.item, source, cx);
+                    self.connect_host(a.item, source, window, cx);
                 }
             }
             PaletteTarget::Session(ix) => self.activate_session(ix, window, cx),

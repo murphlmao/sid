@@ -31,13 +31,12 @@ use gpui::{
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
-use sid_secrets::SecretStore;
 use sid_ssh::RusshClientFactory;
 use sid_store::{Host, PanelSide};
 use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::ssh_connect::{connect_params, resolve_secret};
+use crate::ssh_connect::connect_params;
 use crate::ui::TextInput;
 
 // ---- neutral grayscale palette, matches app.rs's/terminal.rs's/sftp.rs's -----------------
@@ -192,24 +191,25 @@ pub struct SshSession {
 }
 
 impl SshSession {
-    /// Resolve the host's secret, then spawn the connect: build params (3C's `connect_params`)
-    /// → open a client → `connect` **once** → `open_shell` + `open_sftp` on that same client →
-    /// store both, start the shell's read-loop, and resolve+list the home directory. Any
-    /// connect/shell/sftp-open failure lands in `status` as `Failed`; a failure to resolve or
-    /// list the home directory is softer — it only sets `file_error`, since the terminal is
-    /// still perfectly usable without it.
+    /// Spawn the connect: build params (3C's `connect_params`) → open a client →
+    /// `connect` **once** → `open_shell` + `open_sftp` on that same client → store both,
+    /// start the shell's read-loop, and resolve+list the home directory. Any
+    /// connect/shell/sftp-open failure lands in `status` as `Failed`; a failure to
+    /// resolve or list the home directory is softer — it only sets `file_error`, since
+    /// the terminal is still perfectly usable without it.
+    ///
+    /// `secret` is the host's secret, already resolved by the caller
+    /// (`AppState::connect_host`/`finish_connect`) — round-D §A moved that resolve step
+    /// up a level so a `Password`-auth host with nothing concretely resolvable can open
+    /// the connect-time password prompt instead of landing here at all; this
+    /// constructor no longer touches the secret store itself.
     pub fn open(
         host: Host,
-        secrets: &dyn SecretStore,
+        secret: Result<Option<Vec<u8>>, String>,
         known_hosts_path: PathBuf,
         dock_side: PanelSide,
         cx: &mut App,
     ) -> Entity<Self> {
-        // `secrets` is a borrowed trait object — not `'static`/`Send` — so it cannot cross
-        // into the spawned task. Resolve it synchronously here and carry only the owned
-        // bytes over; this is the only point the secret exists as plain bytes, and it is
-        // never logged.
-        let secret = resolve_secret(secrets, &host);
         cx.new(|cx| {
             let mut session = SshSession {
                 client: None,

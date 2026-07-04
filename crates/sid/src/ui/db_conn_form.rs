@@ -126,19 +126,34 @@ pub struct DbConnForm {
     workspace: Option<(Scope, SharedString)>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
+    /// `AppState::secrets_degraded` (round-D §A.5) — swaps the password field's helper
+    /// copy to say a memory-only backend won't outlive this session. Kept on the form
+    /// (rather than a one-shot hint string) so `set_kind`'s field-list rebuild can
+    /// still apply it to a freshly built Password field.
+    secrets_degraded: bool,
 }
 
 impl DbConnForm {
     /// An empty add form defaulting to the first registered engine with a descriptor
-    /// (Postgres). `default_scope` drives the `save to:` preselection.
+    /// (Postgres). `default_scope` drives the `save to:` preselection. See
+    /// `host_form::HostForm::new_add` for `secrets_degraded`.
     pub fn new_add(
         cx: &mut Context<Self>,
         registry: Rc<DbRegistry>,
         workspace: Option<(Scope, SharedString)>,
         default_scope: DefaultScope,
+        secrets_degraded: bool,
     ) -> Self {
         let workspace_active = workspace.is_some();
-        let mut form = Self::new_inner(cx, registry, workspace, DbKind::Postgres, None, None);
+        let mut form = Self::new_inner(
+            cx,
+            registry,
+            workspace,
+            DbKind::Postgres,
+            None,
+            None,
+            secrets_degraded,
+        );
         form.save_to = preselect(default_scope, workspace_active);
         form
     }
@@ -153,6 +168,7 @@ impl DbConnForm {
         original: DbConnection,
         origin: Scope,
         workspace: Option<(Scope, SharedString)>,
+        secrets_degraded: bool,
     ) -> Self {
         let kind = original.kind;
         let prefill = registry
@@ -166,6 +182,7 @@ impl DbConnForm {
             kind,
             Some(original.name.as_str()),
             Some(&prefill),
+            secrets_degraded,
         );
         form.save_to = Some(match &origin {
             Scope::Global => SaveTarget::Global,
@@ -182,6 +199,7 @@ impl DbConnForm {
         kind: DbKind,
         name_prefill: Option<&str>,
         field_prefill: Option<&BTreeMap<String, String>>,
+        secrets_degraded: bool,
     ) -> Self {
         let name = cx.new(|cx| {
             let mut input = TextInput::new(cx, "name — a short label");
@@ -201,6 +219,7 @@ impl DbConnForm {
             workspace,
             error: None,
             focus_handle: cx.focus_handle(),
+            secrets_degraded,
         }
     }
 
@@ -513,10 +532,16 @@ impl DbConnForm {
     }
 
     /// Render one descriptor field: a plain input, or a segmented pill row for
-    /// `Choice`/`Bool` fields.
+    /// `Choice`/`Bool` fields. A `Password` field additionally shows a memory-backend
+    /// helper line when `secrets_degraded` (round-D §A.5) — every other field is
+    /// unaffected, same as before this change.
     fn field_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let (field, widget) = &self.fields[ix];
         let label = field.label.clone();
+        let password_hint =
+            (matches!(field.kind, ConnFieldKind::Password) && self.secrets_degraded).then_some(
+                "no OS keyring — passwords last this session only; you'll be asked at connect",
+            );
         match widget {
             FieldWidget::Text(input) => div()
                 .flex()
@@ -524,6 +549,9 @@ impl DbConnForm {
                 .gap_1()
                 .child(Self::field_label(label))
                 .child(input.clone())
+                .when_some(password_hint, |el, hint| {
+                    el.child(div().text_xs().text_color(rgb(FG_DIM)).child(hint))
+                })
                 .into_any_element(),
             FieldWidget::Choice { options, selected } => {
                 let selected = *selected;

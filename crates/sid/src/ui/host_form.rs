@@ -125,27 +125,33 @@ pub struct HostForm {
 
 impl HostForm {
     /// An empty add form. `default_scope` drives the `save to:` preselection
-    /// ([`preselect`]); the dialog itself always shows.
+    /// ([`preselect`]); the dialog itself always shows. `secrets_degraded` is
+    /// `AppState::secrets_degraded` (round-D §A.5) — memory-only backend swaps the
+    /// password field's helper copy to say so, since it means a password entered here
+    /// won't outlive this session.
     pub fn new_add(
         cx: &mut Context<Self>,
         workspace: Option<(Scope, SharedString)>,
         default_scope: DefaultScope,
+        secrets_degraded: bool,
     ) -> Self {
         let workspace_active = workspace.is_some();
-        let mut form = Self::new_inner(cx, workspace, None);
+        let mut form = Self::new_inner(cx, workspace, None, secrets_degraded);
         form.save_to = preselect(default_scope, workspace_active);
         form
     }
 
     /// An edit form prefilled from `original`, writing back into `origin` on save.
-    /// The alias is locked (rename is out of scope for P3.2).
+    /// The alias is locked (rename is out of scope for P3.2). See [`Self::new_add`] for
+    /// `secrets_degraded`.
     pub fn new_edit(
         cx: &mut Context<Self>,
         original: Host,
         origin: Scope,
         workspace: Option<(Scope, SharedString)>,
+        secrets_degraded: bool,
     ) -> Self {
-        let mut form = Self::new_inner(cx, workspace, Some(&original));
+        let mut form = Self::new_inner(cx, workspace, Some(&original), secrets_degraded);
         form.save_to = Some(match &origin {
             Scope::Global => SaveTarget::Global,
             Scope::Workspace(_) => SaveTarget::Workspace,
@@ -158,6 +164,7 @@ impl HostForm {
         cx: &mut Context<Self>,
         workspace: Option<(Scope, SharedString)>,
         prefill: Option<&Host>,
+        secrets_degraded: bool,
     ) -> Self {
         let mk = |cx: &mut Context<Self>, placeholder: &str, value: Option<String>| {
             let placeholder = placeholder.to_string();
@@ -175,10 +182,16 @@ impl HostForm {
         };
 
         // A stored secret is never read back into the UI: an empty masked field on an
-        // edit means "keep the existing secret" (see `plan_secret`).
+        // edit means "keep the existing secret" (see `plan_secret`). The password
+        // field's hint additionally distinguishes a degraded (memory) backend (round-D
+        // §A.5) — the passphrase field doesn't, since a `Key` auth's passphrase is
+        // always optional and never triggers the connect-time prompt regardless of
+        // backend health (see `ssh_connect::needs_password_prompt`'s doc comment).
         let has_stored_secret = prefill.is_some_and(|h| h.secret_ref.is_some());
         let password_hint = if has_stored_secret {
             "leave empty to keep the stored secret"
+        } else if secrets_degraded {
+            "no OS keyring — passwords last this session only; you'll be asked at connect"
         } else {
             "password — stored in the OS keyring"
         };
