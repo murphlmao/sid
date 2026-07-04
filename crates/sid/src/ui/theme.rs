@@ -160,10 +160,29 @@ pub fn install(name: &str, cx: &mut App) {
 
 /// The active theme. Elements call this at render time — never cache the result
 /// across frames, or a theme switch won't take until some unrelated re-render.
-// dead_code: see THEME_NAMES above.
-#[allow(dead_code)]
 pub fn active(cx: &App) -> &Theme {
     cx.global::<Theme>()
+}
+
+/// Whether `theme` is a light palette. Currently just `cosmos-light` — the only
+/// built-in whose background reads as light rather than dark.
+pub fn is_light(theme: &Theme) -> bool {
+    theme.name == "cosmos-light"
+}
+
+/// The `gpui-component` `ThemeMode` matching `theme` — `Light` for `cosmos-light`,
+/// `Dark` for everything else. `gpui-component` (the `Input`/`Table` widgets the SQL
+/// editor and results grid borrow) layers its own theming system on top of gpui and
+/// knows nothing about sid's tokens, so every window that mounts a `gpui_component::
+/// Root` must call `gpui_component::Theme::change(component_mode(theme::active(cx)),
+/// ..)` before first paint (see `main.rs`'s startup window and `db_tab.rs`'s
+/// relationships-diagram pop-out) to keep its chrome from clashing with sid's own.
+pub fn component_mode(theme: &Theme) -> gpui_component::ThemeMode {
+    if is_light(theme) {
+        gpui_component::ThemeMode::Light
+    } else {
+        gpui_component::ThemeMode::Dark
+    }
 }
 
 #[cfg(test)]
