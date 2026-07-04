@@ -1178,6 +1178,9 @@ impl AppState {
                     title: Some(title.into()),
                     ..Default::default()
                 }),
+                // Same app_id as the main window (see main.rs) so window tooling
+                // groups the diagram pop-out with sid.
+                app_id: Some("sid".into()),
                 ..Default::default()
             },
             move |window, cx| {
