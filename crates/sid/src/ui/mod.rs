@@ -16,6 +16,7 @@ pub mod session;
 pub mod ssh_home;
 pub mod systems_tab;
 mod text_input;
+pub mod theme;
 
 pub use session::{SessionStatus, SshSession, SshSessionEvent};
 pub use text_input::TextInput;

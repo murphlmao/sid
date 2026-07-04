@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, QuickAction,
-    Settings, SettingsV1, SettingsV2,
+    Settings, SettingsV1, SettingsV2, SettingsV3,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -48,7 +48,7 @@ pub(crate) const CONNECTION_VERSION: u8 = 3;
 /// added and to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added; reads
 /// branch on the leading version byte and migrate older values forward (see
 /// [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 3;
+pub(crate) const SETTINGS_VERSION: u8 = 4;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -294,20 +294,23 @@ fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
 }
 
 /// Decode a stored [`Settings`] value, branching on the leading codec version byte:
-/// `1` → the pre-`file_browser_side` [`SettingsV1`] shape, migrated forward through
-/// [`SettingsV2`] (`file_browser_side: PanelSide::Left`); `2` → the pre-secret-toggle
-/// [`SettingsV2`] shape, migrated forward (`secret_keyring_enabled`/`secret_file_enabled`
-/// both `true`); `3` → the current [`Settings`] shape. Any other version is rejected.
+/// `1` → the pre-`file_browser_side` [`SettingsV1`] shape; `2` → the pre-secret-toggle
+/// [`SettingsV2`] shape; `3` → the pre-`theme` [`SettingsV3`] shape; each migrates
+/// forward through the version chain, filling added fields with defaults; `4` → the
+/// current [`Settings`] shape. Any other version is rejected.
 fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
     match version {
-        1 => Ok(Settings::from(SettingsV2::from(
+        1 => Ok(Settings::from(SettingsV3::from(SettingsV2::from(
             decode_versioned::<SettingsV1>(bytes)?.1,
+        )))),
+        2 => Ok(Settings::from(SettingsV3::from(
+            decode_versioned::<SettingsV2>(bytes)?.1,
         ))),
-        2 => Ok(decode_versioned::<SettingsV2>(bytes)?.1.into()),
+        3 => Ok(decode_versioned::<SettingsV3>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -602,6 +605,37 @@ mod tests {
         }
     }
 
+    /// A crafted v3 (pre-`theme`) settings payload decodes with `theme == "cosmos"`
+    /// and every pre-existing field preserved — including a non-default `false`
+    /// toggle, proving the migration copies rather than re-defaults them.
+    #[test]
+    fn settings_v3_payload_migrates_to_cosmos_theme() {
+        use crate::entities::DefaultScope;
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let v3 = SettingsV3 {
+            default_scope: DefaultScope::Workspace,
+            file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: false,
+            secret_file_enabled: true,
+        };
+        let bytes = encode_versioned(3, &v3).unwrap();
+        store
+            .with_write("seed v3", |txn| {
+                let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                tbl.insert(SETTINGS_KEY, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        let settings = store.get_settings().unwrap();
+        assert_eq!(settings.theme, "cosmos");
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+        assert_eq!(settings.file_browser_side, PanelSide::Right);
+        assert!(!settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
+    }
+
     /// A crafted v1 (pre-`file_browser_side`) settings payload decodes with
     /// `file_browser_side == Left` and both secret-backend toggles defaulting to `true`.
     #[test]
@@ -703,6 +737,7 @@ mod tests {
                 file_browser_side: PanelSide::Right,
                 secret_keyring_enabled: false,
                 secret_file_enabled: true,
+                theme: "cosmos".into(),
             })
             .unwrap();
         let raw = store

@@ -229,11 +229,11 @@ impl From<DbConnectionV2> for DbConnection {
 
 /// Machine-local, identity-level preferences. Always global — never layered per workspace.
 ///
-/// Stored in its own single-key redb table under codec version 3 (see
-/// [`SETTINGS_VERSION`]); a missing value reads as [`Settings::default`]. Version-1
-/// values (the pre-`file_browser_side` shape) migrate on read via [`SettingsV1`] →
-/// [`SettingsV2`] → the current shape; version-2 values (the pre-secret-toggle shape)
-/// migrate via [`SettingsV2`] → `secret_keyring_enabled: true, secret_file_enabled: true`.
+/// Stored in its own single-key redb table under codec version 4 (see
+/// [`SETTINGS_VERSION`]); a missing value reads as [`Settings::default`]. Legacy values
+/// migrate on read through the version chain [`SettingsV1`] → [`SettingsV2`] →
+/// [`SettingsV3`] → the current shape, each hop filling its added fields with defaults
+/// (`file_browser_side: Left`, secret toggles `true`, `theme: "cosmos"`).
 ///
 /// [`SETTINGS_VERSION`]: crate::global::SETTINGS_VERSION
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +260,13 @@ pub struct Settings {
     /// defaults to `true`.
     #[serde(default = "default_secret_backend_enabled")]
     pub secret_file_enabled: bool,
+    /// Name of the active UI theme — one of `crates/sid`'s built-in palettes
+    /// (`cosmos`, `void`, `dusk`, `cosmos-light`; ported from the POC's theme system).
+    /// Stored as a free string so future user-defined themes need no schema change;
+    /// an unknown name falls back to the default at resolve time, never at decode
+    /// time. Absent in v1..v3 stores — defaults to `"cosmos"`.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 impl Default for Settings {
@@ -269,8 +276,15 @@ impl Default for Settings {
             file_browser_side: PanelSide::default(),
             secret_keyring_enabled: true,
             secret_file_enabled: true,
+            theme: default_theme(),
         }
     }
+}
+
+/// The `#[serde(default = ...)]` value for [`Settings::theme`]: the POC's signature
+/// deep-space palette.
+fn default_theme() -> String {
+    "cosmos".into()
 }
 
 /// The `#[serde(default = ...)]` value for both secret-backend toggles: `true` — both
@@ -318,13 +332,43 @@ pub(crate) struct SettingsV2 {
     pub file_browser_side: PanelSide,
 }
 
-impl From<SettingsV2> for Settings {
+impl From<SettingsV2> for SettingsV3 {
     fn from(v: SettingsV2) -> Self {
-        Settings {
+        SettingsV3 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: true,
             secret_file_enabled: true,
+        }
+    }
+}
+
+/// The version-3 on-disk shape of [`Settings`] (after the secret-backend toggles,
+/// before `theme`). Retained only to decode legacy redb values;
+/// `From<SettingsV3> for Settings` migrates it forward with `theme: "cosmos"`.
+///
+/// postcard is positional, so a v3 value must be decoded against this exact 4-field
+/// layout — decoding it as the current [`Settings`] would misread the trailing bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV3 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+}
+
+impl From<SettingsV3> for Settings {
+    fn from(v: SettingsV3) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: default_theme(),
         }
     }
 }
