@@ -32,7 +32,7 @@
 #   --out  PATH        where the PNG goes (required unless --tree)
 #   --size WxH         virtual output size (default 1920x1080)
 #   --click X,Y        move pointer + left-click (repeatable, in order)
-#   --key  KEYS        wtype -k <KEYS> chord, e.g. "Tab" or "Return" (repeatable)
+#   --key  KEYS        key chord, e.g. "Return", "ctrl+tab", "ctrl+shift+t" (repeatable)
 #   --type TEXT        wtype literal text (repeatable, needs wtype)
 #   --wait SECS        settle time after launch/actions before capture (default 3)
 #   --real             use the REAL store (default: hermetic demo-seeded XDG)
@@ -132,6 +132,7 @@ NESTED_DISPLAY="$(cat "$CAP_DIR/display")"
 # ---- 2. sid, hermetic by default ---------------------------------------------------
 declare -a APP_ENV=("WAYLAND_DISPLAY=$NESTED_DISPLAY" "SID_START_TAB=$TAB")
 [[ -n "$THEME" ]] && APP_ENV+=("SID_THEME=$THEME")
+[[ -n "${SID_PERF:-}" ]] && APP_ENV+=("SID_PERF=1")
 if [[ "$REAL" -ne 1 ]]; then
     mkdir -p "$CAP_DIR/xdg/data" "$CAP_DIR/xdg/state" "$CAP_DIR/xdg/config"
     APP_ENV+=("XDG_DATA_HOME=$CAP_DIR/xdg/data" "XDG_STATE_HOME=$CAP_DIR/xdg/state" "XDG_CONFIG_HOME=$CAP_DIR/xdg/config")
@@ -175,7 +176,16 @@ for action in "${ACTIONS[@]+"${ACTIONS[@]}"}"; do
             ;;
         key)
             command -v wtype >/dev/null 2>&1 || die "--key needs wtype (sudo pacman -S wtype)"
-            WAYLAND_DISPLAY="$NESTED_DISPLAY" wtype -k "$arg"
+            # "ctrl+shift+tab" -> wtype -M ctrl -M shift -k Tab -m shift -m ctrl
+            # (modifiers pressed in order, released in reverse).
+            IFS='+' read -ra parts <<<"$arg"
+            keyname="${parts[-1]}"
+            mods=("${parts[@]:0:${#parts[@]}-1}")
+            wt_args=()
+            for m in "${mods[@]+"${mods[@]}"}"; do wt_args+=(-M "$m"); done
+            wt_args+=(-k "$keyname")
+            for ((i=${#mods[@]}-1; i>=0; i--)); do wt_args+=(-m "${mods[$i]}"); done
+            WAYLAND_DISPLAY="$NESTED_DISPLAY" wtype "${wt_args[@]}"
             ;;
         type)
             command -v wtype >/dev/null 2>&1 || die "--type needs wtype (sudo pacman -S wtype)"

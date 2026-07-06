@@ -1,14 +1,14 @@
-//! SSH tab, Home state (ssh-v3): the saved-connections tree sidebar, quick-connect box,
-//! and per-row inline rename / folder assignment.
+//! SSH tab, Home state: THE connections surface — a centered, width-capped column
+//! with the quick-connect box on top and the folder-grouped connection list below
+//! (live dots, inline rename/folder edit, right-click menu incl. promote/demote,
+//! origin badges). The design review killed the old [tree sidebar | host-card list]
+//! split that showed the same hosts twice with two vocabularies; this module is now
+//! the single home for all of it.
 //!
 //! [`HomeTabState`] is a sibling cache to `AppState`'s own SSH fields, exactly like
 //! `ui::db_tab`'s `DbTabState` — see that module's doc comment for the pattern this
 //! mirrors: a second `impl AppState` block here reaches back into `AppState`'s
-//! `pub(crate)` fields (`hosts`, `armed_delete`, `ssh_sessions`, `store`, `error`) rather
-//! than app.rs growing a tree-rendering section of its own. The Home tab's MAIN pane
-//! (the connection-manager host list) stays in `app.rs` (`AppState::ssh_connections_main`)
-//! — unchanged from the pre-ssh-v3 single-session SSH tab, just relocated next to this
-//! new sidebar.
+//! `pub(crate)` fields (`hosts`, `armed_delete`, `ssh_sessions`, `store`, `error`).
 //!
 //! Pure/unit-tested: [`group_by_folder`] (the tree's grouping transform), [`filter_hosts`]
 //! (the quick-connect box's search filter), [`parse_quick_connect`] (the `user@host[:port]`
@@ -17,21 +17,17 @@
 use std::collections::{BTreeMap, HashSet};
 
 use gpui::{
-    ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Pixels, SharedString,
-    Window, actions, div, prelude::*, px, rgb,
+    ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent, SharedString, Window,
+    actions, div, prelude::*, px, rgb,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
-use crate::app::{AppState, delete_click_executes};
+use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::ui::TextInput;
 use crate::ui::theme;
 
 const MONO: &str = "DejaVu Sans Mono";
-
-/// The saved-connections tree's fixed sidebar width (Home state only — the session
-/// state's file browser has its own `SIDEBAR_WIDTH` in `session.rs`).
-const TREE_WIDTH: Pixels = px(260.);
 
 actions!(
     ssh_home,
@@ -91,7 +87,7 @@ pub(crate) struct HomeTabState {
     quick_error: Option<String>,
     /// Which row (if any) the tree's last right-click landed on — `None` reads as
     /// "empty space" (or a folder header). Feeds the tree's *single* `context_menu`
-    /// (attached to the whole scroll container, in [`AppState::ssh_home_sidebar`]),
+    /// (attached to the whole scroll container, in [`AppState::ssh_home_main`]),
     /// which decides row-menu vs. "+ Add connection" from this.
     ///
     /// This indirection exists because `gpui_component::menu::ContextMenuExt` can't be
@@ -221,9 +217,12 @@ pub(crate) fn parse_quick_connect(input: &str) -> Option<(String, String, u16)> 
 impl AppState {
     /// The Home tab's SIDEBAR (ssh-v3): quick-connect/filter box above the
     /// folder-grouped saved-connections tree.
-    pub(crate) fn ssh_home_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (bg, border) = (t.bg, t.border);
+    /// Home's single connections surface: a centered, width-capped column — quick
+    /// connect on top, then the folder-grouped connection list. This IS the connection
+    /// manager; there is no second list anywhere (the old sidebar/main split showed
+    /// the same hosts twice). Width-capped because full-bleed rows on a wide window
+    /// put a name on the left and its actions a screen-width away.
+    pub(crate) fn ssh_home_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.ssh_home.search.read(cx).content().to_string();
         let filtered = filter_hosts(&self.hosts, &query);
         let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
@@ -247,51 +246,60 @@ impl AppState {
         }
 
         div()
-            .w(TREE_WIDTH)
-            .h_full()
+            .flex_1()
+            .min_h(px(0.))
             .flex()
             .flex_col()
-            .bg(rgb(bg))
-            .border_r_1()
-            .border_color(rgb(border))
-            .child(self.sidebar_header(cx))
-            .child(self.quick_connect_box(cx))
+            .items_center()
             .child(
                 div()
-                    .id("ssh-home-tree")
+                    .w_full()
+                    .max_w(px(880.))
                     .flex_1()
-                    .overflow_y_scroll()
-                    .py_1()
-                    // Right-click *anywhere* in the tree defaults to "no row" —
-                    // `capture_any_mouse_down` fires during the CAPTURE phase, which
-                    // completes in full before any BUBBLE-phase handler runs (see
-                    // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
-                    // pass over every listener, then bubble is a second full pass, in
-                    // reverse/child-first order). So this always resets the target
-                    // first; a specific row's own `on_mouse_down(Right, ..)` (an
-                    // ordinary BUBBLE-phase handler, see `host_tree_row`) then fires
-                    // straight after and overrides it back to `Some(row)` — but only
-                    // when the click actually landed on that row. Reaching for this
-                    // instead of a plain bubble-phase clear on this same container:
-                    // bubble fires child-before-parent, so a bubble-phase clear here
-                    // would run AFTER (and stomp) a row's bubble-phase set, not before.
-                    .capture_any_mouse_down(cx.listener(
-                        |this, ev: &MouseDownEvent, _window, cx| {
-                            if ev.button == MouseButton::Right {
-                                this.ssh_home.right_click_target = None;
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .children(rows)
-                    // Trailing empty space below the last row, so "right-click empty
-                    // space → Add connection" has somewhere to land even when the list
-                    // is short — purely a layout spacer; the capture-phase reset above
-                    // is what actually makes empty-space right-clicks correct.
-                    .child(div().flex_1().min_h(px(48.)))
-                    // ONE context menu for the whole tree — see `right_click_target`'s
-                    // doc comment on why this can't be attached per-row.
-                    .context_menu(self.tree_context_menu(cx)),
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .px_4()
+                    .pt_4()
+                    .child(self.home_header(cx))
+                    .child(self.quick_connect_box(cx))
+                    .child(
+                        div()
+                            .id("ssh-home-tree")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .py_1()
+                            // Right-click *anywhere* in the tree defaults to "no row" —
+                            // `capture_any_mouse_down` fires during the CAPTURE phase, which
+                            // completes in full before any BUBBLE-phase handler runs (see
+                            // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
+                            // pass over every listener, then bubble is a second full pass, in
+                            // reverse/child-first order). So this always resets the target
+                            // first; a specific row's own `on_mouse_down(Right, ..)` (an
+                            // ordinary BUBBLE-phase handler, see `host_tree_row`) then fires
+                            // straight after and overrides it back to `Some(row)` — but only
+                            // when the click actually landed on that row. Reaching for this
+                            // instead of a plain bubble-phase clear on this same container:
+                            // bubble fires child-before-parent, so a bubble-phase clear here
+                            // would run AFTER (and stomp) a row's bubble-phase set, not before.
+                            .capture_any_mouse_down(cx.listener(
+                                |this, ev: &MouseDownEvent, _window, cx| {
+                                    if ev.button == MouseButton::Right {
+                                        this.ssh_home.right_click_target = None;
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .children(rows)
+                            // Trailing empty space below the last row, so "right-click empty
+                            // space → Add connection" has somewhere to land even when the list
+                            // is short — purely a layout spacer; the capture-phase reset above
+                            // is what actually makes empty-space right-clicks correct.
+                            .child(div().flex_1().min_h(px(48.)))
+                            // ONE context menu for the whole tree — see `right_click_target`'s
+                            // doc comment on why this can't be attached per-row.
+                            .context_menu(self.tree_context_menu(cx)),
+                    ),
             )
     }
 
@@ -309,8 +317,11 @@ impl AppState {
         let this = cx.entity();
         move |menu, _window, cx| {
             let target = this.read(cx).ssh_home.right_click_target.clone();
+            let scope = this.read(cx).scope.clone();
             match target {
-                Some((host, origin)) => Self::row_context_menu(menu, this.clone(), host, origin),
+                Some((host, origin)) => {
+                    Self::row_context_menu(menu, this.clone(), host, origin, scope)
+                }
                 None => Self::add_connection_menu_item(menu, this.clone(), "+ Add connection"),
             }
         }
@@ -329,13 +340,15 @@ impl AppState {
     }
 
     /// The per-row menu: connect, the same in-place rename/folder-assign the row's hover
-    /// icons already offer, a full [`crate::ui::host_form::HostForm`] edit, and delete —
-    /// the plan's "Rename / Edit / Assign folder / Delete", plus `Connect`.
+    /// icons already offer, a full [`crate::ui::host_form::HostForm`] edit, layer moves
+    /// (promote to global / demote into the focused workspace — carried over from the
+    /// deleted second host list), and delete.
     fn row_context_menu(
         menu: PopupMenu,
         this: Entity<AppState>,
         host: Host,
         origin: Scope,
+        scope: Scope,
     ) -> PopupMenu {
         let key = (host.alias.clone(), origin.clone());
         menu.item(PopupMenuItem::new("Connect").on_click({
@@ -388,6 +401,28 @@ impl AppState {
                 });
             }
         }))
+        .when(can_promote(&origin), |menu| {
+            menu.item(PopupMenuItem::new("Promote to global").on_click({
+                let this = this.clone();
+                let alias = host.alias.clone();
+                let origin = origin.clone();
+                move |_ev, _window, cx| {
+                    let alias = alias.clone();
+                    let origin = origin.clone();
+                    this.update(cx, |state, cx| state.promote_row(&alias, &origin, cx));
+                }
+            }))
+        })
+        .when(can_demote(&origin, &scope), |menu| {
+            menu.item(PopupMenuItem::new("Demote to workspace").on_click({
+                let this = this.clone();
+                let alias = host.alias.clone();
+                move |_ev, _window, cx| {
+                    let alias = alias.clone();
+                    this.update(cx, |state, cx| state.demote_row(&alias, cx));
+                }
+            }))
+        })
         .separator()
         .item(PopupMenuItem::new("Delete").on_click({
             let secret_ref = host.secret_ref.clone();
@@ -407,9 +442,11 @@ impl AppState {
     /// no hint). Opens the exact same [`HostForm::new_add`] path as every other
     /// add-connection entry point (`main`'s button, the tab-strip `+`, this tree's
     /// empty-space context menu) — see `AppState::open_add_form`.
-    fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn home_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
+        let count = self.hosts.len();
+        let label: SharedString = format!("CONNECTIONS · {count}").into();
         div()
             .flex()
             .flex_row()
@@ -419,7 +456,7 @@ impl AppState {
             .py_1()
             .border_b_1()
             .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child("CONNECTIONS"))
+            .child(div().text_xs().text_color(rgb(muted)).child(label))
             .child(
                 div()
                     .id("ssh-home-add-connection")
@@ -493,12 +530,9 @@ impl AppState {
                     )
                     .child(go),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child("saved hosts below · double-click a name to rename"),
-            );
+            .child(div().text_xs().text_color(rgb(muted)).child(
+                "saved connections below · double-click a name to rename · right-click for more",
+            ));
         if let Some(err) = &self.ssh_home.quick_error {
             col = col.child(div().text_xs().text_color(rgb(danger)).child(err.clone()));
         }
@@ -598,6 +632,10 @@ impl AppState {
         let armed = delete_click_executes(self.armed_delete.as_ref(), &key);
         let alias: SharedString = host.alias.clone().into();
         let addr: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
+        // Where this record lives (global vs a workspace, `· dup` when shadowing) —
+        // carried over from the deleted second host list; the attributive store's one
+        // per-row fact the tree didn't already show.
+        let (badge, badge_color) = self.origin_badge(a, cx);
 
         let action = |id: (&'static str, u64), label: SharedString, color: u32| {
             div()
@@ -727,16 +765,17 @@ impl AppState {
                     .min_w(px(0.))
                     .cursor_pointer()
                     .on_click(label_click)
-                    .child(div().text_xs().text_color(rgb(fg)).truncate().child(alias))
+                    .child(div().text_sm().text_color(rgb(fg)).truncate().child(alias))
                     .child(
                         div()
                             .font_family(MONO)
+                            .text_xs()
                             .text_color(rgb(muted))
                             .truncate()
-                            .child(addr)
-                            .text_size(px(10.)),
+                            .child(addr),
                     ),
             )
+            .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
             .child(
                 div()
                     .flex()

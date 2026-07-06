@@ -131,6 +131,19 @@ enum PreviewContent {
 /// A live (or connecting/failed/closed) SSH session: one adapter-backed client with a shell
 /// channel feeding a [`TerminalScreen`] (the terminal pane) and an SFTP channel feeding a
 /// cached directory listing (the file panel) — MobaXterm-style, over the same connection.
+/// One completed terminal shape pass — see `SshSession::shaped_cache`. Colors are part
+/// of the key so a live theme switch (same generation, new palette) reshapes; the
+/// per-theme ANSI table always moves together with `fg`/`bg`, so those two suffice.
+struct ShapedGridCache {
+    generation: u64,
+    cursor: (u16, u16),
+    fg: Hsla,
+    bg: Hsla,
+    rows: Vec<ShapedLine>,
+    cell_width: Pixels,
+    line_height: Pixels,
+}
+
 pub struct SshSession {
     // ---- the one shared connection ------------------------------------------------------
     client: Option<SharedClient>,
@@ -138,6 +151,16 @@ pub struct SshSession {
 
     // ---- shell / terminal (Plan 3C) -----------------------------------------------------
     screen: Box<dyn TerminalScreen>,
+    /// Bumped whenever the grid's rendered appearance may have changed: PTY bytes fed,
+    /// resize. Keys [`Self::shaped_cache`], so unrelated re-renders (tab switches,
+    /// overlays, sibling notifies) stop re-cloning and re-shaping the whole grid every
+    /// frame — the deferred perf-audit "terminal-grid memoization" item, and the SSH
+    /// tab's debug-build stutter.
+    grid_generation: u64,
+    /// The last shape pass, reused verbatim while `(generation, cursor, colors)` match.
+    /// `ShapedLine` is `Arc`-backed, so a cache hit costs one shallow Vec clone instead
+    /// of a full-grid `cells()` deep-clone + shape.
+    shaped_cache: Option<ShapedGridCache>,
     /// The shell's write half only — `send_input`/`resize`/`disconnect` need mutual
     /// exclusion among themselves, but must never serialize against the read loop, which
     /// owns the read half outright (see [`Self::start_read_loop`]).
@@ -206,6 +229,8 @@ impl SshSession {
                 client: None,
                 status: SessionStatus::Connecting,
                 screen: Box::new(Vt100Screen::new(DEFAULT_ROWS, DEFAULT_COLS)),
+                grid_generation: 0,
+                shaped_cache: None,
                 shell: None,
                 rows: DEFAULT_ROWS,
                 cols: DEFAULT_COLS,
@@ -394,6 +419,7 @@ impl SshSession {
                 let updated = this.update(cx, |session, cx| {
                     if has_output {
                         session.screen.feed(&bytes);
+                        session.grid_generation += 1;
                         cx.notify();
                     }
                 });
@@ -426,6 +452,7 @@ impl SshSession {
         self.rows = rows;
         self.cols = cols;
         self.screen.resize(rows, cols);
+        self.grid_generation += 1;
         let Some(shell) = self.shell.clone() else {
             return;
         };
@@ -1215,7 +1242,12 @@ impl SshSession {
     /// whatever space the parent layout gives it; the resize detection below reads that
     /// real size back out of the canvas's own paint bounds and reconciles
     /// `self.rows`/`self.cols` against it.
-    fn render_grid(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    ///
+    /// Shaping is memoized on `(grid_generation, cursor, default colors)` — see
+    /// [`ShapedGridCache`]. A re-render with no new PTY bytes (tab switches, overlay
+    /// opens, sibling entity notifies) reuses the previous pass instead of deep-cloning
+    /// and re-shaping the whole grid.
+    fn render_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
         // The terminal viewport is a recessed editor-like surface (spec: "input/editor/
         // terminal backgrounds -> well"), not the general window/panel plane — it reads
@@ -1223,53 +1255,73 @@ impl SshSession {
         let default_fg: Hsla = rgb(t.fg).into();
         let default_bg: Hsla = rgb(t.well).into();
         let ansi = t.ansi;
-        let cells = self.screen.cells();
-        let (cursor_row, cursor_col) = self.screen.cursor_position();
-        let base_font = font(MONO);
+        let cursor = self.screen.cursor_position();
+        let (cursor_row, cursor_col) = cursor;
 
-        // Measure one monospace glyph — its width/the line height are the grid's cell size,
-        // used both to paint rows and (in the canvas below) to turn the pane's real pixel
-        // bounds back into a rows/cols count.
-        let text_system = window.text_system().clone();
-        let em = text_system.shape_line(
-            "M".into(),
-            TERM_FONT_SIZE,
-            &[TextRun {
-                len: 1,
-                font: base_font.clone(),
-                color: default_fg,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }],
-            None,
-        );
-        let cell_width = em.width;
-        // Terminal cell height is the FONT's ascent+descent (kitty's geometry), not the
-        // UI text style's ~1.5× `window.line_height()`: rows must stack so glyph-drawn
-        // block art (█ ▀ ▄) tiles with no default-background bands between rows, and so
-        // the grid's proportions match a real terminal's. `paint_background` already
-        // fills whatever height it's given, so backgrounds were never the problem —
-        // the glyph ink box was (terminal-fidelity F1).
-        let line_height = em.ascent + em.descent;
-
-        let shaped_rows: Vec<ShapedLine> = cells
-            .iter()
-            .enumerate()
-            .map(|(row_ix, row)| {
-                let col = (row_ix as u16 == cursor_row).then_some(cursor_col as usize);
-                shape_row(
-                    &text_system,
-                    row,
-                    col,
-                    &base_font,
-                    TERM_FONT_SIZE,
-                    default_fg,
-                    default_bg,
-                    &ansi,
-                )
-            })
-            .collect();
+        let cache_valid = self.shaped_cache.as_ref().is_some_and(|c| {
+            c.generation == self.grid_generation
+                && c.cursor == cursor
+                && c.fg == default_fg
+                && c.bg == default_bg
+        });
+        if !cache_valid {
+            let base_font = font(MONO);
+            let cells = self.screen.cells();
+            // Measure one monospace glyph — its width/the line height are the grid's
+            // cell size, used both to paint rows and (in the canvas below) to turn the
+            // pane's real pixel bounds back into a rows/cols count.
+            let text_system = window.text_system().clone();
+            let em = text_system.shape_line(
+                "M".into(),
+                TERM_FONT_SIZE,
+                &[TextRun {
+                    len: 1,
+                    font: base_font.clone(),
+                    color: default_fg,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+            // Terminal cell height is the FONT's ascent+descent (kitty's geometry), not
+            // the UI text style's ~1.5× `window.line_height()`: rows must stack so
+            // glyph-drawn block art (█ ▀ ▄) tiles with no default-background bands
+            // between rows, and so the grid's proportions match a real terminal's.
+            // `paint_background` already fills whatever height it's given, so
+            // backgrounds were never the problem — the glyph ink box was
+            // (terminal-fidelity F1).
+            let rows = cells
+                .iter()
+                .enumerate()
+                .map(|(row_ix, row)| {
+                    let col = (row_ix as u16 == cursor_row).then_some(cursor_col as usize);
+                    shape_row(
+                        &text_system,
+                        row,
+                        col,
+                        &base_font,
+                        TERM_FONT_SIZE,
+                        default_fg,
+                        default_bg,
+                        &ansi,
+                    )
+                })
+                .collect();
+            self.shaped_cache = Some(ShapedGridCache {
+                generation: self.grid_generation,
+                cursor,
+                fg: default_fg,
+                bg: default_bg,
+                rows,
+                cell_width: em.width,
+                line_height: em.ascent + em.descent,
+            });
+        }
+        let cache = self.shaped_cache.as_ref().expect("just populated above");
+        let shaped_rows: Vec<ShapedLine> = cache.rows.clone();
+        let cell_width = cache.cell_width;
+        let line_height = cache.line_height;
 
         let current_size = (self.rows, self.cols);
         let weak = cx.weak_entity();
