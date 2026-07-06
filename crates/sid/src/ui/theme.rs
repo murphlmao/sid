@@ -51,6 +51,12 @@ pub struct Theme {
     pub danger: u32,
     /// Active row / selected item fill.
     pub selection: u32,
+    /// The terminal's base-16 ANSI palette (normal 0-7, bright 8-15), in the standard
+    /// black/red/green/yellow/blue/magenta/cyan/white order. kitty renders shell art
+    /// through the USER's configured scheme, not stock xterm RGBs — sid does the same
+    /// through the active theme, so terminal colors follow the theme like everything
+    /// else (terminal-fidelity F2). Indices 16-255 stay the universal xterm cube/ramp.
+    pub ansi: [u32; 16],
 }
 
 impl Global for Theme {}
@@ -72,6 +78,10 @@ pub fn cosmos() -> Theme {
         warning: 0xe8b04a,
         danger: 0xff5570,
         selection: 0x1c1c2c,
+        ansi: [
+            0x1a1a26, 0xd44141, 0x77c48a, 0xe8b04a, 0x6a8dd8, 0xb07ad0, 0xa8d8e8, 0xc8c8d4,
+            0x4a4a60, 0xff5570, 0x99e0a8, 0xf0c878, 0x8fb0f0, 0xd0a0e8, 0xc8ecf8, 0xffffff,
+        ],
     }
 }
 
@@ -92,6 +102,10 @@ pub fn void() -> Theme {
         warning: 0xe0a040,
         danger: 0xff3333,
         selection: 0x161616,
+        ansi: [
+            0x000000, 0xd44141, 0x8fbf8f, 0xd0b070, 0x8090c0, 0xb090c0, 0x90c0c0, 0xcccccc,
+            0x555555, 0xff3333, 0xa8d8a8, 0xe8cc90, 0xa0b0e0, 0xd0b0e0, 0xb0e0e0, 0xffffff,
+        ],
     }
 }
 
@@ -112,6 +126,10 @@ pub fn dusk() -> Theme {
         warning: 0xe8b04a,
         danger: 0xd04a4a,
         selection: 0x241d14,
+        ansi: [
+            0x241d14, 0xd04a4a, 0x9ab86a, 0xe8b04a, 0x7a90a8, 0xc088a0, 0xa8c0b0, 0xd8c8b0,
+            0x605548, 0xe87040, 0xb8d890, 0xf0c878, 0x98b0c8, 0xd8a8c0, 0xc0d8c8, 0xfff8ea,
+        ],
     }
 }
 
@@ -132,6 +150,10 @@ pub fn cosmos_light() -> Theme {
         warning: 0xb08030,
         danger: 0xc03040,
         selection: 0xdedee8,
+        ansi: [
+            0x181824, 0xb03030, 0x3a7a4a, 0xa07020, 0x3a5aa8, 0x8040a0, 0x2a7a8a, 0x8a8a98,
+            0x707082, 0xc03040, 0x4a9a5a, 0xb08030, 0x5a7ac8, 0xa060c0, 0x408090, 0x4a4a58,
+        ],
     }
 }
 
@@ -219,6 +241,39 @@ mod tests {
         // Background light, foreground dark — the POC's own doctest assertion.
         assert!(t.bg >> 16 > 128, "light background");
         assert!(t.fg >> 16 < 64, "dark foreground");
+    }
+
+    #[test]
+    fn every_theme_ships_a_usable_ansi_palette() {
+        // The terminal renders ls/prompt/art colors through this — each theme needs
+        // 16 entries where the canonical hues are actually distinguishable (red vs
+        // green vs blue) and bright-white differs from normal-white's slot.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let red = t.ansi[1];
+            let green = t.ansi[2];
+            let blue = t.ansi[4];
+            assert!(
+                (red >> 16 & 0xff) > (red & 0xff),
+                "{}: ansi red leans red",
+                t.name
+            );
+            assert!(
+                (green >> 8 & 0xff) > (green >> 16 & 0xff),
+                "{}: ansi green leans green",
+                t.name
+            );
+            assert!(
+                (blue & 0xff) > (blue >> 16 & 0xff),
+                "{}: ansi blue leans blue",
+                t.name
+            );
+            assert_ne!(t.ansi[7], t.ansi[15], "{}: white vs bright white", t.name);
+        }
+    }
+
+    #[test]
+    fn cosmos_ansi_red_is_the_galaxy_accent() {
+        assert_eq!(cosmos().ansi[1], cosmos().accent);
     }
 
     #[test]

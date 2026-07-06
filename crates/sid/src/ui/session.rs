@@ -1222,6 +1222,7 @@ impl SshSession {
         // as visually inset from the chrome around it.
         let default_fg: Hsla = rgb(t.fg).into();
         let default_bg: Hsla = rgb(t.well).into();
+        let ansi = t.ansi;
         let cells = self.screen.cells();
         let (cursor_row, cursor_col) = self.screen.cursor_position();
         let base_font = font(MONO);
@@ -1244,7 +1245,13 @@ impl SshSession {
             None,
         );
         let cell_width = em.width;
-        let line_height = window.line_height();
+        // Terminal cell height is the FONT's ascent+descent (kitty's geometry), not the
+        // UI text style's ~1.5× `window.line_height()`: rows must stack so glyph-drawn
+        // block art (█ ▀ ▄) tiles with no default-background bands between rows, and so
+        // the grid's proportions match a real terminal's. `paint_background` already
+        // fills whatever height it's given, so backgrounds were never the problem —
+        // the glyph ink box was (terminal-fidelity F1).
+        let line_height = em.ascent + em.descent;
 
         let shaped_rows: Vec<ShapedLine> = cells
             .iter()
@@ -1259,6 +1266,7 @@ impl SshSession {
                     TERM_FONT_SIZE,
                     default_fg,
                     default_bg,
+                    &ansi,
                 )
             })
             .collect();
@@ -1492,6 +1500,8 @@ fn status_line(text: &str, cx: &App) -> impl IntoElement {
 /// Shape one terminal row into a single `ShapedLine`. Contiguous cells sharing the same
 /// fg/bg/bold/italic/underline coalesce into one `TextRun` — the row, not the cell, is what
 /// gets shaped, matching how `WindowTextSystem::shape_line` is meant to be driven.
+// ponytail: 8 args; a GridStyle struct when the terminal-fidelity work adds more.
+#[allow(clippy::too_many_arguments)]
 fn shape_row(
     text_system: &gpui::WindowTextSystem,
     row: &[TermCell],
@@ -1500,6 +1510,7 @@ fn shape_row(
     font_size: Pixels,
     default_fg: Hsla,
     default_bg: Hsla,
+    ansi: &[u32; 16],
 ) -> ShapedLine {
     let mut text = String::new();
     let mut runs: Vec<TextRun> = Vec::new();
@@ -1513,8 +1524,8 @@ fn shape_row(
             &cell.text
         };
 
-        let mut fg = term_color_to_hsla(cell.fg, default_fg);
-        let mut bg = term_color_to_hsla(cell.bg, default_bg);
+        let mut fg = term_color_to_hsla(cell.fg, default_fg, ansi);
+        let mut bg = term_color_to_hsla(cell.bg, default_bg, ansi);
         if cell.inverse {
             std::mem::swap(&mut fg, &mut bg);
         }
@@ -1563,11 +1574,14 @@ fn shape_row(
     text_system.shape_line(text.into(), font_size, &runs, None)
 }
 
-/// `TermColor::Default` takes the pane's own theme color; `Indexed`/`Rgb` convert to `Hsla`
-/// via a plain `0xRRGGBB` pack — gpui already gives us `Rgba: Into<Hsla>`.
-fn term_color_to_hsla(color: TermColor, default: Hsla) -> Hsla {
+/// `TermColor::Default` takes the pane's own theme color; `Indexed(0..=15)` goes through
+/// the active theme's ANSI palette ([`crate::ui::theme::Theme::ansi`] — the same way
+/// kitty renders the base 16 through the user's scheme, terminal-fidelity F2);
+/// `Indexed(16..)` uses the universal xterm cube/ramp; `Rgb` converts directly.
+fn term_color_to_hsla(color: TermColor, default: Hsla, ansi: &[u32; 16]) -> Hsla {
     match color {
         TermColor::Default => default,
+        TermColor::Indexed(idx) if idx < 16 => rgb(ansi[idx as usize]).into(),
         TermColor::Indexed(idx) => {
             let (r, g, b) = xterm256_to_rgb(idx);
             rgb_to_hsla(r, g, b)
@@ -1616,6 +1630,42 @@ fn xterm256_to_rgb(idx: u8) -> (u8, u8, u8) {
             let level = 8 + (idx - 232) * 10;
             (level, level, level)
         }
+    }
+}
+
+#[cfg(test)]
+mod term_color_tests {
+    use super::*;
+
+    const TEST_ANSI: [u32; 16] = [
+        0x000001, 0x000002, 0x000003, 0x000004, 0x000005, 0x000006, 0x000007, 0x000008, 0x000009,
+        0x00000a, 0x00000b, 0x00000c, 0x00000d, 0x00000e, 0x00000f, 0x000010,
+    ];
+
+    #[test]
+    fn indexed_base16_reads_the_theme_palette_not_xterm() {
+        // Slot 1 (red) must come from the provided palette — the whole point of F2.
+        let got = term_color_to_hsla(TermColor::Indexed(1), Hsla::default(), &TEST_ANSI);
+        assert_eq!(got, rgb(0x000002).into());
+        let got = term_color_to_hsla(TermColor::Indexed(15), Hsla::default(), &TEST_ANSI);
+        assert_eq!(got, rgb(0x000010).into());
+    }
+
+    #[test]
+    fn indexed_cube_and_ramp_stay_universal() {
+        // 196 is pure red in the xterm cube regardless of theme palette.
+        let got = term_color_to_hsla(TermColor::Indexed(196), Hsla::default(), &TEST_ANSI);
+        assert_eq!(got, rgb_to_hsla(255, 0, 0));
+        // Grayscale ramp end.
+        let got = term_color_to_hsla(TermColor::Indexed(255), Hsla::default(), &TEST_ANSI);
+        assert_eq!(got, rgb_to_hsla(238, 238, 238));
+    }
+
+    #[test]
+    fn default_color_passes_through() {
+        let default: Hsla = rgb(0x123456).into();
+        let got = term_color_to_hsla(TermColor::Default, default, &TEST_ANSI);
+        assert_eq!(got, default);
     }
 }
 
