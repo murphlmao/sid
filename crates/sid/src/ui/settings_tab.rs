@@ -227,14 +227,25 @@ impl AppState {
             .min_h(px(0.))
             .overflow_y_scroll()
             .p_4()
-            .gap_3()
             .bg(rgb(chrome.bg))
             .text_color(rgb(chrome.fg))
-            .children(error)
-            .child(theme_section)
-            .child(behavior_section)
-            .child(keyboard_section(&chrome))
-            .child(storage_section(&chrome))
+            // Width-capped, centered content column: full-bleed settings rows on a
+            // wide window put a label on the left and its value/shortcut a full
+            // screen-width away (design review — same rule as the SSH home surface).
+            .items_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(880.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(error)
+                    .child(theme_section)
+                    .child(behavior_section)
+                    .child(keyboard_section(&chrome))
+                    .child(storage_section(&chrome)),
+            )
             .into_any_element()
     }
 

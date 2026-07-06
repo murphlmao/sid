@@ -513,7 +513,13 @@ impl AppState {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_y_scroll()
-                    .child(config_files),
+                    // Width-capped like the SSH home / settings surfaces: a file name
+                    // on the left with its pin affordance 1800px away is not a row,
+                    // it's a scavenger hunt (design review).
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(div().w_full().max_w(px(880.)).child(config_files)),
             )
             .children(editor_overlay)
             .into_any_element()

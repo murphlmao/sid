@@ -12,7 +12,7 @@
 
 use gpui::{
     ClickEvent, Context, Corner, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
-    Subscription, Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba, uniform_list,
+    Subscription, Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
@@ -506,7 +506,7 @@ impl AppState {
     /// ⤒ Move a workspace-origin record up to global. A store-side conflict (the global
     /// layer already holds the alias — e.g. the demo seed's duplicate `vps-1`) surfaces
     /// verbatim in the header error line; nothing is overwritten.
-    fn promote_row(&mut self, alias: &str, origin: &Scope, cx: &mut Context<Self>) {
+    pub(crate) fn promote_row(&mut self, alias: &str, origin: &Scope, cx: &mut Context<Self>) {
         self.armed_delete = None;
         let Scope::Workspace(id) = origin else {
             return;
@@ -520,7 +520,7 @@ impl AppState {
 
     /// ⤓ Move a global-origin record down into the active workspace. Conflicts surface
     /// verbatim, exactly like promote.
-    fn demote_row(&mut self, alias: &str, cx: &mut Context<Self>) {
+    pub(crate) fn demote_row(&mut self, alias: &str, cx: &mut Context<Self>) {
         self.armed_delete = None;
         let Scope::Workspace(id) = self.scope.clone() else {
             return;
@@ -896,10 +896,17 @@ impl AppState {
     /// second accent tone, and `success` reads as a clearly distinct hue from `accent`
     /// in every built-in (cosmos pairs a pale cyan-blue against the red accent, an echo
     /// of the pre-sweep brand blue).
-    fn origin_badge(&self, a: &Attributed<Host>, cx: &Context<Self>) -> (SharedString, u32) {
+    pub(crate) fn origin_badge(
+        &self,
+        a: &Attributed<Host>,
+        cx: &Context<Self>,
+    ) -> (SharedString, u32) {
         let t = theme::active(cx);
+        // `global` is the common, unremarkable origin — muted, not accent: the badge
+        // is orientation, not a call to action. Workspace origins (and `· dup`
+        // shadowing) are the notable cases and keep a color.
         let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("global".into(), t.accent),
+            Scope::Global => ("global".into(), t.faint),
             Scope::Workspace(id) => {
                 let name = self
                     .scopes
@@ -1227,7 +1234,12 @@ impl AppState {
 
     // ---- rendering helpers --------------------------------------------------
 
-    fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The single top chrome bar: `✦ sid` wordmark, the primary tabs, then (right-
+    /// aligned) the scope switcher chips and the secrets warning badge. One bar, not
+    /// the previous two stacked ones — a whole row of chrome bought nothing but
+    /// vertical clutter, and scope-switching is an occasional act that belongs at the
+    /// edge, not on its own strip above everything.
+    fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
         let (surface, border, accent, muted, fg_strong, selection) = (
             t.surface,
@@ -1237,56 +1249,7 @@ impl AppState {
             t.fg_strong,
             t.selection,
         );
-        let current = self.scope.clone();
-        let buttons: Vec<_> = self
-            .scopes
-            .iter()
-            .enumerate()
-            .map(|(ix, choice)| {
-                let active = choice.scope == current;
-                let target = choice.scope.clone();
-                div()
-                    .id(("scope", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(if active { selection } else { surface }))
-                    .text_color(rgb(if active { fg_strong } else { muted }))
-                    .child(choice.label.clone())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
-                        this.set_scope(target.clone());
-                        cx.notify();
-                    }))
-            })
-            .collect();
 
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .h(px(44.))
-            .px_4()
-            .bg(rgb(surface))
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .text_color(rgb(accent))
-                    .font_weight(FontWeight::BOLD)
-                    .child("✦ sid"),
-            )
-            .child(div().text_xs().text_color(rgb(muted)).child("scope"))
-            .children(buttons)
-    }
-
-    fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (surface, border, accent, muted, fg_strong) =
-            (t.surface, t.border, t.accent, t.muted, t.fg_strong);
         let active = self.active_tab;
         let tabs: Vec<_> = Tab::ALL
             .iter()
@@ -1295,8 +1258,10 @@ impl AppState {
                 let is_active = tab == active;
                 div()
                     .id(("tab", ix))
-                    .px_4()
-                    .py_2()
+                    .px_3()
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .text_sm()
                     .cursor_pointer()
                     .text_color(rgb(if is_active { fg_strong } else { muted }))
@@ -1317,18 +1282,53 @@ impl AppState {
             })
             .collect();
 
+        let current = self.scope.clone();
+        let scope_chips: Vec<_> = self
+            .scopes
+            .iter()
+            .enumerate()
+            .map(|(ix, choice)| {
+                let is_active = choice.scope == current;
+                let target = choice.scope.clone();
+                div()
+                    .id(("scope", ix))
+                    .px_2()
+                    .py(px(3.))
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .bg(rgb(if is_active { selection } else { surface }))
+                    .text_color(rgb(if is_active { fg_strong } else { muted }))
+                    .hover(|s| s.bg(rgb(selection)))
+                    .child(choice.label.clone())
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
+                        this.set_scope(target.clone());
+                        cx.notify();
+                    }))
+            })
+            .collect();
+
         div()
             .flex()
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(40.))
-            .px_2()
+            .h(px(42.))
+            .px_3()
+            .gap_1()
             .bg(rgb(surface))
             .border_b_1()
             .border_color(rgb(border))
+            .child(
+                div()
+                    .pr_2()
+                    .text_color(rgb(accent))
+                    .font_weight(FontWeight::BOLD)
+                    .child("✦ sid"),
+            )
             .children(tabs)
-            .child(div().flex_1()) // spacer — pushes the warning badge to the far right
+            .child(div().flex_1()) // spacer — scope chips + badge live at the right edge
+            .children(scope_chips)
             .children(self.secret_status_badge(cx))
     }
 
@@ -1402,9 +1402,15 @@ impl AppState {
 
     /// The SSH tab, top to bottom: the session tab strip (home · one tab per live
     /// session · +), then — on Home — the full-width status/error bar (see
-    /// `ssh_status_bar`) above the [tree sidebar | connection-manager] split, or the
-    /// active session's view (status strip + that `SshSession` entity, which paints its
-    /// own terminal/file-browser split).
+    /// `ssh_status_bar`) above the single connections surface
+    /// (`ui::ssh_home::AppState::ssh_home_main`), or the active session's view (status
+    /// strip + that `SshSession` entity, which paints its own terminal/file-browser
+    /// split).
+    ///
+    /// Home used to be a [tree sidebar | host-card list] split showing the SAME hosts
+    /// twice, with two vocabularies ("+ Add connection" vs "+ Add host") and two
+    /// different action sets. One list, one vocabulary, one add button — the
+    /// design-review fix for "the ssh tab feels very redundant".
     fn ssh_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -1416,30 +1422,18 @@ impl AppState {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_h(px(0.))
                     .children(self.ssh_status_bar(cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .child(self.ssh_home_sidebar(cx).into_any_element())
-                            .child(self.ssh_connections_main(cx).into_any_element()),
-                    )
+                    .child(self.ssh_home_main(cx).into_any_element())
                     .into_any_element(),
                 Some(ix) => self.ssh_session_view(ix, cx).into_any_element(),
             })
     }
 
     /// The SSH Home tab's error notice: a **full-width bar** between the session tab
-    /// strip and the [sidebar | main] split — never inside either side. This used to
-    /// live inside `ssh_connections_main`'s own header, sharing a row with that pane's
-    /// `+ Add host` button; a long message routinely ran past a single pane's width and
-    /// had nowhere to go but visually collide with that button, and since the header row
-    /// sits at the same height as the sidebar's quick-connect box, it read as
-    /// overlapping the sidebar too. `.truncate()` (clip + ellipsis, not wrap) keeps it to
-    /// one line no matter how long the message is. `None` — the common case with no
-    /// error — renders nothing.
+    /// strip and the connections surface. `.truncate()` (clip + ellipsis, not wrap)
+    /// keeps it to one line no matter how long the message is. `None` — the common
+    /// case with no error — renders nothing.
     ///
     /// Round-D §A dropped the startup secrets-backend notice this bar used to double as
     /// (a persistent "secrets: …" line) — a degraded backend now shows as the small
@@ -1598,71 +1592,6 @@ impl AppState {
             .child(add)
     }
 
-    /// Home tab's MAIN pane: the connection manager (header + full host list) —
-    /// unchanged from the pre-ssh-v3 single-session SSH tab, just relocated out of
-    /// `ssh_tab` now that the session tab strip + tree sidebar (`ui::ssh_home`) wrap it.
-    ///
-    /// The header's `sub` line is just the host count now — the error/status notice
-    /// this used to double as moved to `ssh_status_bar`, a full-width bar above this
-    /// [sidebar | main] split, so a long message can't collide with `+ Add host` below
-    /// (see that method's doc comment for why).
-    fn ssh_connections_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
-        let count = self.hosts.len();
-        let sub: SharedString = format!("{count} hosts · union of this scope, deduped").into();
-
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(border))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .text_sm()
-                            .text_color(rgb(muted))
-                            .truncate()
-                            .child(sub),
-                    )
-                    .child(
-                        div()
-                            .id("add-host")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(selection))
-                            .text_color(rgb(fg_strong))
-                            .child("+ Add host")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.open_add_form(window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                uniform_list(
-                    "hosts",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
-                        range.map(|ix| this.host_row(ix, cx)).collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1(),
-            )
-    }
-
     /// A session tab's view: a `← close tab` strip showing `user@host · status` above
     /// the [`SshSession`] entity, which paints its own connecting/failed/closed/split
     /// (terminal + file panel, docked per `file_browser_side`) states. `ix` must be a
@@ -1723,159 +1652,6 @@ impl AppState {
             .child(div().flex().flex_col().flex_1().child(session))
     }
 
-    fn host_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (bg, surface, border, fg, muted, selection, accent, danger) = (
-            t.bg,
-            t.surface,
-            t.border,
-            t.fg,
-            t.muted,
-            t.selection,
-            t.accent,
-            t.danger,
-        );
-        let a = &self.hosts[ix];
-        let host = a.item.clone();
-        let origin = a.origin.clone();
-        let alias: SharedString = host.alias.clone().into();
-        let subtitle: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
-        let (badge, badge_color) = self.origin_badge(a, cx);
-        let alt = ix % 2 == 1;
-        let armed = delete_click_executes(
-            self.armed_delete.as_ref(),
-            &(host.alias.clone(), origin.clone()),
-        );
-
-        // Small text-button factory for the row's action strip.
-        let action = |id: (&'static str, usize), label: SharedString, color: u32| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
-
-        // ⤒ promote: workspace-origin rows only.
-        let promote = can_promote(&origin).then(|| {
-            let alias = host.alias.clone();
-            let origin = origin.clone();
-            action(("promote", ix), "⤒".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.promote_row(&alias, &origin, cx);
-                },
-            ))
-        });
-
-        // ⤓ demote: global-origin rows while a workspace scope is active.
-        let demote = can_demote(&origin, &self.scope).then(|| {
-            let alias = host.alias.clone();
-            action(("demote", ix), "⤓".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.demote_row(&alias, cx);
-                },
-            ))
-        });
-
-        // connect: opens a new, independent SshSession (terminal + file panel) over
-        // this row's host and switches to it — ssh-v3 makes every session independent.
-        let connect = {
-            let host = host.clone();
-            let source = Some((host.alias.clone(), origin.clone()));
-            action(("connect", ix), "connect".into(), accent).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
-                    this.connect_host(host.clone(), source.clone(), window, cx);
-                },
-            ))
-        };
-
-        // ✎ edit: opens the form prefilled with this row's record.
-        let edit = {
-            let host = host.clone();
-            let origin = origin.clone();
-            action(("edit", ix), "✎".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
-                    this.open_edit_form(host.clone(), origin.clone(), window, cx);
-                },
-            ))
-        };
-
-        // ✕ delete: two-click confirm — the first click arms this row, the second
-        // deletes from the row's origin layer (and its secret from the keyring).
-        let delete = {
-            let alias = host.alias.clone();
-            let origin = origin.clone();
-            let secret_ref = host.secret_ref.clone();
-            let (label, color) = if armed {
-                ("✕ confirm?", danger)
-            } else {
-                ("✕", muted)
-            };
-            action(("delete", ix), label.into(), color).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    let key = (alias.clone(), origin.clone());
-                    if delete_click_executes(this.armed_delete.as_ref(), &key) {
-                        this.delete_row(&alias, &origin, secret_ref.as_deref(), cx);
-                    } else {
-                        this.armed_delete = Some(key);
-                        cx.notify();
-                    }
-                },
-            ))
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .w_full()
-            .px_4()
-            .py_2()
-            .bg(rgb(if alt { surface } else { bg }))
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(fg))
-                            .child(alias),
-                    )
-                    .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .children(promote)
-                            .children(demote)
-                            .child(connect)
-                            .child(edit)
-                            .child(delete),
-                    ),
-            )
-            .child(
-                div()
-                    .font_family(MONO)
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(subtitle),
-            )
-    }
-
     fn placeholder(&self, tab: Tab, cx: &Context<Self>) -> impl IntoElement {
         let muted = theme::active(cx).muted;
         div()
@@ -1890,6 +1666,11 @@ impl AppState {
 
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // SID_PERF=1: log any root render over 4ms (a 240Hz frame) to stderr, tagged
+        // with the active tab — the cheap, always-available answer to "which screen
+        // stutters". Element *build* time only; gpui's layout/paint happens after.
+        let perf_start = std::env::var_os("SID_PERF").map(|_| std::time::Instant::now());
+
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
             // `db_tab` needs `window` (W5) to lazily build the SQL editor/results table
@@ -1972,7 +1753,7 @@ impl Render for AppState {
 
         let t = theme::active(cx);
         let (bg, fg) = (t.bg, t.fg);
-        div()
+        let root = div()
             .flex()
             .flex_col()
             .size_full()
@@ -1980,14 +1761,25 @@ impl Render for AppState {
             .text_color(rgb(fg))
             .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(Self::handle_root_key_down))
-            .child(self.titlebar(cx))
             .child(self.tab_strip(cx))
             .child(div().flex().flex_col().flex_1().child(content))
             .children(overlay)
             .children(db_overlay)
             .children(password_prompt_overlay)
             .children(palette_overlay)
-            .children(cheat_sheet_overlay)
+            .children(cheat_sheet_overlay);
+
+        if let Some(start) = perf_start {
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() >= 4 {
+                eprintln!(
+                    "sid-perf: render(build) {:?} took {}ms",
+                    self.active_tab,
+                    elapsed.as_millis()
+                );
+            }
+        }
+        root
     }
 }
 
