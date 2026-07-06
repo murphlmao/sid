@@ -24,10 +24,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent, Keystroke, Pixels,
-    Render, ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred,
-    div, font, point, prelude::*, px, rgb, rgba, uniform_list,
+    App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent,
+    Keystroke, Pixels, Render, ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored,
+    canvas, deferred, div, fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -140,8 +140,85 @@ struct ShapedGridCache {
     fg: Hsla,
     bg: Hsla,
     rows: Vec<ShapedLine>,
+    /// Per row: the block-element cells painted procedurally instead of as font
+    /// glyphs — see [`block_coverage`] (terminal-fidelity F4).
+    quads: Vec<Vec<BlockQuad>>,
     cell_width: Pixels,
     line_height: Pixels,
+}
+
+/// One block-element cell to paint as cell-snapped rectangles: the terminal column,
+/// the covered fractions of the cell, and the fill (fg, with alpha < 1 for the shade
+/// characters). Produced by `shape_row` when a cell's glyph is in U+2580..=U+259F.
+#[derive(Clone, Debug)]
+struct BlockQuad {
+    col: usize,
+    rects: &'static [CellRect],
+    color: Hsla,
+}
+
+/// `(x0, y0, x1, y1)` fractions of one terminal cell, y down.
+type CellRect = (f32, f32, f32, f32);
+
+/// The cell-fraction coverage of a Unicode block element (U+2580..=U+259F), plus the
+/// fill alpha (1.0 except the ░▒▓ shades). `(x0, y0, x1, y1)` in cell space, y down.
+///
+/// The kitty-vs-sid A/B showed why these can't be font glyphs: glyph ink rasterized at
+/// fractional advances never quite covers the cell, so solid `█▀▄▌▐` art shows hairline
+/// seams of background between columns (kitty paints these procedurally for exactly
+/// this reason; the A/B's bg-painted rectangle was seam-free, the glyph one wasn't).
+/// Box drawing (U+2500..=U+257F) deliberately stays as glyphs — the same A/B showed
+/// CaskaydiaCove's box glyphs join cleanly.
+///
+/// Shades approximate kitty's dither with an alpha wash over the cell background —
+/// visually equivalent at cell scale.
+fn block_coverage(ch: char) -> Option<(&'static [CellRect], f32)> {
+    const FULL: &[CellRect] = &[(0.0, 0.0, 1.0, 1.0)];
+    let rects: &'static [CellRect] = match ch {
+        '\u{2580}' => &[(0.0, 0.0, 1.0, 0.5)],   // ▀ upper half
+        '\u{2581}' => &[(0.0, 0.875, 1.0, 1.0)], // ▁ lower 1/8
+        '\u{2582}' => &[(0.0, 0.75, 1.0, 1.0)],  // ▂ lower 1/4
+        '\u{2583}' => &[(0.0, 0.625, 1.0, 1.0)], // ▃ lower 3/8
+        '\u{2584}' => &[(0.0, 0.5, 1.0, 1.0)],   // ▄ lower half
+        '\u{2585}' => &[(0.0, 0.375, 1.0, 1.0)], // ▅ lower 5/8
+        '\u{2586}' => &[(0.0, 0.25, 1.0, 1.0)],  // ▆ lower 3/4
+        '\u{2587}' => &[(0.0, 0.125, 1.0, 1.0)], // ▇ lower 7/8
+        '\u{2588}' => FULL,                      // █ full
+        '\u{2589}' => &[(0.0, 0.0, 0.875, 1.0)], // ▉ left 7/8
+        '\u{258A}' => &[(0.0, 0.0, 0.75, 1.0)],  // ▊ left 3/4
+        '\u{258B}' => &[(0.0, 0.0, 0.625, 1.0)], // ▋ left 5/8
+        '\u{258C}' => &[(0.0, 0.0, 0.5, 1.0)],   // ▌ left half
+        '\u{258D}' => &[(0.0, 0.0, 0.375, 1.0)], // ▍ left 3/8
+        '\u{258E}' => &[(0.0, 0.0, 0.25, 1.0)],  // ▎ left 1/4
+        '\u{258F}' => &[(0.0, 0.0, 0.125, 1.0)], // ▏ left 1/8
+        '\u{2590}' => &[(0.5, 0.0, 1.0, 1.0)],   // ▐ right half
+        '\u{2591}' => return Some((FULL, 0.25)), // ░ light shade
+        '\u{2592}' => return Some((FULL, 0.5)),  // ▒ medium shade
+        '\u{2593}' => return Some((FULL, 0.75)), // ▓ dark shade
+        '\u{2594}' => &[(0.0, 0.0, 1.0, 0.125)], // ▔ upper 1/8
+        '\u{2595}' => &[(0.875, 0.0, 1.0, 1.0)], // ▕ right 1/8
+        '\u{2596}' => &[(0.0, 0.5, 0.5, 1.0)],   // ▖ lower-left
+        '\u{2597}' => &[(0.5, 0.5, 1.0, 1.0)],   // ▗ lower-right
+        '\u{2598}' => &[(0.0, 0.0, 0.5, 0.5)],   // ▘ upper-left
+        '\u{2599}' => &[(0.0, 0.0, 0.5, 1.0), (0.5, 0.5, 1.0, 1.0)], // ▙ all but UR
+        '\u{259A}' => &[(0.0, 0.0, 0.5, 0.5), (0.5, 0.5, 1.0, 1.0)], // ▚ UL + LR
+        '\u{259B}' => &[(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)], // ▛ all but LR
+        '\u{259C}' => &[(0.0, 0.0, 1.0, 0.5), (0.5, 0.5, 1.0, 1.0)], // ▜ all but LL
+        '\u{259D}' => &[(0.5, 0.0, 1.0, 0.5)],   // ▝ upper-right
+        '\u{259E}' => &[(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0)], // ▞ UR + LL
+        '\u{259F}' => &[(0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 1.0)], // ▟ all but UL
+        _ => return None,
+    };
+    Some((rects, 1.0))
+}
+
+/// One edge of a cell-snapped quad: `base + unit * (cell + frac)`. Factored out so the
+/// seam-free property is a *tested invariant*, not a hope: for `frac == 1.0` on cell
+/// `k` and `frac == 0.0` on cell `k + 1` this is the SAME float expression
+/// (`k as f32 + 1.0` is exact for any realistic grid size), so adjacent block cells
+/// share bit-identical edges and the rasterizer can't leave a gap.
+fn quad_edge(base: Pixels, unit: Pixels, cell: usize, frac: f32) -> Pixels {
+    base + unit * (cell as f32 + frac)
 }
 
 pub struct SshSession {
@@ -1291,7 +1368,7 @@ impl SshSession {
             // `paint_background` already fills whatever height it's given, so
             // backgrounds were never the problem — the glyph ink box was
             // (terminal-fidelity F1).
-            let rows = cells
+            let (rows, quads): (Vec<ShapedLine>, Vec<Vec<BlockQuad>>) = cells
                 .iter()
                 .enumerate()
                 .map(|(row_ix, row)| {
@@ -1307,19 +1384,21 @@ impl SshSession {
                         &ansi,
                     )
                 })
-                .collect();
+                .unzip();
             self.shaped_cache = Some(ShapedGridCache {
                 generation: self.grid_generation,
                 cursor,
                 fg: default_fg,
                 bg: default_bg,
                 rows,
+                quads,
                 cell_width: em.width,
                 line_height: em.ascent + em.descent,
             });
         }
         let cache = self.shaped_cache.as_ref().expect("just populated above");
         let shaped_rows: Vec<ShapedLine> = cache.rows.clone();
+        let row_quads: Vec<Vec<BlockQuad>> = cache.quads.clone();
         let cell_width = cache.cell_width;
         let line_height = cache.line_height;
 
@@ -1353,15 +1432,36 @@ impl SshSession {
                                 });
                             });
                         }
-                        shaped_rows
+                        (shaped_rows, row_quads)
                     },
-                    move |bounds, shaped_rows: Vec<ShapedLine>, window, cx| {
-                        let mut y = bounds.top();
-                        for line in &shaped_rows {
-                            let origin = point(bounds.left(), y);
+                    move |bounds,
+                          (shaped_rows, row_quads): (Vec<ShapedLine>, Vec<Vec<BlockQuad>>),
+                          window,
+                          cx| {
+                        for (row_ix, line) in shaped_rows.iter().enumerate() {
+                            // Row tops computed multiplicatively (not accumulated) so
+                            // every row/quad edge is the same float expression — see
+                            // `quad_edge`'s doc comment for why that makes seams
+                            // impossible rather than merely unlikely.
+                            let row_top = quad_edge(bounds.top(), line_height, row_ix, 0.0);
+                            let origin = point(bounds.left(), row_top);
                             let _ = line.paint_background(origin, line_height, window, cx);
+                            for q in row_quads.get(row_ix).into_iter().flatten() {
+                                for &(x0, y0, x1, y1) in q.rects {
+                                    let quad_bounds = Bounds::from_corners(
+                                        point(
+                                            quad_edge(bounds.left(), cell_width, q.col, x0),
+                                            quad_edge(bounds.top(), line_height, row_ix, y0),
+                                        ),
+                                        point(
+                                            quad_edge(bounds.left(), cell_width, q.col, x1),
+                                            quad_edge(bounds.top(), line_height, row_ix, y1),
+                                        ),
+                                    );
+                                    window.paint_quad(fill(quad_bounds, q.color));
+                                }
+                            }
                             let _ = line.paint(origin, line_height, window, cx);
-                            y += line_height;
                         }
                     },
                 )
@@ -1563,14 +1663,15 @@ fn shape_row(
     default_fg: Hsla,
     default_bg: Hsla,
     ansi: &[u32; 16],
-) -> ShapedLine {
+) -> (ShapedLine, Vec<BlockQuad>) {
     let mut text = String::new();
     let mut runs: Vec<TextRun> = Vec::new();
+    let mut quads: Vec<BlockQuad> = Vec::new();
 
     for (col, cell) in row.iter().enumerate() {
         // A blank cell still occupies a column — render it as a space, like `lines()` does,
         // so run byte-offsets stay aligned with terminal columns.
-        let glyph: &str = if cell.text.is_empty() {
+        let mut glyph: &str = if cell.text.is_empty() {
             " "
         } else {
             &cell.text
@@ -1585,6 +1686,20 @@ fn shape_row(
             // Block cursor: swap fg/bg on top of whatever the cell's own styling already is,
             // rather than painting a separate overlay quad.
             std::mem::swap(&mut fg, &mut bg);
+        }
+
+        // Block elements (U+2580..=U+259F) never go through the font: they become
+        // cell-snapped quads painted by the grid's canvas (see `block_coverage` for the
+        // A/B evidence). The cell still contributes a SPACE to the shaped line so run
+        // byte-offsets stay column-aligned and `paint_background` still fills its bg.
+        let mut chars = glyph.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next())
+            && let Some((rects, alpha)) = block_coverage(ch)
+        {
+            let mut color = fg;
+            color.a *= alpha;
+            quads.push(BlockQuad { col, rects, color });
+            glyph = " ";
         }
 
         let mut cell_font = base_font.clone();
@@ -1623,7 +1738,10 @@ fn shape_row(
         }
     }
 
-    text_system.shape_line(text.into(), font_size, &runs, None)
+    (
+        text_system.shape_line(text.into(), font_size, &runs, None),
+        quads,
+    )
 }
 
 /// `TermColor::Default` takes the pane's own theme color; `Indexed(0..=15)` goes through
@@ -1681,6 +1799,69 @@ fn xterm256_to_rgb(idx: u8) -> (u8, u8, u8) {
         232..=255 => {
             let level = 8 + (idx - 232) * 10;
             (level, level, level)
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_quad_tests {
+    use super::*;
+
+    #[test]
+    fn every_block_element_has_coverage_and_nothing_else_does() {
+        for cp in 0x2580..=0x259F_u32 {
+            let ch = char::from_u32(cp).unwrap();
+            assert!(block_coverage(ch).is_some(), "U+{cp:04X} must be covered");
+        }
+        // Box drawing deliberately stays a font glyph (A/B: Caskaydia joins cleanly).
+        assert!(block_coverage('─').is_none());
+        assert!(block_coverage('│').is_none());
+        assert!(block_coverage('┼').is_none());
+        assert!(block_coverage('a').is_none());
+        assert!(block_coverage('█').is_some());
+    }
+
+    #[test]
+    fn coverage_areas_match_the_glyph_semantics() {
+        let area = |ch: char| -> f32 {
+            let (rects, _) = block_coverage(ch).unwrap();
+            rects
+                .iter()
+                .map(|(x0, y0, x1, y1)| (x1 - x0) * (y1 - y0))
+                .sum()
+        };
+        assert_eq!(area('\u{2588}'), 1.0, "full block");
+        assert_eq!(area('\u{2580}'), 0.5, "upper half");
+        assert_eq!(area('\u{2584}'), 0.5, "lower half");
+        assert_eq!(area('\u{258C}'), 0.5, "left half");
+        assert_eq!(area('\u{2590}'), 0.5, "right half");
+        assert_eq!(area('\u{2581}'), 0.125, "lower eighth");
+        assert_eq!(area('\u{2596}'), 0.25, "one quadrant");
+        assert_eq!(area('\u{2599}'), 0.75, "three quadrants");
+        assert_eq!(area('\u{259A}'), 0.5, "two diagonal quadrants");
+    }
+
+    #[test]
+    fn shades_are_full_cover_with_partial_alpha() {
+        for (ch, want) in [('\u{2591}', 0.25), ('\u{2592}', 0.5), ('\u{2593}', 0.75)] {
+            let (rects, alpha) = block_coverage(ch).unwrap();
+            assert_eq!(rects, &[(0.0, 0.0, 1.0, 1.0)]);
+            assert_eq!(alpha, want);
+        }
+    }
+
+    #[test]
+    fn quad_edges_of_adjacent_cells_are_bit_identical() {
+        // The seam-free invariant: cell k's right edge and cell k+1's left edge must be
+        // the SAME float, not merely close — `k as f32 + 1.0` is exact well past any
+        // realistic column count, so `quad_edge` collapses both to one expression.
+        let (base, unit) = (px(3.7), px(8.437_5));
+        for k in [0usize, 1, 7, 79, 210, 511] {
+            assert_eq!(
+                quad_edge(base, unit, k, 1.0),
+                quad_edge(base, unit, k + 1, 0.0),
+                "cell {k}"
+            );
         }
     }
 }
