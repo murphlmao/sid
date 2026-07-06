@@ -36,8 +36,15 @@ actions!(
         InlineEditCommit,
         /// Cancel the in-place rename/folder edit (bound to `escape`).
         InlineEditCancel,
+        /// Fire the quick-connect box (bound to `enter` in its key context) — found by
+        /// the capture-harness shakedown: Enter did nothing, only the Go button worked.
+        QuickConnectGo,
     ]
 );
+
+/// The key context [`QuickConnectGo`] is scoped to — set on the quick-connect box's
+/// wrapper, an ancestor of the focused `TextInput`, same trick as the inline edits.
+pub(crate) const QUICK_CONNECT_CONTEXT: &str = "SshQuickConnect";
 
 /// The key context [`InlineEditCommit`]/[`InlineEditCancel`] are scoped to — set on the
 /// row wrapper around whichever `TextInput` is mid-edit, exactly like `HostForm`'s own
@@ -500,6 +507,10 @@ impl AppState {
             );
 
         let mut col = div()
+            .key_context(QUICK_CONNECT_CONTEXT)
+            .on_action(cx.listener(|this, _: &QuickConnectGo, window, cx| {
+                this.quick_connect(window, cx);
+            }))
             .flex()
             .flex_col()
             .gap_1()

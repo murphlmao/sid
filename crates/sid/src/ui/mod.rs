@@ -117,6 +117,12 @@ pub fn init(cx: &mut App) {
             ssh_home::InlineEditCommit,
             Some(ssh_home::INLINE_EDIT_CONTEXT),
         ),
+        // Quick-connect box: Enter fires the connect, same as clicking Go.
+        KeyBinding::new(
+            "enter",
+            ssh_home::QuickConnectGo,
+            Some(ssh_home::QUICK_CONNECT_CONTEXT),
+        ),
         // Config-file editor modal (round-e §D), scoped the same way — the multi-line
         // gpui-component `Input` inside it propagates an unhandled Escape (see that
         // crate's `InputState::escape`) up to this ancestor context.
