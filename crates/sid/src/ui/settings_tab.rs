@@ -213,7 +213,10 @@ impl AppState {
                 .child(format!("error: {e}"))
         });
 
-        let theme_section = self.theme_section(&chrome, &settings.theme, cx);
+        // The active marker follows the LIVE theme (not the persisted name): identical
+        // in normal use (set_theme installs + persists together), and honest under the
+        // SID_THEME per-run override, where the persisted value deliberately differs.
+        let theme_section = self.theme_section(&chrome, chrome.name, cx);
         let behavior_section = self.behavior_section(&chrome, &settings, cx);
 
         div()

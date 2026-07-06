@@ -27,7 +27,8 @@
 #   scripts/sid-cap.sh --tree                                # dump the window tree (debug)
 #
 # Flags:
-#   --tab  ssh|database|network|workspaces|system   (SID_START_TAB; default ssh)
+#   --tab  ssh|database|network|workspaces|system|settings   (SID_START_TAB; default ssh)
+#   --theme NAME       SID_THEME override (cosmos|void|dusk|cosmos-light)
 #   --out  PATH        where the PNG goes (required unless --tree)
 #   --size WxH         virtual output size (default 1920x1080)
 #   --click X,Y        move pointer + left-click (repeatable, in order)
@@ -45,6 +46,7 @@ set -uo pipefail
 die() { echo "sid-cap: $*" >&2; exit 1; }
 
 TAB="ssh"
+THEME=""
 OUT=""
 SIZE="1920x1080"
 WAIT=3
@@ -57,6 +59,7 @@ ACTIONS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tab)   TAB="$2"; shift 2 ;;
+        --theme) THEME="$2"; shift 2 ;;
         --out)   OUT="$2"; shift 2 ;;
         --size)  SIZE="$2"; shift 2 ;;
         --click) ACTIONS+=("click:$2"); shift 2 ;;
@@ -128,6 +131,7 @@ NESTED_DISPLAY="$(cat "$CAP_DIR/display")"
 
 # ---- 2. sid, hermetic by default ---------------------------------------------------
 declare -a APP_ENV=("WAYLAND_DISPLAY=$NESTED_DISPLAY" "SID_START_TAB=$TAB")
+[[ -n "$THEME" ]] && APP_ENV+=("SID_THEME=$THEME")
 if [[ "$REAL" -ne 1 ]]; then
     mkdir -p "$CAP_DIR/xdg/data" "$CAP_DIR/xdg/state" "$CAP_DIR/xdg/config"
     APP_ENV+=("XDG_DATA_HOME=$CAP_DIR/xdg/data" "XDG_STATE_HOME=$CAP_DIR/xdg/state" "XDG_CONFIG_HOME=$CAP_DIR/xdg/config")
