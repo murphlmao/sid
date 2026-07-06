@@ -489,7 +489,17 @@ impl AppState {
                     .text_color(rgb(theme.muted))
                     .child(sub),
             )
-            .children(table.map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true))))
+            // Both flexible children need `min_h(0)`: without it, the config-file
+            // list's natural (unshrinkable) height starves the table's basis-0
+            // `flex_1` down to just its header row — the round-E capture-harness
+            // shakedown caught exactly that. Each half scrolls internally instead.
+            .children(table.map(|t| {
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .child(Table::new(&t).stripe(true))
+            }))
             .children(kill_error.map(|e| {
                 div()
                     .py_1()
@@ -497,7 +507,14 @@ impl AppState {
                     .text_color(rgb(theme.danger))
                     .child(format!("✗ {e}"))
             }))
-            .child(config_files)
+            .child(
+                div()
+                    .id("systems-config-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .child(config_files),
+            )
             .children(editor_overlay)
             .into_any_element()
     }
