@@ -22,21 +22,14 @@ use sid_core::git::{
 /// let _factory = Git2Provider::factory();
 /// ```
 pub struct Git2Provider {
-    repo: Option<git2::Repository>,
+    /// The bound repo behind a mutex: `git2::Repository` is `Send` but not `Sync`
+    /// (libgit2 handles are not internally synchronized), while the trait requires
+    /// `Sync`. Locking per method makes concurrent `&self` calls serialize instead of
+    /// race — `Sync` then holds by construction, with no `unsafe` and no reliance on
+    /// callers honoring a single-thread convention. An uncontended lock costs
+    /// nanoseconds against git I/O that costs milliseconds.
+    repo: Option<std::sync::Mutex<git2::Repository>>,
 }
-
-// SAFETY: `git2::Repository` already asserts `Send` itself ("a Repository can
-// be sent among threads, or even shared among threads in a mutex" — see
-// git2::Repository's own `unsafe impl Send`). It does not assert `Sync`
-// because the underlying libgit2 handle is not internally synchronized.
-// `sid_core::git::GitProvider` requires `Send + Sync` so `Box<dyn
-// GitProvider>` can move freely between the render thread and the shared
-// background runtime; the trait's doc comment establishes the contract that
-// callers never touch a handle from more than one thread at a time
-// ("callers run them on the shared background runtime, never the render
-// thread"). Asserting `Sync` here is sound under that serialized-access
-// contract — mirrors the POC's `Git2Provider` (`sid-poc/crates/sid-git`).
-unsafe impl Sync for Git2Provider {}
 
 impl Git2Provider {
     /// A stateless factory handle with no bound repo — call
@@ -45,18 +38,22 @@ impl Git2Provider {
         Box::new(Git2Provider { repo: None })
     }
 
-    /// The bound repo, or an error if this handle is an unopened factory.
-    fn repo(&self) -> Result<&git2::Repository, GitError> {
+    /// The bound repo (locked), or an error if this handle is an unopened factory.
+    fn repo(&self) -> Result<std::sync::MutexGuard<'_, git2::Repository>, GitError> {
         self.repo
             .as_ref()
-            .ok_or_else(|| GitError::Other("no repo bound; call open() first".into()))
+            .ok_or_else(|| GitError::Other("no repo bound; call open() first".into()))?
+            .lock()
+            .map_err(|_| GitError::Other("git handle poisoned by a panicked thread".into()))
     }
 }
 
 impl GitProvider for Git2Provider {
     fn open(&self, path: &Path) -> Result<Box<dyn GitProvider>, GitError> {
         let repo = git2::Repository::open(path).map_err(|e| map_open_error(e, path))?;
-        Ok(Box::new(Git2Provider { repo: Some(repo) }))
+        Ok(Box::new(Git2Provider {
+            repo: Some(std::sync::Mutex::new(repo)),
+        }))
     }
 
     fn list_branches(&self) -> Result<Vec<Branch>, GitError> {
@@ -101,7 +98,7 @@ impl GitProvider for Git2Provider {
 
     fn status(&self) -> Result<GitStatus, GitError> {
         let repo = self.repo()?;
-        let entries = collect_status_entries(repo)?;
+        let entries = collect_status_entries(&repo)?;
         Ok(GitStatus {
             is_clean: entries.is_empty(),
             entries,
@@ -158,7 +155,7 @@ impl GitProvider for Git2Provider {
             Err(e) => return Err(map_git2_error(e)),
         };
 
-        let entries = collect_status_entries(repo)?;
+        let entries = collect_status_entries(&repo)?;
         let staged = entries.iter().filter(|e| e.staged).count();
         let unstaged = entries
             .iter()
@@ -170,7 +167,7 @@ impl GitProvider for Git2Provider {
             .count();
 
         let (ahead, behind) = match (&branch, detached) {
-            (Some(name), false) => ahead_behind(repo, name)?,
+            (Some(name), false) => ahead_behind(&repo, name)?,
             _ => (None, None),
         };
 
@@ -191,7 +188,7 @@ impl GitProvider for Git2Provider {
         // Dirty-tree guard: only *tracked* changes (staged or unstaged) block
         // a checkout. Untracked files are not at risk of being clobbered by
         // a safe checkout, so they must not refuse the switch.
-        let entries = collect_status_entries(repo)?;
+        let entries = collect_status_entries(&repo)?;
         let tracked_changes = entries
             .iter()
             .filter(|e| e.kind != StatusKind::Untracked)
