@@ -1,6 +1,6 @@
 # Workspaces v1 — scope (Fable, from the POC + the rebuild's spine)
 
-Status: SCOPING — not yet approved for build.
+Status: BUILDING — approved 2026-07-06 ("surprise me. go."); see the BUILD ADDENDUM for the calls.
 
 ## What the POC actually built (evidence)
 
