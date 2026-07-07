@@ -32,6 +32,7 @@
 #   --out  PATH        where the PNG goes (required unless --tree)
 #   --size WxH         virtual output size (default 1920x1080)
 #   --click X,Y        move pointer + left-click (repeatable, in order)
+#   --rclick X,Y       move pointer + right-click — opens context menus (repeatable)
 #   --key  KEYS        key chord, e.g. "Return", "ctrl+tab", "ctrl+shift+t" (repeatable)
 #   --type TEXT        wtype literal text (repeatable, needs wtype)
 #   --sleep SECS       pause between actions (repeatable) — e.g. wait out an SSH connect
@@ -59,7 +60,7 @@ REAL=0
 KEEP=0
 TREE=0
 XDG_SRC=""
-# Ordered action list: each entry is "click:X,Y" | "key:KEYS" | "type:TEXT".
+# Ordered action list: each entry is "click:X,Y" | "rclick:X,Y" | "key:KEYS" | "type:TEXT".
 ACTIONS=()
 # Extra "KEY=VALUE" env vars forwarded into the sid process (see --env above).
 EXTRA_ENV=()
@@ -71,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --out)   OUT="$2"; shift 2 ;;
         --size)  SIZE="$2"; shift 2 ;;
         --click) ACTIONS+=("click:$2"); shift 2 ;;
+        --rclick) ACTIONS+=("rclick:$2"); shift 2 ;;
         --key)   ACTIONS+=("key:$2"); shift 2 ;;
         --type)  ACTIONS+=("type:$2"); shift 2 ;;
         --sleep) ACTIONS+=("sleep:$2"); shift 2 ;;
@@ -251,6 +253,11 @@ for action in "${ACTIONS[@]+"${ACTIONS[@]}"}"; do
             ensure_vptr
             x="${arg%,*}"; y="${arg#*,}"
             echo "click $x $y ${SIZE/x/ }" >&4 || { cat "$CAP_DIR/vptr.log" >&2; die "pointer driver died (log above)"; }
+            ;;
+        rclick)
+            ensure_vptr
+            x="${arg%,*}"; y="${arg#*,}"
+            echo "rclick $x $y ${SIZE/x/ }" >&4 || { cat "$CAP_DIR/vptr.log" >&2; die "pointer driver died (log above)"; }
             ;;
         key)
             ensure_kbd_holder

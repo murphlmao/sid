@@ -40,6 +40,9 @@ sid-containers.workspace = true
 sid-core.workspace = true
 sid-ssh.workspace = true
 sid-term.workspace = true
+# Workspaces tab (track U): the one crate allowed to name `sid-git`'s concrete
+# `Git2Provider` — see `crates/sid/src/git_registry.rs`.
+sid-git.workspace = true
 # Grapheme/word segmentation for the TextInput element (cursor movement, masking).
 # Already in the tree transitively via gpui; pinned here as a direct dep.
 unicode-segmentation = "1"
