@@ -70,6 +70,48 @@ impl Store {
         self.global.upsert_workspace(meta)
     }
 
+    /// Validate `path` and register a workspace rooted there: the path must exist and
+    /// be a directory; it is canonicalized (so the derived [`WorkspaceId`] is stable
+    /// across `~`-relative vs absolute spellings), and the display name defaults to
+    /// the directory's file name. Returns the registered meta.
+    ///
+    /// Deliberately does NOT require the root to be a git repository — a workspace is
+    /// first a scope layer; the Workspaces tab shows "not a git repo" for the git
+    /// panel instead. Never touches `.sid/config.toml`.
+    pub fn register_workspace_at(&self, path: &Path) -> Result<WorkspaceMeta> {
+        let root = path
+            .canonicalize()
+            .map_err(|e| StoreError::Storage(format!("workspace root {path:?}: {e}")))?;
+        if !root.is_dir() {
+            return Err(StoreError::Storage(format!(
+                "workspace root {root:?} is not a directory"
+            )));
+        }
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let meta = WorkspaceMeta {
+            id: WorkspaceId::from_root(&root),
+            root,
+            name,
+        };
+        self.global.upsert_workspace(&meta)?;
+        Ok(meta)
+    }
+
+    /// Forget a workspace registration, returning whether it was registered. The
+    /// committed `.sid/config.toml` inside the repo is NEVER touched — it belongs to
+    /// the repository (attributive invariant); unregistering only drops sid's pointer.
+    pub fn unregister_workspace(&self, id: &WorkspaceId) -> Result<bool> {
+        self.global.remove_workspace(id.as_str())
+    }
+
+    /// Every registered workspace, for the scope switcher / Workspaces tab.
+    pub fn list_workspaces(&self) -> Result<Vec<WorkspaceMeta>> {
+        self.global.list_workspaces()
+    }
+
     /// Resolve a workspace id to its file store via the registry.
     fn workspace_store(&self, id: &WorkspaceId) -> Result<WorkspaceStore> {
         let meta = self

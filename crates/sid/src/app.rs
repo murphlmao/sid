@@ -319,6 +319,29 @@ impl AppState {
         state
     }
 
+    /// Rebuild the scope switcher from the store at RUNTIME — the seam the Workspaces
+    /// tab uses after registering/unregistering a workspace (this closes the
+    /// long-standing "reload_scopes was inlined into apply_seed_lists, startup-only"
+    /// caveat from HANDOFF). If the focused scope's workspace disappeared, falls back
+    /// to Global and refreshes every scoped view.
+    // dead_code: consumed by the Workspaces tab (in-flight track U) — remove with it.
+    #[allow(dead_code)]
+    pub(crate) fn reload_scopes_runtime(&mut self, cx: &mut Context<Self>) {
+        match self.store.list_workspaces() {
+            Ok(list) => self.scopes = build_scope_choices(list),
+            Err(e) => {
+                self.error = Some(e.to_string());
+                cx.notify();
+                return;
+            }
+        }
+        let focused_still_exists = self.scopes.iter().any(|c| c.scope == self.scope);
+        if !focused_still_exists {
+            self.set_scope(Scope::Global);
+        }
+        cx.notify();
+    }
+
     /// Populate the initial scope switcher + host list from `seed_lists` — the reads
     /// `open_store`'s `seed_if_empty` already performed — instead of re-issuing
     /// `list_workspaces`/`read_hosts` here (perf audit finding #7). Builds the scope
@@ -337,22 +360,13 @@ impl AppState {
     fn apply_seed_lists(&mut self, seed_lists: SeedLists) {
         self.armed_delete = None;
 
-        let mut scopes = vec![ScopeChoice {
-            label: "Global".into(),
-            scope: Scope::Global,
-        }];
         match seed_lists.workspaces {
-            Ok(list) => {
-                for w in list {
-                    scopes.push(ScopeChoice {
-                        label: w.name.clone().into(),
-                        scope: Scope::Workspace(w.id),
-                    });
-                }
+            Ok(list) => self.scopes = build_scope_choices(list),
+            Err(e) => {
+                self.scopes = build_scope_choices(Vec::new());
+                self.error = Some(e);
             }
-            Err(e) => self.error = Some(e),
         }
-        self.scopes = scopes;
 
         match seed_lists.hosts {
             Ok(hosts) => {
@@ -2036,6 +2050,23 @@ pub(crate) fn next_active_after_close(
 /// tabs). Same algorithm as `ui::text_input::next_focus_index` (the Tab/Shift+Tab form
 /// field cycler) — kept as its own tiny pure function here rather than reaching across
 /// the `ui` module's privacy boundary for a two-line formula.
+/// The scope switcher's choices for a workspace list: Global first, then one chip per
+/// registered workspace. Pure — shared by startup (`apply_seed_lists`) and the
+/// Workspaces tab's runtime rebuild (`reload_scopes_runtime`).
+pub(crate) fn build_scope_choices(workspaces: Vec<WorkspaceMeta>) -> Vec<ScopeChoice> {
+    let mut scopes = vec![ScopeChoice {
+        label: "Global".into(),
+        scope: Scope::Global,
+    }];
+    for w in workspaces {
+        scopes.push(ScopeChoice {
+            label: w.name.clone().into(),
+            scope: Scope::Workspace(w.id),
+        });
+    }
+    scopes
+}
+
 pub(crate) fn cycle_index(current: usize, len: usize, backwards: bool) -> usize {
     if len == 0 {
         return 0;
