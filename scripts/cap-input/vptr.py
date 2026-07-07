@@ -11,6 +11,8 @@ Reads commands from stdin, one per line:
     press            left button down
     release          left button up
     click X Y W H    move + press + release (with small frame gaps)
+    rclick X Y W H   move + right-press + right-release — for context menus
+                     (Workspaces tab's row menu; sid-cap.sh's --rclick)
     quit             destroy + exit
 Prints "ok <cmd>" to stdout after each command is flushed.
 """
@@ -27,6 +29,7 @@ from pywayland.protocol.wlr_virtual_pointer_unstable_v1 import (  # noqa: E402
 )
 
 BTN_LEFT = 0x110
+BTN_RIGHT = 0x111
 
 
 def now_ms():
@@ -69,8 +72,8 @@ def do_move(x, y, w, h):
     ptr.frame()
 
 
-def do_button(state):
-    ptr.button(now_ms(), BTN_LEFT, state)
+def do_button(state, button=BTN_LEFT):
+    ptr.button(now_ms(), button, state)
     ptr.frame()
 
 
@@ -95,6 +98,15 @@ for line in sys.stdin:
         display.flush()
         time.sleep(0.05)
         do_button(0)
+    elif cmd == "rclick":
+        x, y, w, h = parts[1:5]
+        do_move(x, y, w, h)
+        display.flush()
+        time.sleep(0.05)
+        do_button(1, BTN_RIGHT)
+        display.flush()
+        time.sleep(0.05)
+        do_button(0, BTN_RIGHT)
     elif cmd == "quit":
         break
     display.flush()

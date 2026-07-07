@@ -32,6 +32,7 @@ use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::theme;
+use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
@@ -170,6 +171,11 @@ pub struct AppState {
     /// same "no store/scope/secrets" shape as `network`. Lives in its own module
     /// (`ui::systems_tab`).
     pub(crate) systems: SystemsTabState,
+    /// Workspaces tab state (track U): the registered-workspace list, per-workspace git
+    /// summaries/branches/status/log fetched through `sid_core::git::GitProvider`, and
+    /// the Umbrella fleet table. Same "sibling cache, second `impl AppState` block in
+    /// its own module" shape as `db`/`network`/`systems`. Lives in `ui::workspaces_tab`.
+    pub(crate) workspaces: WorkspacesTabState,
     /// Settings tab state (round-E §C): a cached snapshot of the persisted
     /// `Settings` (unlike `network`/`systems`, this tab does read/write the store
     /// directly — the cache exists purely so `render` never re-reads it, per this
@@ -307,6 +313,7 @@ impl AppState {
             db,
             network,
             systems,
+            workspaces: WorkspacesTabState::new(cx),
             settings,
             password_prompt: None,
             _password_prompt_subscription: None,
@@ -320,12 +327,10 @@ impl AppState {
     }
 
     /// Rebuild the scope switcher from the store at RUNTIME — the seam the Workspaces
-    /// tab uses after registering/unregistering a workspace (this closes the
+    /// tab uses after registering/renaming/unregistering a workspace (this closes the
     /// long-standing "reload_scopes was inlined into apply_seed_lists, startup-only"
     /// caveat from HANDOFF). If the focused scope's workspace disappeared, falls back
     /// to Global and refreshes every scoped view.
-    // dead_code: consumed by the Workspaces tab (in-flight track U) — remove with it.
-    #[allow(dead_code)]
     pub(crate) fn reload_scopes_runtime(&mut self, cx: &mut Context<Self>) {
         match self.store.list_workspaces() {
             Ok(list) => self.scopes = build_scope_choices(list),
@@ -417,7 +422,10 @@ impl AppState {
         }
     }
 
-    fn set_scope(&mut self, scope: Scope) {
+    /// `pub(crate)` — the Workspaces tab's "Focus scope" row action and its Overview
+    /// sub-tab's jump-to-scope-tab affordance (`ui::workspaces_tab`) switch scope from
+    /// outside `app.rs`, the same way the tab strip's own scope chips do here.
+    pub(crate) fn set_scope(&mut self, scope: Scope) {
         self.scope = scope;
         self.refresh();
         self.refresh_db();
@@ -1666,15 +1674,15 @@ impl AppState {
             .child(div().flex().flex_col().flex_1().child(session))
     }
 
-    fn placeholder(&self, tab: Tab, cx: &Context<Self>) -> impl IntoElement {
-        let muted = theme::active(cx).muted;
-        div()
-            .flex()
-            .flex_1()
-            .items_center()
-            .justify_center()
-            .text_color(rgb(muted))
-            .child(format!("{} — coming next", tab.label()))
+    /// Switch the active primary tab from outside `app.rs` — the Workspaces tab's
+    /// jump-to-scope-tab affordance (Overview's scope-items rows) needs this exact
+    /// three-step sequence, otherwise identical to `dispatch_action`'s `PrimaryTab`/
+    /// `Settings` arms and `tab_strip`'s own click handler.
+    pub(crate) fn switch_to_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        self.active_tab = tab;
+        self.close_palette(cx);
+        self.refocus_stable_target(window, cx);
+        cx.notify();
     }
 }
 
@@ -1694,10 +1702,12 @@ impl Render for AppState {
             Tab::Network => self.network_tab(window, cx),
             // `systems_tab` needs `window` for the same reason (`TableState::new`).
             Tab::System => self.systems_tab(window, cx),
+            // `workspaces_tab` needs `window` for the same reason (the Umbrella
+            // fleet's `TableState::new`).
+            Tab::Workspaces => self.workspaces_tab(window, cx),
             // `settings_tab` needs no lazy widget construction, so it takes `&self`
             // rather than `&mut self` like the tabs above.
             Tab::Settings => self.settings_tab(cx),
-            other => self.placeholder(other, cx).into_any_element(),
         };
 
         // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
