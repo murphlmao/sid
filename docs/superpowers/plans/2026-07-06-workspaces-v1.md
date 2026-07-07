@@ -100,3 +100,32 @@ clean later slice on top of §A's trait.
 (init/commit/branch via git2 in-test); pure helpers unit-tested; UI
 observation-gated via sid-cap (which can now click/type — checkout flows are
 scriptable end-to-end).
+
+---
+
+## BUILD ADDENDUM (Fable's calls — Murphy said "surprise me. go.")
+
+Decisions: (1) mutation ceiling = read + checkout (commit flow is v2);
+(2) **Umbrella fleet dashboard SHIPS IN v1** — this is the surprise: register
+`~/vcs` and the detail pane is a sortable fleet table (repo · branch · dirty ·
+ahead/behind · last-commit age); (3) no separate scan feature — pointing
+`+ add` at a directory of repos IS the umbrella.
+
+Foundation already on main (do not redo):
+- `sid_core::git` — the v1 trait (`open/list_branches/current_branch/status/
+  commit_log/summary/checkout_branch`), typed `GitError` (NotARepo /
+  DirtyWorkingTree / …), `RepoSummary` (the one-call fleet rollup).
+- `crates/sid-git` — skeleton crate (compiles; every method errors "port in
+  progress"); the ONLY crate that may name `git2`.
+- `Store::register_workspace_at(path)` (canonicalize, must-be-dir, name from
+  file_name, idempotent by id), `Store::unregister_workspace` (never touches
+  `.sid/config.toml` — tested), `Store::list_workspaces`.
+- `AppState::reload_scopes_runtime` (+ pure `build_scope_choices`) — scope
+  chips rebuild at runtime; focused-scope removal falls back to Global.
+
+Umbrella detection (track U, pure + unit-tested): a workspace root that is NOT
+itself a git repo but contains ≥1 git repo exactly one level deep (dir entries
+with a `.git`) renders the fleet; a git-repo root renders the single-repo
+sub-tabs; neither renders the scope-only view with a muted "not a git repo"
+note in place of the git panels. Detection = filesystem checks only (cheap,
+no git open); fleet rows then `open`+`summary` each repo on the shared runtime.

@@ -1,0 +1,16 @@
+[package]
+name = "sid-git"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The one place `git2` may be named (CLAUDE.md's adapter rule) — the libgit2
+# binding the POC's sid-git used; the impl here is its direct port.
+git2 = { version = "0.20", default-features = false }
+sid-core = { path = "../sid-core" }
+
+[dev-dependencies]
+tempfile.workspace = true

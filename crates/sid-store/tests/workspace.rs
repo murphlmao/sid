@@ -364,3 +364,61 @@ fn remove_removes_both_duplicate_id_connections() {
     assert!(ws.remove_connection("dup").unwrap());
     assert!(ws.load().unwrap().db.connection.is_empty());
 }
+
+// ---- Workspaces v1 foundation: register_workspace_at / unregister_workspace ----
+
+#[test]
+fn register_workspace_at_canonicalizes_and_derives_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = sid_store::Store::open(&dir.path().join("s.redb")).unwrap();
+    let root = dir.path().join("my-project");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let meta = store.register_workspace_at(&root).unwrap();
+    assert_eq!(meta.name, "my-project");
+    assert!(meta.root.is_absolute());
+    // Registered and listed.
+    let listed = store.list_workspaces().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, meta.id);
+
+    // Re-registering the same path (even via a relative-ish spelling) is an
+    // idempotent upsert, not a duplicate: canonicalization stabilizes the id.
+    let again = store
+        .register_workspace_at(&root.join("..").join("my-project"))
+        .unwrap();
+    assert_eq!(again.id, meta.id);
+    assert_eq!(store.list_workspaces().unwrap().len(), 1);
+}
+
+#[test]
+fn register_workspace_at_rejects_missing_and_non_dir_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = sid_store::Store::open(&dir.path().join("s.redb")).unwrap();
+    assert!(
+        store
+            .register_workspace_at(&dir.path().join("nope"))
+            .is_err()
+    );
+    let file = dir.path().join("a-file");
+    std::fs::write(&file, "x").unwrap();
+    assert!(store.register_workspace_at(&file).is_err());
+}
+
+#[test]
+fn unregister_workspace_forgets_the_pointer_but_never_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = sid_store::Store::open(&dir.path().join("s.redb")).unwrap();
+    let root = dir.path().join("repo");
+    std::fs::create_dir_all(root.join(".sid")).unwrap();
+    let config = root.join(".sid").join("config.toml");
+    std::fs::write(&config, "# committed workspace config\n").unwrap();
+
+    let meta = store.register_workspace_at(&root).unwrap();
+    assert!(store.unregister_workspace(&meta.id).unwrap());
+    assert!(store.list_workspaces().unwrap().is_empty());
+    // Second unregister: already gone.
+    assert!(!store.unregister_workspace(&meta.id).unwrap());
+    // The committed file is untouched — attributive invariant.
+    assert!(config.exists());
+}

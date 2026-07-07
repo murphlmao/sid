@@ -8,6 +8,7 @@ members = [
     "crates/sid-term",
     "crates/sid-ssh",
     "crates/sid-db",
+    "crates/sid-git",
     "crates/sid-sysinfo",
     "crates/sid-svcctl",
     "crates/sid-containers",
@@ -26,6 +27,7 @@ sid-core = { path = "crates/sid-core" }
 sid-term = { path = "crates/sid-term" }
 sid-ssh = { path = "crates/sid-ssh" }
 sid-store = { path = "crates/sid-store" }
+sid-git = { path = "crates/sid-git" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-containers = { path = "crates/sid-containers" }
 
