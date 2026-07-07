@@ -29,14 +29,16 @@ mod tests {
 
     #[test]
     fn factory_reaches_the_real_concrete_type_through_the_trait_seam() {
-        // Smoke test for the wiring itself, not sid-git's behavior (that's someone
-        // else's in-flight branch) — this only proves `crates/sid` resolves to
-        // `Git2Provider` and gets back its current honest "port in progress" error.
-        // `Box<dyn GitProvider>` isn't `Debug`, so `unwrap_err` (which requires the `Ok`
-        // side to be `Debug`) doesn't apply here — match instead.
+        // Smoke test for the wiring itself: `crates/sid` resolves to the real
+        // `Git2Provider`, which maps a non-repo path to the typed `NotARepo` (the
+        // variant the workspace list's "not a git repo" chip keys on).
+        // `Box<dyn GitProvider>` isn't `Debug`, so `unwrap_err` doesn't apply — match.
         match factory().open(std::path::Path::new("/nonexistent")) {
-            Ok(_) => panic!("expected the stubbed provider to error"),
-            Err(e) => assert!(e.to_string().contains("port in progress")),
+            Ok(_) => panic!("expected a non-repo path to error"),
+            Err(e) => assert!(
+                matches!(e, sid_core::git::GitError::NotARepo(_)),
+                "want NotARepo, got: {e}"
+            ),
         }
     }
 }
