@@ -6885,6 +6885,7 @@ dependencies = [
  "sid-containers",
  "sid-core",
  "sid-db",
+ "sid-git",
  "sid-secrets",
  "sid-ssh",
  "sid-store",
