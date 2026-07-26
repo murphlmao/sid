@@ -45,7 +45,7 @@ use crate::app::{AppState, Tab};
 use crate::git_registry;
 use crate::ui::TextInput;
 use crate::ui::session::ssh_runtime;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Monospace family for root/path subtitles; matches every other tab's `MONO`.
 const MONO: &str = "DejaVu Sans Mono";

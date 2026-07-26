@@ -38,7 +38,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::TextInput;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This

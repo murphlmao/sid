@@ -21,7 +21,6 @@ mod ssh_connect;
 mod ui;
 
 use gpui::{Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
-use gpui_component::Theme;
 use sid_core::gpu::{GpuPreflight as _, RenderPath};
 
 fn main() {
@@ -118,7 +117,7 @@ fn main() {
                     .map(|s| s.theme)
                     .unwrap_or_else(|_| "cosmos".into())
             });
-            ui::theme::install(&theme_name, cx);
+            sid_ui::theme::install(&theme_name, cx);
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -129,12 +128,12 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    // Keep gpui-component's own theming system (a separate layer the
-                    // borrowed `Input`/`Table` widgets read) in sync with the active sid
-                    // theme, instead of hardcoding Dark — cosmos-light is the one built-in
-                    // that needs `ThemeMode::Light` here.
-                    let mode = ui::theme::component_mode(ui::theme::active(cx));
-                    Theme::change(mode, Some(window), cx);
+                    // Project the active sid palette onto gpui-component's own theming
+                    // system (a separate layer the borrowed `Input`/`Table`/`PopupMenu`
+                    // widgets read) BEFORE first paint. Without this every borrowed
+                    // widget renders in the library's stock shadcn palette — see
+                    // `sid_ui::bridge`.
+                    sid_ui::bridge::sync(Some(window), cx);
                     // `gpui-component`'s `Input`/`Table` (W5) reach for a
                     // `gpui_component::Root` ancestor at render time — without it,
                     // rendering panics (`root.rs`'s `window.root::<Root>().expect(..)`).

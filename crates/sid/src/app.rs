@@ -31,9 +31,9 @@ use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
 use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
-use crate::ui::theme;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
+use sid_ui::theme;
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
 /// named family is missing, so we name a concrete, near-universal Linux mono family).

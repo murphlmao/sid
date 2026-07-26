@@ -18,7 +18,7 @@ use sid_core::db::{SchemaGraph, SchemaInfo};
 
 use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
-use crate::ui::theme;
+use sid_ui::theme;
 
 // ---- layout geometry ------------------------------------------------------------------------
 

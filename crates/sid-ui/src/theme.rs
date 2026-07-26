@@ -1,5 +1,10 @@
 //! The sid theme system — ported from the POC (`sid-poc/crates/sid-ui/src/{theme,themes}.rs`).
 //!
+//! This is the **single source of colour** for the whole app: every other module reads
+//! semantic tokens from here, and [`crate::bridge`] projects those same tokens onto
+//! `gpui-component`'s 100-field `ThemeColor` so the borrowed library widgets render in
+//! the active sid palette too.
+//!
 //! Every colour-bearing element reads semantic tokens from the active [`Theme`] (a gpui
 //! [`Global`]) instead of embedding literal hex values; switching themes is one
 //! [`install`] call + a window refresh. The four built-ins are the POC's palettes:
@@ -193,14 +198,15 @@ pub fn is_light(theme: &Theme) -> bool {
 }
 
 /// The `gpui-component` `ThemeMode` matching `theme` — `Light` for a light sid
-/// palette, `Dark` otherwise. `gpui-component` (the `Input`/`Table` widgets the SQL
-/// editor and results grid borrow) layers its own theming system on top of gpui and
-/// knows nothing about sid's tokens, so every window that mounts a
-/// `gpui_component::Root` must call
-/// `gpui_component::Theme::change(component_mode(theme::active(cx)), ..)` before
-/// first paint — see `main.rs`'s startup window, `db_tab.rs`'s
-/// relationships-diagram pop-out, and the settings screen's live switch
-/// (`ui::settings_tab::AppState::set_theme`).
+/// palette, `Dark` otherwise. `gpui-component` (the `Input`/`Table`/`PopupMenu`
+/// widgets the SQL editor, results grid and context menus borrow) layers its own
+/// theming system on top of gpui and knows nothing about sid's tokens.
+///
+/// This is only the *mode bit*; the palette itself is carried by
+/// [`crate::bridge::theme_config`]. Callers want [`crate::bridge::sync`], which does
+/// both — every window that mounts a `gpui_component::Root` must call it before first
+/// paint (see `main.rs`'s startup window, `db_tab.rs`'s relationships-diagram pop-out,
+/// and the settings screen's live switch, `ui::settings_tab::AppState::set_theme`).
 pub fn component_mode(theme: &Theme) -> ThemeMode {
     if is_light(theme) {
         ThemeMode::Light

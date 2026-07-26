@@ -1,0 +1,22 @@
+[package]
+name = "sid-ui"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# sid-ui is a FRONTEND crate: naming `gpui` / `gpui-component` here is allowed and
+# correct (CLAUDE.md rule 1 — "GPUI may be named only in frontend crates"). It is the
+# rendering surface's adapter layer: it owns the semantic tokens, the cosmos ->
+# `gpui_component::ThemeColor` bridge, and every shared widget. It must NOT depend on
+# `sid-core`/`sid-store`/any domain crate — it knows colors and pixels, nothing else.
+gpui.workspace = true
+gpui-component.workspace = true
+
+[dev-dependencies]
+# The icon registry's "every named icon really exists in the bundle" test loads the
+# embedded SVGs directly (`AssetSource::load`), so a typo or an upstream icon removal
+# fails the build instead of rendering an invisible glyph at runtime.
+gpui-component-assets.workspace = true

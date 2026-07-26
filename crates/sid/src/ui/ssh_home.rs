@@ -25,7 +25,7 @@ use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::ui::TextInput;
-use crate::ui::theme;
+use sid_ui::theme;
 
 const MONO: &str = "DejaVu Sans Mono";
 

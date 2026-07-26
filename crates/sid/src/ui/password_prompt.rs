@@ -22,7 +22,7 @@ use gpui::{
 };
 
 use super::TextInput;
-use crate::ui::theme;
+use sid_ui::theme;
 
 actions!(
     password_prompt,
