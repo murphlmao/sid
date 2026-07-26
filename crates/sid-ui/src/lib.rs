@@ -39,9 +39,11 @@ pub mod bridge;
 pub mod elevation;
 pub mod icon;
 pub mod styled;
+pub mod table;
 pub mod theme;
 
 pub use elevation::Elevation;
 pub use icon::Icon;
 pub use styled::{StyledExt, h_flex, v_flex};
+pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
 pub use theme::Theme;
