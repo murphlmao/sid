@@ -1,0 +1,18 @@
+[package]
+name = "sid-gpu"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+serde.workspace = true
+# Stamp file format — same crate/line `sid-store` already resolves for the
+# committed workspace config, so this adds nothing new to the lock.
+toml = "0.8"
+log = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -135,6 +135,16 @@ pub struct AppState {
     pub(crate) secrets_status_detail: String,
     /// Whether the warning badge's popover is open.
     secret_badge_open: bool,
+    /// Why rendering is on the software path, when it is (`None` = hardware —
+    /// the overwhelmingly common case, which renders nothing at all). Set once
+    /// at startup from the GPU pre-flight's verdict (see `main`); nothing
+    /// changes it mid-session. Drives the second warning badge at the tab
+    /// strip's right end (`gpu_status_badge`) — same never-silent rule as
+    /// `secrets_degraded`: a degraded rendering path must stay visible, not
+    /// vanish into a log.
+    render_soft_reason: Option<String>,
+    /// Whether the software-rendering badge's popover is open.
+    gpu_badge_open: bool,
     /// The open host add/edit modal, if any.
     form: Option<Entity<HostForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
@@ -275,6 +285,7 @@ impl AppState {
         secrets: Box<dyn SecretStore>,
         secrets_degraded: bool,
         secrets_status: String,
+        render_soft_reason: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
@@ -303,6 +314,8 @@ impl AppState {
             secrets_degraded,
             secrets_status_detail: secrets_status,
             secret_badge_open: false,
+            render_soft_reason,
+            gpu_badge_open: false,
             form: None,
             _form_subscription: None,
             armed_delete: None,
@@ -1352,6 +1365,7 @@ impl AppState {
             .child(div().flex_1()) // spacer — scope chips + badge live at the right edge
             .children(scope_chips)
             .children(self.secret_status_badge(cx))
+            .children(self.gpu_status_badge(cx))
     }
 
     /// Round-D §A's warning badge: a small yellow `!` pill at the primary tab strip's
@@ -1385,6 +1399,14 @@ impl AppState {
             .child("!")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.secret_badge_open = !this.secret_badge_open;
+                // Mutually exclusive with the GPU popover: both `anchored()` to
+                // `Corner::TopRight` with the same window snap-margin and the same
+                // `with_priority(2)`, so open together they occupy the identical spot
+                // and the later-drawn GPU one wins. `secrets_degraded` and
+                // `render_soft_reason` are independent — a VM with no keyring daemon
+                // *and* lavapipe shows both pills — so this is a reachable state, not
+                // a theoretical one.
+                this.gpu_badge_open = false;
                 cx.notify();
             }));
 
@@ -1407,6 +1429,74 @@ impl AppState {
                             .text_xs()
                             .text_color(rgb(fg))
                             .child(self.secrets_status_detail.clone()),
+                    ),
+            )
+            .with_priority(2)
+        });
+
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(badge)
+                .children(popover),
+        )
+    }
+
+    /// The GPU pre-flight's software-rendering badge: a small `sw` pill next to the
+    /// secrets badge, rendered only while the render path is degraded (hardware
+    /// rendering — the overwhelmingly common case — shows nothing at all). Exactly
+    /// the `secret_status_badge` pattern: click toggles a trigger-anchored popover
+    /// with the why, plus the `sid --gpu-report` pointer for the full evidence.
+    fn gpu_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let reason = self.render_soft_reason.as_deref()?;
+        let t = theme::active(cx);
+        let (warning, border, surface, fg) = (t.warning, t.border, t.surface, t.fg);
+        let badge = div()
+            .id("gpu-status-badge")
+            .px_2()
+            .py(px(2.))
+            .rounded_full()
+            .text_xs()
+            .font_weight(FontWeight::BOLD)
+            .cursor_pointer()
+            .bg(rgb(warning))
+            // Same non-token near-black as `secret_status_badge` — readable on every
+            // theme's amber `warning` tone, which a theme-following text color could
+            // not guarantee.
+            .text_color(rgb(0x1a1a1a))
+            .child("sw")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.gpu_badge_open = !this.gpu_badge_open;
+                // The other half of the mutual exclusion — see `secret_status_badge`:
+                // both popovers snap to the same window corner, so one has to close
+                // for the other to be readable at all.
+                this.secret_badge_open = false;
+                cx.notify();
+            }));
+
+        let detail: SharedString =
+            format!("software rendering — {reason}\n\nrun `sid --gpu-report` for details").into();
+        let popover = self.gpu_badge_open.then(|| {
+            deferred(
+                anchored()
+                    .anchor(Corner::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(
+                        div()
+                            .id("gpu-status-popover")
+                            .occlude()
+                            .mt_1()
+                            .max_w(px(360.))
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(border))
+                            .bg(rgb(surface))
+                            .text_xs()
+                            .text_color(rgb(fg))
+                            .child(detail),
                     ),
             )
             .with_priority(2)
