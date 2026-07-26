@@ -55,7 +55,7 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, IntoElement, SharedString, Subscription, Window,
     div, prelude::*, px, relative, rgb,
 };
-use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
 use sid_sysinfo::SysinfoProvider;
@@ -65,6 +65,7 @@ use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
+use sid_ui::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
 
 /// Systems tab state. See the module doc comment for why this holds no store/scope.
 pub struct SystemsTabState {
@@ -193,7 +194,10 @@ struct ProcessesDelegate {
     /// Outcome of the last kill attempt, if it failed (e.g. `SysError::PermissionDenied`
     /// on a root-owned process). Cleared on the next refresh, arm, or successful kill.
     kill_error: Option<String>,
-    columns: Vec<Column>,
+    /// The columns and the width each one declared. Resized to the live viewport by
+    /// [`FillTable`] — see `sid_ui::table`'s module docs for why this table used to be a
+    /// 652px ribbon in a 2000px window.
+    columns: FillColumns,
 }
 
 impl ProcessesDelegate {
@@ -207,14 +211,34 @@ impl ProcessesDelegate {
             sort_dir: ColumnSort::Descending,
             armed_kill: None,
             kill_error: None,
-            columns: vec![
-                Column::new("cpu", "CPU%").width(px(70.)).descending(),
-                Column::new("mem", "Mem").width(px(90.)).sortable(),
-                Column::new("pid", "PID").width(px(80.)).sortable(),
-                Column::new("name", "Name").width(px(220.)).sortable(),
-                Column::new("user", "User").width(px(120.)).sortable(),
-                Column::new("kill", "").width(px(72.)),
-            ],
+            // Widths are declared as intent, not pixels: the numeric columns have a
+            // known upper bound and stay exactly as wide as they need, `Name` — the one
+            // column whose content is unbounded, and the one the old 220px cap was
+            // truncating mid-word — absorbs everything the window has spare, and `User`
+            // holds a floor so a short username can't collapse the header.
+            columns: FillColumns::new([
+                (
+                    Column::new("cpu", "CPU%").descending(),
+                    ColumnWidth::Fixed(70.),
+                ),
+                (
+                    Column::new("mem", "Mem").sortable(),
+                    ColumnWidth::Fixed(90.),
+                ),
+                (
+                    Column::new("pid", "PID").sortable(),
+                    ColumnWidth::Fixed(80.),
+                ),
+                (
+                    Column::new("name", "Name").sortable(),
+                    ColumnWidth::grow().min_width(220.),
+                ),
+                (
+                    Column::new("user", "User").sortable(),
+                    ColumnWidth::Min(120.),
+                ),
+                (Column::new("kill", ""), ColumnWidth::Fixed(72.)),
+            ]),
         }
     }
 
@@ -282,6 +306,12 @@ impl ProcessesDelegate {
     }
 }
 
+impl FillTableDelegate for ProcessesDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for ProcessesDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -292,7 +322,7 @@ impl TableDelegate for ProcessesDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -311,6 +341,10 @@ impl TableDelegate for ProcessesDelegate {
         if matches!(sort, ColumnSort::Ascending | ColumnSort::Descending) {
             self.sort_dir = sort;
         }
+        // Mirror the sort onto our own columns so the header indicator survives the
+        // next `TableState::refresh` — which a viewport change (and `kill`) triggers.
+        // See `FillColumns::apply_sort`.
+        self.columns.apply_sort(col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -498,7 +532,7 @@ impl AppState {
                     .flex_1()
                     .min_h(px(0.))
                     .w_full()
-                    .child(Table::new(&t).stripe(true))
+                    .child(FillTable::new(&t).stripe(true))
             }))
             .children(kill_error.map(|e| {
                 div()
