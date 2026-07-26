@@ -20,7 +20,7 @@ mod keymap;
 mod ssh_connect;
 mod ui;
 
-use gpui::{Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{AnyView, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
 use sid_core::gpu::{GpuPreflight as _, RenderPath};
 
 fn main() {
@@ -138,17 +138,27 @@ fn main() {
                     // `gpui_component::Root` ancestor at render time — without it,
                     // rendering panics (`root.rs`'s `window.root::<Root>().expect(..)`).
                     // The window's first layer must be `Root`, not `AppState` directly.
-                    let view = cx.new(|cx| {
-                        app::AppState::new(
-                            store,
-                            seed_lists,
-                            secrets,
-                            secrets_degraded,
-                            secrets_status,
-                            render_soft_reason,
-                            cx,
-                        )
-                    });
+                    // `SID_GALLERY=1` mounts `sid-ui`'s component gallery instead of
+                    // the app shell — the observation gate for the component crate
+                    // (every widget, every variant, every state, on one canvas, in
+                    // whichever palette `SID_THEME` selects). Dev-only by env gate:
+                    // nothing in the app navigates to it.
+                    let view: AnyView = if sid_ui::gallery::requested() {
+                        cx.new(|_| sid_ui::gallery::Gallery::new()).into()
+                    } else {
+                        cx.new(|cx| {
+                            app::AppState::new(
+                                store,
+                                seed_lists,
+                                secrets,
+                                secrets_degraded,
+                                secrets_status,
+                                render_soft_reason,
+                                cx,
+                            )
+                        })
+                        .into()
+                    };
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
             );
