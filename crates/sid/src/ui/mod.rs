@@ -1,9 +1,13 @@
-//! Reusable GPUI UI elements for sid.
+//! sid's screens: one module per tab, plus the modals and the single-line
+//! [`TextInput`] they share.
 //!
-//! The single-line [`TextInput`] (P3.2 spearhead) and the [`host_form::HostForm`]
-//! modal built on it. The input's actions are declared here and bound once via
-//! [`init`], scoped to the `TextInput` key context so they never collide with other
-//! bindings; the form's `escape`/`enter` bindings are scoped to `HostForm` the same way.
+//! Shared *widgets* and the semantic tokens live in the `sid-ui` crate, not here — see
+//! that crate's docs and `docs/design/2026-07-26-ui-overhaul-plan.md`. The theme module
+//! these screens read (`sid_ui::theme`) moved there with it.
+//!
+//! The input's actions are declared here and bound once via [`init`], scoped to the
+//! `TextInput` key context so they never collide with other bindings; the form's
+//! `escape`/`enter` bindings are scoped to `HostForm` the same way.
 
 pub mod command_palette;
 pub mod config_editor;
@@ -18,7 +22,6 @@ pub mod settings_tab;
 pub mod ssh_home;
 pub mod systems_tab;
 mod text_input;
-pub mod theme;
 pub mod workspaces_tab;
 
 pub use session::{SessionStatus, SshSession, SshSessionEvent};

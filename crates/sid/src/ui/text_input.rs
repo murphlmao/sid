@@ -31,11 +31,11 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::theme;
 use super::{
     Backspace, Copy, Cut, Delete, End, Home, Left, Paste, Right, SelectAll, SelectLeft,
     SelectRight, SelectToEnd, SelectToHome, ShowCharacterPalette, WordLeft, WordRight,
 };
+use sid_ui::theme;
 
 /// The masking glyph rendered in place of each real grapheme.
 const BULLET: char = '\u{2022}';

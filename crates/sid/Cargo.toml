@@ -7,12 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# App-shell spike. gpui is published on crates.io since Oct 2025; 0.2.x is
-# self-contained (no `gpui_platform` split — that lives only on git `main`) and
-# uses the monolithic `Application::new().run(...)` entry point. Pre-1.0: expect
+# App-shell spike. gpui is published on crates.io since Oct 2025; the pin lives in
+# `[workspace.dependencies]` so `sid` and `sid-ui` can never drift. Pre-1.0: expect
 # breaking changes between 0.2.x and later. Linux default features pull in
 # font-kit + wayland + x11 automatically.
-gpui = "0.2"
+gpui.workspace = true
+# The component crate (2026-07-26 UI overhaul): semantic tokens, the cosmos ->
+# `gpui_component::ThemeColor` bridge, and every shared widget. A frontend crate, so it
+# may name gpui/gpui-component; it depends on no domain crate.
+sid-ui.workspace = true
 sid-store = { path = "../sid-store" }
 sid-secrets = { path = "../sid-secrets" }
 # W2 (Database tab, Plan Wave 2): the one crate allowed to name `sid-db`'s concrete
@@ -67,10 +70,10 @@ tokio.workspace = true
 # highlighting) + results table. GPUI-0.2.2-compatible; validated against dbflux/pgui
 # precedent. `crates/sid` names it directly (the rendering surface) — DB drivers
 # themselves stay behind `sid_db`/`sid_core::db`, never named here.
-gpui-component = { version = "0.5.1", features = ["tree-sitter-languages"] }
+gpui-component.workspace = true
 # Bundled icon/font assets `gpui-component`'s widgets reference (sort-chevron icons on
 # `Table` columns, etc.) — wired in via `Application::new().with_assets(..)`.
-gpui-component-assets = "0.5.1"
+gpui-component-assets.workspace = true
 
 [dev-dependencies]
 # `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`

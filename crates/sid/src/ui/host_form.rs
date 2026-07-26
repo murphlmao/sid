@@ -22,7 +22,7 @@ use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
 use super::TextInput;
 use super::text_input::next_focus_index;
-use crate::ui::theme;
+use sid_ui::theme;
 
 actions!(
     host_form,

@@ -28,9 +28,9 @@ use gpui::{
     Window, WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
     size,
 };
+use gpui_component::Root;
 use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::table::{Column, Table, TableDelegate, TableState};
-use gpui_component::{Root, Theme};
 use sid_core::db::{
     DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo,
     TableInfo,
@@ -46,7 +46,7 @@ use crate::ui::db_conn_form::{
 };
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
 const MONO: &str = "DejaVu Sans Mono";
@@ -1140,7 +1140,7 @@ impl AppState {
     /// `App`, so `cx.open_window` opens a second top-level window in the same process
     /// (no second instance, no subprocess) right here in the click handler. Cribs the
     /// window-bootstrap shape from `main.rs` exactly — `Root::new` must be the window's
-    /// first layer and `Theme::change` must run before anything paints, or
+    /// first layer and the theme bridge must run before anything paints, or
     /// gpui-component's widgets panic reaching for a `Root` ancestor. A snapshot means
     /// the pop-out goes stale if the schema changes later; re-opening it re-reads
     /// whatever is cached then (acceptable for v1 — noted in the module's plan).
@@ -1194,8 +1194,7 @@ impl AppState {
             move |window, cx| {
                 // Same sync as main.rs's startup window — the sid `Theme` global is
                 // process-wide, so this pop-out follows whatever the user has active.
-                let mode = theme::component_mode(theme::active(cx));
-                Theme::change(mode, Some(window), cx);
+                sid_ui::bridge::sync(Some(window), cx);
                 let view = cx.new(|_cx| DiagramView::new(schema, graph, app, main_window));
                 cx.new(|cx| Root::new(view, window, cx))
             },

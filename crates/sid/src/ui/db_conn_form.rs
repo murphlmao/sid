@@ -33,7 +33,7 @@ use sid_store::{DbConnection, DefaultScope, Scope};
 use super::TextInput;
 use super::text_input::next_focus_index;
 use crate::db_registry::DbRegistry;
-use crate::ui::theme;
+use sid_ui::theme;
 
 actions!(
     db_conn_form,

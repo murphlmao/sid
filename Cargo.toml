@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/sid",
+    "crates/sid-ui",
     "crates/sid-secrets",
     "crates/sid-store",
     "crates/sid-core",
@@ -25,6 +26,7 @@ repository = "https://github.com/murphlmao/sid"
 [workspace.dependencies]
 # Internal crates (versionless path deps; never published).
 sid-core = { path = "crates/sid-core" }
+sid-ui = { path = "crates/sid-ui" }
 sid-term = { path = "crates/sid-term" }
 sid-ssh = { path = "crates/sid-ssh" }
 sid-store = { path = "crates/sid-store" }
@@ -98,6 +100,16 @@ argon2 = { version = "0.6.0-rc.8", default-features = false, features = ["alloc"
 chacha20poly1305 = "0.11"
 getrandom = "0.3"
 zeroize = "1"
+
+# Rendering surface. Single-sourced here (rather than in each frontend crate) so the
+# `sid` binary and the `sid-ui` component crate can never drift apart on the pin, and
+# so the eventual git-`gpui` / gpui-component 0.5.2 migration is one line. Only
+# frontend crates (`sid`, `sid-ui`) may depend on these — see CLAUDE.md rule 1.
+# gpui 0.2.x is self-contained (no `gpui_platform` split — that lives only on git
+# `main`) and uses the monolithic `Application::new().run(..)` entry point.
+gpui = "0.2"
+gpui-component = { version = "0.5.1", features = ["tree-sitter-languages"] }
+gpui-component-assets = "0.5.1"
 
 # Test
 tempfile = "3"

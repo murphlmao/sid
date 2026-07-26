@@ -36,7 +36,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
@@ -304,7 +304,10 @@ impl AppState {
                 .px_3()
                 .py_2()
                 .rounded_md()
-                .bg(rgba(0xe8b04a26))
+                // A 15%-alpha wash of the theme's own `warning`, not a fixed amber:
+                // `0xRRGGBB` token shifted into `rgba`'s `0xRRGGBBAA` slot. Was a raw
+                // hex literal, which the no-raw-hex hygiene gate now forbids.
+                .bg(rgba((theme.warning << 8) | 0x26))
                 .text_sm()
                 .text_color(rgb(theme.warning))
                 .child("read-only — needs root; edit with sudoedit")

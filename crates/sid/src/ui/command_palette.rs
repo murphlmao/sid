@@ -22,7 +22,7 @@ use gpui::{
 use crate::app::AppState;
 use crate::keymap::{self, Action};
 use crate::ui::TextInput;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list

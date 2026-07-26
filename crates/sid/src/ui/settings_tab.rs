@@ -29,7 +29,7 @@ use sid_store::{DefaultScope, PanelSide, Settings, Store};
 
 use crate::app::AppState;
 use crate::keymap;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Monospace family for the Storage section's paths — aligned with `app.rs`'s own
 /// `MONO` const. Kept local so `ui` stays self-contained (same convention as
@@ -347,8 +347,10 @@ impl AppState {
     /// future command-palette "switch theme" entry could reuse it.
     pub(crate) fn set_theme(&mut self, name: &'static str, cx: &mut Context<Self>) {
         theme::install(name, cx);
-        let mode = theme::component_mode(theme::active(cx));
-        gpui_component::Theme::change(mode, None, cx);
+        // Re-project the new palette onto gpui-component's theme so the borrowed
+        // widgets (SQL editor, tables, popup menus) follow the switch LIVE — see
+        // `sid_ui::bridge`. The `cx.refresh_windows()` below repaints everything.
+        sid_ui::bridge::sync(None, cx);
         match persist_theme(&self.store, name) {
             Ok(()) => {
                 self.settings.cached.theme = name.to_string();

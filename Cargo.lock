@@ -7056,6 +7056,7 @@ dependencies = [
  "sid-svcctl",
  "sid-sysinfo",
  "sid-term",
+ "sid-ui",
  "tempfile",
  "tokio",
  "unicode-segmentation",
@@ -7194,6 +7195,15 @@ version = "0.0.1"
 dependencies = [
  "sid-core",
  "vt100",
+]
+
+[[package]]
+name = "sid-ui"
+version = "0.0.1"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
 ]
 
 [[package]]

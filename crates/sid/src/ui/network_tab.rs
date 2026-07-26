@@ -79,7 +79,7 @@ use sid_sysinfo::SysinfoProvider;
 use super::TextInput;
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-use crate::ui::theme;
+use sid_ui::theme;
 
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

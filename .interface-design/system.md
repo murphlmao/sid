@@ -5,7 +5,7 @@ keyboard-first, hopping between a shell, a query, and system state — the UI is
 orientation and engagement, never decoration.
 
 ## Tokens
-`crates/sid/src/ui/theme.rs` is the single source: bg / surface / well / border /
+`crates/sid-ui/src/theme.rs` is the single source: bg / surface / well / border /
 fg / fg_strong / muted / faint / accent / success / warning / danger / selection
 (+ ansi[16] for the terminal). No raw hex in UI code except the theme-agnostic
 modal scrim `rgba(0x000000a8)` and the warning-badge's near-black label.

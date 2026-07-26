@@ -64,7 +64,7 @@ use super::TextInput;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
-use crate::ui::theme::{self, Theme};
+use sid_ui::theme::{self, Theme};
 
 /// Systems tab state. See the module doc comment for why this holds no store/scope.
 pub struct SystemsTabState {
