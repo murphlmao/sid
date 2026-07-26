@@ -43,6 +43,17 @@ sid-term.workspace = true
 # Workspaces tab (track U): the one crate allowed to name `sid-git`'s concrete
 # `Git2Provider` — see `crates/sid/src/git_registry.rs`.
 sid-git.workspace = true
+# GPU pre-flight: the one crate allowed to name `sid-gpu`'s concrete
+# `LinuxGpuPreflight` — same seam shape as `sid-sysinfo`/`sid-svcctl` above. The
+# probe/ladder/stamp mechanics themselves stay behind `sid_core::gpu`, never
+# named here beyond the constructor + the two protocol modes in `main.rs`.
+sid-gpu.workspace = true
+# Startup logging: blade/gpui emit real diagnostics through `log` (most
+# importantly the exact failing Vulkan call when GPU init breaks) and sid
+# previously dropped every record on the floor. Also the `--gpu-probe`
+# protocol's stderr channel — the pre-flight parent parses the probe child's
+# env_logger-formatted `Adapter:` line.
+env_logger = "0.11"
 # Grapheme/word segmentation for the TextInput element (cursor movement, masking).
 # Already in the tree transitively via gpui; pinned here as a direct dep.
 unicode-segmentation = "1"
