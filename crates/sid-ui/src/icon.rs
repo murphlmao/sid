@@ -49,6 +49,9 @@ pub enum Icon {
     Trash,
     /// Copy to clipboard.
     Copy,
+    /// Rename in place. The bundle ships no pencil; Lucide's `case-sensitive` (an "Aa"
+    /// glyph) is the closest monochrome stand-in and reads as "edit this text".
+    Rename,
     /// Confirmed / selected.
     Check,
     /// Cautionary state.
@@ -132,6 +135,7 @@ impl Icon {
         Icon::Close,
         Icon::Trash,
         Icon::Copy,
+        Icon::Rename,
         Icon::Check,
         Icon::Warning,
         Icon::Info,
@@ -180,6 +184,7 @@ impl Icon {
             Icon::Close => IconName::Close,
             Icon::Trash => IconName::CircleX,
             Icon::Copy => IconName::Copy,
+            Icon::Rename => IconName::CaseSensitive,
             Icon::Check => IconName::Check,
             Icon::Warning => IconName::TriangleAlert,
             Icon::Info => IconName::Info,
