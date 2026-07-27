@@ -24,8 +24,11 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
-use crate::ui::TextInput;
-use sid_ui::theme;
+use crate::ui::{SessionStatus, TextInput};
+use sid_ui::{
+    Button, ButtonVariant, ConnectionState, Icon, IconButton, List, Row, StatusDot, StatusLegend,
+    StyledExt as _, h_flex, theme,
+};
 
 const MONO: &str = "DejaVu Sans Mono";
 
@@ -202,6 +205,26 @@ pub(crate) fn filter_hosts<'a>(
         .collect()
 }
 
+/// What a saved row's dot says, given the live session (if any) that row opened.
+///
+/// The tree used to ask one question — "is there a tab whose `source` is this row?" —
+/// and paint `●` or `○` from the answer, which folded *dialling*, *authenticated* and
+/// *failed* into one indistinguishable mark. Four states now, straight off the session's
+/// own lifecycle.
+///
+/// A `Closed` session reads as [`ConnectionState::Offline`], not `Failed`: the tab is
+/// still open so the user can read its scrollback, but nothing is connected and the row
+/// is ready to dial again. A `Failed` one keeps its colour until the tab is closed —
+/// that is the one state the old dot could never show, and the one worth seeing.
+pub(crate) fn connection_state(status: Option<&SessionStatus>) -> ConnectionState {
+    match status {
+        None | Some(SessionStatus::Closed) => ConnectionState::Offline,
+        Some(SessionStatus::Connecting) => ConnectionState::Connecting,
+        Some(SessionStatus::Connected) => ConnectionState::Live,
+        Some(SessionStatus::Failed(_)) => ConnectionState::Failed,
+    }
+}
+
 /// Parse the quick-connect box's `user@host[:port]` shorthand. `None` if the text
 /// doesn't look like that shape at all — the same box doubles as a plain tree filter,
 /// so a partial query (most keystrokes) must not read as a failed connect attempt; only
@@ -271,11 +294,7 @@ impl AppState {
                     .child(self.home_header(cx))
                     .child(self.quick_connect_box(cx))
                     .child(
-                        div()
-                            .id("ssh-home-tree")
-                            .flex_1()
-                            .overflow_y_scroll()
-                            .py_1()
+                        List::scrolling("ssh-home-tree")
                             // Right-click *anywhere* in the tree defaults to "no row" —
                             // `capture_any_mouse_down` fires during the CAPTURE phase, which
                             // completes in full before any BUBBLE-phase handler runs (see
@@ -450,35 +469,32 @@ impl AppState {
     /// add-connection entry point (`main`'s button, the tab-strip `+`, this tree's
     /// empty-space context menu) — see `AppState::open_add_form`.
     fn home_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
+        let t = theme::active(cx).clone();
         let count = self.hosts.len();
         let label: SharedString = format!("CONNECTIONS · {count}").into();
         div()
             .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
+            .flex_col()
+            .gap_1()
             .px_2()
             .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child(label))
+            .hairline_b(&t)
             .child(
-                div()
-                    .id("ssh-home-add-connection")
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .bg(rgb(selection))
-                    .text_color(rgb(fg_strong))
-                    .child("+ Add connection")
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_form(window, cx);
-                    })),
+                h_flex()
+                    .justify_between()
+                    .child(div().section_label(&t).child(label))
+                    .child(
+                        Button::new("ssh-home-add-connection", "add connection")
+                            .small()
+                            .icon(Icon::Add)
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_form(window, cx);
+                            })),
+                    ),
             )
+            // The dot vocabulary, spelled out once. The tree used to paint an unlabelled
+            // 6px circle per row with nothing on screen saying what it meant.
+            .child(StatusLegend::new("ssh-home-legend"))
     }
 
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -586,24 +602,16 @@ impl AppState {
         collapsed: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (muted, selection) = (t.muted, t.selection);
-        let caret = if collapsed { "▸" } else { "▾" };
+        let t = theme::active(cx).clone();
+        let caret = if collapsed {
+            Icon::ChevronRight
+        } else {
+            Icon::ChevronDown
+        };
         let owned = folder.to_string();
-        div()
-            .id(("ssh-folder", gix))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(muted))
-            .hover(|s| s.bg(rgb(selection)))
-            .child(caret)
-            .child(folder.to_string())
+        Row::new(("ssh-folder", gix))
+            .leading(caret.el().size(px(14.)).text_color(rgb(t.muted)))
+            .child(div().section_label(&t).child(folder.to_string()))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.toggle_folder(owned.clone(), cx);
             }))
@@ -624,8 +632,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (fg, muted, selection, accent, danger, success) =
-            (t.fg, t.muted, t.selection, t.accent, t.danger, t.success);
+        let (fg, muted) = (t.fg, t.muted);
         let host = a.item.clone();
         let origin = a.origin.clone();
 
@@ -636,55 +643,46 @@ impl AppState {
         }
 
         let key = (host.alias.clone(), origin.clone());
-        let is_live = self
-            .ssh_sessions
-            .iter()
-            .any(|t| t.source.as_ref() == Some(&key));
+        let state = connection_state(
+            self.ssh_sessions
+                .iter()
+                .find(|t| t.source.as_ref() == Some(&key))
+                .map(|t| t.session.read(cx).status()),
+        );
         let armed = delete_click_executes(self.armed_delete.as_ref(), &key);
         let alias: SharedString = host.alias.clone().into();
         let addr: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
-        // Where this record lives (global vs a workspace, `· dup` when shadowing) —
-        // carried over from the deleted second host list; the attributive store's one
-        // per-row fact the tree didn't already show.
-        let (badge, badge_color) = self.origin_badge(a, cx);
-
-        let action = |id: (&'static str, u64), label: SharedString, color: u32| {
-            div()
-                .id(id)
-                .px_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
         let row_id = row_hash(&host.alias, &origin);
+
+        // A short, stable per-row element id for each control. gpui wants ids unique
+        // within the window, and every one of these repeats down the list.
+        let slot = |name: &'static str| (name, row_id);
 
         let connect = {
             let host = host.clone();
             let key = key.clone();
-            action(("ssh-tree-connect", row_id), "»".into(), accent).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-row-connect"), Icon::Terminal, "connect")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.connect_host(host.clone(), Some(key.clone()), window, cx);
-                },
-            ))
+                }))
         };
         let rename = {
             let alias = host.alias.clone();
             let origin = origin.clone();
-            action(("ssh-tree-rename", row_id), "✎".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-row-rename"), Icon::Rename, "rename")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.start_rename(alias.clone(), origin.clone(), window, cx);
-                },
-            ))
+                }))
         };
         let folder_btn = {
             let alias = host.alias.clone();
             let origin = origin.clone();
             let current = host.folder.clone();
-            action(("ssh-tree-folder", row_id), "folder".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-row-folder"), Icon::Folder, "assign folder")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.start_folder_edit(
                         alias.clone(),
                         origin.clone(),
@@ -692,27 +690,33 @@ impl AppState {
                         window,
                         cx,
                     );
-                },
-            ))
+                }))
         };
         let delete = {
             let secret_ref = host.secret_ref.clone();
             let key = key.clone();
-            let (label, color): (SharedString, u32) = if armed {
-                ("✕?".into(), danger)
+            // Two-step, and the arming step now says so in words instead of turning a
+            // `✕` into a `✕?`: the tooltip is the confirmation prompt.
+            let tooltip = if armed {
+                "click again to delete — this cannot be undone"
             } else {
-                ("✕".into(), muted)
+                "delete"
             };
-            action(("ssh-tree-delete", row_id), label, color).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
+            IconButton::new(slot("ssh-row-delete"), Icon::Trash, tooltip)
+                .small()
+                .variant(if armed {
+                    ButtonVariant::Danger
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     if delete_click_executes(this.armed_delete.as_ref(), &key) {
                         this.delete_row(&key.0, &key.1, secret_ref.as_deref(), cx);
                     } else {
                         this.armed_delete = Some(key.clone());
                         cx.notify();
                     }
-                },
-            ))
+                }))
         };
 
         let label_click = {
@@ -739,20 +743,12 @@ impl AppState {
             })
         };
 
-        div()
-            .id(("ssh-tree-host", row_id))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .hover(|s| s.bg(rgb(selection)))
+        Row::new(slot("ssh-tree-host"))
+            .leading(StatusDot::new(slot("ssh-row-dot"), state))
             // Records this row as the tree's right-click target — read by the tree's
             // single `context_menu` (see `HomeTabState::right_click_target`'s doc
             // comment for why every row can't just have its own `.context_menu`).
-            .on_mouse_down(MouseButton::Right, {
+            .on_secondary_mouse_down({
                 let host = host.clone();
                 let origin = origin.clone();
                 cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
@@ -762,18 +758,9 @@ impl AppState {
             })
             .child(
                 div()
-                    .w(px(12.))
-                    .text_xs()
-                    .text_color(rgb(if is_live { success } else { muted }))
-                    .child(if is_live { "●" } else { "○" }),
-            )
-            .child(
-                div()
-                    .id(("ssh-tree-host-label", row_id))
+                    .id(slot("ssh-tree-host-label"))
                     .flex()
                     .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
                     .cursor_pointer()
                     .on_click(label_click)
                     .child(div().text_sm().text_color(rgb(fg)).truncate().child(alias))
@@ -786,18 +773,13 @@ impl AppState {
                             .child(addr),
                     ),
             )
-            .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(connect)
-                    .child(rename)
-                    .child(folder_btn)
-                    .child(delete),
-            )
+            // Where this record lives (global vs a workspace, `· dup` when shadowing) —
+            // the attributive store's one per-row fact the tree doesn't otherwise show.
+            .meta(self.scope_chip(a))
+            .action(connect)
+            .action(rename)
+            .action(folder_btn)
+            .action(delete)
             .into_any_element()
     }
 
@@ -1055,6 +1037,39 @@ mod tests {
         assert_eq!(parse_quick_connect("user@"), None);
         assert_eq!(parse_quick_connect("user@host:"), None);
         assert_eq!(parse_quick_connect("user@host:notaport"), None);
+    }
+
+    #[test]
+    fn a_row_with_no_session_reads_as_not_connected() {
+        assert_eq!(connection_state(None), ConnectionState::Offline);
+    }
+
+    #[test]
+    fn the_dot_now_separates_dialling_from_connected_from_failed() {
+        // The whole point of the four-state mark: the old `●`/`○` could only say
+        // "there is a tab for this row" or "there isn't".
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Connecting)),
+            ConnectionState::Connecting
+        );
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Connected)),
+            ConnectionState::Live
+        );
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Failed("no route to host".into()))),
+            ConnectionState::Failed
+        );
+    }
+
+    #[test]
+    fn a_closed_session_frees_the_row_rather_than_marking_it_failed() {
+        // The tab stays open so its scrollback is still readable, but nothing is
+        // connected — the row is ready to dial again and should look it.
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Closed)),
+            ConnectionState::Offline
+        );
     }
 
     #[test]
