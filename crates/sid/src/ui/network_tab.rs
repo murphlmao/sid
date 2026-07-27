@@ -22,7 +22,7 @@
 //!   restart/stop/kill.
 //! - **Interfaces** (ported from inc-1, regrouped): primary interfaces are always
 //!   visible; generic/virtual ones ([`is_hidden_interface`]) collapse under a
-//!   `hidden (N) ▸` expandable row (Murphy: docker etc. "should literally be a
+//!   `hidden (N)` disclosure row (Murphy: docker etc. "should literally be a
 //!   dropdown to expand").
 //! - **Docker** (new, read-only): containers via `sid_core::containers::
 //!   ContainerProvider` — name/image/state/status/ports. Management (start/stop/exec)
@@ -45,6 +45,22 @@
 //! `systemctl`/`docker`/`kubectl` — it recomputes from the cache already sitting on
 //! the entity, exactly the "render pure-from-cache" rule below.
 //!
+//! ## Tables (UI overhaul, 2026-07-26)
+//!
+//! All four table delegates size their columns through [`FillColumns`] and render with
+//! [`FillTable`] — declared intent (`Fixed`/`Min`/`Grow`) resolved against the measured
+//! viewport, instead of the 648px of hard-coded pixels this file used to declare in a
+//! 2000px window. That fixed declaration is what truncated `fd7a:115c:a1e0::1a0…` inside
+//! a 120px `Addr` column while 1350px sat unused beside it; `Addr` and `Process` are
+//! growers now, so the widest surface in the app spends its width on the two columns
+//! whose content is unbounded. See `sid_ui::table`'s module docs for the model, and
+//! `TABLE_CHROME` in particular before touching any width here.
+//!
+//! Header cells sort on a click anywhere in them (`sid_ui::sortable_th`), not only on
+//! upstream's ~6x8px chevron, and every `perform_sort` mirrors the new sort back onto its
+//! own columns via [`FillColumns::apply_sort`] so the indicator survives the `refresh`
+//! that a viewport change triggers.
+//!
 //! Ports/interfaces are rendered with `gpui-component`'s `Table`/`TableDelegate`
 //! (cribbed from `db_tab.rs`'s `ResultDelegate`), reused on the shared
 //! `session::ssh_runtime()` Tokio runtime for the same reason `db_tab.rs` does:
@@ -60,13 +76,15 @@
 //! are plain read-only tables, closer in shape to `db_tab.rs`'s `ResultDelegate`.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString,
     Subscription, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_containers::{DockerCliProvider, KubectlCliProvider};
 use sid_core::containers::{
     ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
@@ -79,7 +97,12 @@ use sid_sysinfo::SysinfoProvider;
 use super::TextInput;
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-use sid_ui::theme;
+use sid_ui::theme::{self, Theme};
+use sid_ui::{
+    ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, Segment, SegmentSelect,
+    SegmentedControl, StyledExt as _, Toolbar, h_flex, sortable_th, v_flex,
+};
 
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +115,8 @@ enum NetSubTab {
 }
 
 impl NetSubTab {
+    /// In the order the segmented control lists them; the index into this array is the
+    /// index the control reports back from `on_select`.
     const ALL: [NetSubTab; 5] = [
         NetSubTab::Ports,
         NetSubTab::Services,
@@ -108,6 +133,13 @@ impl NetSubTab {
             NetSubTab::Docker => "Docker",
             NetSubTab::Kubernetes => "Kubernetes",
         }
+    }
+
+    /// The sub-view at `ix`, for the segmented control's callback. Out-of-range keeps
+    /// the current view rather than guessing — the control clamps its own index, so this
+    /// only fires if the two lists ever disagree.
+    fn at(ix: usize) -> Option<Self> {
+        Self::ALL.get(ix).copied()
     }
 }
 
@@ -141,7 +173,7 @@ pub struct NetworkTabState {
     /// Name of the interface holding the default route, if any — sorted first and
     /// always visible regardless of [`is_hidden_interface`].
     default_route: Option<String>,
-    /// Whether the Interfaces sub-tab's `hidden (N) ▸` group is expanded. Toggling
+    /// Whether the Interfaces sub-tab's `hidden (N)` group is expanded. Toggling
     /// this does NOT touch [`Self::visible_interfaces`]/[`Self::hidden_interfaces`] —
     /// it only changes whether the already-cached hidden group renders, not which
     /// interfaces belong in it.
@@ -313,28 +345,7 @@ impl SortDir {
     }
 }
 
-/// Set `columns[col_ix]`'s own [`ColumnSort`] marker to `sort` and reset every other
-/// sortable column back to [`ColumnSort::Default`] — mirrors what `gpui_component::
-/// table::TableState::perform_sort` does to its *internal* `col_groups` copy. Without
-/// this, the delegate's own `columns` (the copy `TableDelegate::column` hands back on
-/// every `TableState::refresh`, e.g. after a filter keystroke — see `recompute`'s
-/// callers) would still report the construction-time `ColumnSort::Default` on every
-/// sortable column, and the header's sort chevron would visually reset even though the
-/// row order (driven by `active_sort`) stayed correctly sorted.
-fn mark_column_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
-    for (ix, column) in columns.iter_mut().enumerate() {
-        if column.sort.is_none() {
-            continue;
-        }
-        column.sort = Some(if ix == col_ix {
-            sort
-        } else {
-            ColumnSort::Default
-        });
-    }
-}
-
-/// Backs the ports [`Table`]. Constructed empty by `ensure_network_widgets`, then
+/// Backs the ports table. Constructed empty by `ensure_network_widgets`, then
 /// mutated in place (`set_ports`) on every refresh — mirrors `db_tab.rs`'s
 /// `ResultDelegate`. Unlike `ResultDelegate`, this delegate is interactive: it owns the
 /// two-click kill-confirm state and spawns its own kill task, since `render_td`'s `cx`
@@ -348,13 +359,21 @@ struct PortsDelegate {
     ports: Vec<ListeningPort>,
     /// The active filter query, cached so `set_ports` can re-apply it after a refresh.
     query: String,
-    /// The pid whose kill button has been clicked once — the second click on the same
-    /// pid sends the signal.
-    armed_kill: Option<Pid>,
+    /// The two-step kill confirm, keyed by pid.
+    ///
+    /// Keyed rather than positional so a table that re-sorts between the two clicks can
+    /// never redirect the confirm onto a different process, and *surviving*
+    /// [`Self::set_ports`] rather than cleared by it — the `Option<Pid>` this replaces
+    /// was reset on every refresh, which is the failure mode
+    /// `sid_ui::action_cell`'s module docs were written about. It also expires on its
+    /// own, which a bare `Option` never did.
+    kill_arm: ConfirmArm<Pid>,
     /// Outcome of the last kill attempt, if it failed (e.g. `SysError::PermissionDenied`
     /// on a root-owned process). Cleared on the next refresh, arm, or successful kill.
     kill_error: Option<String>,
-    columns: Vec<Column>,
+    /// The columns and the width each one declared. Resized to the live viewport by
+    /// [`FillTable`] — see `sid_ui::table`'s module docs.
+    columns: FillColumns,
     /// The active sort column (index into `columns`) + direction, if any — `None` means
     /// unsorted (rows stay in probe order). Set by `TableDelegate::perform_sort`,
     /// applied by `recompute` after the filter.
@@ -368,27 +387,54 @@ impl PortsDelegate {
             all_ports: Vec::new(),
             ports: Vec::new(),
             query: String::new(),
-            armed_kill: None,
+            kill_arm: ConfirmArm::new(),
             kill_error: None,
-            columns: vec![
-                Column::new("proto", "Proto").width(px(64.)).sortable(),
-                Column::new("port", "Port").width(px(72.)).sortable(),
-                Column::new("addr", "Addr").width(px(120.)).sortable(),
-                Column::new("pid", "PID").width(px(80.)).sortable(),
-                Column::new("process", "Process").width(px(240.)).sortable(),
-                // Not sortable — an action column, not data.
-                Column::new("kill", "").width(px(72.)),
-            ],
+            // Declared as intent, not pixels. `Addr` is the column the old 120px cap was
+            // truncating IPv6 socket addresses inside — it is a grower now, and so is
+            // `Process`, because those two are the only columns here whose content has no
+            // upper bound. Everything else has one: a protocol is three letters, a port is
+            // five digits, a pid is seven.
+            columns: FillColumns::new([
+                (
+                    Column::new("proto", "Proto").sortable(),
+                    ColumnWidth::Fixed(76.),
+                ),
+                (
+                    Column::new("port", "Port").sortable(),
+                    ColumnWidth::Fixed(80.),
+                ),
+                // 240px floors a full `[fd7a:115c:a1e0:ab12:4843:cd96:6265:1a0]:8080`
+                // rather than eliding it, and the grow share takes it far past that on a
+                // wide window.
+                (
+                    Column::new("addr", "Addr").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(240.),
+                ),
+                (
+                    Column::new("pid", "PID").sortable(),
+                    ColumnWidth::Fixed(80.),
+                ),
+                (
+                    Column::new("process", "Process").sortable(),
+                    ColumnWidth::grow().weight(1.6).min_width(220.),
+                ),
+                // Not sortable — an action column, not data. Wide enough for the armed
+                // state's "confirm" label, so arming a row never resizes its column.
+                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
+            ]),
             active_sort: None,
         }
     }
 
     /// Replace the cached rows after a refresh, keeping the active filter applied.
-    /// Disarms any pending kill confirmation — the row set just changed underneath it
-    /// (mirrors `DbTabState::refresh` disarming a pending delete).
+    ///
+    /// A pending kill confirmation is kept **unless its process is gone**
+    /// ([`ConfirmArm::retain`]). Clearing it unconditionally — what this did before — is
+    /// what made the two-step confirm a race against the refresh that the refresh won.
     fn set_ports(&mut self, ports: Vec<ListeningPort>) {
         self.all_ports = ports;
-        self.armed_kill = None;
+        let live: HashSet<Pid> = self.all_ports.iter().filter_map(|p| p.pid).collect();
+        self.kill_arm.retain(|pid| live.contains(&pid));
         self.recompute();
     }
 
@@ -418,7 +464,7 @@ impl PortsDelegate {
     /// `SysError::PermissionDenied` for a root-owned process) is surfaced via
     /// `kill_error`.
     fn kill(&mut self, pid: Pid, cx: &mut Context<TableState<Self>>) {
-        self.armed_kill = None;
+        self.kill_arm.disarm();
         self.kill_error = None;
         let provider = self.provider.clone();
         cx.spawn(async move |this, cx| {
@@ -450,6 +496,12 @@ impl PortsDelegate {
     }
 }
 
+impl FillTableDelegate for PortsDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for PortsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -460,7 +512,7 @@ impl TableDelegate for PortsDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -470,10 +522,24 @@ impl TableDelegate for PortsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        mark_column_sort(&mut self.columns, col_ix, sort);
+        // Mirror the sort onto our own columns so the header indicator survives the next
+        // `TableState::refresh` — which every viewport change now triggers. See
+        // `FillColumns::apply_sort`.
+        self.columns.apply_sort(col_ix, sort);
         self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
         self.recompute();
         cx.notify();
+    }
+
+    /// Sort on a click anywhere in the header cell, not only on the chevron — see
+    /// `sid_ui::table::sortable_th`.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
@@ -484,7 +550,7 @@ impl TableDelegate for PortsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let t = theme::active(cx);
-        let (fg, muted, danger, selection) = (t.fg, t.muted, t.danger, t.selection);
+        let (fg, muted) = (t.fg, t.muted);
         // Borrow, not clone (perf audit finding #6) — every field this fn reads is
         // either `Copy` (`protocol`, `pid`) or already individually `.clone()`d below
         // where a `String` needs to move into a label/closure, so cloning the whole
@@ -493,6 +559,9 @@ impl TableDelegate for PortsDelegate {
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index (8 columns, generous multiplier) instead of a 3-tuple.
         let cell_id = ("net-cell", row_ix * 8 + col_ix);
+        // One clock read per cell, so every cell in a frame agrees about whether the
+        // armed row's confirm window is still open.
+        let now = Instant::now();
         match col_ix {
             0 => {
                 let label = match port.protocol {
@@ -553,37 +622,34 @@ impl TableDelegate for PortsDelegate {
             }
             _ => {
                 let Some(pid) = port.pid else {
-                    return div()
-                        .id(cell_id)
-                        .px_2()
-                        .text_xs()
-                        .text_color(rgb(muted))
-                        .child("—");
+                    // Right-anchored like the buttons it stands in for: a socket with no
+                    // attributable pid is most of this table, and a left-aligned dash in
+                    // the action column would make the few real buttons look misaligned.
+                    return div().id(cell_id).size_full().child(
+                        ActionCell::new().child(div().text_xs().text_color(rgb(muted)).child("—")),
+                    );
                 };
-                let armed = kill_click_executes(self.armed_kill, pid);
-                let (label, color) = if armed {
-                    ("kill?", danger)
-                } else {
-                    ("kill", muted)
-                };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(rgb(color))
-                    .hover(|s| s.bg(rgb(selection)))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        if kill_click_executes(this.delegate().armed_kill, pid) {
-                            this.delegate_mut().kill(pid, cx);
-                        } else {
-                            this.delegate_mut().armed_kill = Some(pid);
-                            cx.notify();
-                        }
-                    }))
+                let armed = self.kill_arm.is_armed(pid, now);
+                // Keyed by pid, not by row index: the rows under the pointer reorder on
+                // every sort and every refresh, and an id that moves with them would hand
+                // one row's hover/press state to another.
+                let button_id = ("net-kill", pid.as_u32() as usize);
+                div().id(cell_id).size_full().child(
+                    ActionCell::new().child(
+                        ConfirmButton::new(button_id, "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("send SIGTERM to this process")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
             }
         }
     }
@@ -602,11 +668,18 @@ struct ServicesDelegate {
     query: String,
     /// The (unit name, action) whose button has been clicked once — the second click
     /// on the same pair executes it.
+    ///
+    /// Deliberately **not** a [`ConfirmArm`], which is what the Ports table's pid-keyed
+    /// kill uses: `ConfirmArm<K>` needs `K: Copy`, and this arm's key is a unit *name*
+    /// plus an action. It gets `ConfirmArm`'s load-bearing property anyway —
+    /// [`Self::retain_armed_action`] survives a refresh, dropping the arm only when the
+    /// unit itself is gone — but not its self-expiry.
     armed_action: Option<(String, SvcAction)>,
     /// Outcome of the last restart/stop/kill attempt, if it failed (esp.
     /// `SvcError::PermissionDenied` for a system-scope action without root).
     action_error: Option<String>,
-    columns: Vec<Column>,
+    /// See [`PortsDelegate::columns`].
+    columns: FillColumns,
     /// See [`PortsDelegate::active_sort`].
     active_sort: Option<(usize, SortDir)>,
 }
@@ -621,18 +694,30 @@ impl ServicesDelegate {
             query: String::new(),
             armed_action: None,
             action_error: None,
-            columns: vec![
-                Column::new("name", "Unit").width(px(240.)).sortable(),
-                Column::new("state", "State").width(px(90.)).sortable(),
-                Column::new("sub_state", "Sub-state")
-                    .width(px(110.))
-                    .sortable(),
-                Column::new("description", "Description")
-                    .width(px(320.))
-                    .sortable(),
-                // Not sortable — an action column, not data.
-                Column::new("actions", "").width(px(210.)),
-            ],
+            // `Unit` and `Description` are the growers: a unit name and its description
+            // are the two unbounded strings here, and the description is the one that
+            // actually reads as prose, so it takes the larger share.
+            columns: FillColumns::new([
+                (
+                    Column::new("name", "Unit").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(200.),
+                ),
+                (
+                    Column::new("state", "State").sortable(),
+                    ColumnWidth::Fixed(100.),
+                ),
+                (
+                    Column::new("sub_state", "Sub-state").sortable(),
+                    ColumnWidth::Fixed(110.),
+                ),
+                (
+                    Column::new("description", "Description").sortable(),
+                    ColumnWidth::grow().weight(1.8).min_width(220.),
+                ),
+                // Not sortable — an action column, not data. Fits `restart` `stop` `kill`
+                // side by side with the widest of them swapped for `confirm`.
+                (Column::new("actions", ""), ColumnWidth::Fixed(220.)),
+            ]),
             active_sort: None,
         }
     }
@@ -643,8 +728,24 @@ impl ServicesDelegate {
 
     fn set_services(&mut self, services: Vec<ServiceInfo>) {
         self.all_services = services;
-        self.armed_action = None;
+        self.retain_armed_action();
         self.recompute();
+    }
+
+    /// Keep a pending confirm only while the unit it is armed on is still in the list.
+    ///
+    /// The same rule [`ConfirmArm::retain`] enforces for the Ports table, hand-rolled
+    /// here because this arm's key is not `Copy` (see [`Self::armed_action`]). Clearing
+    /// the arm on every refresh — what this did before — is what makes a two-step confirm
+    /// unreachable on a table that reloads itself after every action.
+    fn retain_armed_action(&mut self) {
+        let unit_still_listed = self
+            .armed_action
+            .as_ref()
+            .is_some_and(|(name, _)| self.all_services.iter().any(|s| &s.name == name));
+        if !unit_still_listed {
+            self.armed_action = None;
+        }
     }
 
     fn set_query(&mut self, query: &str) {
@@ -703,6 +804,12 @@ impl ServicesDelegate {
     }
 }
 
+impl FillTableDelegate for ServicesDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for ServicesDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -713,7 +820,7 @@ impl TableDelegate for ServicesDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -723,10 +830,20 @@ impl TableDelegate for ServicesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.columns.apply_sort(col_ix, sort);
         self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
         self.recompute();
         cx.notify();
+    }
+
+    /// See [`PortsDelegate::render_th`].
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
@@ -737,7 +854,7 @@ impl TableDelegate for ServicesDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let t = theme::active(cx);
-        let (fg, muted, danger, selection) = (t.fg, t.muted, t.danger, t.selection);
+        let (fg, muted) = (t.fg, t.muted);
         // Borrow, not clone (perf audit finding #6) — `active` is `Copy`, and every
         // `String` field this fn needs already gets its own `.clone()` below.
         let svc = &self.services[row_ix];
@@ -751,12 +868,11 @@ impl TableDelegate for ServicesDelegate {
                 .child(svc.name.clone()),
             1 => {
                 let (label, tone) = svc_state_badge(svc.active);
-                div()
+                h_flex()
                     .id(cell_id)
+                    .size_full()
                     .px_2()
-                    .text_xs()
-                    .text_color(rgb(tone_color(tone, cx)))
-                    .child(label)
+                    .child(Badge::new(label).tone(badge_tone(tone)))
             }
             2 => {
                 let label: SharedString = if svc.sub_state.is_empty() {
@@ -790,30 +906,17 @@ impl TableDelegate for ServicesDelegate {
                     (SvcAction::Stop, "stop"),
                     (SvcAction::Kill, "kill"),
                 ];
-                div().id(cell_id).flex().flex_row().gap_2().px_2().children(
-                    actions
-                        .into_iter()
-                        .enumerate()
-                        .map(|(action_ix, (action, label))| {
+                div().id(cell_id).size_full().child(
+                    ActionCell::new().children(actions.into_iter().enumerate().map(
+                        |(action_ix, (action, label))| {
                             let armed =
                                 action_click_executes(&self.armed_action, &svc.name, action);
-                            let (display, color): (SharedString, u32) = if armed {
-                                (format!("{label}?").into(), danger)
-                            } else {
-                                (label.into(), muted)
-                            };
                             let name = svc.name.clone();
-                            div()
-                                .id(("svc-action", row_ix * 8 + action_ix))
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .text_xs()
-                                .cursor_pointer()
-                                .text_color(rgb(color))
-                                .hover(|s| s.bg(rgb(selection)))
-                                .child(display)
-                                .on_click(cx.listener(
+                            ConfirmButton::new(("svc-action", row_ix * 8 + action_ix), label)
+                                .armed(armed)
+                                .armed_label("confirm")
+                                .tooltip(svc_action_tooltip(action))
+                                .on_press(cx.listener(
                                     move |this, _ev: &ClickEvent, _window, cx| {
                                         if action_click_executes(
                                             &this.delegate().armed_action,
@@ -828,7 +931,8 @@ impl TableDelegate for ServicesDelegate {
                                         }
                                     },
                                 ))
-                        }),
+                        },
+                    )),
                 )
             }
         }
@@ -843,7 +947,8 @@ struct DockerDelegate {
     all_containers: Vec<ContainerInfo>,
     containers: Vec<ContainerInfo>,
     query: String,
-    columns: Vec<Column>,
+    /// See [`PortsDelegate::columns`].
+    columns: FillColumns,
     /// See [`PortsDelegate::active_sort`].
     active_sort: Option<(usize, SortDir)>,
 }
@@ -854,13 +959,32 @@ impl DockerDelegate {
             all_containers: Vec::new(),
             containers: Vec::new(),
             query: String::new(),
-            columns: vec![
-                Column::new("name", "Name").width(px(200.)).sortable(),
-                Column::new("image", "Image").width(px(220.)).sortable(),
-                Column::new("state", "State").width(px(90.)).sortable(),
-                Column::new("status", "Status").width(px(200.)).sortable(),
-                Column::new("ports", "Ports").width(px(260.)).sortable(),
-            ],
+            // Name, image and the port map are all unbounded (an image reference carries
+            // a registry, a path and a tag; the port map is a joined list), so all three
+            // grow. `Status` is systemd-ish prose of a predictable length and holds a
+            // floor instead.
+            columns: FillColumns::new([
+                (
+                    Column::new("name", "Name").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(180.),
+                ),
+                (
+                    Column::new("image", "Image").sortable(),
+                    ColumnWidth::grow().weight(1.2).min_width(180.),
+                ),
+                (
+                    Column::new("state", "State").sortable(),
+                    ColumnWidth::Fixed(110.),
+                ),
+                (
+                    Column::new("status", "Status").sortable(),
+                    ColumnWidth::Min(160.),
+                ),
+                (
+                    Column::new("ports", "Ports").sortable(),
+                    ColumnWidth::grow().weight(1.2).min_width(200.),
+                ),
+            ]),
             active_sort: None,
         }
     }
@@ -889,6 +1013,12 @@ impl DockerDelegate {
     }
 }
 
+impl FillTableDelegate for DockerDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for DockerDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -899,7 +1029,7 @@ impl TableDelegate for DockerDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -909,10 +1039,20 @@ impl TableDelegate for DockerDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.columns.apply_sort(col_ix, sort);
         self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
         self.recompute();
         cx.notify();
+    }
+
+    /// See [`PortsDelegate::render_th`].
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
@@ -941,12 +1081,11 @@ impl TableDelegate for DockerDelegate {
                 .child(container.image.clone()),
             2 => {
                 let (label, tone) = docker_state_badge(&container.state);
-                div()
+                h_flex()
                     .id(cell_id)
+                    .size_full()
                     .px_2()
-                    .text_xs()
-                    .text_color(rgb(tone_color(tone, cx)))
-                    .child(label.to_string())
+                    .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
             }
             3 => div()
                 .id(cell_id)
@@ -976,7 +1115,8 @@ struct KubePodsDelegate {
     all_pods: Vec<KubePod>,
     pods: Vec<KubePod>,
     query: String,
-    columns: Vec<Column>,
+    /// See [`PortsDelegate::columns`].
+    columns: FillColumns,
     /// See [`PortsDelegate::active_sort`].
     active_sort: Option<(usize, SortDir)>,
 }
@@ -987,18 +1127,35 @@ impl KubePodsDelegate {
             all_pods: Vec::new(),
             pods: Vec::new(),
             query: String::new(),
-            columns: vec![
-                Column::new("namespace", "Namespace")
-                    .width(px(140.))
-                    .sortable(),
-                Column::new("name", "Name").width(px(240.)).sortable(),
-                Column::new("ready", "Ready").width(px(70.)).sortable(),
-                Column::new("phase", "Phase").width(px(90.)).sortable(),
-                Column::new("restarts", "Restarts")
-                    .width(px(80.))
-                    .sortable(),
-                Column::new("node", "Node").width(px(140.)).sortable(),
-            ],
+            // A generated pod name (`coredns-7c65d6cfc9-4xqvj`) is the longest string in
+            // the row by a wide margin, so it takes twice the node name's share; the
+            // three status numbers are bounded and fixed.
+            columns: FillColumns::new([
+                (
+                    Column::new("namespace", "Namespace").sortable(),
+                    ColumnWidth::Min(150.),
+                ),
+                (
+                    Column::new("name", "Name").sortable(),
+                    ColumnWidth::grow().weight(2.0).min_width(240.),
+                ),
+                (
+                    Column::new("ready", "Ready").sortable(),
+                    ColumnWidth::Fixed(84.),
+                ),
+                (
+                    Column::new("phase", "Phase").sortable(),
+                    ColumnWidth::Fixed(110.),
+                ),
+                (
+                    Column::new("restarts", "Restarts").sortable(),
+                    ColumnWidth::Fixed(100.),
+                ),
+                (
+                    Column::new("node", "Node").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(160.),
+                ),
+            ]),
             active_sort: None,
         }
     }
@@ -1026,6 +1183,12 @@ impl KubePodsDelegate {
     }
 }
 
+impl FillTableDelegate for KubePodsDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for KubePodsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -1036,7 +1199,7 @@ impl TableDelegate for KubePodsDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -1046,10 +1209,20 @@ impl TableDelegate for KubePodsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        mark_column_sort(&mut self.columns, col_ix, sort);
+        self.columns.apply_sort(col_ix, sort);
         self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
         self.recompute();
         cx.notify();
+    }
+
+    /// See [`PortsDelegate::render_th`].
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
@@ -1084,12 +1257,11 @@ impl TableDelegate for KubePodsDelegate {
                 .child(pod.ready.clone()),
             3 => {
                 let (label, tone) = kube_phase_badge(&pod.phase);
-                div()
+                h_flex()
                     .id(cell_id)
+                    .size_full()
                     .px_2()
-                    .text_xs()
-                    .text_color(rgb(tone_color(tone, cx)))
-                    .child(label.to_string())
+                    .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
             }
             4 => {
                 let color = if pod.restarts > 0 { danger } else { muted };
@@ -1123,9 +1295,6 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = theme::active(cx);
-        let (border, accent, selection, muted, danger) =
-            (t.border, t.accent, t.selection, t.muted, t.danger);
         self.ensure_network_widgets(window, cx);
         if !self.network.loaded {
             self.network.loaded = true;
@@ -1141,428 +1310,454 @@ impl AppState {
             self.refresh_network_kube(cx);
         }
 
-        let filter = self.network.filter.clone();
-        let refreshing = match self.network.sub_tab {
-            NetSubTab::Services => self.network.svc_refreshing,
-            NetSubTab::Ports | NetSubTab::Interfaces => self.network.refreshing,
-            NetSubTab::Docker => self.network.docker_refreshing,
-            NetSubTab::Kubernetes => self.network.kube_refreshing,
-        };
-        let refresh_label = if refreshing { "…" } else { "⟳ refresh" };
-
-        let port_count = self
-            .network
-            .table
-            .as_ref()
-            .map(|t| t.read(cx).delegate().ports.len())
-            .unwrap_or(0);
-        let svc_count = self
-            .network
-            .services_table
-            .as_ref()
-            .map(|t| t.read(cx).delegate().services.len())
-            .unwrap_or(0);
-        let container_count = self
-            .network
-            .docker_table
-            .as_ref()
-            .map(|t| t.read(cx).delegate().containers.len())
-            .unwrap_or(0);
-        let pod_count = self
-            .network
-            .kube_pods_table
-            .as_ref()
-            .map(|t| t.read(cx).delegate().pods.len())
-            .unwrap_or(0);
-
-        let sub: SharedString = match self.network.sub_tab {
-            NetSubTab::Ports => match &self.network.error {
-                Some(e) => format!("error: {e}").into(),
-                None if self.network.refreshing => "refreshing…".into(),
-                None => format!("{port_count} listening ports").into(),
-            },
-            NetSubTab::Services => match &self.network.svc_error {
-                Some(e) => format!("error: {e}").into(),
-                None if self.network.svc_refreshing => "refreshing…".into(),
-                None => {
-                    let scope_label = if self.network.svc_scope == SvcScope::User {
-                        "user"
-                    } else {
-                        "system"
-                    };
-                    format!("{svc_count} {scope_label} services").into()
-                }
-            },
-            NetSubTab::Interfaces => match &self.network.error {
-                Some(e) => format!("error: {e}").into(),
-                None => format!("{} interfaces", self.network.interfaces.len()).into(),
-            },
-            NetSubTab::Docker => {
-                if self.network.docker_not_installed {
-                    "docker not installed — no daemon reachable".into()
-                } else {
-                    match &self.network.docker_error {
-                        Some(e) => format!("error: {e}").into(),
-                        None if self.network.docker_refreshing => "refreshing…".into(),
-                        None => format!("{container_count} containers").into(),
-                    }
-                }
-            }
-            NetSubTab::Kubernetes => {
-                if self.network.kube_not_installed {
-                    "kubectl not installed — no cluster".into()
-                } else {
-                    match &self.network.kube_error {
-                        Some(e) => format!("error: {e}").into(),
-                        None if self.network.kube_refreshing => "refreshing…".into(),
-                        None => format!(
-                            "{} contexts · {pod_count} pods",
-                            self.network.kube_contexts.len()
-                        )
-                        .into(),
-                    }
-                }
-            }
+        let theme = theme::active(cx).clone();
+        let sub_tab = self.network.sub_tab;
+        let body: AnyElement = match sub_tab {
+            NetSubTab::Ports => self.ports_view(&theme, cx),
+            NetSubTab::Services => self.services_view(&theme, cx),
+            NetSubTab::Interfaces => self.interfaces_view(&theme, cx),
+            NetSubTab::Docker => self.docker_view(cx),
+            NetSubTab::Kubernetes => self.kube_view(cx),
         };
 
-        let kill_error = self
-            .network
-            .table
-            .as_ref()
-            .and_then(|t| t.read(cx).delegate().kill_error.clone());
-        let action_error = self
-            .network
-            .services_table
-            .as_ref()
-            .and_then(|t| t.read(cx).delegate().action_error.clone());
-
-        let body: AnyElement = match self.network.sub_tab {
-            NetSubTab::Ports => self
-                .network
-                .table
-                .clone()
-                .map(|t| {
-                    div()
-                        .flex_1()
-                        .w_full()
-                        .child(Table::new(&t).stripe(true))
-                        .into_any_element()
-                })
-                .unwrap_or_else(|| div().into_any_element()),
-            NetSubTab::Services => {
-                let scope_toggle = self.svc_scope_toggle(cx);
-                let table = self.network.services_table.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .child(scope_toggle)
-                    .children(
-                        table.map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true))),
-                    )
-                    .into_any_element()
-            }
-            NetSubTab::Interfaces => self.interfaces_strip(cx).into_any_element(),
-            NetSubTab::Docker => {
-                if self.network.docker_not_installed {
-                    graceful_absence_notice(
-                        "docker not installed — no daemon reachable",
-                        "install Docker and start the daemon to see containers here",
-                        cx,
-                    )
-                    .into_any_element()
-                } else {
-                    self.network
-                        .docker_table
-                        .clone()
-                        .map(|t| {
-                            div()
-                                .flex_1()
-                                .w_full()
-                                .child(Table::new(&t).stripe(true))
-                                .into_any_element()
-                        })
-                        .unwrap_or_else(|| div().into_any_element())
-                }
-            }
-            NetSubTab::Kubernetes => {
-                if self.network.kube_not_installed {
-                    graceful_absence_notice(
-                        "kubectl not installed — no cluster",
-                        "install kubectl and configure a context to see pods here",
-                        cx,
-                    )
-                    .into_any_element()
-                } else {
-                    let context_strip = self.kube_context_strip(cx);
-                    let table = self.network.kube_pods_table.clone();
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .child(context_strip)
-                        .children(
-                            table.map(|t| {
-                                div().flex_1().w_full().child(Table::new(&t).stripe(true))
-                            }),
-                        )
-                        .into_any_element()
-                }
-            }
-        };
-
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .flex_1()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(border))
-                    .child(self.network_sub_tab_strip(cx))
-                    .children(filter.map(|f| div().flex_1().max_w(px(280.)).child(f)))
-                    .child(
-                        div()
-                            .id("net-refresh")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(rgb(accent))
-                            .hover(|s| s.bg(rgb(selection)))
-                            .child(refresh_label)
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                match this.network.sub_tab {
-                                    NetSubTab::Services => this.refresh_network_services(cx),
-                                    NetSubTab::Ports | NetSubTab::Interfaces => {
-                                        this.refresh_network(cx)
-                                    }
-                                    NetSubTab::Docker => this.refresh_network_docker(cx),
-                                    NetSubTab::Kubernetes => this.refresh_network_kube(cx),
-                                }
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .px_4()
-                    .py_1()
-                    .text_sm()
-                    .text_color(rgb(muted))
-                    .child(sub),
-            )
-            .child(body)
-            .children(kill_error.map(|e| {
-                div()
-                    .px_4()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(danger))
-                    .child(format!("✗ {e}"))
-            }))
-            .children(action_error.map(|e| {
-                div()
-                    .px_4()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(danger))
-                    .child(format!("✗ {e}"))
-            }))
+            .p_4()
+            .gap_3()
+            .child(self.network_sub_view_strip(sub_tab, cx))
+            // The one flexible child, so whichever sub-view is showing gets the whole
+            // remaining canvas. `min_h(0)` keeps its own natural height from starving the
+            // basis-0 `flex_1` down to a header row — same rule `systems_tab.rs` documents.
+            .child(div().flex_1().min_h(px(0.)).w_full().child(body))
             .into_any_element()
     }
 
-    /// The `[Ports] [Services] [Interfaces]` segmented control — mirrors `app.rs`'s
-    /// main `tab_strip` / `host_form.rs`'s `auth_selector`.
-    fn network_sub_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (selection, border, fg_strong, muted) = (t.selection, t.border, t.fg_strong, t.muted);
-        let active = self.network.sub_tab;
-        div()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .children(NetSubTab::ALL.iter().enumerate().map(|(ix, &tab)| {
-                let is_active = tab == active;
-                div()
-                    .id(("net-subtab", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(if is_active { selection } else { border }))
-                    .text_color(rgb(if is_active { fg_strong } else { muted }))
-                    .child(tab.label())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.network.sub_tab = tab;
-                        cx.notify();
-                    }))
+    /// The `[Ports] [Services] [Interfaces] [Docker] [Kubernetes]` strip.
+    ///
+    /// This control is where `sid_ui::SegmentedControl` came from — the audit called the
+    /// hand-rolled original *"the best-looking control in the app"* — but the original
+    /// painted unselected chips `border` and the selected one `selection`, which on cosmos
+    /// are `0x1f1f2e` and `0x1c1c2c`: the inactive chips were **brighter** than the active
+    /// one, so the strip read as four raised chips with one dent in it. The component
+    /// inverts that structurally (recessed track, transparent unselected, one filled chip).
+    ///
+    /// No segment icons: the bundled Lucide set has no honest glyph for a container
+    /// runtime, a cluster or a network adapter, and three wrong pictures next to two right
+    /// ones is worse than five words.
+    fn network_sub_view_strip(
+        &self,
+        active: NetSubTab,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let selected = NetSubTab::ALL
+            .iter()
+            .position(|&tab| tab == active)
+            .unwrap_or(0);
+        SegmentedControl::new("net-subview")
+            .segments(NetSubTab::ALL.iter().map(|&tab| Segment::new(tab.label())))
+            .selected(selected)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                if let Some(tab) = NetSubTab::at(ev.index) {
+                    this.network.sub_tab = tab;
+                    cx.notify();
+                }
             }))
     }
 
-    /// The Services sub-tab's `system|user` scope toggle. Switching scope forces a
-    /// fresh `list_services` call (`svc_loaded` reset) — the two scopes are disjoint
-    /// unit sets, not a filter over one cached list.
-    fn svc_scope_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
-        let scopes = [(SvcScope::System, "system"), (SvcScope::User, "user")];
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child("scope"))
-            .children(scopes.iter().enumerate().map(|(ix, &(scope, label))| {
-                let active = self.network.svc_scope == scope;
-                div()
-                    .id(("svc-scope", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(if active { selection } else { border }))
-                    .text_color(rgb(if active { fg_strong } else { muted }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.set_svc_scope(scope, cx);
-                    }))
-            }))
+    /// The shared filter field, capped rather than filling the toolbar row: a 1900px-wide
+    /// filter box is as wrong as the 648px table it used to sit above.
+    fn network_filter_field(&self) -> impl IntoElement + use<> {
+        div().max_w(px(320.)).children(self.network.filter.clone())
     }
 
-    /// The Kubernetes sub-tab's context strip: one chip per configured context
-    /// (★ marks kubeconfig's own `current-context`), clicking a chip re-scopes the
-    /// pods table to that context (`select_kube_context`). Mirrors
-    /// [`Self::svc_scope_toggle`]'s shape; empty when no contexts are configured
-    /// (kubectl installed but nothing set up yet — a valid non-`NotInstalled` state).
-    fn kube_context_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
-        let contexts = self.network.kube_contexts.clone();
-        let selected = self.network.kube_selected_context.clone();
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child("context"))
-            .when(contexts.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(muted))
-                        .child("no kube contexts configured"),
-                )
-            })
-            .children(contexts.iter().enumerate().map(|(ix, ctx)| {
-                // A context is "active" either because the user explicitly selected it,
-                // or (nothing explicitly selected yet) because it's kubeconfig's own
-                // `current-context` — matches which context `list_pods(None)` actually
-                // queried on the initial load.
-                let active = match &selected {
-                    Some(name) => name == &ctx.name,
-                    None => ctx.current,
-                };
-                let label: SharedString = if ctx.current {
-                    format!("★ {}", ctx.name).into()
-                } else {
-                    ctx.name.clone().into()
-                };
-                let name = ctx.name.clone();
-                div()
-                    .id(("kube-context", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(if active { selection } else { border }))
-                    .text_color(rgb(if active { fg_strong } else { muted }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.select_kube_context(Some(name.clone()), cx);
-                    }))
-            }))
-    }
-
-    /// Interfaces sub-tab: primary interfaces (default-route iface first, then
-    /// alphabetical — `sort_interfaces_default_first`, applied on refresh) always
-    /// shown; generic/virtual ones ([`is_hidden_interface`]) collapsed under a
-    /// `hidden (N) ▸` row that expands in place. Reads the already-filtered/partitioned
-    /// cache (`recompute_interfaces`, perf audit finding #5) instead of re-partitioning
-    /// `self.network.interfaces` on every render — the cache is kept current on every
-    /// refresh and every filter keystroke, so this never shows a stale count.
-    fn interfaces_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, fg) = (t.border, t.muted, t.fg);
-        let default_name = self.network.default_route.clone();
-        let visible = &self.network.visible_interfaces;
-        let hidden = &self.network.hidden_interfaces;
-        let hidden_count = hidden.len();
-        let expanded = self.network.interfaces_expanded;
-
-        let default_for_rows = default_name.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
-            .children(
-                visible
-                    .iter()
-                    .map(|iface| render_iface_row(iface, default_for_rows.as_deref(), cx)),
+    /// The one refresh control, routed to whichever sub-view is showing.
+    ///
+    /// Was an unstyled accent word (`⟳ refresh`) with no border, no fill and no padding
+    /// box — the same defect on this tab as on System. It is a real [`Button`] now, and
+    /// the in-flight state is the button's own spinner rather than the label turning into
+    /// a single ellipsis character.
+    fn network_refresh_button(
+        &self,
+        sub_tab: NetSubTab,
+        refreshing: bool,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        Button::new("net-refresh", "refresh")
+            .small()
+            .icon(Icon::Refresh)
+            .loading(refreshing)
+            .on_click(
+                cx.listener(move |this, _ev: &ClickEvent, _window, cx| match sub_tab {
+                    NetSubTab::Services => this.refresh_network_services(cx),
+                    NetSubTab::Ports | NetSubTab::Interfaces => this.refresh_network(cx),
+                    NetSubTab::Docker => this.refresh_network_docker(cx),
+                    NetSubTab::Kubernetes => this.refresh_network_kube(cx),
+                }),
             )
-            .when(hidden_count > 0, |el| {
-                let toggle_label: SharedString = format!(
-                    "{} hidden ({hidden_count})",
-                    if expanded { "▾" } else { "▸" }
+    }
+
+    /// The filter box's current text — read for the empty states' wording, so "nothing
+    /// here" and "nothing matches what you typed" are not the same sentence.
+    fn network_query(&self, cx: &App) -> String {
+        self.network
+            .filter
+            .as_ref()
+            .map(|f| f.read(cx).content().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Ports: toolbar, then the fill-width table, then any kill error.
+    fn ports_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.refreshing;
+        let table = self.network.table.clone();
+        let count = table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().ports.len())
+            .unwrap_or(0);
+        let kill_error = table
+            .as_ref()
+            .and_then(|t| t.read(cx).delegate().kill_error.clone());
+        let count_label: SharedString = match &self.network.error {
+            Some(e) => format!("error: {e}").into(),
+            None if refreshing => "refreshing…".into(),
+            None => sid_ui::toolbar::count_label(count, "listening port").into(),
+        };
+        let empty = (count == 0 && !refreshing && self.network.error.is_none()).then(|| {
+            EmptyState::new("no listening ports")
+                .icon(Icon::Globe)
+                .guidance(empty_guidance(
+                    &self.network_query(cx),
+                    "nothing on this machine is accepting connections",
+                ))
+        });
+
+        v_flex()
+            .size_full()
+            .child(
+                Toolbar::new()
+                    .filter(self.network_filter_field())
+                    .count_label(count_label)
+                    .action(self.network_refresh_button(NetSubTab::Ports, refreshing, cx)),
+            )
+            .child(table_pane(table.as_ref(), empty))
+            .children(kill_error.map(|e| error_line(theme, e)))
+            .into_any_element()
+    }
+
+    /// Services: toolbar (with the `system|user` scope control in it), table, action error.
+    fn services_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.svc_refreshing;
+        let scope = self.network.svc_scope;
+        let table = self.network.services_table.clone();
+        let count = table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().services.len())
+            .unwrap_or(0);
+        let action_error = table
+            .as_ref()
+            .and_then(|t| t.read(cx).delegate().action_error.clone());
+        let count_label: SharedString = match &self.network.svc_error {
+            Some(e) => format!("error: {e}").into(),
+            None if refreshing => "refreshing…".into(),
+            None => {
+                sid_ui::toolbar::count_label(count, &format!("{} service", svc_scope_label(scope)))
+                    .into()
+            }
+        };
+        let empty = (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
+            EmptyState::new("no units")
+                .icon(Icon::Settings)
+                .guidance(empty_guidance(
+                    &self.network_query(cx),
+                    "this systemd manager reports no service units",
+                ))
+        });
+
+        v_flex()
+            .size_full()
+            .child(
+                Toolbar::new()
+                    .filter(self.network_filter_field())
+                    // The scope control belongs *in* the toolbar, not on a bordered row of
+                    // its own beneath it: it narrows the same list the filter beside it
+                    // narrows, and a second full-width bar for two chips was a third
+                    // horizontal rule in the top 100px of the screen.
+                    .child(self.svc_scope_control(scope, cx))
+                    .count_label(count_label)
+                    .action(self.network_refresh_button(NetSubTab::Services, refreshing, cx)),
+            )
+            .child(table_pane(table.as_ref(), empty))
+            .children(action_error.map(|e| error_line(theme, e)))
+            .into_any_element()
+    }
+
+    /// The Services sub-view's `system|user` scope control. Switching scope forces a
+    /// fresh `list_services` call (`svc_loaded` reset) — the two scopes are disjoint unit
+    /// sets, not a filter over one cached list.
+    fn svc_scope_control(
+        &self,
+        active: SvcScope,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let selected = SVC_SCOPES
+            .iter()
+            .position(|&(scope, _)| scope == active)
+            .unwrap_or(0);
+        SegmentedControl::new("net-svc-scope")
+            .segments(SVC_SCOPES.iter().map(|&(_, label)| Segment::new(label)))
+            .selected(selected)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                if let Some(&(scope, _)) = SVC_SCOPES.get(ev.index) {
+                    this.set_svc_scope(scope, cx);
+                }
+            }))
+    }
+
+    /// Docker: toolbar, then either the containers table or the graceful-absence state.
+    ///
+    /// `docker not installed` is an expected local-machine condition, not a failure, so it
+    /// gets an [`EmptyState`] — the same component every other "nothing here" surface uses
+    /// — rather than the two dim centred lines this file used to hand-roll.
+    fn docker_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.docker_refreshing;
+        let not_installed = self.network.docker_not_installed;
+        let table = self.network.docker_table.clone();
+        let count = table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().containers.len())
+            .unwrap_or(0);
+        let count_label: SharedString = if not_installed {
+            "docker not installed".into()
+        } else {
+            match &self.network.docker_error {
+                Some(e) => format!("error: {e}").into(),
+                None if refreshing => "refreshing…".into(),
+                None => sid_ui::toolbar::count_label(count, "container").into(),
+            }
+        };
+
+        let body: AnyElement = if not_installed {
+            EmptyState::new("docker not installed — no daemon reachable")
+                .icon(Icon::Info)
+                .guidance("install Docker and start the daemon to see containers here")
+                .into_any_element()
+        } else {
+            let empty =
+                (count == 0 && !refreshing && self.network.docker_error.is_none()).then(|| {
+                    EmptyState::new("no containers")
+                        .icon(Icon::Info)
+                        .guidance(empty_guidance(
+                            &self.network_query(cx),
+                            "the daemon is reachable and reports no containers, running or stopped",
+                        ))
+                });
+            table_pane(table.as_ref(), empty)
+        };
+
+        v_flex()
+            .size_full()
+            .child(
+                Toolbar::new()
+                    .filter(self.network_filter_field())
+                    .count_label(count_label)
+                    .action(self.network_refresh_button(NetSubTab::Docker, refreshing, cx)),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Kubernetes: toolbar (with the context control in it), then the pods table, the
+    /// no-contexts state, or the graceful-absence state.
+    fn kube_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.kube_refreshing;
+        let not_installed = self.network.kube_not_installed;
+        let context_count = self.network.kube_contexts.len();
+        let table = self.network.kube_pods_table.clone();
+        let count = table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().pods.len())
+            .unwrap_or(0);
+        let count_label: SharedString = if not_installed {
+            "kubectl not installed".into()
+        } else {
+            match &self.network.kube_error {
+                Some(e) => format!("error: {e}").into(),
+                None if refreshing => "refreshing…".into(),
+                None => format!(
+                    "{} · {}",
+                    sid_ui::toolbar::count_label(context_count, "context"),
+                    sid_ui::toolbar::count_label(count, "pod")
                 )
-                .into();
-                let el = el.child(
-                    div()
-                        .id("net-hidden-toggle")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .px_1()
-                        .py_1()
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(muted))
-                        .hover(|s| s.text_color(rgb(fg)))
-                        .child(toggle_label)
-                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                            this.network.interfaces_expanded = !this.network.interfaces_expanded;
-                            cx.notify();
-                        })),
-                );
-                el.when(expanded, |el2| {
-                    el2.children(
-                        hidden
-                            .iter()
-                            .map(|iface| render_iface_row(iface, default_name.as_deref(), cx)),
-                    )
-                })
+                .into(),
+            }
+        };
+
+        let body: AnyElement = if not_installed {
+            EmptyState::new("kubectl not installed — no cluster")
+                .icon(Icon::Info)
+                .guidance("install kubectl and configure a context to see pods here")
+                .into_any_element()
+        } else if context_count == 0 {
+            EmptyState::new("no kube contexts configured")
+                .icon(Icon::Info)
+                .guidance("add a cluster to your kubeconfig to scope the pods table to it")
+                .into_any_element()
+        } else {
+            let empty =
+                (count == 0 && !refreshing && self.network.kube_error.is_none()).then(|| {
+                    EmptyState::new("no pods")
+                        .icon(Icon::Info)
+                        .guidance(empty_guidance(
+                            &self.network_query(cx),
+                            "this context reports no pods in any namespace",
+                        ))
+                });
+            table_pane(table.as_ref(), empty)
+        };
+
+        v_flex()
+            .size_full()
+            .child(
+                Toolbar::new()
+                    .filter(self.network_filter_field())
+                    .children(self.kube_context_control(cx))
+                    .count_label(count_label)
+                    .action(self.network_refresh_button(NetSubTab::Kubernetes, refreshing, cx)),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// The Kubernetes context control: one segment per configured context, the
+    /// kubeconfig's own `current-context` marked with a star. Clicking one re-scopes the
+    /// pods table (`select_kube_context`). `None` when nothing is configured — the body
+    /// says so instead, with room to say it in.
+    fn kube_context_control(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let contexts = &self.network.kube_contexts;
+        if contexts.is_empty() {
+            return None;
+        }
+        let selected_name = self.network.kube_selected_context.clone();
+        // A context is "active" either because the user explicitly selected it, or —
+        // nothing explicitly selected yet — because it is kubeconfig's own
+        // `current-context`, which is the context `list_pods(None)` actually queried.
+        let selected = contexts
+            .iter()
+            .position(|ctx| match &selected_name {
+                Some(name) => name == &ctx.name,
+                None => ctx.current,
             })
+            .unwrap_or(0);
+        let names: Vec<String> = contexts.iter().map(|ctx| ctx.name.clone()).collect();
+        Some(
+            SegmentedControl::new("net-kube-context")
+                .segments(contexts.iter().map(|ctx| {
+                    let segment = Segment::new(ctx.name.clone());
+                    if ctx.current {
+                        segment.icon(Icon::Star)
+                    } else {
+                        segment
+                    }
+                }))
+                .selected(selected)
+                .on_select(cx.listener(move |this, ev: &SegmentSelect, _window, cx| {
+                    if let Some(name) = names.get(ev.index) {
+                        this.select_kube_context(Some(name.clone()), cx);
+                    }
+                })),
+        )
+    }
+
+    /// Interfaces: toolbar, then one bounded card holding the always-visible interfaces
+    /// and the collapsed `hidden (N)` group.
+    ///
+    /// Not a [`FillTable`] like the other four sub-views, and deliberately so: the whole
+    /// point of this view is the *grouping* (primary interfaces always shown,
+    /// generic/virtual ones — [`is_hidden_interface`] — behind one disclosure), and
+    /// `gpui-component`'s table has no row-group concept to express that with. What it
+    /// does adopt is everything else: a card boundary instead of a bare bordered strip, a
+    /// real disclosure [`Button`] instead of a `▸`/`▾` text glyph, and [`Badge`]s instead
+    /// of coloured words for up/down and the default route.
+    fn interfaces_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.refreshing;
+        let total = self.network.interfaces.len();
+        let count_label: SharedString = match &self.network.error {
+            Some(e) => format!("error: {e}").into(),
+            None if refreshing => "refreshing…".into(),
+            None => sid_ui::toolbar::count_label(total, "interface").into(),
+        };
+
+        let default_name = self.network.default_route.clone();
+        let visible_rows: Vec<AnyElement> = self
+            .network
+            .visible_interfaces
+            .iter()
+            .map(|iface| render_iface_row(iface, default_name.as_deref(), theme).into_any_element())
+            .collect();
+        let hidden_rows: Vec<AnyElement> = self
+            .network
+            .hidden_interfaces
+            .iter()
+            .map(|iface| render_iface_row(iface, default_name.as_deref(), theme).into_any_element())
+            .collect();
+        let hidden_count = hidden_rows.len();
+        let expanded = self.network.interfaces_expanded;
+        let nothing_to_show = visible_rows.is_empty() && hidden_count == 0;
+
+        let card = Card::new()
+            .title("interfaces")
+            .child(v_flex().w_full().children(visible_rows))
+            .children((hidden_count > 0).then(|| {
+                v_flex()
+                    .w_full()
+                    .child(
+                        h_flex().w_full().pt_1().child(
+                            Button::new("net-hidden-toggle", format!("hidden ({hidden_count})"))
+                                .small()
+                                .ghost()
+                                .icon(if expanded {
+                                    Icon::ChevronDown
+                                } else {
+                                    Icon::ChevronRight
+                                })
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                    this.network.interfaces_expanded =
+                                        !this.network.interfaces_expanded;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .children(expanded.then(|| v_flex().w_full().children(hidden_rows)))
+            }))
+            .children(nothing_to_show.then(|| {
+                EmptyState::new("no interfaces")
+                    .icon(Icon::Globe)
+                    .guidance(empty_guidance(
+                        &self.network_query(cx),
+                        "the probe found no network interfaces on this machine",
+                    ))
+                    .into_any_element()
+            }));
+
+        v_flex()
+            .size_full()
+            .child(
+                Toolbar::new()
+                    .filter(self.network_filter_field())
+                    .count_label(count_label)
+                    .action(self.network_refresh_button(NetSubTab::Interfaces, refreshing, cx)),
+            )
+            .child(
+                div()
+                    .id("net-ifaces-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .pt_3()
+                    .overflow_y_scroll()
+                    .child(card),
+            )
+            .into_any_element()
     }
 
     /// Lazily build the ports table, the services table, the Docker/Kubernetes tables,
@@ -2007,13 +2202,78 @@ fn should_apply_pods(current_gen: u64, fetched_gen: u64) -> bool {
     current_gen == fetched_gen
 }
 
-// ---- pure helpers (unit-tested) ---------------------------------------------------
+// ---- view helpers -------------------------------------------------------------------
 
-/// Two-click kill confirm: `true` when `clicked` is the pid already armed. Mirrors
-/// `app::delete_click_executes`, keyed on `Pid` since kill targets a process, not a row.
-fn kill_click_executes(armed: Option<Pid>, clicked: Pid) -> bool {
-    armed == Some(clicked)
+/// The Services scope control's choices, in display order. The index into this array is
+/// the index `SegmentedControl` reports back from `on_select`.
+const SVC_SCOPES: [(SvcScope, &str); 2] = [(SvcScope::System, "system"), (SvcScope::User, "user")];
+
+/// The word for a systemd manager scope, for the count line ("12 system services").
+fn svc_scope_label(scope: SvcScope) -> &'static str {
+    match scope {
+        SvcScope::User => "user",
+        SvcScope::System => "system",
+    }
 }
+
+/// A tooltip naming what a Services row action actually does. Required by
+/// [`ConfirmButton`]'s tooltip slot for the same reason `IconButton` demands one: `kill`
+/// on a unit row is not self-describing, and it is the destructive one.
+fn svc_action_tooltip(action: SvcAction) -> &'static str {
+    match action {
+        SvcAction::Start => "systemctl start this unit",
+        SvcAction::Restart => "systemctl restart this unit",
+        SvcAction::Stop => "systemctl stop this unit",
+        SvcAction::Kill => "systemctl kill this unit",
+    }
+}
+
+/// What an empty table should say: whether it is empty because the machine has nothing,
+/// or because the filter excluded everything. Pure, so the distinction is unit-tested
+/// rather than eyeballed.
+fn empty_guidance(query: &str, unfiltered: &str) -> String {
+    let query = query.trim();
+    if query.is_empty() {
+        return unfiltered.to_string();
+    }
+    format!("nothing matches \"{query}\" — clear the filter to see everything")
+}
+
+/// The table half of a sub-view: the fill-width table, or an [`EmptyState`] in its place.
+///
+/// Substituting rather than stacking: a header row above a centred "nothing here" panel
+/// reads as a broken render, which is exactly the failure the audit flagged on Workspaces.
+fn table_pane<D: FillTableDelegate + 'static>(
+    table: Option<&Entity<TableState<D>>>,
+    empty: Option<EmptyState>,
+) -> AnyElement {
+    let pane = div().flex_1().min_h(px(0.)).w_full();
+    match (table, empty) {
+        (_, Some(empty)) => pane.child(empty).into_any_element(),
+        (Some(table), None) => pane
+            .child(FillTable::new(table).stripe(true))
+            .into_any_element(),
+        (None, None) => pane.into_any_element(),
+    }
+}
+
+/// An inline failure notice: the registry's error glyph, then the message.
+///
+/// Both of this tab's error lines used to open with a literal `✗` — a Dingbats codepoint
+/// drawn by whatever the text font happened to have, at whatever weight, with no size or
+/// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG that
+/// inherits both.
+fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
+    h_flex()
+        .gap_1p5()
+        .py_1()
+        .text_xs()
+        .text_color(rgb(theme.danger))
+        .child(Icon::Error.small())
+        .child(message)
+}
+
+// ---- pure helpers (unit-tested) ---------------------------------------------------
 
 /// Two-click confirm for a Services row action: `true` when `(name, action)` matches
 /// the armed pair exactly (a different action on the same unit, or the same action on
@@ -2130,12 +2390,18 @@ enum Tone {
     Muted,
 }
 
-fn tone_color(tone: Tone, cx: &App) -> u32 {
-    let t = theme::active(cx);
+/// The [`BadgeTone`] a [`Tone`] renders as.
+///
+/// The state columns used to be a coloured word — the same weight and size as the muted
+/// metadata beside them, distinguishable only by hue, which is the one channel a reader
+/// scanning 300 rows does not reliably resolve. A [`Badge`] gives the state a bounded
+/// chip, and the tone ladder is the component's problem from here (it is the thing that
+/// keeps the label legible on all four palettes).
+fn badge_tone(tone: Tone) -> BadgeTone {
     match tone {
-        Tone::Ok => t.success,
-        Tone::Danger => t.danger,
-        Tone::Muted => t.muted,
+        Tone::Ok => BadgeTone::Success,
+        Tone::Danger => BadgeTone::Danger,
+        Tone::Muted => BadgeTone::Neutral,
     }
 }
 
@@ -2368,37 +2634,7 @@ fn cmp_pod_node(a: &KubePod, b: &KubePod) -> Ordering {
     a.node.cmp(&b.node)
 }
 
-/// Two-tier graceful-absence notice, reusing the same "dim status line + secondary
-/// detail line" shape already used for the Ports/Services error paths (`sub` line +
-/// `kill_error`/`action_error` line in `network_tab`) — here both tiers are
-/// intentionally dim (not danger-toned), since "docker/kubectl isn't set up" is an
-/// expected, common local-machine state, not a failure.
-fn graceful_absence_notice(headline: &str, detail: &str, cx: &App) -> impl IntoElement + use<> {
-    let t = theme::active(cx);
-    let (fg, muted) = (t.fg, t.muted);
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_4()
-        .py_6()
-        .items_center()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(fg))
-                .child(headline.to_string()),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(detail.to_string()),
-        )
-}
-
-/// Whether interface `name` should default into the collapsed "hidden (N) ▸" group.
+/// Whether interface `name` should default into the collapsed "hidden (N)" group.
 /// Never hidden if it holds the default route; otherwise visible only if it matches a
 /// physical/VPN name prefix (`en*`, `eth*`, `wl*`, `wlan*`, `ww*`, `usb*`, `wg*`,
 /// `tun*`, `tailscale*`) — anything else (loopback, container/VM virtual interfaces
@@ -2434,57 +2670,92 @@ fn partition_interfaces<'a>(
         .partition(|i| !is_hidden_interface(&i.name, default_name == Some(i.name.as_str())))
 }
 
-/// Render one interfaces-strip row: name (+ ★ if default route) · addrs · up/down ·
-/// rx/tx (humanized). Free function (not `&self`) so it's shared between the visible
-/// and expanded-hidden groups in `interfaces_strip`.
+/// Render one interfaces row: name · addrs · a `default route` badge where it applies ·
+/// an up/down badge · rx/tx (humanized). Free function (not `&self`) so it is shared
+/// between the visible and expanded-hidden groups in [`AppState::interfaces_view`].
+///
+/// The default-route marker used to be a bare `★` in accent — an unlabelled glyph with no
+/// legend anywhere on the screen — and up/down was a coloured word. Both are [`Badge`]s
+/// now, which is the same treatment the Services/Docker/Kubernetes state columns get, so
+/// one reading applies across the whole tab.
 fn render_iface_row(
     iface: &NetInterface,
     default_name: Option<&str>,
-    cx: &App,
+    theme: &Theme,
 ) -> impl IntoElement + use<> {
-    let t = theme::active(cx);
-    let (fg, muted, accent) = (t.fg, t.muted, t.accent);
     let is_default = default_name == Some(iface.name.as_str());
     let addrs: SharedString = if iface.addrs.is_empty() {
         "no addrs".into()
     } else {
         iface.addrs.join(", ").into()
     };
-    let (status_label, status_color) = if iface.is_up {
-        ("up", accent)
+    let (status_label, status_tone) = if iface.is_up {
+        ("up", BadgeTone::Success)
     } else {
-        ("down", muted)
+        ("down", BadgeTone::Neutral)
     };
     let throughput: SharedString = format!(
-        "↓{} ↑{}",
+        "rx {} · tx {}",
         humanize_bytes(iface.rx_bytes),
         humanize_bytes(iface.tx_bytes)
     )
     .into();
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
+    h_flex()
+        .w_full()
         .gap_3()
+        .row_padding()
         .child(
+            // Fixed and clipped, not wrapped: a docker bridge name
+            // (`br-ad668dcc2335`) is 15 characters and wrapping one made its row twice
+            // as tall as its neighbours, which is the only thing the eye notices in a
+            // list of 17.
             div()
-                .w(px(120.))
+                .w(px(184.))
+                .flex_none()
+                .truncate()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(fg))
+                .text_color(rgb(theme.fg_strong))
                 .child(iface.name.clone()),
         )
         .when(is_default, |el| {
-            el.child(div().text_xs().text_color(rgb(accent)).child("★"))
+            // Outline, not the soft fill: accent means "engage", and on cosmos a filled
+            // accent chip is a red block. This is orientation — exactly one row on the
+            // screen carries it at all, which is signal enough without shouting.
+            el.child(
+                Badge::new("default route")
+                    .tone(BadgeTone::Accent)
+                    .outline(),
+            )
         })
-        .child(div().flex_1().text_xs().text_color(rgb(muted)).child(addrs))
         .child(
             div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
                 .text_xs()
-                .text_color(rgb(status_color))
-                .child(status_label),
+                .text_color(rgb(theme.muted))
+                .child(addrs),
         )
-        .child(div().text_xs().text_color(rgb(muted)).child(throughput))
+        // The trailing two are fixed-width so the status chips line up down the list.
+        // Left to size themselves they tracked the throughput string's length and the
+        // column zig-zagged by 60px a row.
+        .child(
+            h_flex()
+                .w(px(72.))
+                .flex_none()
+                .justify_end()
+                .child(Badge::new(status_label).tone(status_tone)),
+        )
+        .child(
+            div()
+                .w(px(180.))
+                .flex_none()
+                .text_right()
+                .text_xs()
+                .text_color(rgb(theme.muted))
+                .child(throughput),
+        )
 }
 
 /// Human-readable byte count (binary units, one decimal place above `B`) — e.g. "340 B",
@@ -2572,13 +2843,82 @@ mod tests {
         }
     }
 
+    fn ports_delegate() -> PortsDelegate {
+        PortsDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())))
+    }
+
+    fn services_delegate() -> ServicesDelegate {
+        ServicesDelegate::new(Arc::new(SvcctlProvider::new()), SvcScope::System)
+    }
+
+    /// The resolved pixel width of every column at `viewport`.
+    fn resolved(columns: &mut FillColumns, viewport: f32) -> Vec<f32> {
+        columns.sync(viewport);
+        (0..columns.len())
+            .map(|ix| f32::from(columns.column(ix).width))
+            .collect()
+    }
+
     #[test]
     fn kill_needs_two_clicks_on_the_same_pid() {
         let pid = Pid::from_u32(123);
         let other = Pid::from_u32(456);
-        assert!(!kill_click_executes(None, pid));
-        assert!(kill_click_executes(Some(pid), pid));
-        assert!(!kill_click_executes(Some(pid), other));
+        let now = Instant::now();
+        let mut arm = ConfirmArm::new();
+        assert!(!arm.is_armed(pid, now));
+        assert_eq!(arm.press(pid, now), Confirm::Armed);
+        assert!(arm.is_armed(pid, now));
+        // A different pid moves the arm rather than firing on either.
+        assert_eq!(arm.press(other, now), Confirm::Armed);
+        assert!(!arm.is_armed(pid, now));
+        assert_eq!(arm.press(other, now), Confirm::Fire);
+    }
+
+    /// The bug `sid_ui::action_cell` was written about, pinned at this call site: the
+    /// `Option<Pid>` this replaces was cleared by `set_ports` on every refresh, so a
+    /// confirm was a race against the refresh. The arm must survive a refresh that still
+    /// lists the process.
+    #[test]
+    fn a_refresh_that_still_lists_the_process_keeps_the_kill_armed() {
+        let mut delegate = ports_delegate();
+        let pid = Pid::from_u32(4242);
+        let now = Instant::now();
+        delegate.kill_arm.press(pid, now);
+
+        delegate.set_ports(vec![port(8080, Some(4242), "nginx", "0.0.0.0")]);
+        assert!(
+            delegate.kill_arm.is_armed(pid, now),
+            "arm lost to a refresh"
+        );
+    }
+
+    #[test]
+    fn a_refresh_that_drops_the_process_disarms_the_kill() {
+        let mut delegate = ports_delegate();
+        let pid = Pid::from_u32(4242);
+        let now = Instant::now();
+        delegate.kill_arm.press(pid, now);
+
+        delegate.set_ports(vec![port(8080, Some(9), "nginx", "0.0.0.0")]);
+        assert!(!delegate.kill_arm.is_armed(pid, now));
+    }
+
+    /// The Services arm is hand-rolled (its key is not `Copy`, so `ConfirmArm` cannot
+    /// hold it — see `ServicesDelegate::armed_action`), so it needs the same pin.
+    #[test]
+    fn a_refresh_that_still_lists_the_unit_keeps_the_action_armed() {
+        let mut delegate = services_delegate();
+        delegate.armed_action = Some(("nginx.service".to_string(), SvcAction::Restart));
+
+        delegate.set_services(vec![svc("nginx.service", "web server")]);
+        assert!(action_click_executes(
+            &delegate.armed_action,
+            "nginx.service",
+            SvcAction::Restart
+        ));
+
+        delegate.set_services(vec![svc("sshd.service", "openssh")]);
+        assert_eq!(delegate.armed_action, None);
     }
 
     #[test]
@@ -2897,22 +3237,199 @@ mod tests {
         assert_eq!(SortDir::Desc.apply(Ordering::Equal), Ordering::Equal);
     }
 
+    // ---- column plans ---------------------------------------------------------------
+
+    /// **The acceptance criterion for this tab's migration.** The `Addr` column was a
+    /// hard 120px, which elided `fd7a:115c:a1e0::1a0…` — an IPv6 socket address, the one
+    /// datum in the row a reader cannot reconstruct from context — while 1350px of the
+    /// window sat unused to its right. At 2000px it must now be wide enough for a
+    /// bracketed IPv6 address with a port, several times over.
     #[test]
-    fn mark_column_sort_sets_target_and_clears_other_sortable_columns() {
-        let mut columns = vec![
-            Column::new("a", "A").sortable(),
-            Column::new("b", "B").sortable(),
-            // Not sortable to begin with — must stay `None`, not get stamped `Default`.
-            Column::new("c", "C"),
+    fn the_addr_column_fits_an_ipv6_socket_address_on_a_wide_window() {
+        let mut delegate = ports_delegate();
+        let widths = resolved(&mut delegate.columns, 2000.);
+        let addr = widths[2];
+        // `[fd7a:115c:a1e0:ab12:4843:cd96:6265:1a0]:8080` is 45 characters; at the
+        // table's 12px type that is ~310px, and the floor alone already clears it.
+        assert!(
+            addr >= 480.,
+            "Addr resolved to {addr}px at a 2000px viewport"
+        );
+        assert!(
+            addr > 120. * 4.,
+            "Addr is barely wider than the 120px it replaces"
+        );
+    }
+
+    /// Every column plan on this tab must spend the whole width it is given: wider and
+    /// the table grows a horizontal scrollbar, narrower and the dead space the fill-width
+    /// model exists to kill is back. Swept across the window sizes sid is used at.
+    #[test]
+    fn every_table_fills_the_width_it_is_given() {
+        let mut ports = ports_delegate();
+        let mut services = services_delegate();
+        let mut docker = DockerDelegate::new();
+        let mut pods = KubePodsDelegate::new();
+        let plans: [(&str, &mut FillColumns); 4] = [
+            ("ports", &mut ports.columns),
+            ("services", &mut services.columns),
+            ("docker", &mut docker.columns),
+            ("pods", &mut pods.columns),
         ];
-        // Simulate column "a" having been sorted descending on a previous click.
-        columns[0].sort = Some(ColumnSort::Descending);
+        for (name, columns) in plans {
+            for viewport in [900., 1440., 2000., 3440.] {
+                let total: f32 = resolved(columns, viewport).iter().sum();
+                let want = viewport - sid_ui::table::TABLE_CHROME;
+                assert!(
+                    (total - want).abs() < 0.01,
+                    "{name} at {viewport}px: columns total {total}, want {want}"
+                );
+            }
+        }
+    }
 
-        mark_column_sort(&mut columns, 1, ColumnSort::Ascending);
+    /// A laptop window must not push any of these tables into horizontal scroll: the sum
+    /// of the declared floors has to stay inside the narrowest viewport sid targets.
+    #[test]
+    fn no_column_plan_overflows_a_narrow_window() {
+        let mut ports = ports_delegate();
+        let mut services = services_delegate();
+        let mut docker = DockerDelegate::new();
+        let mut pods = KubePodsDelegate::new();
+        let plans: [(&str, &mut FillColumns); 4] = [
+            ("ports", &mut ports.columns),
+            ("services", &mut services.columns),
+            ("docker", &mut docker.columns),
+            ("pods", &mut pods.columns),
+        ];
+        for (name, columns) in plans {
+            let total: f32 = resolved(columns, 900.).iter().sum();
+            assert!(total <= 900., "{name} declares {total}px of floors");
+        }
+    }
 
-        assert_eq!(columns[0].sort, Some(ColumnSort::Default));
-        assert_eq!(columns[1].sort, Some(ColumnSort::Ascending));
-        assert_eq!(columns[2].sort, None);
+    /// The action columns carry no comparator (`sort_ports`/`sort_services` return early
+    /// on their index), and `Column::sort == None` is what keeps `TableState` from ever
+    /// calling back with it — as well as what suppresses the header chevron.
+    #[test]
+    fn action_columns_are_not_sortable_and_data_columns_are() {
+        let ports = ports_delegate();
+        let last = ports.columns.len() - 1;
+        assert_eq!(ports.columns.column(last).sort, None);
+        for ix in 0..last {
+            assert!(ports.columns.column(ix).sort.is_some(), "ports column {ix}");
+        }
+
+        let services = services_delegate();
+        let last = services.columns.len() - 1;
+        assert_eq!(services.columns.column(last).sort, None);
+        for ix in 0..last {
+            assert!(
+                services.columns.column(ix).sort.is_some(),
+                "services column {ix}"
+            );
+        }
+
+        // The two read-only tables have no action column; every column sorts.
+        let docker = DockerDelegate::new();
+        for ix in 0..docker.columns.len() {
+            assert!(
+                docker.columns.column(ix).sort.is_some(),
+                "docker column {ix}"
+            );
+        }
+        let pods = KubePodsDelegate::new();
+        for ix in 0..pods.columns.len() {
+            assert!(pods.columns.column(ix).sort.is_some(), "pods column {ix}");
+        }
+    }
+
+    /// `sort_*`'s `col_ix` dispatch is positional, so a column added without its
+    /// comparator silently sorts by the wrong field (or, past the end, not at all).
+    #[test]
+    fn every_column_plan_has_the_arity_its_comparator_dispatch_assumes() {
+        assert_eq!(ports_delegate().columns.len(), 6);
+        assert_eq!(services_delegate().columns.len(), 5);
+        assert_eq!(DockerDelegate::new().columns.len(), 5);
+        assert_eq!(KubePodsDelegate::new().columns.len(), 6);
+    }
+
+    // ---- sub-view strip -------------------------------------------------------------
+
+    /// The segmented control reports back an index into `ALL`; a mismatch would silently
+    /// switch to the wrong sub-view.
+    #[test]
+    fn every_sub_view_round_trips_through_its_index() {
+        for (ix, &tab) in NetSubTab::ALL.iter().enumerate() {
+            assert_eq!(NetSubTab::at(ix), Some(tab));
+        }
+        assert_eq!(NetSubTab::at(NetSubTab::ALL.len()), None);
+    }
+
+    #[test]
+    fn every_sub_view_labels_itself_distinctly() {
+        let labels: Vec<&str> = NetSubTab::ALL.iter().map(|t| t.label()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len(), "{labels:?}");
+    }
+
+    /// The scope control reports back an index into `SVC_SCOPES`, same contract.
+    #[test]
+    fn the_scope_control_agrees_with_the_scope_label() {
+        for &(scope, label) in &SVC_SCOPES {
+            assert_eq!(svc_scope_label(scope), label);
+        }
+        assert_eq!(SVC_SCOPES[0].0, SvcScope::System);
+    }
+
+    // ---- empty states ---------------------------------------------------------------
+
+    #[test]
+    fn an_unfiltered_empty_table_says_the_machine_has_nothing() {
+        assert_eq!(
+            empty_guidance("", "nothing is listening"),
+            "nothing is listening"
+        );
+        assert_eq!(
+            empty_guidance("   ", "nothing is listening"),
+            "nothing is listening"
+        );
+    }
+
+    /// A table emptied by the filter is a different situation from a table that is
+    /// genuinely empty, and telling the user the machine has no ports when they typed
+    /// `zzz` into the filter is a lie the old UI had no words for at all.
+    #[test]
+    fn a_filtered_empty_table_names_the_query() {
+        let got = empty_guidance("  zzz  ", "nothing is listening");
+        assert!(got.contains("zzz"), "{got}");
+        assert!(got.contains("clear the filter"), "{got}");
+    }
+
+    #[test]
+    fn badge_tone_maps_every_semantic_tone() {
+        assert_eq!(badge_tone(Tone::Ok), BadgeTone::Success);
+        assert_eq!(badge_tone(Tone::Danger), BadgeTone::Danger);
+        assert_eq!(badge_tone(Tone::Muted), BadgeTone::Neutral);
+    }
+
+    #[test]
+    fn every_service_action_names_its_consequence() {
+        let actions = [
+            SvcAction::Start,
+            SvcAction::Restart,
+            SvcAction::Stop,
+            SvcAction::Kill,
+        ];
+        let tips: Vec<&str> = actions.iter().map(|&a| svc_action_tooltip(a)).collect();
+        assert!(tips.iter().all(|t| t.starts_with("systemctl ")));
+        let mut unique = tips.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), tips.len(), "{tips:?}");
     }
 
     // ---- Ports: sort comparators --------------------------------------------------
