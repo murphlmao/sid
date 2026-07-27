@@ -145,6 +145,11 @@ pub struct DbTabState {
     /// Which tables are expanded (columns visible), keyed by [`table_display_name`].
     /// Cleared whenever the active connection changes or the schema is re-fetched.
     schema_expanded: HashSet<String>,
+    /// The relationships pop-out, while one is open — see
+    /// [`AppState::push_schema_to_diagram`] for why the main window keeps a handle to a
+    /// view living in another window. Weak on purpose: the strong reference belongs to
+    /// that window's `Root`, so closing the window is all it takes to drop the view.
+    diagram: Option<WeakEntity<DiagramView>>,
 
     // ---- D2: cell copy / view -------------------------------------------------------
     /// The `view` popover's contents, if open.
@@ -556,6 +561,7 @@ impl DbTabState {
             query_generation: 0,
             schema_error: None,
             schema_expanded: HashSet::new(),
+            diagram: None,
             cell_view: None,
             notice: None,
             export_menu_open: false,
@@ -1156,11 +1162,17 @@ impl AppState {
     /// window's `Window` there would register that bookkeeping against the wrong OS
     /// window. `AnyWindowHandle::update` (see [`DiagramView::navigate_to_table`]) resolves
     /// that by handing back the *main* window's real `Window` when the click fires.
+    ///
+    /// The snapshot is no longer one-shot: the new view's handle is kept in
+    /// `DbTabState::diagram` so [`Self::push_schema_to_diagram`] can hand it a fresh one
+    /// when a schema fetch completes — which is what makes the pop-out's own ⟳ (and the
+    /// main panel's) update it in place.
     fn open_diagram_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(schema) = self.db.schema.clone() else {
             return;
         };
         let graph = self.db.schema_graph.clone().unwrap_or_default();
+        let connection_id = self.db.active_id.clone();
         let connection_label = self
             .db
             .active_id
@@ -1177,6 +1189,12 @@ impl AppState {
         let title = format!("sid — relationships · {connection_label}");
         let main_window = window.window_handle();
         let app = cx.entity().downgrade();
+
+        // Built here rather than inside the window closure so the handle can be kept:
+        // gpui entities are app-global, not window-owned, and the window's `Root` still
+        // takes the only strong reference a moment later.
+        let view = cx.new(|_cx| DiagramView::new(connection_id, schema, graph, app, main_window));
+        self.db.diagram = Some(view.downgrade());
 
         let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);
         let _ = cx.open_window(
@@ -1195,7 +1213,6 @@ impl AppState {
                 // Same sync as main.rs's startup window — the sid `Theme` global is
                 // process-wide, so this pop-out follows whatever the user has active.
                 sid_ui::bridge::sync(Some(window), cx);
-                let view = cx.new(|_cx| DiagramView::new(schema, graph, app, main_window));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         );
@@ -2401,6 +2418,7 @@ impl AppState {
                         this.db.client_for = Some(id);
                         this.db.schema = Some(schema);
                         this.db.schema_graph = Some(graph);
+                        this.push_schema_to_diagram(cx);
                     }
                     Err(e) => this.db.schema_error = Some(e),
                 }
@@ -2408,6 +2426,30 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// Hand a freshly fetched schema to the relationships pop-out, if one is open.
+    ///
+    /// Push, not pull. The pop-out cannot fetch for itself: `DbTabState::schema` and
+    /// `schema_graph` are private to this module, and [`Self::refresh_schema`] spawns
+    /// and detaches, so there is no moment at which the other window could read a result
+    /// it asked for. This side, in the completion, has both the data and the `&mut App`
+    /// needed to reach an entity in another window — so it does the handing over, and
+    /// the pop-out stays a passive renderer with no async of its own.
+    ///
+    /// A closed pop-out leaves a dead [`WeakEntity`]; `update` returns `Err` and this is
+    /// a no-op. [`DiagramView::reload`] does the connection-id check, since it is the
+    /// side that knows which connection its window is titled for.
+    fn push_schema_to_diagram(&self, cx: &mut Context<Self>) {
+        let (Some(view), Some(schema), Some(graph)) =
+            (&self.db.diagram, &self.db.schema, &self.db.schema_graph)
+        else {
+            return;
+        };
+        let connection_id = self.db.active_id.clone();
+        let _ = view.update(cx, |view, cx| {
+            view.reload(connection_id.as_deref(), schema, graph, cx);
+        });
     }
 
     /// D1: chevron-click — toggle one table's expanded state (shows/hides its columns).
