@@ -487,33 +487,30 @@ impl TableDelegate for ProcessesDelegate {
     ) -> impl IntoElement {
         let theme = theme::active(cx).clone();
         let proc = &self.processes[row_ix];
-        // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
-        // single index, same trick `network_tab.rs`'s delegates use.
-        let cell_id = ("proc-cell", row_ix * 8 + col_ix);
         // One clock read per cell, so every cell in a frame agrees about whether the
         // armed row's confirm window is still open.
         let now = Instant::now();
+        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
+        // must not carry an `ElementId`" section. Nothing here has click, hover, tooltip,
+        // scroll or drag state to keep, and an id on a cell that has none is ~180
+        // `GlobalElementId` round trips per frame for nothing.
         match col_ix {
             0 => div()
-                .id(cell_id)
                 .px_2()
                 .text_mono(&theme)
                 .text_color(rgb(theme.fg))
                 .child(format!("{:.1}%", proc.cpu_pct)),
             1 => div()
-                .id(cell_id)
                 .px_2()
                 .text_mono(&theme)
                 .text_color(rgb(theme.muted))
                 .child(humanize_bytes(proc.rss_bytes)),
             2 => div()
-                .id(cell_id)
                 .px_2()
                 .text_mono(&theme)
                 .text_color(rgb(theme.muted))
                 .child(proc.pid.as_u32().to_string()),
             3 => div()
-                .id(cell_id)
                 .px_2()
                 .text_mono(&theme)
                 .text_color(rgb(theme.fg))
@@ -527,7 +524,6 @@ impl TableDelegate for ProcessesDelegate {
                     proc.cmd.clone().into()
                 };
                 div()
-                    .id(cell_id)
                     .px_2()
                     .text_mono(&theme)
                     .text_color(rgb(theme.muted))
@@ -537,7 +533,6 @@ impl TableDelegate for ProcessesDelegate {
                 let label: SharedString =
                     proc.user.clone().unwrap_or_else(|| "—".to_string()).into();
                 div()
-                    .id(cell_id)
                     .px_2()
                     .text_mono(&theme)
                     .text_color(rgb(theme.muted))
@@ -548,9 +543,10 @@ impl TableDelegate for ProcessesDelegate {
                 let armed = self.kill_arm.is_armed(pid, now);
                 // Keyed by pid, not by row index: the rows under the pointer reorder on
                 // every sort and every 2s refresh, and an id that moves with them would
-                // hand one row's hover/press state to another.
+                // hand one row's hover/press state to another. The *button* needs an id;
+                // the cell wrapping it does not.
                 let button_id = ("proc-kill", pid.as_u32() as usize);
-                div().id(cell_id).size_full().child(
+                div().size_full().child(
                     ActionCell::new().child(
                         ConfirmButton::new(button_id, "kill")
                             .armed(armed)

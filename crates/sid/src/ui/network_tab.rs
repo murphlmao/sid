@@ -556,27 +556,20 @@ impl TableDelegate for PortsDelegate {
         // where a `String` needs to move into a label/closure, so cloning the whole
         // row up front was pure waste.
         let port = &self.ports[row_ix];
-        // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
-        // single index (8 columns, generous multiplier) instead of a 3-tuple.
-        let cell_id = ("net-cell", row_ix * 8 + col_ix);
         // One clock read per cell, so every cell in a frame agrees about whether the
         // armed row's confirm window is still open.
         let now = Instant::now();
+        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
+        // must not carry an `ElementId`" section.
         match col_ix {
             0 => {
                 let label = match port.protocol {
                     Protocol::Tcp => "tcp",
                     Protocol::Udp => "udp",
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(fg))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(fg)).child(label)
             }
             1 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(fg))
@@ -587,12 +580,7 @@ impl TableDelegate for PortsDelegate {
                 } else {
                     port.local_addr.clone().into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
             3 => {
                 let label: SharedString = port
@@ -600,12 +588,7 @@ impl TableDelegate for PortsDelegate {
                     .map(|p| p.as_u32().to_string())
                     .unwrap_or_else(|| "—".to_string())
                     .into();
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
             4 => {
                 let label: SharedString = if port.command.is_empty() {
@@ -613,28 +596,24 @@ impl TableDelegate for PortsDelegate {
                 } else {
                     port.command.clone().into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(fg))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(fg)).child(label)
             }
             _ => {
                 let Some(pid) = port.pid else {
                     // Right-anchored like the buttons it stands in for: a socket with no
                     // attributable pid is most of this table, and a left-aligned dash in
                     // the action column would make the few real buttons look misaligned.
-                    return div().id(cell_id).size_full().child(
+                    return div().size_full().child(
                         ActionCell::new().child(div().text_xs().text_color(rgb(muted)).child("—")),
                     );
                 };
                 let armed = self.kill_arm.is_armed(pid, now);
                 // Keyed by pid, not by row index: the rows under the pointer reorder on
                 // every sort and every refresh, and an id that moves with them would hand
-                // one row's hover/press state to another.
+                // one row's hover/press state to another. The *button* needs an id; the
+                // cell wrapping it does not.
                 let button_id = ("net-kill", pid.as_u32() as usize);
-                div().id(cell_id).size_full().child(
+                div().size_full().child(
                     ActionCell::new().child(
                         ConfirmButton::new(button_id, "kill")
                             .armed(armed)
@@ -858,10 +837,10 @@ impl TableDelegate for ServicesDelegate {
         // Borrow, not clone (perf audit finding #6) — `active` is `Copy`, and every
         // `String` field this fn needs already gets its own `.clone()` below.
         let svc = &self.services[row_ix];
-        let cell_id = ("svc-cell", row_ix * 8 + col_ix);
+        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
+        // must not carry an `ElementId`" section.
         match col_ix {
             0 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(fg))
@@ -869,7 +848,6 @@ impl TableDelegate for ServicesDelegate {
             1 => {
                 let (label, tone) = svc_state_badge(svc.active);
                 h_flex()
-                    .id(cell_id)
                     .size_full()
                     .px_2()
                     .child(Badge::new(label).tone(badge_tone(tone)))
@@ -880,12 +858,7 @@ impl TableDelegate for ServicesDelegate {
                 } else {
                     svc.sub_state.clone().into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
             3 => {
                 let label: SharedString = if svc.description.is_empty() {
@@ -893,12 +866,7 @@ impl TableDelegate for ServicesDelegate {
                 } else {
                     svc.description.clone().into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
             _ => {
                 let actions = [
@@ -906,7 +874,7 @@ impl TableDelegate for ServicesDelegate {
                     (SvcAction::Stop, "stop"),
                     (SvcAction::Kill, "kill"),
                 ];
-                div().id(cell_id).size_full().child(
+                div().size_full().child(
                     ActionCell::new().children(actions.into_iter().enumerate().map(
                         |(action_ix, (action, label))| {
                             let armed =
@@ -1065,16 +1033,15 @@ impl TableDelegate for DockerDelegate {
         let t = theme::active(cx);
         let (fg, muted) = (t.fg, t.muted);
         let container = &self.containers[row_ix];
-        let cell_id = ("docker-cell", row_ix * 8 + col_ix);
+        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
+        // must not carry an `ElementId`" section.
         match col_ix {
             0 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(fg))
                 .child(container.name.clone()),
             1 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(muted))
@@ -1082,13 +1049,11 @@ impl TableDelegate for DockerDelegate {
             2 => {
                 let (label, tone) = docker_state_badge(&container.state);
                 h_flex()
-                    .id(cell_id)
                     .size_full()
                     .px_2()
                     .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
             }
             3 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(muted))
@@ -1099,12 +1064,7 @@ impl TableDelegate for DockerDelegate {
                 } else {
                     container.ports.join(", ").into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
         }
     }
@@ -1235,22 +1195,20 @@ impl TableDelegate for KubePodsDelegate {
         let t = theme::active(cx);
         let (fg, muted, danger) = (t.fg, t.muted, t.danger);
         let pod = &self.pods[row_ix];
-        let cell_id = ("kube-cell", row_ix * 8 + col_ix);
+        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
+        // must not carry an `ElementId`" section.
         match col_ix {
             0 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(muted))
                 .child(pod.namespace.clone()),
             1 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(fg))
                 .child(pod.name.clone()),
             2 => div()
-                .id(cell_id)
                 .px_2()
                 .text_xs()
                 .text_color(rgb(muted))
@@ -1258,7 +1216,6 @@ impl TableDelegate for KubePodsDelegate {
             3 => {
                 let (label, tone) = kube_phase_badge(&pod.phase);
                 h_flex()
-                    .id(cell_id)
                     .size_full()
                     .px_2()
                     .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
@@ -1266,7 +1223,6 @@ impl TableDelegate for KubePodsDelegate {
             4 => {
                 let color = if pod.restarts > 0 { danger } else { muted };
                 div()
-                    .id(cell_id)
                     .px_2()
                     .text_xs()
                     .text_color(rgb(color))
@@ -1278,12 +1234,7 @@ impl TableDelegate for KubePodsDelegate {
                 } else {
                     pod.node.clone().into()
                 };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(label)
+                div().px_2().text_xs().text_color(rgb(muted)).child(label)
             }
         }
     }
