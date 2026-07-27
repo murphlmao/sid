@@ -9,6 +9,7 @@ pub mod containers;
 pub mod db;
 pub mod git;
 pub mod gpu;
+pub mod privfs;
 pub mod ssh;
 pub mod svc;
 pub mod sys;
