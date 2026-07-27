@@ -47,9 +47,9 @@ use crate::ui::db_conn_form::{
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
 use sid_ui::{
-    Badge, Button, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState, FillColumns,
-    FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip, StatusDot,
-    StyledExt as _, Theme, Toolbar, h_flex, sortable_th, theme, v_flex,
+    Badge, Button, ButtonSize, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState,
+    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip,
+    StatusDot, StyledExt as _, Theme, Toolbar, h_flex, sortable_th, theme, v_flex,
 };
 
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
@@ -63,6 +63,21 @@ const DEMO_SQL: &str = "select 1;";
 /// Rows per `query_paged` call. Small enough to make the "⭳ next page" control
 /// exercisable by hand against the demo seed without a huge fixture table.
 const PAGE_SIZE: u32 = 100;
+
+/// The one size every control in the query toolbar's action cluster is built at.
+///
+/// The bug this const exists to make unrepeatable: `Run` was written as
+/// `Button::new(..).primary()` with no size, so it took [`ButtonSize`]'s default `Md`
+/// — a 32px box with a body-rung label — while `Export` and `next page`, sitting in
+/// the same [`Toolbar`] action slot two lines below, were written `.small()` and came
+/// out at 24px with a meta-rung label. Three buttons in one cluster, two heights,
+/// because the size was retyped per call site instead of declared once.
+///
+/// `Sm` rather than `Md`, on the house rule the other toolbars already follow
+/// (`systems_tab`'s refresh, `network_tab`'s refresh): **a toolbar action is sized by
+/// its container, and emphasised by its variant.** Run stays the loudest control on
+/// the tab — it is the only `Primary` (accent fill) — without also being the tallest.
+const QUERY_ACTION_SIZE: ButtonSize = ButtonSize::Sm;
 
 // ---- increment 2: schema tree / cell copy-view / CSV export / history --------------------
 
@@ -1054,7 +1069,7 @@ impl AppState {
 
         let next_page = has_more.then(|| {
             Button::new("db-next-page", "next page")
-                .small()
+                .size(QUERY_ACTION_SIZE)
                 .icon(Icon::ChevronRight)
                 .tooltip("fetch the next page of this result set")
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
@@ -1086,6 +1101,7 @@ impl AppState {
                     .action(
                         Button::new("db-run", "Run")
                             .primary()
+                            .size(QUERY_ACTION_SIZE)
                             .loading(self.db.running)
                             .tooltip("run the query (Ctrl-Enter)")
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -1196,7 +1212,7 @@ impl AppState {
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let button = Button::new("db-export-open", "Export")
-            .small()
+            .size(QUERY_ACTION_SIZE)
             .tooltip("export the results now on screen")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.db.export_menu_open = !this.db.export_menu_open;
