@@ -215,6 +215,12 @@ fn labeled_row(
 /// needs and `sid_ui` doesn't have a variant of. Deliberately built here rather than in
 /// the component crate: it is one row's affordance, and `sid_ui::Button` is a
 /// full-height form button that would out-shout the binding chip beside it.
+///
+/// `emphasis` is always `muted` today, and on purpose. Sixteen accent-red "rebind"
+/// buttons would be the very failure `sid_ui::kbd`'s doc comment describes — accent
+/// means *engage*, and a column of it teaches the eye to ignore red everywhere. Hover
+/// (a `selection` fill) is what says "clickable" here; accent is spent on the one row
+/// that is actually asking for a keystroke.
 fn row_button(
     chrome: &theme::Theme,
     id: (&'static str, usize),
@@ -750,7 +756,7 @@ impl AppState {
             row_button(chrome, ("keymap-cancel", ix), "cancel", chrome.muted)
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.cancel_rebind(cx)))
         } else {
-            row_button(chrome, ("keymap-rebind", ix), "rebind", chrome.accent).on_click(
+            row_button(chrome, ("keymap-rebind", ix), "rebind", chrome.muted).on_click(
                 cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     this.begin_rebind(action, cx)
                 }),
