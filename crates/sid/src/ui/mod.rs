@@ -27,7 +27,24 @@ pub mod workspaces_tab;
 pub use session::{SessionStatus, SshSession, SshSessionEvent};
 pub use text_input::TextInput;
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, Keystroke, actions};
+
+/// Does this keystroke mean "submit the single-line field I am in"?
+///
+/// The two idioms sid uses for Enter-to-submit are a form-wide key context (see the
+/// `HostForm`/`DbConnForm`/`PasswordPrompt` bindings in [`init`]) and, for a lone field
+/// with a button beside it, an `on_key_down` on the wrapper. This is the decision the
+/// second kind shares, in one place — it was open-coded per site, and the two sites that
+/// forgot to code it at all were the SFTP go-to-path field and the System tab's
+/// "pin a file…" input, whose own doc comment claimed Enter worked.
+///
+/// **Plain Enter only.** A modified Enter belongs to whatever else is listening — a
+/// terminal wanting a literal newline, a future "save and add another" — and a field that
+/// swallowed every chord would make those unreachable without anyone noticing.
+pub(crate) fn is_field_submit(keystroke: &Keystroke) -> bool {
+    let m = &keystroke.modifiers;
+    keystroke.key == "enter" && !m.control && !m.alt && !m.shift && !m.platform && !m.function
+}
 
 actions!(
     text_input,
@@ -136,4 +153,51 @@ pub fn init(cx: &mut App) {
             Some("ConfigEditor"),
         ),
     ]);
+}
+
+#[cfg(test)]
+mod submit_key_tests {
+    use super::*;
+    use gpui::Modifiers;
+
+    fn stroke(key: &str, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn a_plain_enter_submits() {
+        assert!(is_field_submit(&stroke("enter", Modifiers::none())));
+    }
+
+    #[test]
+    fn any_other_key_does_not() {
+        for key in ["escape", "tab", "a", "space", "return"] {
+            assert!(
+                !is_field_submit(&stroke(key, Modifiers::none())),
+                "{key} should not submit"
+            );
+        }
+    }
+
+    #[test]
+    fn a_modified_enter_belongs_to_someone_else() {
+        // Each modifier on its own: a field that ate every Enter chord would quietly
+        // make the chord unavailable to anything else that wanted it.
+        let modified = [
+            ("control", Modifiers::control()),
+            ("alt", Modifiers::alt()),
+            ("shift", Modifiers::shift()),
+            ("platform", Modifiers::command()),
+        ];
+        for (name, modifiers) in modified {
+            assert!(
+                !is_field_submit(&stroke("enter", modifiers)),
+                "{name}-enter should not submit"
+            );
+        }
+    }
 }
