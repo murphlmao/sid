@@ -1,9 +1,9 @@
-//! SSH tab, Home state: THE connections surface — a centered, width-capped column
-//! with the quick-connect box on top and the folder-grouped connection list below
-//! (live dots, inline rename/folder edit, right-click menu incl. promote/demote,
-//! origin badges). The design review killed the old [tree sidebar | host-card list]
-//! split that showed the same hosts twice with two vocabularies; this module is now
-//! the single home for all of it.
+//! SSH tab, Home state: THE connections surface — a width-capped column anchored to
+//! the content gutter, with the quick-connect box on top and the folder-grouped
+//! connection list below (status dots, inline rename/folder edit, right-click menu
+//! incl. promote/demote, origin chips). The design review killed the old [tree sidebar
+//! | host-card list] split that showed the same hosts twice with two vocabularies;
+//! this module is now the single home for all of it.
 //!
 //! [`HomeTabState`] is a sibling cache to `AppState`'s own SSH fields, exactly like
 //! `ui::db_tab`'s `DbTabState` — see that module's doc comment for the pattern this
@@ -12,7 +12,9 @@
 //!
 //! Pure/unit-tested: [`group_by_folder`] (the tree's grouping transform), [`filter_hosts`]
 //! (the quick-connect box's search filter), [`parse_quick_connect`] (the `user@host[:port]`
-//! shorthand). Rendering is observation-gated, per the plan's pragmatic-TDD rule.
+//! shorthand), [`connection_state`] (what a row's dot says), [`row_primary`] (what its
+//! primary button does) and [`home_empty`] (which nothing the list is showing).
+//! Rendering is observation-gated, per the plan's pragmatic-TDD rule.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -26,8 +28,8 @@ use sid_store::{Attributed, Host, Scope};
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::ui::{SessionStatus, TextInput};
 use sid_ui::{
-    Button, ButtonVariant, ConnectionState, Icon, IconButton, List, Row, StatusDot, StatusLegend,
-    StyledExt as _, h_flex, theme,
+    Button, ButtonVariant, ConnectionState, EmptyState, Icon, IconButton, List, Row, StatusDot,
+    StatusLegend, StyledExt as _, h_flex, theme,
 };
 
 const MONO: &str = "DejaVu Sans Mono";
@@ -232,6 +234,31 @@ pub(crate) fn connection_state(status: Option<&SessionStatus>) -> ConnectionStat
     }
 }
 
+/// Why the connection list is showing nothing, when it is.
+///
+/// Two different nothings that used to render identically — as literally nothing, an
+/// empty scroll area under a header saying `CONNECTIONS · 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HomeEmpty {
+    /// Nothing is saved in either layer. A first-run screen: it needs a way in.
+    NoHosts,
+    /// Hosts exist, but the filter excludes all of them. A dead end the user typed
+    /// themselves, so the way out is to undo it — not to add a host.
+    NoMatch,
+}
+
+/// Which empty state (if either) the list should show.
+///
+/// `matched` is the count *after* filtering, `total` the composed list before it. A
+/// non-empty result is never an empty state, whatever the query is.
+pub(crate) fn home_empty(total: usize, matched: usize) -> Option<HomeEmpty> {
+    match (matched, total) {
+        (1.., _) => None,
+        (0, 0) => Some(HomeEmpty::NoHosts),
+        (0, _) => Some(HomeEmpty::NoMatch),
+    }
+}
+
 /// What a row's primary button does when clicked.
 ///
 /// The tab's primary verb used to be documented in a hint string — *"double-click a name
@@ -313,6 +340,7 @@ impl AppState {
         let query = self.ssh_home.search.read(cx).content().to_string();
         let filtered = filter_hosts(&self.hosts, &query);
         let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
+        let empty = home_empty(self.hosts.len(), owned.len());
         let groups = group_by_folder(&owned);
 
         let mut rows = Vec::new();
@@ -337,7 +365,14 @@ impl AppState {
             .min_h(px(0.))
             .flex()
             .flex_col()
-            .items_center()
+            // LEFT-aligned, not centred. `.interface-design/system.md`'s reading-column
+            // rule caps this at 880px so a row's actions never sit a screen-width from
+            // its name — but centring that cap in a 2000px window spent 1120px on two
+            // dead margins and left the column floating with nothing to align to. The
+            // amended rule: cap the width, anchor it to the content gutter, so the
+            // column lines up with the tab strip above it and the empty canvas falls
+            // where empty canvas belongs — outside the content, not around it.
+            .items_start()
             .child(
                 div()
                     .w_full()
@@ -374,6 +409,11 @@ impl AppState {
                                 },
                             ))
                             .children(rows)
+                            // Nothing to list: say which nothing this is, and hand back a
+                            // way out of it. See `home_empty`.
+                            .when_some(empty, |this, empty| {
+                                this.child(self.home_empty_state(empty, cx))
+                            })
                             // Trailing empty space below the last row, so "right-click empty
                             // space → Add connection" has somewhere to land even when the list
                             // is short — purely a layout spacer; the capture-phase reset above
@@ -384,6 +424,54 @@ impl AppState {
                             .context_menu(self.tree_context_menu(cx)),
                     ),
             )
+    }
+
+    /// The list's empty state: a headline, one line of what to do next, and a real
+    /// control that does it.
+    ///
+    /// `.interface-design/system.md` says empty states "say what to do next, in muted
+    /// text, without a box" — right about the box, incomplete about the rest. The
+    /// zero-host case used to render *nothing at all* under a `CONNECTIONS · 0` header,
+    /// which on a wide window is indistinguishable from a failed render; and telling a
+    /// first-run user what to do while giving them no way to do it is the same mistake
+    /// as documenting the tab's primary verb in a hint string.
+    fn home_empty_state(&self, empty: HomeEmpty, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = match empty {
+            HomeEmpty::NoHosts => EmptyState::new("no saved connections")
+                .icon(Icon::Globe)
+                .guidance(
+                    "add a host to keep it here, or type user@host above to connect once \
+                     without saving",
+                )
+                .action(
+                    Button::new("ssh-empty-add", "add connection")
+                        .primary()
+                        .icon(Icon::Add)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.open_add_form(window, cx);
+                        })),
+                ),
+            // A dead end the user typed, so the way out is to undo it — offering "add a
+            // connection" here would answer a search with a form.
+            HomeEmpty::NoMatch => EmptyState::new("no connection matches the filter")
+                .icon(Icon::Search)
+                .guidance(
+                    "clear the filter to see every saved connection, or press Enter to \
+                     connect to what you typed",
+                )
+                .action(
+                    Button::new("ssh-empty-clear", "clear filter")
+                        .icon(Icon::Close)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            this.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+                            this.ssh_home.quick_error = None;
+                            cx.notify();
+                        })),
+                ),
+        };
+        // The scroll body is a plain stack, so the panel needs a height of its own to
+        // have something to centre itself in.
+        div().w_full().h(px(280.)).child(state)
     }
 
     /// Builds the tree's single [`ContextMenuExt::context_menu`]: "+ Add connection"
@@ -1230,6 +1318,48 @@ mod tests {
             assert_ne!(verb.label(), verb.tooltip());
         }
         assert_ne!(RowPrimary::Connect.label(), RowPrimary::Focus.label());
+    }
+
+    #[test]
+    fn a_list_with_rows_in_it_is_never_an_empty_state() {
+        assert_eq!(home_empty(2, 2), None);
+        assert_eq!(
+            home_empty(2, 1),
+            None,
+            "a filtered-down list still has rows"
+        );
+        assert_eq!(home_empty(500, 1), None);
+    }
+
+    #[test]
+    fn a_first_run_screen_asks_for_a_host() {
+        assert_eq!(home_empty(0, 0), Some(HomeEmpty::NoHosts));
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_is_a_different_nothing() {
+        // The two used to render identically — as literally nothing under a
+        // `CONNECTIONS · 0` header. They need different words and different exits:
+        // answering a search with "add a connection" would be a non-sequitur.
+        assert_eq!(home_empty(3, 0), Some(HomeEmpty::NoMatch));
+        assert_ne!(home_empty(3, 0), home_empty(0, 0));
+    }
+
+    #[test]
+    fn the_empty_states_agree_with_the_filter_they_describe() {
+        // Ties `home_empty` to the real filter rather than to a hand-written count, so
+        // the two cannot drift: a blank query matches everything, so a non-empty store
+        // can never land in `NoHosts`.
+        let hosts = vec![attributed(host("web-1", None))];
+        let matched = filter_hosts(&hosts, "").len();
+        assert_eq!(home_empty(hosts.len(), matched), None);
+
+        let matched = filter_hosts(&hosts, "nothing-matches-this").len();
+        assert_eq!(home_empty(hosts.len(), matched), Some(HomeEmpty::NoMatch));
+
+        let none: Vec<Attributed<Host>> = Vec::new();
+        let matched = filter_hosts(&none, "").len();
+        assert_eq!(home_empty(none.len(), matched), Some(HomeEmpty::NoHosts));
     }
 
     #[test]
