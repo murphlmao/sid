@@ -12,7 +12,7 @@
 
 use gpui::{
     ClickEvent, Context, Corner, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
-    Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
+    Window, anchored, canvas, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
@@ -1798,9 +1798,9 @@ impl AppState {
 
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // SID_PERF=1: log any root render over 4ms (a 240Hz frame) to stderr, tagged
-        // with the active tab — the cheap, always-available answer to "which screen
-        // stutters". Element *build* time only; gpui's layout/paint happens after.
+        // SID_PERF=1: time the frame. See `perf_probe` — `build=` is this function's own
+        // cost (element construction), `total=` is the whole frame including gpui's
+        // layout/prepaint/paint, which is where scroll lag actually lives.
         let perf_start = std::env::var_os("SID_PERF").map(|_| std::time::Instant::now());
 
         let content = match self.active_tab {
@@ -1843,7 +1843,7 @@ impl Render for AppState {
 
         let t = theme::active(cx);
         let (bg, fg) = (t.bg, t.fg);
-        let root = div()
+        div()
             .flex()
             .flex_col()
             .size_full()
@@ -1871,20 +1871,57 @@ impl Render for AppState {
             .children(db_overlay)
             .children(password_prompt_overlay)
             .children(palette_overlay)
-            .children(cheat_sheet_overlay);
-
-        if let Some(start) = perf_start {
-            let elapsed = start.elapsed();
-            if elapsed.as_millis() >= 4 {
-                eprintln!(
-                    "sid-perf: render(build) {:?} took {}ms",
-                    self.active_tab,
-                    elapsed.as_millis()
-                );
-            }
-        }
-        root
+            .children(cheat_sheet_overlay)
+            // Last child, so its paint closure runs at the very end of the paint phase.
+            .children(perf_start.map(|start| perf_probe(self.active_tab, start)))
     }
+}
+
+/// The frame timer, as an element.
+///
+/// `SID_PERF` used to report only the elapsed time of `AppState::render` — element
+/// *build*. That is a small and, for scrolling, actively misleading fraction of a frame:
+/// building the System tab's process table costs ~0.3ms while the frame it belongs to can
+/// cost 20ms, because everything expensive (taffy layout, text shaping, prepaint of every
+/// visible cell, paint) happens *after* `render` returns. Scroll lag was therefore
+/// invisible to the instrument that existed.
+///
+/// A [`canvas`] fixes that with no new machinery: its paint closure runs in the paint
+/// phase, and placed last in the root's child list it runs at the end of it, so
+/// `start.elapsed()` there is essentially the frame's whole CPU cost. `absolute()` +
+/// `size_full()` keeps it out of the flex layout; a canvas paints nothing and takes no
+/// hitbox, so it cannot perturb what it measures beyond its own `eprintln!` (which lands
+/// in the *next* frame's budget, not this one's).
+///
+/// The same canvas also splits the frame in two, because its *prepaint* closure runs at
+/// the end of the prepaint phase: `layout=` is build + taffy + prepaint (where text is
+/// measured and every element's bounds are resolved), `total=` adds paint. Which of the
+/// two moves under a fix is the difference between "we build too many elements" and "we
+/// re-shape too much text".
+///
+/// One line per frame — not a threshold — because the number that matters is a p95 over a
+/// sustained scroll, and that needs the whole distribution:
+///
+/// ```text
+/// sid-perf: frame System build=0.31ms layout=14.90ms total=18.42ms
+/// ```
+fn perf_probe(tab: Tab, start: std::time::Instant) -> impl IntoElement {
+    let build = start.elapsed();
+    canvas(
+        move |_, _, _| start.elapsed(),
+        move |_, layout: std::time::Duration, _, _| {
+            let total = start.elapsed();
+            eprintln!(
+                "sid-perf: frame {:?} build={:.2}ms layout={:.2}ms total={:.2}ms",
+                tab,
+                build.as_secs_f64() * 1e3,
+                layout.as_secs_f64() * 1e3,
+                total.as_secs_f64() * 1e3,
+            );
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 // ---- store bootstrap -------------------------------------------------------
