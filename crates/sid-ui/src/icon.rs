@@ -90,6 +90,9 @@ pub enum Icon {
     Menu,
     /// Pinned / favourite.
     Star,
+    /// Un-pin / un-favourite — the paired "off" glyph, so a toggle's two states are two
+    /// icons rather than one icon and a colour.
+    StarOff,
     /// In-flight work.
     Spinner,
     /// Expand a pane to fill.
@@ -144,6 +147,7 @@ impl Icon {
         Icon::EyeOff,
         Icon::Menu,
         Icon::Star,
+        Icon::StarOff,
         Icon::Spinner,
         Icon::Maximize,
         Icon::Minimize,
@@ -191,6 +195,7 @@ impl Icon {
             Icon::EyeOff => IconName::EyeOff,
             Icon::Menu => IconName::Menu,
             Icon::Star => IconName::Star,
+            Icon::StarOff => IconName::StarOff,
             Icon::Spinner => IconName::LoaderCircle,
             Icon::Maximize => IconName::Maximize,
             Icon::Minimize => IconName::Minimize,
