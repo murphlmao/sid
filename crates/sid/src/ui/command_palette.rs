@@ -148,7 +148,10 @@ impl AppState {
     /// first. Pure given `&self` + `query` — no gpui `cx` needed, so this (and
     /// [`fuzzy_score`] underneath it) is straightforward to unit-test without a window.
     fn palette_entries(&self, query: &str) -> Vec<PaletteEntry> {
-        let bindings = keymap::default_bindings();
+        // The *effective* registry, not the defaults: the palette's shortcut column has
+        // to show what the user actually rebound (`ui::settings_tab::effective_bindings`
+        // is the one resolution point every consumer goes through).
+        let bindings = self.effective_bindings();
         let mut entries = Vec::new();
 
         for &action in keymap::ALL_ACTIONS {
