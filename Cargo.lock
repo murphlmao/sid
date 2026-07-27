@@ -7050,6 +7050,7 @@ dependencies = [
  "sid-db",
  "sid-git",
  "sid-gpu",
+ "sid-privfs",
  "sid-secrets",
  "sid-ssh",
  "sid-store",
@@ -7081,6 +7082,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -7122,6 +7124,17 @@ dependencies = [
  "sid-core",
  "tempfile",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "sid-privfs"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "sid-core",
+ "tempfile",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

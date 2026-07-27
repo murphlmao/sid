@@ -1,0 +1,27 @@
+[package]
+name = "sid-privfs"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sid-core.workspace = true
+async-trait.workspace = true
+# `process` isn't in the workspace's base tokio feature set; Cargo unifies features
+# per-dependency across the build, so this addition only ever adds `process` to the
+# final resolved tokio — the same way `sid-svcctl` adds it for its `systemctl` shell-out.
+# `time` (already in the base set) backs the elevation timeout.
+tokio = { workspace = true, features = ["process", "io-util"] }
+# The write path stages new content in a private 0600 temp file that the elevated
+# helper reads — a real dependency, not a test one. See `sudo`'s module doc for why the
+# content cannot travel on stdin beside the password.
+tempfile.workspace = true
+# The newline-terminated password handed to sudo's stdin is a second plaintext copy of
+# the secret; `Zeroizing` wipes that buffer when the invocation drops rather than leaving
+# it in freed heap memory.
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["process", "io-util", "macros"] }
