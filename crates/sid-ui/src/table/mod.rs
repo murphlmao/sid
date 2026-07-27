@@ -63,9 +63,11 @@
 
 mod column_width;
 mod columns;
+mod header;
 
 pub use column_width::{ColumnWidth, DEFAULT_GROW_MIN, resolve_widths};
 pub use columns::{FillColumns, TABLE_CHROME};
+pub use header::{next_sort, sortable_th};
 
 use gpui::{
     App, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas, div,

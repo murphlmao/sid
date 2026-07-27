@@ -18,7 +18,7 @@ use sid_core::db::{SchemaGraph, SchemaInfo};
 
 use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
-use sid_ui::theme;
+use sid_ui::{Icon as SidIcon, IconButton, theme};
 
 // ---- layout geometry ------------------------------------------------------------------------
 
@@ -92,6 +92,11 @@ pub struct DiagramView {
     /// editor's mutators need the *main* window's real `Window`, not this one's).
     app: WeakEntity<AppState>,
     main_window: AnyWindowHandle,
+    /// The connection id this window was opened for, so a snapshot pushed by
+    /// [`Self::reload`] after the *main* window switched connections is ignored rather
+    /// than silently repainting this window — whose titlebar still names the old
+    /// connection — with a different database's tables.
+    connection_id: Option<String>,
 }
 
 impl DiagramView {
@@ -102,74 +107,18 @@ impl DiagramView {
     /// lines) rather than dropped.
     ///
     /// `app`/`main_window` back Task 2's click-through (a table-name or column-row click
-    /// jumping to the main window's SQL editor) — see
+    /// jumping to the main window's SQL editor) and the header's ⟳ — see
     /// [`crate::ui::db_tab::AppState::open_diagram_window`]'s doc comment for where
     /// they come from and why both are needed.
     pub fn new(
+        connection_id: Option<String>,
         schema: SchemaInfo,
         graph: SchemaGraph,
         app: WeakEntity<AppState>,
         main_window: AnyWindowHandle,
     ) -> Self {
-        let tables: Vec<DiagramTable> = schema
-            .tables
-            .iter()
-            .map(|t| {
-                let key = table_display_name(t);
-                let pk: HashSet<String> = graph
-                    .primary_keys
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-                let mut fk_columns = HashSet::new();
-                for fk in &graph.foreign_keys {
-                    if fk.from_table == key {
-                        fk_columns.extend(fk.from_columns.iter().cloned());
-                    }
-                    if fk.to_table == key {
-                        fk_columns.extend(fk.to_columns.iter().cloned());
-                    }
-                }
-                DiagramTable {
-                    key,
-                    columns: t.columns.iter().map(|c| c.name.clone()).collect(),
-                    pk,
-                    fk_columns,
-                }
-            })
-            .collect();
-
-        let known: HashSet<&str> = tables.iter().map(|t| t.key.as_str()).collect();
-        let edges: Vec<DiagramEdge> = graph
-            .foreign_keys
-            .iter()
-            .filter(|fk| {
-                known.contains(fk.from_table.as_str()) && known.contains(fk.to_table.as_str())
-            })
-            .map(|fk| DiagramEdge {
-                from_table: fk.from_table.clone(),
-                to_table: fk.to_table.clone(),
-                self_ref: fk.from_table == fk.to_table,
-            })
-            .collect();
-
-        let layout_inputs: Vec<LayoutInput> = tables
-            .iter()
-            .map(|t| {
-                let degree = edges
-                    .iter()
-                    .filter(|e| e.from_table == t.key || e.to_table == t.key)
-                    .count();
-                LayoutInput {
-                    key: t.key.clone(),
-                    degree,
-                    column_count: t.columns.len(),
-                }
-            })
-            .collect();
-        let positions = compute_initial_layout(&layout_inputs);
+        let (tables, edges) = project(&schema, &graph);
+        let positions = compute_initial_layout(&layout_inputs(&tables, &edges));
 
         Self {
             tables,
@@ -179,7 +128,63 @@ impl DiagramView {
             selected: None,
             app,
             main_window,
+            connection_id,
         }
+    }
+
+    /// Re-render from a newer schema snapshot — the other half of the header's ⟳.
+    ///
+    /// Pushed in by [`crate::ui::db_tab::AppState::refresh_schema`]'s completion rather
+    /// than pulled: the fetch is async and the cache it lands in
+    /// (`DbTabState::schema`/`schema_graph`) is private to the `db_tab` module, so the
+    /// side that already has both the fresh data and the `&mut App` does the handing
+    /// over. That also means a ⟳ pressed in the *main* window updates an open diagram,
+    /// which is the behaviour a user would expect anyway.
+    ///
+    /// Snapshots for a different connection are dropped — see [`Self::connection_id`].
+    /// Everything the user has done to the canvas that still makes sense is preserved:
+    /// hand-dragged boxes stay put ([`merge_positions`]) and the selection survives if
+    /// its table does. An in-flight drag is cancelled, because the box it was moving may
+    /// not exist any more.
+    pub fn reload(
+        &mut self,
+        connection_id: Option<&str>,
+        schema: &SchemaInfo,
+        graph: &SchemaGraph,
+        cx: &mut Context<Self>,
+    ) {
+        if connection_id != self.connection_id.as_deref() {
+            return;
+        }
+
+        let (tables, edges) = project(schema, graph);
+        let fresh = compute_initial_layout(&layout_inputs(&tables, &edges));
+
+        self.positions = merge_positions(&self.positions, fresh);
+        self.selected = self
+            .selected
+            .take()
+            .filter(|key| tables.iter().any(|t| &t.key == key));
+        self.drag = None;
+        self.tables = tables;
+        self.edges = edges;
+        cx.notify();
+    }
+
+    /// The header's ⟳: re-run the *main* window's schema fetch, exactly as its own ⟳
+    /// does. Nothing comes back through this call — `refresh_schema` spawns and detaches
+    /// — so the new snapshot arrives later through [`Self::reload`].
+    ///
+    /// Reached the same way [`Self::navigate_to_table`] reaches the SQL editor:
+    /// `refresh_schema` needs the *main* window's `&mut Window` (it may raise a password
+    /// prompt on a dangling secret), which only `AnyWindowHandle::update` can produce.
+    /// Unlike the click-through, this deliberately does **not** `activate_window` — a
+    /// refresh should not yank the user off the diagram they are reading.
+    fn refresh(&self, cx: &mut Context<Self>) {
+        let app = self.app.clone();
+        let _ = self.main_window.update(cx, move |_root, window, cx| {
+            let _ = app.update(cx, |app, cx| app.refresh_schema(window, cx));
+        });
     }
 
     /// How many self-referencing FKs `key` has — rendered as a "↺ N" badge on the box
@@ -321,10 +326,16 @@ impl DiagramView {
         });
     }
 
-    /// The header bar: table/relationship counts, and — when the backend hasn't wired
-    /// up `schema_graph` yet (or the engine genuinely has no FKs) — a subtle hint
-    /// rather than a diagram that silently looks broken.
-    fn header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+    /// The header bar: table/relationship counts, a ⟳ that re-fetches the schema
+    /// ([`Self::refresh`]), and — when the backend hasn't wired up `schema_graph` yet
+    /// (or the engine genuinely has no FKs) — a subtle hint rather than a diagram that
+    /// silently looks broken.
+    ///
+    /// The ⟳ has no busy state: `schema_loading` lives on the main window's private
+    /// `DbTabState`, and a locally-held flag could stick on forever whenever
+    /// `refresh_schema` early-returns (no active connection, or a password prompt it
+    /// raises over *that* window). The diagram simply repaints when the snapshot lands.
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (border, muted) = (t.border, t.muted);
         let summary = format!(
@@ -348,6 +359,14 @@ impl DiagramView {
             .border_color(rgb(border))
             .child(div().text_sm().text_color(rgb(muted)).child(summary))
             .children(hint.map(|h| div().text_xs().text_color(rgb(muted)).child(h)))
+            .child(div().flex_1())
+            .child(
+                IconButton::new("diagram-refresh", SidIcon::Refresh, "refresh schema")
+                    .small()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.refresh(cx);
+                    })),
+            )
     }
 
     /// The FK-lines layer. A `canvas()` sized to the scrollable content (see
@@ -684,6 +703,137 @@ fn compute_initial_layout(tables: &[LayoutInput]) -> HashMap<String, Point<Pixel
         col_y[col] = y + box_height(table.column_count) + GAP_Y;
     }
     positions
+}
+
+/// Project a schema snapshot into the boxes and lines the canvas draws.
+///
+/// Shared by [`DiagramView::new`] and [`DiagramView::reload`] so the first paint and
+/// every refresh cannot drift apart. See `DiagramView::new`'s doc comment for the
+/// dangling-edge and self-reference rules.
+fn project(schema: &SchemaInfo, graph: &SchemaGraph) -> (Vec<DiagramTable>, Vec<DiagramEdge>) {
+    let tables: Vec<DiagramTable> = schema
+        .tables
+        .iter()
+        .map(|t| {
+            let key = table_display_name(t);
+            let pk: HashSet<String> = graph
+                .primary_keys
+                .get(&key)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let mut fk_columns = HashSet::new();
+            for fk in &graph.foreign_keys {
+                if fk.from_table == key {
+                    fk_columns.extend(fk.from_columns.iter().cloned());
+                }
+                if fk.to_table == key {
+                    fk_columns.extend(fk.to_columns.iter().cloned());
+                }
+            }
+            DiagramTable {
+                key,
+                columns: t.columns.iter().map(|c| c.name.clone()).collect(),
+                pk,
+                fk_columns,
+            }
+        })
+        .collect();
+
+    let known: HashSet<&str> = tables.iter().map(|t| t.key.as_str()).collect();
+    let edges: Vec<DiagramEdge> = graph
+        .foreign_keys
+        .iter()
+        .filter(|fk| known.contains(fk.from_table.as_str()) && known.contains(fk.to_table.as_str()))
+        .map(|fk| DiagramEdge {
+            from_table: fk.from_table.clone(),
+            to_table: fk.to_table.clone(),
+            self_ref: fk.from_table == fk.to_table,
+        })
+        .collect();
+
+    (tables, edges)
+}
+
+/// Strip the projected boxes down to what [`compute_initial_layout`] places them by.
+fn layout_inputs(tables: &[DiagramTable], edges: &[DiagramEdge]) -> Vec<LayoutInput> {
+    tables
+        .iter()
+        .map(|t| LayoutInput {
+            key: t.key.clone(),
+            degree: edges
+                .iter()
+                .filter(|e| e.from_table == t.key || e.to_table == t.key)
+                .count(),
+            column_count: t.columns.len(),
+        })
+        .collect()
+}
+
+/// Carry the user's hand-placed boxes across a reload.
+///
+/// `fresh` is what [`compute_initial_layout`] just produced for the reloaded schema, so
+/// it — not `kept` — decides which tables exist afterwards. A table that survived the
+/// reload keeps wherever the user dragged it; a table that is new to the schema takes
+/// its computed slot; a table that is gone leaves nothing behind.
+///
+/// Without this, ⟳ would fling every box back to the grid, which makes the refresh
+/// actively worse than closing and re-opening the window.
+fn merge_positions(
+    kept: &HashMap<String, Point<Pixels>>,
+    fresh: HashMap<String, Point<Pixels>>,
+) -> HashMap<String, Point<Pixels>> {
+    fresh
+        .into_iter()
+        .map(|(key, laid_out)| {
+            let position = kept.get(&key).copied().unwrap_or(laid_out);
+            (key, position)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    fn at(x: f32, y: f32) -> Point<Pixels> {
+        point(px(x), px(y))
+    }
+
+    #[test]
+    fn a_table_that_survives_the_reload_stays_where_the_user_dragged_it() {
+        let dragged = HashMap::from([("orders".to_string(), at(700., 300.))]);
+        let fresh = HashMap::from([("orders".to_string(), at(MARGIN, MARGIN))]);
+        assert_eq!(merge_positions(&dragged, fresh)["orders"], at(700., 300.));
+    }
+
+    #[test]
+    fn a_table_new_to_the_schema_takes_its_computed_slot() {
+        let dragged = HashMap::from([("orders".to_string(), at(700., 300.))]);
+        let fresh = HashMap::from([
+            ("orders".to_string(), at(MARGIN, MARGIN)),
+            ("invoices".to_string(), at(320., MARGIN)),
+        ]);
+        assert_eq!(
+            merge_positions(&dragged, fresh)["invoices"],
+            at(320., MARGIN)
+        );
+    }
+
+    #[test]
+    fn a_table_dropped_from_the_schema_leaves_no_position_behind() {
+        // Otherwise the map grows forever across refreshes and a table re-added under
+        // the same name would silently reappear at a position from a previous schema.
+        let dragged = HashMap::from([
+            ("orders".to_string(), at(700., 300.)),
+            ("legacy".to_string(), at(40., 900.)),
+        ]);
+        let fresh = HashMap::from([("orders".to_string(), at(MARGIN, MARGIN))]);
+        let merged = merge_positions(&dragged, fresh);
+        assert!(!merged.contains_key("legacy"));
+        assert_eq!(merged.len(), 1);
+    }
 }
 
 /// The anchor point on `bounds`'s boundary nearest `toward`: the right-edge midpoint if
