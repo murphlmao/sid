@@ -63,6 +63,6 @@ pub use kbd::Kbd;
 pub use meter::{Meter, MeterTone, StatCluster};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use styled::{StyledExt, h_flex, v_flex};
-pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
+pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate, sortable_th};
 pub use theme::Theme;
 pub use toolbar::Toolbar;
