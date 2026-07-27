@@ -37,6 +37,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme;
+use sid_ui::{Icon, h_flex};
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
@@ -291,11 +292,12 @@ impl AppState {
             ),
         };
 
-        let title: SharedString = if dirty {
-            format!("{file_name} •").into()
-        } else {
-            file_name
-        };
+        // The unsaved marker. Was a literal `•` glued onto the filename with a
+        // `format!` — a Unicode bullet from whatever the text font supplied, welded into
+        // the title string so it could not be coloured, sized or spaced independently of
+        // it. `Icon::Asterisk` is the bundled Lucide glyph, the conventional
+        // unsaved-buffer mark, and it renders beside the title rather than inside it.
+        let dirty_marker = dirty.then(|| Icon::Asterisk.small().text_color(rgb(theme.accent)));
 
         let banner = (is_editor && !writable).then(|| {
             div()
@@ -367,10 +369,12 @@ impl AppState {
                                                 .flex()
                                                 .flex_col()
                                                 .child(
-                                                    div()
+                                                    h_flex()
+                                                        .gap_1p5()
                                                         .text_sm()
                                                         .text_color(rgb(theme.fg_strong))
-                                                        .child(title),
+                                                        .child(file_name)
+                                                        .children(dirty_marker),
                                                 )
                                                 .child(
                                                     div()
