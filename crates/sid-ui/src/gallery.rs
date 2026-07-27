@@ -19,13 +19,16 @@
 //! scripts/sid-cap.sh --env SID_GALLERY=1 --env SID_THEME=cosmos --out /tmp/g-cosmos.png
 //! ```
 
-use gpui::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, rgb};
+use gpui::{
+    Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
+};
 
 use crate::badge::{ALL_BADGE_FILLS, ALL_BADGE_TONES, Badge, BadgeFill, BadgeTone};
 use crate::button::{ALL_BUTTON_VARIANTS, Button, ButtonSize, ButtonVariant, IconButton};
 use crate::card::Card;
 use crate::elevation::Elevation;
 use crate::empty_state::EmptyState;
+use crate::grid::{CardGrid, GridCard};
 use crate::icon::Icon;
 use crate::kbd::Kbd;
 use crate::list::{List, Row};
@@ -34,6 +37,20 @@ use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, Statu
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::toolbar::Toolbar;
+
+/// The sample objects the card grid is drawn with — a host grid, because that is the
+/// grid this shape was built for.
+const GRID_CARDS: [(&str, &str, ConnectionState); 5] = [
+    ("home-server", "you@192.168.1.10:22", ConnectionState::Live),
+    ("vps-1", "root@5.5.5.5:22", ConnectionState::Connecting),
+    (
+        "staging",
+        "deploy@staging.acme:22",
+        ConnectionState::Offline,
+    ),
+    ("prod", "deploy@prod.acme:22", ConnectionState::Failed),
+    ("bastion", "ops@bastion.acme:2222", ConnectionState::Offline),
+];
 
 /// The gallery screen. Holds no state: everything on it is a fresh element per frame.
 pub struct Gallery;
@@ -322,6 +339,53 @@ fn structure(theme: &Theme) -> Vec<gpui::AnyElement> {
                         "a flat section: the same header with no chrome, for titled \
                          blocks inside a reading column",
                     )),
+            )
+            .into_any_element(),
+        Card::new()
+            .title("card grid")
+            .child(div().hint_text(theme).child(
+                "cards wrap into as many columns as the width allows, and stretch to \
+                 fill a short line — the SSH home's host grid, at a narrower column \
+                 here so the wrap is visible inside one gallery pane",
+            ))
+            .child(
+                CardGrid::new()
+                    .min_col(px(150.))
+                    .max_col(px(210.))
+                    .children(
+                        GRID_CARDS
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, (name, addr, state))| {
+                                GridCard::new(("gallery-grid-card", ix))
+                                    // The middle one is picked: `selection` fill plus the
+                                    // brighter outline, against its resting neighbours.
+                                    .selected(ix == 1)
+                                    .on_click(|_, _, _| {})
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap_2()
+                                            .child(StatusDot::new(("gallery-grid-dot", ix), *state))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(rgb(theme.fg_strong))
+                                                    .child(*name),
+                                            ),
+                                    )
+                                    .child(div().hint_text(theme).truncate().child(*addr))
+                                    .child(
+                                        h_flex().w_full().gap_1().pt_1().child(
+                                            Button::new(("gallery-grid-connect", ix), "connect")
+                                                .small()
+                                                .icon(Icon::Terminal),
+                                        ),
+                                    )
+                            }),
+                    ),
             )
             .into_any_element(),
         Card::new()

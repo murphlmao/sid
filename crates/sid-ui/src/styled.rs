@@ -54,6 +54,25 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
+    /// One line of text, cut with a real `…` when it does not fit.
+    ///
+    /// **Use this, not `gpui`'s `truncate()`.** They mean the same thing and only one of
+    /// them works. `truncate()` sets `white_space: Nowrap` alongside the ellipsis, and
+    /// `TextElement`'s measured-layout cache (see `elements/text.rs`) keys itself on
+    /// `wrap_width`, which is *always* `None` under `Nowrap`. So the first measure pass —
+    /// taffy's intrinsic sizing, where the available width is `MaxContent` and there is
+    /// nothing to truncate *to* — caches the full-width layout, and the second pass, the
+    /// one that finally knows how wide the element is, hits that cache and returns early
+    /// without ever truncating. The text then gets hard-clipped by `overflow_hidden`,
+    /// mid-glyph, with no ellipsis: an SSH card read `prod-eu-west-1-application-serv`
+    /// jammed against its origin chip.
+    ///
+    /// Clamping to one line instead leaves `white_space` at `Normal`, so the second pass
+    /// carries a real `wrap_width`, misses the cache, and truncates with the suffix.
+    fn clamp_one_line(self) -> Self {
+        self.line_clamp(1).text_ellipsis()
+    }
+
     /// A section header's type: `text_xs`, UPPERCASE is the caller's job (the string is
     /// theirs), `muted`.
     fn section_label(self, theme: &Theme) -> Self {
@@ -128,6 +147,26 @@ mod tests {
 
         let well = style_of(div().elevation(Elevation::Well, &t));
         assert_eq!(well.background, Some(gpui::rgb(t.well).into()));
+    }
+
+    #[test]
+    fn a_clamped_line_asks_for_an_ellipsis_and_never_for_nowrap() {
+        // The `white_space` assertion is the load-bearing one, and it is the whole
+        // difference between this helper and gpui's `truncate()`: `Nowrap` pins
+        // `wrap_width` to `None`, which makes `TextElement`'s measured-layout cache hit
+        // on the first (MaxContent, nothing-to-truncate-to) pass and return before the
+        // ellipsis is ever applied. Anyone "simplifying" this back to `.truncate()`
+        // reintroduces text hard-clipped mid-glyph across every card in the app.
+        let text = style_of(div().clamp_one_line())
+            .text
+            .clone()
+            .unwrap_or_default();
+        assert_eq!(text.line_clamp, Some(1), "clamped to one line");
+        assert!(text.text_overflow.is_some(), "and cut with a suffix");
+        assert_eq!(
+            text.white_space, None,
+            "nowrap defeats the truncation it comes with"
+        );
     }
 
     #[test]

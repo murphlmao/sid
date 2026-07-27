@@ -149,10 +149,6 @@ pub struct AppState {
     form: Option<Entity<HostForm>>,
     /// Keeps the form's event subscription alive exactly as long as the form is open.
     _form_subscription: Option<Subscription>,
-    /// The row whose ✕ has been clicked once, keyed by (alias, origin) — the second
-    /// click on the same row executes the delete. `pub(crate)` so `ui::ssh_home`'s tree
-    /// rows share the exact same two-click state as the host-list rows below.
-    pub(crate) armed_delete: Option<(String, Scope)>,
     /// Every live SSH session (ssh-v3): each fully independent (own client/reader/
     /// writer/shell/sftp — the P3.5 split carries over unchanged per-session). Replaces
     /// the old single-`Option` field now that MobaXterm-style multi-session tabs are the
@@ -318,7 +314,6 @@ impl AppState {
             gpu_badge_open: false,
             form: None,
             _form_subscription: None,
-            armed_delete: None,
             ssh_sessions: Vec::new(),
             active_session: None,
             file_browser_side,
@@ -376,8 +371,6 @@ impl AppState {
     /// `workspace: None`) — so reusing `seed_lists.hosts` here is not an approximation,
     /// it's the identical result `refresh()` would have read.
     fn apply_seed_lists(&mut self, seed_lists: SeedLists) {
-        self.armed_delete = None;
-
         match seed_lists.workspaces {
             Ok(list) => self.scopes = build_scope_choices(list),
             Err(e) => {
@@ -411,7 +404,6 @@ impl AppState {
     /// every other host-list mutation here does (same convention as `db_tab`'s
     /// `refresh_db`).
     pub(crate) fn refresh(&mut self) {
-        self.armed_delete = None;
         match self.store.read_hosts(&self.scope, self.filters) {
             Ok(hosts) => {
                 self.hosts = hosts;
@@ -500,17 +492,21 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.armed_delete = None;
         let workspace = self.active_workspace();
         let degraded = self.secrets_degraded;
         let form = cx.new(|cx| HostForm::new_edit(cx, host, origin, workspace, degraded));
         self.open_form(form, window, cx);
     }
 
-    /// ✕ (second click) Remove the record from **its origin layer**, then its secret
-    /// from the keyring. Deleting a workspace copy un-shadows a global duplicate — that
-    /// is attributive behavior, not loss. `pub(crate)` so `ui::ssh_home`'s tree rows
-    /// share this exact delete path (and `armed_delete` state) with the host-list rows.
+    /// Remove the record from **its origin layer**, then its secret from the keyring.
+    /// Deleting a workspace copy un-shadows a global duplicate — that is attributive
+    /// behavior, not loss. `pub(crate)` so `ui::ssh_home`'s right-click menu shares this
+    /// exact delete path with the host-list rows.
+    ///
+    /// There is no arming step any more. It existed because delete used to be an 11px
+    /// `✕` on every row, one stray click from destroying a record; the card grid took
+    /// delete off the card entirely and left it in the right-click menu, where choosing
+    /// it is already a deliberate two-step act.
     pub(crate) fn delete_row(
         &mut self,
         alias: &str,
@@ -518,7 +514,6 @@ impl AppState {
         secret_ref: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        self.armed_delete = None;
         match self.store.delete_host(alias, origin) {
             Ok(_removed) => {
                 let mut post_warning = None;
@@ -542,7 +537,6 @@ impl AppState {
     /// layer already holds the alias — e.g. the demo seed's duplicate `vps-1`) surfaces
     /// verbatim in the header error line; nothing is overwritten.
     pub(crate) fn promote_row(&mut self, alias: &str, origin: &Scope, cx: &mut Context<Self>) {
-        self.armed_delete = None;
         let Scope::Workspace(id) = origin else {
             return;
         };
@@ -556,7 +550,6 @@ impl AppState {
     /// ⤓ Move a global-origin record down into the active workspace. Conflicts surface
     /// verbatim, exactly like promote.
     pub(crate) fn demote_row(&mut self, alias: &str, cx: &mut Context<Self>) {
-        self.armed_delete = None;
         let Scope::Workspace(id) = self.scope.clone() else {
             return;
         };
