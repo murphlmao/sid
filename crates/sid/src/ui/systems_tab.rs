@@ -28,18 +28,37 @@
 //! Process kill reuses the exact `SysProvider::kill_process` call path the Network
 //! tab's ports table uses — the pid-0 / i32-overflow guards live once, in
 //! `sid-sysinfo`'s `kill` module, behind that one trait method (see `sid_sysinfo::
-//! kill::kill_process`'s doc comment). [`ProcessesDelegate`] only adds the two-click
-//! confirm UI state on top, mirroring `network_tab.rs`'s `PortsDelegate::kill`.
+//! kill::kill_process`'s doc comment). [`ProcessesDelegate`] adds the two-click confirm
+//! on top, as a [`ConfirmArm`] rather than the `Option<Pid>` field it used to be —
+//! **that field made the confirm unreachable**: `set_processes` cleared it on arrival of
+//! every refresh, and this tab refreshes every 2 seconds, so arming a row was a race
+//! against the timer that the timer always won. See `sid_ui::action_cell`'s module docs.
+//!
+//! ## Layout (UI overhaul, 2026-07-26)
+//!
+//! The tab is one shared overview plus two **segmented sub-views**:
+//!
+//! ```text
+//! ┌ STATCLUSTER ─ host line · CPU / Memory / Swap meters ───────────────┐
+//! ├ [ Processes | Config files ] ───────────────────────────────────────┤
+//! └ the active sub-view, full width ────────────────────────────────────┘
+//! ```
+//!
+//! The config-file list used to sit *below* the process table as a centred 880px column
+//! under a full-width table, which orphaned it: it started at x≈560 aligned to nothing,
+//! and its `pin` actions were red text ~800px from the filename they acted on. It is now
+//! a sub-view of its own, owning the whole viewport, with the pin affordance a
+//! row-anchored tooltipped `IconButton` inside a bounded card.
 //!
 //! ## Config files (Round E §D)
 //!
-//! The tab also grows a small config-file manager below the processes table: pinned
-//! paths (persisted globally via `sid_store::PinnedFile` — see [`AppState::refresh_config_files`])
-//! plus a fixed "common" candidate list, existence-filtered against this machine. Unlike
-//! the overview/processes half of this file, pins *are* persisted (through `AppState::store`,
-//! same as every other tab's writes) — only the overview/processes state itself stays
-//! ephemeral. Clicking a row opens the editor modal in [`super::config_editor`]; this
-//! module owns just the two lists, the pin/unpin affordances, and the "pin a file…" input.
+//! Pinned paths (persisted globally via `sid_store::PinnedFile` — see
+//! [`AppState::refresh_config_files`]) plus a fixed "common" candidate list,
+//! existence-filtered against this machine. Unlike the overview/processes half of this
+//! file, pins *are* persisted (through `AppState::store`, same as every other tab's
+//! writes) — only the overview/processes state itself stays ephemeral. Clicking a row
+//! opens the editor modal in [`super::config_editor`]; this module owns just the two
+//! lists, the pin/unpin affordances, and the "pin a file…" input.
 //!
 //! Every colour here reads [`theme::active`] at render time (never cached across frames)
 //! — this file was the first to drop its own local hex-const palette in favour of the
@@ -47,13 +66,14 @@
 //! `FG_DIM→muted`, `ACTIVE_BG→selection`, `BRAND→accent`, `DANGER→danger`, `WARN→warning`).
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, IntoElement, SharedString, Subscription, Window,
-    div, prelude::*, px, relative, rgb,
+    div, prelude::*, px, rgb,
 };
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
@@ -65,7 +85,50 @@ use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
-use sid_ui::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
+use sid_ui::{
+    ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
+    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, Meter, Segment, SegmentSelect,
+    SegmentedControl, StatCluster, StyledExt as _, Toolbar, h_flex, v_flex,
+};
+
+/// Which sub-view is active under the System tab's segmented control.
+///
+/// The config-file list used to be stacked *under* the process table (see the module
+/// docs); making it a peer sub-view is what lets each of them own the full viewport
+/// width instead of splitting the vertical space and orphaning the narrower one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SystemSubView {
+    #[default]
+    Processes,
+    ConfigFiles,
+}
+
+impl SystemSubView {
+    /// In the order the segmented control lists them; the index into this array is the
+    /// index the control reports back from `on_select`.
+    const ALL: [SystemSubView; 2] = [SystemSubView::Processes, SystemSubView::ConfigFiles];
+
+    fn label(self) -> &'static str {
+        match self {
+            SystemSubView::Processes => "Processes",
+            SystemSubView::ConfigFiles => "Config files",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            SystemSubView::Processes => Icon::Terminal,
+            SystemSubView::ConfigFiles => Icon::File,
+        }
+    }
+
+    /// The sub-view at `ix`, for the segmented control's callback. Out-of-range keeps
+    /// the current view rather than guessing — the control clamps its own index, so
+    /// this only fires if the two lists ever disagree.
+    fn at(ix: usize) -> Option<Self> {
+        Self::ALL.get(ix).copied()
+    }
+}
 
 /// Systems tab state. See the module doc comment for why this holds no store/scope.
 pub struct SystemsTabState {
@@ -87,6 +150,10 @@ pub struct SystemsTabState {
     /// whenever it finds it not running, which is exactly "the tab just (re)became
     /// active" since the loop only ever stops itself while inactive.
     refresh_loop_running: bool,
+    /// Which of `[Processes] [Config files]` is showing. Purely a view choice — both
+    /// sub-views keep their own state loaded whichever one is on screen, so switching
+    /// back never costs a re-probe.
+    sub_view: SystemSubView,
     overview: Option<SystemOverview>,
     error: Option<String>,
     /// The processes table. Lazily built by `ensure_systems_widgets` (needs `window`,
@@ -128,6 +195,7 @@ impl SystemsTabState {
             loaded: false,
             refreshing: false,
             refresh_loop_running: false,
+            sub_view: SystemSubView::default(),
             overview: None,
             error: None,
             table: None,
@@ -151,17 +219,19 @@ enum ProcessSortKey {
     Mem,
     Pid,
     Name,
+    Command,
     User,
 }
 
 /// Column index -> sort key, for the sortable columns only (the trailing "kill" column
 /// has no `Column::sort` set, so `TableState::perform_sort` never calls into our
 /// `perform_sort` for it — see that method's gate in gpui-component's `table/state.rs`).
-const PROCESS_SORT_KEYS: [ProcessSortKey; 5] = [
+const PROCESS_SORT_KEYS: [ProcessSortKey; 6] = [
     ProcessSortKey::Cpu,
     ProcessSortKey::Mem,
     ProcessSortKey::Pid,
     ProcessSortKey::Name,
+    ProcessSortKey::Command,
     ProcessSortKey::User,
 ];
 
@@ -188,9 +258,14 @@ struct ProcessesDelegate {
     /// insertion order (which would be a confusing, undocumented "current" order for a
     /// live process list).
     sort_dir: ColumnSort,
-    /// The pid whose kill button has been clicked once — the second click on the same
-    /// pid sends the signal. Mirrors `PortsDelegate::armed_kill`.
-    armed_kill: Option<Pid>,
+    /// The two-step kill confirm, keyed by pid.
+    ///
+    /// Keyed rather than positional so a table that re-sorts between the two clicks can
+    /// never redirect the confirm onto a different process, and *surviving*
+    /// [`Self::set_processes`] rather than cleared by it — the `Option<Pid>` this
+    /// replaces was reset on every 2-second refresh, which made the confirm
+    /// unreachable in practice. See `sid_ui::action_cell`.
+    kill_arm: ConfirmArm<Pid>,
     /// Outcome of the last kill attempt, if it failed (e.g. `SysError::PermissionDenied`
     /// on a root-owned process). Cleared on the next refresh, arm, or successful kill.
     kill_error: Option<String>,
@@ -209,7 +284,7 @@ impl ProcessesDelegate {
             query: String::new(),
             sort_key: ProcessSortKey::Cpu,
             sort_dir: ColumnSort::Descending,
-            armed_kill: None,
+            kill_arm: ConfirmArm::new(),
             kill_error: None,
             // Widths are declared as intent, not pixels: the numeric columns have a
             // known upper bound and stay exactly as wide as they need, `Name` — the one
@@ -231,23 +306,41 @@ impl ProcessesDelegate {
                 ),
                 (
                     Column::new("name", "Name").sortable(),
-                    ColumnWidth::grow().min_width(220.),
+                    ColumnWidth::grow().weight(1.0).min_width(180.),
+                ),
+                // The reclaimed width has to carry something. Filling a 2000px window by
+                // stretching a 6-character process name across 1480px of it is the same
+                // dead space the fill-width model was built to kill, just relabelled —
+                // and the command line is the one datum a process monitor is missing
+                // (the filter already matches on it). It takes the larger share of the
+                // grow because it is the column whose content is genuinely unbounded.
+                (
+                    Column::new("cmd", "Command").sortable(),
+                    ColumnWidth::grow().weight(2.5).min_width(240.),
                 ),
                 (
                     Column::new("user", "User").sortable(),
                     ColumnWidth::Min(120.),
                 ),
-                (Column::new("kill", ""), ColumnWidth::Fixed(72.)),
+                // Wide enough for the armed state's "confirm" label plus the cell's own
+                // padding — the idle "kill" chip is narrower, but a control that resizes
+                // the column it lives in when you arm it makes the whole row jump.
+                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
             ]),
         }
     }
 
     /// Replace the cached rows after a refresh, keeping the active filter + sort
-    /// applied. Disarms any pending kill confirmation — the row set just changed
-    /// underneath it (mirrors `PortsDelegate::set_ports`).
+    /// applied.
+    ///
+    /// A pending kill confirmation is kept **unless its process is gone**. Clearing it
+    /// unconditionally (what this did before) made the confirm unreachable: this tab
+    /// re-probes every 2 seconds, so every arm was disarmed within the tick, and the
+    /// armed state never even reached the screen. See [`ProcessesDelegate::kill_arm`].
     fn set_processes(&mut self, processes: Vec<ProcessInfo>) {
         self.all_processes = processes;
-        self.armed_kill = None;
+        let live: HashSet<Pid> = self.all_processes.iter().map(|p| p.pid).collect();
+        self.kill_arm.retain(|pid| live.contains(&pid));
         self.recompute();
     }
 
@@ -274,7 +367,7 @@ impl ProcessesDelegate {
     /// both the cached and displayed sets immediately (rather than waiting on the next
     /// 2s refresh tick); on failure the error is surfaced via `kill_error`.
     fn kill(&mut self, pid: Pid, cx: &mut Context<TableState<Self>>) {
-        self.armed_kill = None;
+        self.kill_arm.disarm();
         self.kill_error = None;
         let provider = self.provider.clone();
         cx.spawn(async move |this, cx| {
@@ -361,6 +454,9 @@ impl TableDelegate for ProcessesDelegate {
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index, same trick `network_tab.rs`'s delegates use.
         let cell_id = ("proc-cell", row_ix * 8 + col_ix);
+        // One clock read per cell, so every cell in a frame agrees about whether the
+        // armed row's confirm window is still open.
+        let now = Instant::now();
         match col_ix {
             0 => div()
                 .id(cell_id)
@@ -387,6 +483,21 @@ impl TableDelegate for ProcessesDelegate {
                 .text_color(rgb(theme.fg))
                 .child(proc.name.clone()),
             4 => {
+                // Kernel threads have no cmdline at all; an empty cell reads as a
+                // rendering failure, the em dash reads as "there is none".
+                let label: SharedString = if proc.cmd.trim().is_empty() {
+                    "—".into()
+                } else {
+                    proc.cmd.clone().into()
+                };
+                div()
+                    .id(cell_id)
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(theme.muted))
+                    .child(label)
+            }
+            5 => {
                 let label: SharedString =
                     proc.user.clone().unwrap_or_else(|| "—".to_string()).into();
                 div()
@@ -398,30 +509,27 @@ impl TableDelegate for ProcessesDelegate {
             }
             _ => {
                 let pid = proc.pid;
-                let armed = self.armed_kill == Some(pid);
-                let (label, color) = if armed {
-                    ("kill?", theme.danger)
-                } else {
-                    ("kill", theme.muted)
-                };
-                div()
-                    .id(cell_id)
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(rgb(color))
-                    .hover(|s| s.bg(rgb(theme.selection)))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        if this.delegate().armed_kill == Some(pid) {
-                            this.delegate_mut().kill(pid, cx);
-                        } else {
-                            this.delegate_mut().armed_kill = Some(pid);
-                            cx.notify();
-                        }
-                    }))
+                let armed = self.kill_arm.is_armed(pid, now);
+                // Keyed by pid, not by row index: the rows under the pointer reorder on
+                // every sort and every 2s refresh, and an id that moves with them would
+                // hand one row's hover/press state to another.
+                let button_id = ("proc-kill", pid.as_u32() as usize);
+                div().id(cell_id).size_full().child(
+                    ActionCell::new().child(
+                        ConfirmButton::new(button_id, "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("send SIGTERM to this process")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
             }
         }
     }
@@ -452,81 +560,96 @@ impl AppState {
         }
 
         let theme = theme::active(cx).clone();
-        let filter = self.systems.filter.clone();
-        let refresh_label = if self.systems.refreshing {
-            "…"
-        } else {
-            "⟳ refresh"
+        let overview = self.overview_cluster();
+        let sub_view = self.systems.sub_view;
+        let body: AnyElement = match sub_view {
+            SystemSubView::Processes => self.processes_view(&theme, cx),
+            SystemSubView::ConfigFiles => self.config_files_view(&theme, cx),
         };
+        let editor_overlay = self.config_editor_overlay(window, cx);
+
+        v_flex()
+            .flex_1()
+            .p_4()
+            .gap_3()
+            .child(overview)
+            .child(self.system_sub_view_strip(sub_view, cx))
+            // The one flexible child, so whichever sub-view is showing gets the whole
+            // remaining canvas. `min_h(0)` keeps its own natural height from starving
+            // the basis-0 `flex_1` down to a header row — the round-E capture-harness
+            // shakedown caught exactly that.
+            .child(div().flex_1().min_h(px(0.)).w_full().child(body))
+            .children(editor_overlay)
+            .into_any_element()
+    }
+
+    /// The `[Processes] [Config files]` segmented control. The meters above it are
+    /// shared context for both; everything below it belongs to one sub-view.
+    fn system_sub_view_strip(
+        &self,
+        active: SystemSubView,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let selected = SystemSubView::ALL
+            .iter()
+            .position(|&v| v == active)
+            .unwrap_or(0);
+        SegmentedControl::new("system-subview")
+            .segments(
+                SystemSubView::ALL
+                    .iter()
+                    .map(|&v| Segment::new(v.label()).icon(v.icon())),
+            )
+            .selected(selected)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                if let Some(view) = SystemSubView::at(ev.index) {
+                    this.systems.sub_view = view;
+                    cx.notify();
+                }
+            }))
+    }
+
+    /// The Processes sub-view: toolbar, then the fill-width table, then any kill error.
+    fn processes_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.systems.filter.clone();
+        let refreshing = self.systems.refreshing;
         let proc_count = self
             .systems
             .table
             .as_ref()
             .map(|t| t.read(cx).delegate().processes.len())
             .unwrap_or(0);
-
-        let sub: SharedString = match &self.systems.error {
-            Some(e) => format!("error: {e}").into(),
-            None if self.systems.refreshing && self.systems.overview.is_none() => "loading…".into(),
-            None => format!("{proc_count} processes").into(),
-        };
-
-        let overview = overview_section(&theme, self.systems.overview.as_ref());
-
         let kill_error = self
             .systems
             .table
             .as_ref()
             .and_then(|t| t.read(cx).delegate().kill_error.clone());
-
         let table = self.systems.table.clone();
-        let config_files = self.config_files_section(&theme, cx);
-        let editor_overlay = self.config_editor_overlay(window, cx);
 
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .p_4()
-            .gap_3()
-            .child(overview)
+        let count_label: SharedString = match &self.systems.error {
+            Some(e) => format!("error: {e}").into(),
+            None if refreshing && self.systems.overview.is_none() => "loading…".into(),
+            None => sid_ui::toolbar::count_label(proc_count, "process").into(),
+        };
+
+        v_flex()
+            .size_full()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(theme.border))
-                    .children(filter.map(|f| div().flex_1().max_w(px(280.)).child(f)))
-                    .child(
-                        div()
-                            .id("systems-refresh")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(rgb(theme.accent))
-                            .hover(|s| s.bg(rgb(theme.selection)))
-                            .child(refresh_label)
+                Toolbar::new()
+                    // Capped rather than filling the row: a 1900px-wide filter field is
+                    // as wrong as the 652px table it used to sit above.
+                    .filter(div().max_w(px(320.)).children(filter))
+                    .count_label(count_label)
+                    .action(
+                        Button::new("systems-refresh", "refresh")
+                            .small()
+                            .icon(Icon::Refresh)
+                            .loading(refreshing)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                 this.refresh_systems(cx);
                             })),
                     ),
             )
-            .child(
-                div()
-                    .py_1()
-                    .text_sm()
-                    .text_color(rgb(theme.muted))
-                    .child(sub),
-            )
-            // Both flexible children need `min_h(0)`: without it, the config-file
-            // list's natural (unshrinkable) height starves the table's basis-0
-            // `flex_1` down to just its header row — the round-E capture-harness
-            // shakedown caught exactly that. Each half scrolls internally instead.
             .children(table.map(|t| {
                 div()
                     .flex_1()
@@ -535,27 +658,14 @@ impl AppState {
                     .child(FillTable::new(&t).stripe(true))
             }))
             .children(kill_error.map(|e| {
-                div()
+                h_flex()
+                    .gap_1p5()
                     .py_1()
                     .text_xs()
                     .text_color(rgb(theme.danger))
-                    .child(format!("✗ {e}"))
+                    .child("✗")
+                    .child(e)
             }))
-            .child(
-                div()
-                    .id("systems-config-scroll")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    // Width-capped like the SSH home / settings surfaces: a file name
-                    // on the left with its pin affordance 1800px away is not a row,
-                    // it's a scavenger hunt (design review).
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(div().w_full().max_w(px(880.)).child(config_files)),
-            )
-            .children(editor_overlay)
             .into_any_element()
     }
 
@@ -760,26 +870,21 @@ impl AppState {
         self.refresh_config_files(cx);
     }
 
-    /// The config-files area: pinned section on top, then the existence-filtered
-    /// "common" list (anything already pinned is excluded from it — no point showing a
-    /// row twice), then the "pin a file…" input. Each row (outside its own pin/unpin
-    /// affordance) opens [`AppState::open_config_editor`] on click.
-    fn config_files_section(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    /// The Config files sub-view: the "pin a file…" toolbar, then the pinned and common
+    /// lists side by side, each in its own bounded [`Card`].
+    ///
+    /// Two columns rather than one, and full-width rather than centred. The old layout
+    /// was a `max_w(880px)` column centred beneath a full-width table — it started at
+    /// x≈560 aligned to nothing above it, and its `pin` action sat at the far right of an
+    /// invisible boundary ~800px from the filename it acted on. Splitting the lists gives
+    /// each row a card edge to be anchored to at a width that is still a reading column,
+    /// while the pair together use the whole viewport.
+    fn config_files_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let pinned_paths: Vec<String> =
             self.systems.pinned.iter().map(|p| p.path.clone()).collect();
         let common: Vec<String> = exclude_pinned(&self.systems.curated, &pinned_paths);
-
-        let section_header = |label: &'static str| {
-            div()
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .mb_2()
-                .child(label.to_uppercase())
-        };
+        let pinned_count = pinned_paths.len();
+        let common_count = common.len();
 
         // Eagerly collected (rather than left as lazy iterators): `config_file_row`
         // needs `cx` on every call, and two still-lazy iterators both holding a
@@ -802,59 +907,33 @@ impl AppState {
             .collect();
 
         let pin_error = self.systems.pin_error.clone().map(|e| {
-            div()
-                .mt_1()
+            h_flex()
+                .gap_1p5()
+                .py_1()
                 .text_xs()
                 .text_color(rgb(theme.danger))
+                .child("✗")
                 .child(e)
         });
         let pin_input = self.systems.pin_input.clone();
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .pt_3()
-            .border_t_1()
-            .border_color(rgb(theme.border))
-            .when(!pinned_paths.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(section_header("pinned"))
-                        .children(pinned_rows),
-                )
-            })
+        v_flex()
+            .size_full()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(section_header("common"))
-                    .children(common_rows),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
+                Toolbar::new()
+                    // Input and submit go in the toolbar's left slot *together*. They are
+                    // one control, and a `pin` button on the far right edge would be the
+                    // same "action a screen-width from the thing it acts on" this whole
+                    // sub-view exists to undo — the toolbar's action slot is for controls
+                    // that act on the lists below, not on the field beside them.
+                    .filter(
+                        h_flex()
                             .gap_2()
-                            .children(pin_input.map(|i| div().flex_1().max_w(px(360.)).child(i)))
+                            .child(div().flex_1().max_w(px(420.)).children(pin_input))
                             .child(
-                                div()
-                                    .id("cfg-pin-submit")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .text_color(rgb(theme.accent))
-                                    .hover(|s| s.bg(rgb(theme.selection)))
-                                    .child("+ pin")
+                                Button::new("cfg-pin-submit", "pin")
+                                    .small()
+                                    .icon(Icon::Add)
                                     .on_click(cx.listener(
                                         |this, _ev: &ClickEvent, _window, cx| {
                                             this.submit_pin(cx);
@@ -862,13 +941,57 @@ impl AppState {
                                     )),
                             ),
                     )
-                    .children(pin_error),
+                    .count_label(sid_ui::toolbar::count_label(
+                        pinned_count + common_count,
+                        "file",
+                    )),
             )
+            .children(pin_error)
+            .child(
+                // A bare `flex_row` rather than `h_flex()`: this row wants flexbox's
+                // default `align-items: stretch`, and `h_flex` centres. An empty PINNED
+                // card beside a full COMMON one would otherwise leave a 700x880 unbounded
+                // black hole in the left half — the "looks like a broken render" failure
+                // the audit flagged on Workspaces. Equal-height cards make the empty one
+                // read as an empty *container*.
+                div()
+                    .id("systems-config-scroll")
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .gap_4()
+                    .pt_3()
+                    .overflow_y_scroll()
+                    .child(config_list_card(
+                        "pinned",
+                        pinned_count,
+                        pinned_rows,
+                        // An empty pinned list still holds its column, so the two lists
+                        // do not reflow the moment the first pin lands.
+                        (pinned_count == 0).then(|| {
+                            EmptyState::new("nothing pinned yet")
+                                .icon(Icon::Star)
+                                .guidance(
+                                    "pin a file above, or from the common list, to keep \
+                                     it one click away",
+                                )
+                                .into_any_element()
+                        }),
+                    ))
+                    .child(config_list_card("common", common_count, common_rows, None)),
+            )
+            .into_any_element()
     }
 
     /// One pinned/common row: filename (`fg_strong`) + muted full path, and a
-    /// pin/unpin text affordance that `cx.stop_propagation()`s so it never also
-    /// triggers the row's own open-editor click.
+    /// row-anchored pin/unpin [`IconButton`] that `cx.stop_propagation()`s so it never
+    /// also triggers the row's own open-editor click.
+    ///
+    /// The affordance used to be bare `pin` / `unpin` text — accent-red for `pin`, which
+    /// spent the app's one "engage" colour on a bookmark. It is a real bounded control
+    /// now, and the tooltip is required by [`IconButton`]'s constructor.
     fn config_file_row(
         &self,
         theme: &Theme,
@@ -881,30 +1004,25 @@ impl AppState {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string());
-        let (affordance_label, affordance_color) = if pinned {
-            ("unpin", theme.muted)
+        let (icon, tooltip) = if pinned {
+            (Icon::StarOff, "unpin this file")
         } else {
-            ("pin", theme.accent)
+            (Icon::Star, "pin this file")
         };
         let toggle_path = path.to_string();
         let open_path = PathBuf::from(path.to_string());
 
-        div()
+        h_flex()
             .id(id)
-            .flex()
-            .flex_row()
-            .items_center()
+            .w_full()
             .justify_between()
             .gap_2()
-            .py_2()
-            .px_3()
-            .rounded_md()
+            .row_padding()
             .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme.selection)))
+            .hover_fill(theme)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
+                v_flex()
+                    .min_w_0()
                     .child(
                         div()
                             .text_sm()
@@ -919,16 +1037,8 @@ impl AppState {
                     ),
             )
             .child(
-                div()
-                    .id(("cfg-toggle", id.1))
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(rgb(affordance_color))
-                    .hover(|s| s.bg(rgb(theme.border)))
-                    .child(affordance_label)
+                IconButton::new(("cfg-toggle", id.1), icon, tooltip)
+                    .small()
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         cx.stop_propagation();
                         if pinned {
@@ -945,6 +1055,29 @@ impl AppState {
                 this.open_config_editor(open_path.clone(), window, cx);
             }))
     }
+}
+
+/// One of the two config-file lists, as a bounded card.
+///
+/// An equal half of whatever width the sub-view has, uncapped. The design system's
+/// `max_w(880px)` reading-column rule is what produced the orphaned `COMMON` block in the
+/// first place, and capping *here* just moves the dead space: at 2000px two 880px cards
+/// leave 200px of nothing at the right edge. What the rule is actually protecting against
+/// — a filename with its action a screen-width away, unanchored — is answered by the card
+/// boundary and the row's hover fill instead, which is what the old layout had neither of.
+fn config_list_card(
+    title: &'static str,
+    count: usize,
+    rows: Vec<AnyElement>,
+    empty: Option<AnyElement>,
+) -> impl IntoElement + use<> {
+    Card::new()
+        .title(title)
+        .count(count)
+        .child(v_flex().w_full().children(rows))
+        .children(empty)
+        .flex_1()
+        .min_w_0()
 }
 
 /// `$HOME`, falling back to `/tmp` — no `dirs` crate for one env-var read, matching
@@ -992,172 +1125,77 @@ fn exclude_pinned(curated: &[String], pinned: &[String]) -> Vec<String> {
         .collect()
 }
 
-// ---- overview card rendering ------------------------------------------------------
+// ---- overview cluster ---------------------------------------------------------------
 
-/// The top overview strip: one host/kernel/uptime/load line, then CPU total + per-core
-/// bars and memory/swap bars side by side. Renders a dim "loading…" line instead while
-/// the first probe is still in flight (`overview` is `None`).
-fn overview_section(theme: &Theme, overview: Option<&SystemOverview>) -> AnyElement {
-    let Some(ov) = overview else {
-        return div()
-            .py_3()
-            .text_sm()
-            .text_color(rgb(theme.muted))
-            .child("loading system overview…")
-            .into_any_element();
-    };
+impl AppState {
+    /// The shared overview above the segmented control: a framed [`StatCluster`] with
+    /// the host/kernel/uptime/load line as its summary and CPU / Memory / Swap as
+    /// [`Meter`]s.
+    ///
+    /// This used to be three unframed bars floating on the window background with a
+    /// strip of ~20 unlabelled ticks underneath — *"they read as debug output, not as an
+    /// instrument cluster."* The frame, the header and the per-core strip's caption are
+    /// all the component's now; this function only supplies the numbers.
+    ///
+    /// It carries no refresh control of its own: the screen has exactly one, in the
+    /// Processes toolbar, and the overview re-probes itself every 2 seconds regardless.
+    fn overview_cluster(&self) -> AnyElement {
+        let refreshing = self.systems.refreshing;
+        let Some(ov) = self.systems.overview.as_ref() else {
+            return StatCluster::new()
+                .title("system")
+                .summary(if refreshing {
+                    "probing…"
+                } else {
+                    "no system overview yet"
+                })
+                .into_any_element();
+        };
 
-    let host_line: SharedString = format!(
-        "{} · {} · kernel {} · up {} · load {:.2} {:.2} {:.2}",
-        ov.hostname,
-        ov.os,
-        ov.kernel,
-        humanize_uptime(ov.uptime_secs),
-        ov.load_avg.0,
-        ov.load_avg.1,
-        ov.load_avg.2,
-    )
-    .into();
+        let summary: SharedString = format!(
+            "{} · {} · kernel {} · up {} · load {:.2} {:.2} {:.2}",
+            ov.hostname,
+            ov.os,
+            ov.kernel,
+            humanize_uptime(ov.uptime_secs),
+            ov.load_avg.0,
+            ov.load_avg.1,
+            ov.load_avg.2,
+        )
+        .into();
 
-    let swap_card: AnyElement = if ov.swap_total > 0 {
-        mem_card(theme, "Swap", ov.swap_used, ov.swap_total).into_any_element()
-    } else {
-        div()
-            .flex_1()
-            .text_xs()
-            .text_color(rgb(theme.muted))
-            .child("Swap — none configured")
+        let cores = ov.cpu_per_core.len();
+        let cpu = Meter::new("CPU", ov.cpu_total_pct / 100.0)
+            .value(format!("{:.1}%", ov.cpu_total_pct))
+            .segments(
+                ov.cpu_per_core.iter().map(|&pct| pct / 100.0),
+                // The caption the bare tick strip never had.
+                sid_ui::toolbar::count_label(cores, "core"),
+            );
+
+        let memory = Meter::new("Memory", Meter::ratio(ov.mem_used, ov.mem_total)).value(format!(
+            "{} / {}",
+            humanize_bytes(ov.mem_used),
+            humanize_bytes(ov.mem_total)
+        ));
+
+        let swap = if ov.swap_total > 0 {
+            Meter::new("Swap", Meter::ratio(ov.swap_used, ov.swap_total)).value(format!(
+                "{} / {}",
+                humanize_bytes(ov.swap_used),
+                humanize_bytes(ov.swap_total)
+            ))
+        } else {
+            Meter::new("Swap", 0.0).value("—").note("none configured")
+        };
+
+        StatCluster::new()
+            .title("system")
+            .summary(summary)
+            .stat(cpu)
+            .stat(memory)
+            .stat(swap)
             .into_any_element()
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .py_3()
-        .border_b_1()
-        .border_color(rgb(theme.border))
-        .child(div().text_sm().text_color(rgb(theme.fg)).child(host_line))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_6()
-                .child(cpu_card(theme, ov))
-                .child(mem_card(theme, "Memory", ov.mem_used, ov.mem_total))
-                .child(swap_card),
-        )
-        .into_any_element()
-}
-
-/// CPU card: aggregate percent + a thin horizontal bar, then one thin vertical bar per
-/// logical core underneath (visual density over per-core numeric labels — this is an
-/// overview card, not the processes table).
-fn cpu_card(theme: &Theme, ov: &SystemOverview) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .flex_1()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(div().text_xs().text_color(rgb(theme.muted)).child("CPU"))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(theme.fg))
-                        .child(format!("{:.1}%", ov.cpu_total_pct)),
-                ),
-        )
-        .child(horizontal_bar(
-            theme,
-            ov.cpu_total_pct / 100.0,
-            bar_color(ov.cpu_total_pct, theme),
-        ))
-        .child(
-            div().flex().flex_row().flex_wrap().gap_1().mt_1().children(
-                ov.cpu_per_core
-                    .iter()
-                    .map(|&pct| vertical_core_bar(theme, pct)),
-            ),
-        )
-}
-
-/// Memory/swap card: `label` · `used / total` (humanized bytes) + a thin horizontal
-/// bar. Shared by both the Memory and (when swap is configured) Swap cards.
-fn mem_card(theme: &Theme, label: &'static str, used: u64, total: u64) -> impl IntoElement {
-    let pct = if total == 0 {
-        0.0
-    } else {
-        (used as f32 / total as f32) * 100.0
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .flex_1()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(div().text_xs().text_color(rgb(theme.muted)).child(label))
-                .child(div().text_xs().text_color(rgb(theme.fg)).child(format!(
-                    "{} / {}",
-                    humanize_bytes(used),
-                    humanize_bytes(total)
-                ))),
-        )
-        .child(horizontal_bar(theme, pct / 100.0, bar_color(pct, theme)))
-}
-
-/// A thin horizontal filled bar: a dim track the full width of its container, with a
-/// colored fill proportional to `fraction` (clamped to `0.0..=1.0`).
-fn horizontal_bar(theme: &Theme, fraction: f32, color: u32) -> impl IntoElement {
-    let frac = fraction.clamp(0.0, 1.0);
-    div()
-        .w_full()
-        .h(px(6.))
-        .rounded_sm()
-        .bg(rgb(theme.border))
-        .child(div().h_full().rounded_sm().bg(rgb(color)).w(relative(frac)))
-}
-
-/// A thin vertical filled bar (one per CPU core): a dim track of fixed height, with a
-/// colored fill anchored to the bottom, proportional to `pct` (0..=100, clamped).
-fn vertical_core_bar(theme: &Theme, pct: f32) -> impl IntoElement {
-    let frac = (pct / 100.0).clamp(0.0, 1.0);
-    div()
-        .w(px(5.))
-        .h(px(20.))
-        .flex()
-        .flex_col()
-        .justify_end()
-        .rounded_sm()
-        .bg(rgb(theme.border))
-        .child(
-            div()
-                .w_full()
-                .rounded_sm()
-                .bg(rgb(bar_color(pct, theme)))
-                .h(relative(frac)),
-        )
-}
-
-/// Bar fill color by load: calm (`accent`) under 70%, `warning` 70..90%, `danger`
-/// at/above 90% — same three-tier convention as the rest of the app's status colors.
-fn bar_color(pct: f32, theme: &Theme) -> u32 {
-    if pct >= 90.0 {
-        theme.danger
-    } else if pct >= 70.0 {
-        theme.warning
-    } else {
-        theme.accent
     }
 }
 
@@ -1195,6 +1233,7 @@ fn process_cmp(a: &ProcessInfo, b: &ProcessInfo, key: ProcessSortKey) -> Orderin
         ProcessSortKey::Mem => a.rss_bytes.cmp(&b.rss_bytes),
         ProcessSortKey::Pid => a.pid.as_u32().cmp(&b.pid.as_u32()),
         ProcessSortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        ProcessSortKey::Command => a.cmd.to_lowercase().cmp(&b.cmd.to_lowercase()),
         ProcessSortKey::User => {
             let a_user = a.user.as_deref().unwrap_or("").to_lowercase();
             let b_user = b.user.as_deref().unwrap_or("").to_lowercase();
@@ -1352,6 +1391,46 @@ mod tests {
     }
 
     #[test]
+    fn sort_processes_command_is_case_insensitive() {
+        let mut processes = vec![
+            proc(1, "a", 0.0, 0, None),
+            proc(2, "b", 0.0, 0, None),
+            proc(3, "c", 0.0, 0, None),
+        ];
+        processes[0].cmd = "/usr/bin/Zsh -l".to_string();
+        processes[1].cmd = "/usr/bin/bash".to_string();
+        processes[2].cmd = String::new();
+        sort_processes(
+            &mut processes,
+            ProcessSortKey::Command,
+            ColumnSort::Ascending,
+        );
+        let names: Vec<&str> = processes.iter().map(|p| p.name.as_str()).collect();
+        // The kernel thread with no cmdline sorts first, then bash, then Zsh — case
+        // folded, so "Zsh" does not sort before "bash" the way a byte compare would.
+        assert_eq!(names, vec!["c", "b", "a"]);
+    }
+
+    /// The sort-key table is indexed by column position: adding a column without adding
+    /// its key silently sorts by the wrong field (or, past the end, not at all).
+    #[test]
+    fn every_sortable_column_has_a_sort_key() {
+        let delegate = ProcessesDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())));
+        let sortable = (0..delegate.columns.len())
+            .filter(|&ix| delegate.columns.column(ix).sort.is_some())
+            .count();
+        assert_eq!(
+            sortable,
+            PROCESS_SORT_KEYS.len(),
+            "{sortable} sortable columns, {} keys",
+            PROCESS_SORT_KEYS.len()
+        );
+        // ...and the trailing action column is deliberately not one of them.
+        let last = delegate.columns.len() - 1;
+        assert_eq!(delegate.columns.column(last).sort, None);
+    }
+
+    #[test]
     fn sort_processes_user_missing_sorts_as_empty_string() {
         let mut processes = vec![
             proc(1, "a", 0.0, 0, Some("zed")),
@@ -1376,15 +1455,50 @@ mod tests {
         assert_eq!(names, vec!["b", "a"]);
     }
 
+    /// The calm/caution/critical ladder moved to `sid_ui::MeterTone` with the meters
+    /// (and is tested there, in fraction space, across all four palettes). This pins the
+    /// call-site conversion — percent in, fraction out — which is where an off-by-100
+    /// would put every meter in the danger colour.
     #[test]
-    fn bar_color_thresholds() {
-        let t = theme::cosmos();
-        assert_eq!(bar_color(0.0, &t), t.accent);
-        assert_eq!(bar_color(69.9, &t), t.accent);
-        assert_eq!(bar_color(70.0, &t), t.warning);
-        assert_eq!(bar_color(89.9, &t), t.warning);
-        assert_eq!(bar_color(90.0, &t), t.danger);
-        assert_eq!(bar_color(100.0, &t), t.danger);
+    fn cpu_percent_reaches_the_meter_as_a_fraction() {
+        use sid_ui::MeterTone;
+        assert_eq!(MeterTone::of(12.4 / 100.0), MeterTone::Calm);
+        assert_eq!(MeterTone::of(75.0 / 100.0), MeterTone::Caution);
+        assert_eq!(MeterTone::of(96.0 / 100.0), MeterTone::Critical);
+    }
+
+    /// The sub-view strip and the enum behind it have to stay in step: the control
+    /// reports back an index into `ALL`, and a mismatch would silently switch to the
+    /// wrong view.
+    #[test]
+    fn every_sub_view_round_trips_through_its_index() {
+        for (ix, &view) in SystemSubView::ALL.iter().enumerate() {
+            assert_eq!(SystemSubView::at(ix), Some(view));
+        }
+        assert_eq!(SystemSubView::at(SystemSubView::ALL.len()), None);
+    }
+
+    #[test]
+    fn the_default_sub_view_is_processes() {
+        // The tab is a process monitor first; landing on the config list would be a
+        // surprise every time the tab is opened.
+        assert_eq!(SystemSubView::default(), SystemSubView::Processes);
+        assert_eq!(SystemSubView::ALL[0], SystemSubView::Processes);
+    }
+
+    #[test]
+    fn every_sub_view_labels_itself() {
+        for &view in &SystemSubView::ALL {
+            assert!(!view.label().is_empty(), "{view:?}");
+        }
+        assert_ne!(
+            SystemSubView::Processes.label(),
+            SystemSubView::ConfigFiles.label()
+        );
+        assert_ne!(
+            SystemSubView::Processes.icon(),
+            SystemSubView::ConfigFiles.icon()
+        );
     }
 
     // ---- config files (Round E §D) -------------------------------------------------

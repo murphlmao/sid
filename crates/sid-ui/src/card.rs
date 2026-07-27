@@ -18,8 +18,8 @@
 //! System tab's orphaned `COMMON` list).
 
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div,
-    prelude::FluentBuilder as _, rgb,
+    AnyElement, App, IntoElement, ParentElement, Refineable as _, RenderOnce, SharedString,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, rgb,
 };
 
 use crate::elevation::Elevation;
@@ -55,6 +55,7 @@ pub struct Card {
     count: Option<usize>,
     actions: Vec<AnyElement>,
     children: Vec<AnyElement>,
+    style: StyleRefinement,
 }
 
 impl Card {
@@ -66,6 +67,7 @@ impl Card {
             count: None,
             actions: Vec::new(),
             children: Vec::new(),
+            style: StyleRefinement::default(),
         }
     }
 
@@ -78,6 +80,7 @@ impl Card {
             count: None,
             actions: Vec::new(),
             children: Vec::new(),
+            style: StyleRefinement::default(),
         }
     }
 
@@ -108,6 +111,17 @@ impl Default for Card {
     }
 }
 
+/// A card is a box a layout has to be able to size: side-by-side cards need `flex_1` to
+/// share a row and `h_full` to end level with each other, and neither is expressible
+/// through a wrapper (a wrapper stretches, its card child does not follow). The
+/// refinement is applied *last*, so a call site's `.flex_1()` wins over the card's own
+/// padding and fill.
+impl Styled for Card {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
 impl ParentElement for Card {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
@@ -132,7 +146,7 @@ impl RenderOnce for Card {
                 })
         });
 
-        v_flex()
+        let mut card = v_flex()
             .when(raised, |this| {
                 this.elevation(Elevation::Surface, &theme).p_3()
             })
@@ -141,7 +155,9 @@ impl RenderOnce for Card {
             .child(v_flex().gap_2().children(self.children))
             // A flat section's own text colour, so its body does not inherit whatever
             // the surrounding chrome happened to be painted in.
-            .text_color(rgb(theme.fg))
+            .text_color(rgb(theme.fg));
+        card.style().refine(&self.style);
+        card
     }
 }
 
@@ -169,6 +185,16 @@ mod tests {
         // empties reads as a broken render, which is exactly the complaint the
         // Workspaces empty state drew.
         assert_eq!(header_text("hosts", Some(0)), "HOSTS · 0");
+    }
+
+    #[test]
+    fn a_card_takes_a_style_refinement() {
+        // Side-by-side cards need to be sizeable by their layout; a wrapper div cannot
+        // do it for them, because the wrapper stretches and the card inside does not.
+        let mut card = Card::new().flex_1().h_full();
+        let style = card.style().clone();
+        assert!(style.flex_grow.is_some(), "flex_1");
+        assert!(style.size.height.is_some(), "h_full");
     }
 
     #[test]

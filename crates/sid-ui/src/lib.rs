@@ -35,6 +35,7 @@
 //! - **Depth is borders and surface shifts, never shadows** — see [`Elevation`]. The
 //!   bridge also switches the library's own `shadow` flag off.
 
+pub mod action_cell;
 pub mod badge;
 pub mod bridge;
 pub mod button;
@@ -44,11 +45,14 @@ pub mod empty_state;
 pub mod gallery;
 pub mod icon;
 pub mod kbd;
+pub mod meter;
+pub mod segmented;
 pub mod styled;
 pub mod table;
 pub mod theme;
 pub mod toolbar;
 
+pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
 pub use badge::{Badge, BadgeFill, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonState, ButtonVariant, IconButton};
 pub use card::Card;
@@ -56,6 +60,8 @@ pub use elevation::Elevation;
 pub use empty_state::EmptyState;
 pub use icon::Icon;
 pub use kbd::Kbd;
+pub use meter::{Meter, MeterTone, StatCluster};
+pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use styled::{StyledExt, h_flex, v_flex};
 pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
 pub use theme::Theme;
