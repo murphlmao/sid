@@ -45,6 +45,36 @@
 //! frame and never schedules a repaint, which is what keeps the measure/refresh pair
 //! from becoming a render loop.
 //!
+//! # Why a cell must not carry an `ElementId`
+//!
+//! `TableDelegate::render_td` is called for **every visible cell on every frame** — 178
+//! calls per frame on the System tab's process table at 1920x1080, confirmed with
+//! `GPUI_MEASUREMENTS=1` (`gpui-component`'s own per-cell timer). Building those cells is
+//! cheap: 0.10-0.20ms of a frame that costs 6-25ms. What is *not* cheap is what an
+//! `ElementId` on each of them makes `gpui` do afterwards.
+//!
+//! An id turns a `Div` into a `Stateful<Div>`, and `Interactivity` then runs
+//! `Window::with_element_state` in **both** prepaint and paint. Each of those calls
+//! (`gpui-0.2.2/src/window.rs:2628-2641`) **clones the whole `GlobalElementId` twice** —
+//! once for the map key, once to push onto `accessed_element_states` — and
+//! `GlobalElementId` is a `SmallVec<[ElementId; 32]>` whose every `Name`/`NamedInteger`
+//! component is a refcounted `SharedString`. Two hash-map operations over that key
+//! follow, and the clones are dropped at frame end. Four id-path clones per cell per
+//! frame, times ~180 cells, is ~700 of them — for divs that have **no** click, hover,
+//! tooltip, scroll, drag or focus state to remember. In a release scroll profile that
+//! machinery (`ArcCow::hash`, `ElementId::hash`, `drop_in_place<ElementId>`,
+//! `hashbrown::remove_entry`, `SmallVec::extend`/`drop`, plus its share of `malloc`/
+//! `memcpy`) is **10-15% of the frame**, and it is 100% waste.
+//!
+//! So: **no `.id()` on a table cell.** The interactive thing *inside* the cell — a
+//! `ConfirmButton`, keyed by pid or unit name so its armed state survives a re-sort —
+//! carries its own id and keeps its own state. The wrapper never needed one. Row hover
+//! and row click are upstream's, on the row, and are unaffected.
+//!
+//! (An id is not free elsewhere either, but everywhere else the count is bounded: six
+//! header cells, one per row, one per action button. Cells are the only place the count
+//! is *rows x columns*.)
+//!
 //! # Using it from a delegate
 //!
 //! ```ignore
@@ -119,6 +149,28 @@ impl<D: FillTableDelegate> FillTable<D> {
     }
 }
 
+/// Ask for exactly one more frame, because the widths this frame just resolved cannot
+/// reach the screen inside it.
+///
+/// The measure happens in **prepaint**, which is after taffy has already laid the columns
+/// out at their previous widths; `TableState::refresh` re-reads them, but nothing repaints
+/// unless something asks. Inside a draw, nothing will: `Window::refresh` is a no-op while
+/// the invalidator is drawing (`gpui-0.2.2/src/window.rs:1367`, `if not_drawing()`), which
+/// is the same rule that makes a `cx.notify()` from `render` disappear. A table on a poll
+/// timer never noticed — the next tick brought a frame along. A **quiescent** one did: the
+/// Workspaces fleet table settled its data before its first paint, so nothing followed the
+/// measure and every column sat at `gpui-component`'s 100px default until a stray click
+/// woke it. That tab worked around it with a 120ms timer of its own
+/// (`ui::workspaces_tab::AppState::settle_fleet_layout`), which this makes deletable.
+///
+/// [`Window::on_next_frame`] is the escape hatch: the callback runs from
+/// `on_request_frame`, outside the draw, where `refresh` takes. One frame, only after a
+/// `sync` that actually moved a width — a steady viewport still costs one comparison and
+/// schedules nothing, so this cannot become a render loop.
+fn settle(window: &mut Window) {
+    window.on_next_frame(|window, _| window.refresh());
+}
+
 impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let measured = self.state.clone();
@@ -134,13 +186,18 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
                 // The viewport probe. See the module docs: this is upstream's own
                 // bounds-capture mechanism, pointed at the column widths.
                 canvas(
-                    move |bounds, _, cx| {
+                    move |bounds, window, cx| {
                         let width = f32::from(bounds.size.width);
-                        measured.update(cx, |table, cx| {
-                            if table.delegate_mut().fill_columns().sync(width) {
+                        let moved = measured.update(cx, |table, cx| {
+                            let moved = table.delegate_mut().fill_columns().sync(width);
+                            if moved {
                                 table.refresh(cx);
                             }
+                            moved
                         });
+                        if moved {
+                            settle(window);
+                        }
                     },
                     |_, _, _, _| {},
                 )
