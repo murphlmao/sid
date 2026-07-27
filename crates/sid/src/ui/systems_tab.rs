@@ -88,7 +88,7 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, Meter, Segment, SegmentSelect,
-    SegmentedControl, StatCluster, StyledExt as _, Toolbar, h_flex, v_flex,
+    SegmentedControl, StatCluster, StyledExt as _, Toolbar, h_flex, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -440,6 +440,18 @@ impl TableDelegate for ProcessesDelegate {
         self.columns.apply_sort(col_ix, sort);
         self.recompute();
         cx.notify();
+    }
+
+    /// Sort on a click anywhere in the header cell, not only on the chevron — upstream's
+    /// default `render_th` gives the label to the column-selection handler and leaves a
+    /// ~6x8px sort target. See `sid_ui::table::sortable_th`.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
