@@ -283,8 +283,7 @@ pub trait PrivilegedFs: Send + Sync {
     /// the replacement is **atomic** (a reader sees either the whole old file or the
     /// whole new one, never a truncated one), and the file's **mode and ownership are
     /// preserved** (a 0600 root-owned file comes back 0600 root-owned).
-    async fn write(&self, path: &Path, bytes: &[u8], secret: &Passphrase)
-    -> Result<(), PrivError>;
+    async fn write(&self, path: &Path, bytes: &[u8], secret: &Passphrase) -> Result<(), PrivError>;
 }
 
 #[cfg(test)]
@@ -560,6 +559,9 @@ mod tests {
         // Expressed as a signature fact: `probe` takes no `Passphrase`, so a caller
         // cannot be made to hold one before it knows whether elevation is even needed.
         let fs = FakePrivilegedFs::new(Access::ReadOnly, "x");
-        assert_eq!(block_on(fs.probe(Path::new("/etc/fstab"))), Access::ReadOnly);
+        assert_eq!(
+            block_on(fs.probe(Path::new("/etc/fstab"))),
+            Access::ReadOnly
+        );
     }
 }
