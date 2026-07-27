@@ -512,6 +512,8 @@ mod tests {
     // that still needs a human at a real machine (see the crate doc).
 
     /// A quick timeout: no test should ever wait on the production 30s budget.
+    use std::sync::OnceLock;
+
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
     fn mock_sudo() -> OsString {
@@ -523,22 +525,47 @@ mod tests {
     /// A wrapper that forces one of `mock-sudo`'s failure verdicts. Written as a script
     /// rather than set on this process's environment: `set_var` is unsafe in edition 2024
     /// and would race every other test in this binary.
-    fn mock_sudo_with(dir: &Path, verdict: &str) -> OsString {
-        let path = dir.join(format!("mock-sudo-{verdict}"));
-        let mock = mock_sudo();
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\nexport MOCK_SUDO_VERDICT={verdict}\nexec {} \"$@\"\n",
-                Path::new(&mock).display()
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+    ///
+    /// Every wrapper this binary will ever need is written ONCE, before any test can spawn
+    /// anything, and never rewritten. Writing one per test made the suite flaky with
+    /// `ETXTBSY` ("Text file busy"): these tests run concurrently, and Linux refuses to
+    /// `exec` a file that any process holds open for writing. A `fork` in one thread
+    /// momentarily inherits every descriptor another thread has open — including a wrapper
+    /// mid-`write` — so a script written on thread A could be un-executable for as long as
+    /// thread B's unrelated child took to reach its own `exec`. One write per verdict,
+    /// completed before the first spawn, removes the window instead of narrowing it.
+    fn mock_sudo_with(verdict: &str) -> OsString {
+        /// Every verdict `mock-sudo` understands, so the eager write below is total.
+        const VERDICTS: [&str; 4] = ["notsudoer", "wrongpass", "hang", "innerfail"];
+
+        static SCRIPTS: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = SCRIPTS.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("a temp dir for the mock-sudo wrappers");
+            let mock = mock_sudo();
+            for v in VERDICTS {
+                let path = dir.path().join(format!("mock-sudo-{v}"));
+                std::fs::write(
+                    &path,
+                    format!(
+                        "#!/bin/sh\nexport MOCK_SUDO_VERDICT={v}\nexec {} \"$@\"\n",
+                        Path::new(&mock).display()
+                    ),
+                )
+                .expect("write a mock-sudo wrapper");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                        .expect("make a mock-sudo wrapper executable");
+                }
+            }
+            dir
+        });
+        let path = dir.path().join(format!("mock-sudo-{verdict}"));
+        assert!(
+            path.exists(),
+            "unknown mock-sudo verdict {verdict:?} — add it to VERDICTS"
+        );
         path.into()
     }
 
@@ -583,7 +610,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fstab");
         std::fs::write(&path, "x\n").unwrap();
-        let program = mock_sudo_with(dir.path(), "notsudoer");
+        let program = mock_sudo_with("notsudoer");
 
         let err = read_with(&program, &path, &good_secret(), TEST_TIMEOUT)
             .await
@@ -598,7 +625,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fstab");
         std::fs::write(&path, "x\n").unwrap();
-        let program = mock_sudo_with(dir.path(), "hang");
+        let program = mock_sudo_with("hang");
 
         let started = std::time::Instant::now();
         let err = read_with(&program, &path, &good_secret(), Duration::from_millis(300))
