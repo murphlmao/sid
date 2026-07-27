@@ -1,8 +1,9 @@
 //! Host add/edit form modal (A6): the write side of the SSH tab.
 //!
-//! [`HostForm`] is a gpui entity rendered as a centered panel (the dimmed backdrop and
-//! `deferred`/`anchored` overlay live in `app.rs`). It owns one [`TextInput`] per field,
-//! an auth-method segmented selector, and the `save to:` layer selector. It never touches
+//! [`HostForm`] is a gpui entity rendered as a [`sid_ui::Modal`] panel (the scrim that
+//! centres it is `sid_ui::modal::overlay`, mounted by `app.rs`). It owns one
+//! [`TextInput`] per field, an auth-method [`SegmentedControl`], and the `save to:`
+//! layer selector built from [`sid_ui::Row`]s. It never touches
 //! the store or the keyring itself — on Save it validates and emits
 //! [`HostFormEvent::Submit`]; the owner (`AppState`) runs the add-mode guard, the
 //! secret lifecycle, and the write, and pushes any store error back into the form's
@@ -14,15 +15,19 @@
 //! unit-tested without gpui; rendering is observation-gated.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, SharedString, Window,
-    actions, div, prelude::*, px, rgb,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Window, actions, div, prelude::*, rgb,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
 use super::TextInput;
 use super::text_input::next_focus_index;
-use sid_ui::theme;
+use sid_ui::theme::{self, Theme};
+use sid_ui::{
+    Button, Elevation, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
+    Typography as _, h_flex, v_flex,
+};
 
 actions!(
     host_form,
@@ -389,9 +394,11 @@ impl HostForm {
 
     // ---- render pieces ------------------------------------------------------
 
+    /// A field's caption. `Meta` (12px, muted): this is orientation above the value,
+    /// not a section header — those are UPPERCASE `Label`.
     fn field_label(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
-        let muted = theme::active(cx).muted;
-        div().text_xs().text_color(rgb(muted)).child(text.into())
+        let theme = theme::active(cx).clone();
+        div().text_meta(&theme).child(text.into())
     }
 
     fn field(
@@ -400,89 +407,51 @@ impl HostForm {
         input: &Entity<TextInput>,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_1()
             .child(Self::field_label(label, cx))
             .child(input.clone())
     }
 
-    /// The alias row in edit mode: static text, visibly locked.
+    /// The alias row in edit mode: static text in an input-shaped recess, so it reads as
+    /// a field that cannot be typed in rather than as a stray line of prose.
     fn locked_alias(&self, alias: &str, cx: &App) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, muted) = (t.well, t.border, t.muted);
-        div()
-            .flex()
-            .flex_col()
+        let theme = theme::active(cx).clone();
+        v_flex()
             .gap_1()
             .child(Self::field_label("alias — locked while editing", cx))
             .child(
                 div()
-                    .px(px(8.))
-                    .py(px(6.))
+                    .px_2()
+                    .py_1p5()
                     .rounded_md()
-                    .bg(rgb(well))
-                    .border_1()
-                    .border_color(rgb(border))
-                    .text_sm()
-                    .text_color(rgb(muted))
+                    .elevation(Elevation::Well, &theme)
+                    .text_body(&theme)
+                    .text_color(rgb(theme.muted))
                     .child(SharedString::from(alias.to_string())),
             )
     }
 
     fn auth_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg_strong) = (
-            t.well,
-            t.border,
-            t.selection,
-            t.accent,
-            t.muted,
-            t.fg_strong,
-        );
-        let segments = [
-            ("auth-agent", "agent", AuthChoice::Agent),
-            ("auth-key", "key", AuthChoice::Key),
-            ("auth-password", "password", AuthChoice::Password),
-        ];
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(Self::field_label("auth", cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .children(segments.map(|(id, label, choice)| {
-                        let active = self.auth == choice;
-                        div()
-                            .id(id)
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(if active { selection } else { well }))
-                            .border_1()
-                            .border_color(rgb(if active { accent } else { border }))
-                            .text_color(rgb(if active { fg_strong } else { muted }))
-                            .child(label)
-                            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                this.set_auth(choice, cx);
-                            }))
+        // The `h_flex` wrapper is what keeps the control hugging its three chips: a flex
+        // column stretches its children across the cross axis, which left the segmented
+        // track spanning the whole panel with two-thirds of it empty.
+        v_flex().gap_1().child(Self::field_label("auth", cx)).child(
+            h_flex().child(
+                SegmentedControl::new("host-form-auth")
+                    .segments(AUTH_SEGMENTS.map(|(label, _)| label))
+                    .selected(auth_index(self.auth))
+                    .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                        this.set_auth(auth_at(ev.index), cx);
                     })),
-            )
+            ),
+        )
     }
 
     fn save_to_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
-        let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg) =
-            (t.well, t.border, t.selection, t.accent, t.muted, t.fg);
+        let theme = theme::active(cx).clone();
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -490,38 +459,29 @@ impl HostForm {
                       target: SaveTarget,
                       enabled: bool,
                       selected: bool,
+                      theme: &Theme,
                       cx: &mut Context<Self>| {
-            div()
-                .id(id)
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(if selected { accent } else { border }))
-                .bg(rgb(if selected { selection } else { well }))
+            let ink = if enabled { theme.fg } else { theme.faint };
+            Row::new(id)
+                .selected(selected)
+                .leading(radio_mark(selected, enabled, theme))
+                // Title and note in the *same* slot: `Row`'s meta slot is right-anchored,
+                // which parked "— .sid/ · travels with git" 250px from the word it
+                // qualifies. The design system's own rule — a label's action never lives
+                // a screen-width away — reads on this scale too.
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(if selected { accent } else { muted }))
-                        .child(if selected { "●" } else { "○" }),
+                    h_flex()
+                        .gap_2()
+                        .child(div().text_body(theme).text_color(rgb(ink)).child(title))
+                        .child(div().text_meta(theme).child(note)),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(if enabled { fg } else { muted }))
-                        .child(title),
-                )
-                .child(div().text_xs().text_color(rgb(muted)).child(note))
-                .when(enabled, |el| {
-                    el.cursor_pointer()
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            this.save_to = Some(target);
-                            cx.notify();
-                        }))
+                // A disabled option installs no click handler at all, so `Row` renders
+                // it inert — no pointer, no hover fill, nothing promising it will react.
+                .when(enabled, |row| {
+                    row.on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.save_to = Some(target);
+                        cx.notify();
+                    }))
                 })
         };
 
@@ -531,85 +491,80 @@ impl HostForm {
             "save to:".into()
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(Self::field_label(label, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(option(
-                        "save-workspace",
-                        "workspace",
-                        "— .sid/ · travels with git",
-                        SaveTarget::Workspace,
-                        ws_active && !locked,
-                        self.save_to == Some(SaveTarget::Workspace),
-                        cx,
-                    ))
-                    .child(option(
-                        "save-global",
-                        "global",
-                        "— everywhere · never lost",
-                        SaveTarget::Global,
-                        !locked,
-                        self.save_to == Some(SaveTarget::Global),
-                        cx,
-                    )),
-            )
+        v_flex().gap_1().child(Self::field_label(label, cx)).child(
+            v_flex()
+                .gap_0p5()
+                .child(option(
+                    "save-workspace",
+                    "workspace",
+                    "— .sid/ · travels with git",
+                    SaveTarget::Workspace,
+                    ws_active && !locked,
+                    self.save_to == Some(SaveTarget::Workspace),
+                    &theme,
+                    cx,
+                ))
+                .child(option(
+                    "save-global",
+                    "global",
+                    "— everywhere · never lost",
+                    SaveTarget::Global,
+                    !locked,
+                    self.save_to == Some(SaveTarget::Global),
+                    &theme,
+                    cx,
+                )),
+        )
     }
+}
 
-    fn buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, muted, selection, accent, fg_strong) = (
-            t.well,
-            t.border,
-            t.muted,
-            t.selection,
-            t.accent,
-            t.fg_strong,
-        );
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                div()
-                    .id("form-cancel")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(well))
-                    .border_1()
-                    .border_color(rgb(border))
-                    .text_color(rgb(muted))
-                    .child("Cancel")
-                    .on_click(cx.listener(|_this, _ev, _window, cx| {
-                        cx.emit(HostFormEvent::Cancel);
-                    })),
-            )
-            .child(
-                div()
-                    .id("form-save")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(selection))
-                    .border_1()
-                    .border_color(rgb(accent))
-                    .text_color(rgb(fg_strong))
-                    .child("Save")
-                    .on_click(cx.listener(|this, _ev, _window, cx| this.submit(cx))),
-            )
-    }
+/// The auth segments, in render order. One list: the labels the selector shows and the
+/// choices they map to cannot drift apart into "clicking `key` selects password".
+const AUTH_SEGMENTS: [(&str, AuthChoice); 3] = [
+    ("agent", AuthChoice::Agent),
+    ("key", AuthChoice::Key),
+    ("password", AuthChoice::Password),
+];
+
+/// Which segment is lit for `choice`.
+fn auth_index(choice: AuthChoice) -> usize {
+    AUTH_SEGMENTS
+        .iter()
+        .position(|(_, c)| *c == choice)
+        .unwrap_or(0)
+}
+
+/// Which choice segment `index` means. An out-of-range index (impossible unless the
+/// control and this list disagree) falls back to `Agent` — the method that stores no
+/// secret, so a drift can never silently arm a password field.
+fn auth_at(index: usize) -> AuthChoice {
+    AUTH_SEGMENTS
+        .get(index)
+        .map_or(AuthChoice::Agent, |(_, choice)| *choice)
+}
+
+/// The save-to picker's radio mark: a ring that gains a filled core when chosen.
+///
+/// Drawn rather than glyphed. The `●`/`○` pair this replaces renders in whatever the
+/// ambient font happens to have, at whatever weight, and in most families the two are
+/// visibly different sizes — so the picker jittered as the selection moved.
+fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
+    let edge = match (selected, enabled) {
+        (true, _) => theme.accent,
+        (false, true) => theme.border,
+        (false, false) => theme.faint,
+    };
+    div()
+        .size_3()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(edge))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |mark| {
+            mark.child(div().size_1p5().rounded_full().bg(rgb(theme.accent)))
+        })
 }
 
 impl EventEmitter<HostFormEvent> for HostForm {}
@@ -622,13 +577,15 @@ impl Focusable for HostForm {
 
 impl Render for HostForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (surface, border, fg, muted, danger) = (t.surface, t.border, t.fg, t.muted, t.danger);
         let title = match &self.mode {
             FormMode::Add => "Add host",
             FormMode::Edit { .. } => "Edit host",
         };
 
+        // The key context, the focus handle and the three key handlers stay on a wrapper
+        // around the panel: `sid_ui::Modal` is a plain element with no lifecycle, and
+        // Escape/Enter/Tab are this entity's own bindings (see `sid_ui::modal`'s "what
+        // the panel does not own").
         div()
             .key_context("HostForm")
             .track_focus(&self.focus_handle)
@@ -637,51 +594,43 @@ impl Render for HostForm {
             }))
             .on_action(cx.listener(|this, _: &FormSubmit, _window, cx| this.submit(cx)))
             .on_key_down(cx.listener(Self::handle_key_down))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w(px(460.))
-            .p_4()
-            .rounded_lg()
-            .bg(rgb(surface))
-            .border_1()
-            .border_color(rgb(border))
-            .text_color(rgb(fg))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child("esc cancels · enter saves"),
-                    ),
+                Modal::new("host-form", title)
+                    .submit_hint("saves")
+                    .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
+                        cx.emit(HostFormEvent::Cancel);
+                    }))
+                    .child(match &self.mode {
+                        FormMode::Add => self.field("alias", &self.alias, cx).into_any_element(),
+                        FormMode::Edit { original, .. } => {
+                            self.locked_alias(&original.alias, cx).into_any_element()
+                        }
+                    })
+                    .child(self.field("user", &self.user, cx))
+                    .child(self.field("host", &self.host, cx))
+                    .child(self.field("port", &self.port, cx))
+                    .child(self.auth_selector(cx))
+                    .when(self.auth == AuthChoice::Key, |modal| {
+                        modal
+                            .child(self.field("key path", &self.key_path, cx))
+                            .child(self.field("passphrase", &self.passphrase, cx))
+                    })
+                    .when(self.auth == AuthChoice::Password, |modal| {
+                        modal.child(self.field("password", &self.password, cx))
+                    })
+                    .child(self.save_to_selector(cx))
+                    .when_some(self.error.clone(), |modal, err| {
+                        modal.child(Toast::danger(err))
+                    })
+                    .footer(Button::new("host-form-cancel", "Cancel").ghost().on_click(
+                        cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
+                            cx.emit(HostFormEvent::Cancel);
+                        }),
+                    ))
+                    .footer(Button::new("host-form-save", "Save").primary().on_click(
+                        cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx)),
+                    )),
             )
-            .child(match &self.mode {
-                FormMode::Add => self.field("alias", &self.alias, cx).into_any_element(),
-                FormMode::Edit { original, .. } => {
-                    self.locked_alias(&original.alias, cx).into_any_element()
-                }
-            })
-            .child(self.field("user", &self.user, cx))
-            .child(self.field("host", &self.host, cx))
-            .child(self.field("port", &self.port, cx))
-            .child(self.auth_selector(cx))
-            .when(self.auth == AuthChoice::Key, |el| {
-                el.child(self.field("key path", &self.key_path, cx))
-                    .child(self.field("passphrase", &self.passphrase, cx))
-            })
-            .when(self.auth == AuthChoice::Password, |el| {
-                el.child(self.field("password", &self.password, cx))
-            })
-            .child(self.save_to_selector(cx))
-            .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(danger)).child(err))
-            })
-            .child(self.buttons(cx))
     }
 }
 
@@ -993,6 +942,34 @@ mod tests {
         let mut i = input("a", "u", "h", "22");
         i.auth = AuthChoice::Password;
         assert_eq!(validate(&i).unwrap().auth, AuthMethod::Password);
+    }
+
+    // ---- auth segments ----------------------------------------------------------
+
+    #[test]
+    fn every_auth_choice_round_trips_through_its_segment() {
+        // The failure this prevents: the segment list and the choice list drifting, so
+        // clicking `key` selects password auth. Both directions, exhaustively.
+        for (ix, (_, choice)) in AUTH_SEGMENTS.iter().enumerate() {
+            assert_eq!(auth_index(*choice), ix, "{choice:?}");
+            assert_eq!(auth_at(ix), *choice, "index {ix}");
+        }
+    }
+
+    #[test]
+    fn the_segments_are_labelled_in_render_order() {
+        assert_eq!(
+            AUTH_SEGMENTS.map(|(label, _)| label),
+            ["agent", "key", "password"]
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_segment_falls_back_to_the_secretless_method() {
+        // Unreachable unless the control and the list disagree — and if they ever do,
+        // the safe landing is the method that stores nothing in the keyring.
+        assert_eq!(auth_at(AUTH_SEGMENTS.len()), AuthChoice::Agent);
+        assert_eq!(auth_at(usize::MAX), AuthChoice::Agent);
     }
 
     // ---- add-mode guard -------------------------------------------------------
