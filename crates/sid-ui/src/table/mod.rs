@@ -45,6 +45,36 @@
 //! frame and never schedules a repaint, which is what keeps the measure/refresh pair
 //! from becoming a render loop.
 //!
+//! # Why a cell must not carry an `ElementId`
+//!
+//! `TableDelegate::render_td` is called for **every visible cell on every frame** — 178
+//! calls per frame on the System tab's process table at 1920x1080, confirmed with
+//! `GPUI_MEASUREMENTS=1` (`gpui-component`'s own per-cell timer). Building those cells is
+//! cheap: 0.10-0.20ms of a frame that costs 6-25ms. What is *not* cheap is what an
+//! `ElementId` on each of them makes `gpui` do afterwards.
+//!
+//! An id turns a `Div` into a `Stateful<Div>`, and `Interactivity` then runs
+//! `Window::with_element_state` in **both** prepaint and paint. Each of those calls
+//! (`gpui-0.2.2/src/window.rs:2628-2641`) **clones the whole `GlobalElementId` twice** —
+//! once for the map key, once to push onto `accessed_element_states` — and
+//! `GlobalElementId` is a `SmallVec<[ElementId; 32]>` whose every `Name`/`NamedInteger`
+//! component is a refcounted `SharedString`. Two hash-map operations over that key
+//! follow, and the clones are dropped at frame end. Four id-path clones per cell per
+//! frame, times ~180 cells, is ~700 of them — for divs that have **no** click, hover,
+//! tooltip, scroll, drag or focus state to remember. In a release scroll profile that
+//! machinery (`ArcCow::hash`, `ElementId::hash`, `drop_in_place<ElementId>`,
+//! `hashbrown::remove_entry`, `SmallVec::extend`/`drop`, plus its share of `malloc`/
+//! `memcpy`) is **10-15% of the frame**, and it is 100% waste.
+//!
+//! So: **no `.id()` on a table cell.** The interactive thing *inside* the cell — a
+//! `ConfirmButton`, keyed by pid or unit name so its armed state survives a re-sort —
+//! carries its own id and keeps its own state. The wrapper never needed one. Row hover
+//! and row click are upstream's, on the row, and are unaffected.
+//!
+//! (An id is not free elsewhere either, but everywhere else the count is bounded: six
+//! header cells, one per row, one per action button. Cells are the only place the count
+//! is *rows x columns*.)
+//!
 //! # Using it from a delegate
 //!
 //! ```ignore
