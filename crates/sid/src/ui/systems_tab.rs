@@ -88,7 +88,8 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, Meter, Segment, SegmentSelect,
-    SegmentedControl, StatCluster, StyledExt as _, Toolbar, h_flex, sortable_th, v_flex,
+    SegmentedControl, StatCluster, StyledExt as _, Toolbar, Typography as _, h_flex, sortable_th,
+    v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -474,25 +475,25 @@ impl TableDelegate for ProcessesDelegate {
             0 => div()
                 .id(cell_id)
                 .px_2()
-                .text_xs()
+                .text_mono(&theme)
                 .text_color(rgb(theme.fg))
                 .child(format!("{:.1}%", proc.cpu_pct)),
             1 => div()
                 .id(cell_id)
                 .px_2()
-                .text_xs()
+                .text_mono(&theme)
                 .text_color(rgb(theme.muted))
                 .child(humanize_bytes(proc.rss_bytes)),
             2 => div()
                 .id(cell_id)
                 .px_2()
-                .text_xs()
+                .text_mono(&theme)
                 .text_color(rgb(theme.muted))
                 .child(proc.pid.as_u32().to_string()),
             3 => div()
                 .id(cell_id)
                 .px_2()
-                .text_xs()
+                .text_mono(&theme)
                 .text_color(rgb(theme.fg))
                 .child(proc.name.clone()),
             4 => {
@@ -506,7 +507,7 @@ impl TableDelegate for ProcessesDelegate {
                 div()
                     .id(cell_id)
                     .px_2()
-                    .text_xs()
+                    .text_mono(&theme)
                     .text_color(rgb(theme.muted))
                     .child(label)
             }
@@ -516,7 +517,7 @@ impl TableDelegate for ProcessesDelegate {
                 div()
                     .id(cell_id)
                     .px_2()
-                    .text_xs()
+                    .text_mono(&theme)
                     .text_color(rgb(theme.muted))
                     .child(label)
             }
@@ -1039,16 +1040,11 @@ impl AppState {
                     .min_w_0()
                     .child(
                         div()
-                            .text_sm()
+                            .text_body(theme)
                             .text_color(rgb(theme.fg_strong))
                             .child(file_name),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme.muted))
-                            .child(path.to_string()),
-                    ),
+                    .child(div().text_mono_meta(theme).child(path.to_string())),
             )
             .child(
                 IconButton::new(("cfg-toggle", id.1), icon, tooltip)
@@ -1081,7 +1077,7 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
         .gap_1p5()
         .py_1()
-        .text_xs()
+        .text_meta(theme)
         .text_color(rgb(theme.danger))
         .child(Icon::Error.small())
         .child(message)

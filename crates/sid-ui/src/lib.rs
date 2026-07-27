@@ -54,6 +54,7 @@ pub mod styled;
 pub mod table;
 pub mod theme;
 pub mod toolbar;
+pub mod typography;
 
 pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
 pub use badge::{Badge, BadgeFill, BadgeTone};
@@ -72,3 +73,4 @@ pub use styled::{StyledExt, h_flex, v_flex};
 pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate, sortable_th};
 pub use theme::Theme;
 pub use toolbar::Toolbar;
+pub use typography::{ALL_TYPE_ROLES, TypeRole, TypeSpec, Typography, UI_MONO};

@@ -29,12 +29,8 @@ use sid_store::{DefaultScope, PanelSide, Settings, Store};
 
 use crate::app::AppState;
 use crate::keymap;
+use sid_ui::Typography as _;
 use sid_ui::theme;
-
-/// Monospace family for the Storage section's paths — aligned with `app.rs`'s own
-/// `MONO` const. Kept local so `ui` stays self-contained (same convention as
-/// `network_tab.rs`/`systems_tab.rs`'s local color consts).
-const MONO: &str = "DejaVu Sans Mono";
 
 /// Settings tab state: a cached snapshot of the persisted [`Settings`] (loaded
 /// once in `AppState::new`, refreshed after every successful write — never
@@ -91,14 +87,11 @@ fn persist_secret_keyring_enabled(store: &Store, enabled: bool) -> sid_store::Re
 
 // ---- render pieces (free functions — no `self` needed) ---------------------
 
-/// A section header — spacey pass §B.2: `text_xs` UPPERCASE `muted` label with
-/// `mb_2`.
+/// A section header: the [`Label`] role, uppercased, with `mb_2`.
+///
+/// [`Label`]: sid_ui::TypeRole::Label
 fn section_header(chrome: &theme::Theme, label: &str) -> impl IntoElement {
-    div()
-        .text_xs()
-        .text_color(rgb(chrome.muted))
-        .mb_2()
-        .child(label.to_uppercase())
+    div().text_label(chrome).mb_2().child(label.to_uppercase())
 }
 
 /// One labeled control inside a section: a muted label above, the interactive
@@ -112,7 +105,7 @@ fn labeled_row(
         .flex()
         .flex_col()
         .gap_1()
-        .child(div().text_xs().text_color(rgb(chrome.muted)).child(label))
+        .child(div().text_meta(chrome).child(label))
         .child(content)
 }
 
@@ -130,15 +123,10 @@ fn keyboard_section(chrome: &theme::Theme) -> impl IntoElement {
             .justify_between()
             .gap_4()
             .py_1()
+            .child(div().text_body(chrome).child(action.label()))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(rgb(chrome.fg))
-                    .child(action.label()),
-            )
-            .child(
-                div()
-                    .text_sm()
+                    .text_body(chrome)
                     .text_color(rgb(chrome.accent))
                     .child(shortcut),
             )
@@ -152,7 +140,7 @@ fn keyboard_section(chrome: &theme::Theme) -> impl IntoElement {
         .child(
             div()
                 .mt_2()
-                .text_xs()
+                .text_meta(chrome)
                 .text_color(rgb(chrome.faint))
                 .child("rebinding comes later"),
         )
@@ -173,9 +161,7 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
             chrome,
             label,
             div()
-                .text_sm()
-                .font_family(MONO)
-                .text_color(rgb(chrome.fg))
+                .text_mono(chrome)
                 .child(path.to_string_lossy().into_owned()),
         )
     };
@@ -188,7 +174,7 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
         .child(path_row("data directory", data_dir))
         .child(path_row("store file", store_path))
         .child(path_row("demo database", demo_db_path))
-        .child(div().text_xs().text_color(rgb(chrome.faint)).child(
+        .child(div().text_meta(chrome).text_color(rgb(chrome.faint)).child(
             "the encrypted-file secret vault is dormant (round D §A) — keyring or \
                  in-memory only",
         ))
@@ -208,7 +194,7 @@ impl AppState {
                 .px_3()
                 .py_2()
                 .rounded_md()
-                .text_xs()
+                .text_meta(&chrome)
                 .text_color(rgb(chrome.danger))
                 .child(format!("error: {e}"))
         });
@@ -319,7 +305,7 @@ impl AppState {
             .child(
                 div()
                     .flex_1()
-                    .text_sm()
+                    .text_body(chrome)
                     .text_color(rgb(if active { chrome.fg_strong } else { chrome.fg }))
                     .child(name),
             )
@@ -389,13 +375,12 @@ impl AppState {
             .child(labeled_row(chrome, "secret keyring", keyring))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(chrome.muted))
+                    .text_meta(chrome)
                     .child(self.secrets_status_detail.clone()),
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_meta(chrome)
                     .text_color(rgb(chrome.faint))
                     .child("changes take effect on restart"),
             )
@@ -423,7 +408,7 @@ impl AppState {
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_body(chrome)
                     .cursor_pointer()
                     .bg(rgb(if active {
                         chrome.selection
@@ -473,7 +458,7 @@ impl AppState {
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_body(chrome)
                     .cursor_pointer()
                     .bg(rgb(if active {
                         chrome.selection
@@ -533,7 +518,7 @@ impl AppState {
                     .px_3()
                     .py_1()
                     .rounded_md()
-                    .text_sm()
+                    .text_body(chrome)
                     .cursor_pointer()
                     .bg(rgb(if active {
                         chrome.selection

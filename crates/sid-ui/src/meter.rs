@@ -39,6 +39,7 @@ use gpui::{
 use crate::card::Card;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
+use crate::typography::Typography;
 
 /// At or above this load, a meter is [`MeterTone::Caution`].
 pub const CAUTION_AT: f32 = 0.70;
@@ -251,7 +252,15 @@ impl RenderOnce for Meter {
                     .gap_2()
                     .child(div().hint_text(&theme).child(self.label))
                     .when_some(self.value, |this, value| {
-                        this.child(div().text_xs().text_color(rgb(theme.fg)).child(value))
+                        this.child(
+                            // The readout is the fact the meter exists for, so it takes
+                            // `fg` rather than the label's `muted` — but it stays on the
+                            // meta rung so the caption reads as one line, not two.
+                            div()
+                                .text_meta(&theme)
+                                .text_color(rgb(theme.fg))
+                                .child(value),
+                        )
                     }),
             )
             .child(
@@ -373,7 +382,7 @@ impl RenderOnce for StatCluster {
             card = card.action(action);
         }
         card.when_some(self.summary, |this, summary| {
-            this.child(div().text_xs().text_color(rgb(theme.muted)).child(summary))
+            this.child(div().text_meta(&theme).child(summary))
         })
         .child(h_flex().w_full().items_start().gap_6().children(self.stats))
     }

@@ -19,7 +19,9 @@
 //! scripts/sid-cap.sh --env SID_GALLERY=1 --env SID_THEME=cosmos --out /tmp/g-cosmos.png
 //! ```
 
-use gpui::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, rgb};
+use gpui::{
+    Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
+};
 
 use crate::badge::{ALL_BADGE_FILLS, ALL_BADGE_TONES, Badge, BadgeFill, BadgeTone};
 use crate::button::{ALL_BUTTON_VARIANTS, Button, ButtonSize, ButtonVariant, IconButton};
@@ -34,6 +36,7 @@ use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, Statu
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::toolbar::Toolbar;
+use crate::typography::{ALL_TYPE_ROLES, TypeRole, Typography};
 
 /// The gallery screen. Holds no state: everything on it is a fresh element per frame.
 pub struct Gallery;
@@ -62,15 +65,18 @@ impl Render for Gallery {
         v_flex()
             .size_full()
             .bg(rgb(theme.bg))
-            .text_color(rgb(theme.fg))
-            .text_sm()
+            .text_body(&theme)
             .child(chrome(&theme))
+            // The specimen is a full-width band rather than a fifth column: the samples
+            // are sentences, and a fifth of 1920px is not a line of text.
+            .child(type_specimen(&theme))
             .child(
                 h_flex()
                     .flex_1()
                     .items_start()
                     .gap_4()
-                    .p_4()
+                    .px_4()
+                    .pb_4()
                     .overflow_hidden()
                     .child(v_flex().flex_1().gap_4().children(buttons(&theme)))
                     .child(v_flex().flex_1().gap_4().children(chips(&theme)))
@@ -92,7 +98,7 @@ fn chrome(theme: &Theme) -> impl IntoElement + use<> {
         .child(
             h_flex()
                 .gap_2()
-                .child(div().text_color(rgb(theme.fg_strong)).child("sid-ui"))
+                .child(div().text_title(theme).child("sid-ui"))
                 .child(div().hint_text(theme).child("component gallery")),
         )
         .child(
@@ -354,7 +360,7 @@ fn rows(theme: &Theme) -> Vec<gpui::AnyElement> {
                 .selected(selected)
                 .leading(StatusDot::new(sub(id, "dot"), state))
                 .on_click(|_, _, _| {})
-                .child(div().text_sm().child(alias))
+                .child(div().text_body(theme).child(alias))
                 .child(div().hint_text(theme).child(addr))
                 .meta(chip)
                 .action(
@@ -436,6 +442,96 @@ fn rows(theme: &Theme) -> Vec<gpui::AnyElement> {
     ]
 }
 
+/// The type specimen — every role on the scale, once, with its own measurements
+/// printed beside it.
+///
+/// This is the band that answers "is the hierarchy obvious?" by eye rather than by
+/// argument. Each sample renders *in* its role and prints the numbers straight off
+/// [`TypeRole::spec`], so the specimen cannot drift from the scale: there is no literal
+/// size anywhere in it to fall out of date.
+fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
+    let sample = |role: TypeRole| {
+        let spec = role.spec(theme);
+        let measure = format!(
+            "{}px · {} · {}",
+            f32::from(spec.size),
+            if spec.weight == gpui::FontWeight::MEDIUM {
+                "medium"
+            } else {
+                "normal"
+            },
+            spec.family.unwrap_or("system"),
+        );
+        h_flex()
+            .w_full()
+            .gap_4()
+            .items_baseline()
+            .child(
+                div()
+                    .w(px(96.))
+                    .flex_none()
+                    .text_label(theme)
+                    .child(role.name().to_uppercase()),
+            )
+            .child(
+                div()
+                    .w(px(212.))
+                    .flex_none()
+                    .text_meta(theme)
+                    .child(measure),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_role(role, theme)
+                    .child("Sphinx of black quartz, judge my vow — 0123456789"),
+            )
+    };
+
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap_4()
+        .p_4()
+        .child(
+            Card::new()
+                .title("type scale")
+                .count(ALL_TYPE_ROLES.len())
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_meta(theme)
+                        .child("three sizes, two weights, one mono family"),
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .children(ALL_TYPE_ROLES.iter().map(|&r| sample(r))),
+                ),
+        )
+        .child(
+            // The same six roles doing their day job, so the ladder can be judged as a
+            // screen and not only as a chart.
+            Card::new()
+                .title("hierarchy in place")
+                .w(px(420.))
+                .flex_none()
+                .child(div().text_title(theme).child("Processes"))
+                .child(
+                    div()
+                        .text_body(theme)
+                        .child("34 running, sorted by resident memory"),
+                )
+                .child(div().text_label(theme).child("FILTERS"))
+                .child(div().text_meta(theme).child("user · system · all"))
+                .child(div().text_mono(theme).child("/usr/lib/systemd/systemd"))
+                .child(div().text_mono_meta(theme).child("pid 1 · 0.0% · 12.4 MB")),
+        )
+}
+
 /// A stand-in for the search field. `TextInput`/`SearchInput` land in a later commit;
 /// until then the toolbar needs *something* filter-shaped to hold its left edge.
 fn fake_filter(theme: &Theme, placeholder: &'static str) -> impl IntoElement + use<> {
@@ -447,10 +543,5 @@ fn fake_filter(theme: &Theme, placeholder: &'static str) -> impl IntoElement + u
         .rounded_md()
         .elevation(Elevation::Well, theme)
         .child(Icon::Search.el().text_color(rgb(theme.faint)))
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme.muted))
-                .child(placeholder),
-        )
+        .child(div().text_meta(theme).child(placeholder))
 }
