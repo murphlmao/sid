@@ -1,7 +1,7 @@
 //! Design-law gates, enforced by scanning the workspace's frontend source.
 //!
-//! Two rules in `.interface-design/system.md` cannot be expressed as a type, only as an
-//! absence, so they get a scanner:
+//! Three rules in `.interface-design/system.md` cannot be expressed as a type, only as
+//! an absence, so they get a scanner:
 //!
 //! 1. **No emoji, anywhere.** Glyphs come from `sid_ui::Icon` (bundled Lucide
 //!    monochrome SVGs). Monochrome line-art *symbols* (`→`, `▸`, `✦`, box-drawing) are
@@ -10,10 +10,14 @@
 //! 2. **Semantic tokens are the only colour source.** No `rgb(0x..)` / `rgba(0x..)`
 //!    literal outside the palette definitions, with the two exemptions the design
 //!    system itself names.
+//! 3. **The type scale is the only text-size source.** No `text_xs()` / `text_sm()` /
+//!    `text_size(..)` / `font_weight(..)` / `font_family(..)` outside
+//!    `sid_ui::typography`, which defines them. Call sites name a *role*
+//!    (`.text_body(&t)`, `.text_meta(&t)`, `.text_mono(&t)`), never a measurement.
 //!
-//! Both scanners skip each file's `#[cfg(test)]` region: test code legitimately uses
-//! literal colours as fixtures and an emoji as a grapheme-segmentation subject, and
-//! neither reaches a pixel.
+//! All three scanners skip each file's `#[cfg(test)]` region: test code legitimately
+//! uses literal colours as fixtures, an emoji as a grapheme-segmentation subject, and
+//! raw sizes as assertions, and none of it reaches a pixel.
 
 use std::path::{Path, PathBuf};
 
@@ -49,13 +53,36 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The part of a source file that can reach a pixel: everything before the first
-/// `#[cfg(test)]`. Test modules are conventionally last in this codebase.
-fn shipping_source(text: &str) -> &str {
-    match text.find("#[cfg(test)]") {
-        Some(at) => &text[..at],
-        None => text,
+/// The lines of a source file that can reach a pixel — every line outside a
+/// `#[cfg(test)]` module — as `(1-based line number, line)`.
+///
+/// This used to be "everything before the first `#[cfg(test)]`", on the assumption that
+/// test modules come last. Nineteen files disprove it: `session.rs` opens a
+/// `#[cfg(test)] mod crumb_tests` at line 1104 and then renders for another 1400 lines,
+/// so the colour and emoji scanners were blind to more than half of it. Skipping *each*
+/// test module and resuming after it is the difference between a gate and a decoration.
+///
+/// Every `#[cfg(test)]` in this workspace annotates a top-level `mod x {` at column 0,
+/// which rustfmt closes with a `}` at column 0 — so the block's end needs no brace
+/// counting, and in particular cannot be confused by a brace inside a test's string.
+fn shipping_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut in_test_module = false;
+    for (ix, line) in text.lines().enumerate() {
+        if in_test_module {
+            // A top-level item's closing brace: column 0, nothing else on the line.
+            if line == "}" {
+                in_test_module = false;
+            }
+            continue;
+        }
+        if line.starts_with("#[cfg(test)]") {
+            in_test_module = true;
+            continue;
+        }
+        out.push((ix + 1, line));
     }
+    out
 }
 
 /// Whether `c` is an emoji, as opposed to a monochrome symbol.
@@ -89,12 +116,11 @@ fn no_emoji_in_frontend_source() {
     for root in scanned_roots() {
         for file in rust_files(&root) {
             let text = std::fs::read_to_string(&file).expect("utf-8 source");
-            for (n, line) in shipping_source(&text).lines().enumerate() {
+            for (n, line) in shipping_lines(&text) {
                 for c in line.chars().filter(|&c| is_emoji(c)) {
                     offences.push(format!(
-                        "{}:{}: emoji {:?} (U+{:04X}) — use sid_ui::Icon",
+                        "{}:{n}: emoji {:?} (U+{:04X}) — use sid_ui::Icon",
                         file.display(),
-                        n + 1,
                         c,
                         c as u32
                     ));
@@ -147,15 +173,14 @@ fn no_raw_colour_literals_outside_the_palette() {
                 continue;
             }
             let text = std::fs::read_to_string(&file).expect("utf-8 source");
-            for (n, line) in shipping_source(&text).lines().enumerate() {
+            for (n, line) in shipping_lines(&text) {
                 for literal in colour_literals(line) {
                     if EXEMPT_LITERALS.iter().any(|(l, _)| *l == literal) {
                         continue;
                     }
                     offences.push(format!(
-                        "{}:{}: raw colour {literal} — read a token from sid_ui::theme",
+                        "{}:{n}: raw colour {literal} — read a token from sid_ui::theme",
                         file.display(),
-                        n + 1,
                     ));
                 }
             }
@@ -210,10 +235,241 @@ fn the_colour_scanner_reads_calls_not_constants() {
     );
 }
 
+// ---------------------------------------------------------------------------------
+// The type scale
+// ---------------------------------------------------------------------------------
+
+/// The `gpui` calls that decide how text *measures*. Naming one of these at a call site
+/// is choosing a size by hand, which is exactly how sid ended up with 222 of them and no
+/// scale. `sid_ui::typography` owns them; everyone else names a role.
+const RAW_TYPE_CALLS: &[&str] = &[
+    ".text_xs(",
+    ".text_sm(",
+    ".text_base(",
+    ".text_lg(",
+    ".text_xl(",
+    ".text_2xl(",
+    ".text_3xl(",
+    ".text_size(",
+    ".font_weight(",
+    ".font_family(",
+];
+
+/// The single module allowed to name a raw size: it *is* the scale.
+fn defines_the_type_scale(file: &Path) -> bool {
+    file.ends_with("sid-ui/src/typography.rs")
+}
+
+/// Files that still hand-type sizes, with who owns the sweep.
+///
+/// **This list only shrinks.** `the_type_scale_allowlist_has_no_dead_entries` fails the
+/// build on an entry whose file is already clean, so a landing sweep forces its own
+/// line to be deleted rather than letting the exemption outlive the debt. Wave 1
+/// (`feat(sid-ui): semantic type scale`) swept `sid-ui`, `app.rs`, `systems_tab.rs`,
+/// `settings_tab.rs` and `config_editor.rs`; everything below is wave 2.
+const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
+    // Held by concurrent UI-overhaul agents during wave 1 — editing them would have
+    // been a guaranteed merge conflict, so their violations were inventoried instead
+    // (see the wave-1 commit message for the per-file table).
+    ("sid/src/ui/ssh_home.rs", "SSH home overhaul, in flight"),
+    (
+        "sid/src/ui/session.rs",
+        "SSH session overhaul, in flight — also holds the PTY grid's own font, which is \
+         terminal geometry rather than UI type and stays out of the scale",
+    ),
+    ("sid/src/ui/network_tab.rs", "Network overhaul, in flight"),
+    (
+        "sid/src/ui/workspaces_tab.rs",
+        "Workspaces overhaul, in flight",
+    ),
+    ("sid/src/ui/db_tab.rs", "Database overhaul, in flight"),
+    // Not held by anyone; simply not reached in wave 1. No blocker beyond the diff size.
+    ("sid/src/ui/command_palette.rs", "wave 2"),
+    (
+        "sid/src/ui/db_conn_form.rs",
+        "wave 2 — moves with the DB tab",
+    ),
+    ("sid/src/ui/db_diagram.rs", "wave 2 — moves with the DB tab"),
+    ("sid/src/ui/host_form.rs", "wave 2 — moves with SSH home"),
+    ("sid/src/ui/password_prompt.rs", "wave 2"),
+    (
+        "sid/src/ui/text_input.rs",
+        "wave 2 — a custom Element that measures its own line height from the style, so \
+         it needs the resolved pixels rather than a role",
+    ),
+];
+
+/// Whether `file` is excused, and why.
+fn sweep_pending(file: &Path) -> Option<&'static str> {
+    let path = file.to_string_lossy().replace('\\', "/");
+    TYPE_SCALE_SWEEP_PENDING
+        .iter()
+        .find(|(suffix, _)| path.ends_with(suffix))
+        .map(|(_, why)| *why)
+}
+
 #[test]
-fn the_test_region_split_stops_at_the_first_cfg_test() {
-    let src = "fn ship() { rgb(0x123456) }\n#[cfg(test)]\nmod tests { rgb(0xabcdef) }";
-    assert!(shipping_source(src).contains("0x123456"));
-    assert!(!shipping_source(src).contains("0xabcdef"));
-    assert_eq!(shipping_source("fn a() {}"), "fn a() {}");
+fn no_raw_text_sizes_outside_the_type_scale() {
+    let mut offences = Vec::new();
+    for root in scanned_roots() {
+        for file in rust_files(&root) {
+            if defines_the_type_scale(&file) || sweep_pending(&file).is_some() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("utf-8 source");
+            for (n, line) in shipping_lines(&text) {
+                for call in raw_type_calls(line) {
+                    offences.push(format!(
+                        "{}:{n}: {call} — name a role: .text_body(&t) / .text_meta(&t) / \
+                         .text_mono(&t) (sid_ui::typography)",
+                        file.display(),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "the type scale is the only text-size source:\n{}",
+        offences.join("\n")
+    );
+}
+
+#[test]
+fn the_type_scale_allowlist_has_no_dead_entries() {
+    // The ratchet. An exemption that no longer excuses anything is a lie about the
+    // codebase, and the only way this list ever gets shorter.
+    let mut clean = Vec::new();
+    for root in scanned_roots() {
+        for file in rust_files(&root) {
+            let Some(why) = sweep_pending(&file) else {
+                continue;
+            };
+            let text = std::fs::read_to_string(&file).expect("utf-8 source");
+            let still_dirty = shipping_lines(&text)
+                .iter()
+                .any(|(_, line)| !raw_type_calls(line).is_empty());
+            if !still_dirty {
+                clean.push(format!("{} ({why})", file.display()));
+            }
+        }
+    }
+    assert!(
+        clean.is_empty(),
+        "these files are swept — delete their TYPE_SCALE_SWEEP_PENDING entries:\n{}",
+        clean.join("\n")
+    );
+}
+
+/// The raw type calls on `line`, ignoring anything in a trailing comment (doc comments
+/// and rationale legitimately *name* the calls they are replacing).
+fn raw_type_calls(line: &str) -> Vec<&'static str> {
+    let code = match line.find("//") {
+        Some(at) => &line[..at],
+        None => line,
+    };
+    RAW_TYPE_CALLS
+        .iter()
+        .filter(|call| code.contains(*call))
+        .copied()
+        .collect()
+}
+
+#[test]
+fn the_type_scanner_flags_measurements_and_not_roles() {
+    // Positive controls, one per call family.
+    assert_eq!(raw_type_calls("div().text_xs()"), vec![".text_xs("]);
+    assert_eq!(raw_type_calls("    .text_sm()"), vec![".text_sm("]);
+    assert_eq!(raw_type_calls(".text_size(px(14.))"), vec![".text_size("]);
+    assert_eq!(
+        raw_type_calls(".font_weight(FontWeight::BOLD)"),
+        vec![".font_weight("]
+    );
+    assert_eq!(raw_type_calls(".font_family(MONO)"), vec![".font_family("]);
+    // ...and the roles that replace them are not measurements.
+    for ok in [
+        ".text_title(&t)",
+        ".text_body(&t)",
+        ".text_label(&t)",
+        ".text_meta(&t)",
+        ".text_mono(&t)",
+        ".text_mono_meta(&t)",
+        ".text_role(TypeRole::Body, &t)",
+    ] {
+        assert!(raw_type_calls(ok).is_empty(), "{ok} is a role, not a size");
+    }
+    // Neighbours that merely start the same way.
+    for ok in [
+        ".text_color(rgb(t.fg))",
+        ".text_center()",
+        ".text_ellipsis()",
+        ".truncate()",
+        "let text_size = 12;",
+    ] {
+        assert!(raw_type_calls(ok).is_empty(), "{ok}");
+    }
+    // Prose about the old spelling is prose.
+    assert!(raw_type_calls("/// replaces `.text_xs()` at 41 sites").is_empty());
+    assert!(raw_type_calls("    .text_body(&t) // was .text_sm()").is_empty());
+    // Several on one line are all reported.
+    assert_eq!(
+        raw_type_calls(".text_xs().font_family(MONO)"),
+        vec![".text_xs(", ".font_family("]
+    );
+}
+
+#[test]
+fn every_sweep_pending_entry_points_at_a_real_file() {
+    // A typo in the allowlist is a silent hole: the scanner would keep passing the file
+    // it was meant to excuse *and* nobody would notice the exemption was inert.
+    let files: Vec<String> = scanned_roots()
+        .iter()
+        .flat_map(|root| rust_files(root))
+        .map(|f| f.to_string_lossy().replace('\\', "/"))
+        .collect();
+    for (suffix, _) in TYPE_SCALE_SWEEP_PENDING {
+        assert!(
+            files.iter().any(|f| f.ends_with(suffix)),
+            "{suffix}: no such source file"
+        );
+    }
+}
+
+#[test]
+fn the_test_region_split_skips_each_test_module_and_resumes_after_it() {
+    let src = "fn a() { rgb(0x111111) }\n\
+               #[cfg(test)]\n\
+               mod early {\n\
+               \x20   rgb(0xaaaaaa)\n\
+               }\n\
+               fn b() { rgb(0x222222) }\n\
+               #[cfg(test)]\n\
+               mod late {\n\
+               \x20   rgb(0xbbbbbb)\n\
+               }\n";
+    let kept: Vec<&str> = shipping_lines(src).into_iter().map(|(_, l)| l).collect();
+    let text = kept.join("\n");
+    // Shipping code on both sides of an inline test module survives...
+    assert!(text.contains("0x111111"));
+    assert!(
+        text.contains("0x222222"),
+        "the scanner must resume after a test module"
+    );
+    // ...and neither module's body does.
+    assert!(!text.contains("0xaaaaaa"));
+    assert!(!text.contains("0xbbbbbb"));
+
+    // Line numbers stay true to the original file, or every offence points at the
+    // wrong line.
+    assert_eq!(shipping_lines(src).first().map(|(n, _)| *n), Some(1));
+    assert_eq!(
+        shipping_lines(src)
+            .iter()
+            .find(|(_, l)| l.contains("0x222222"))
+            .map(|(n, _)| *n),
+        Some(6)
+    );
+
+    // A file with no tests keeps every line.
+    assert_eq!(shipping_lines("fn a() {}\nfn b() {}").len(), 2);
 }

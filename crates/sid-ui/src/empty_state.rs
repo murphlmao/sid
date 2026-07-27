@@ -18,6 +18,7 @@ use gpui::{
 use crate::icon::Icon;
 use crate::styled::v_flex;
 use crate::theme;
+use crate::typography::Typography;
 
 /// A centred "nothing here yet" panel.
 ///
@@ -83,19 +84,13 @@ impl RenderOnce for EmptyState {
                         .into_any_element(),
                 )
             })
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(theme.fg))
-                    .child(self.headline),
-            )
+            .child(div().text_body(&theme).child(self.headline))
             .when_some(self.guidance, |this, guidance| {
                 this.child(
                     div()
                         .max_w_96()
-                        .text_xs()
+                        .text_meta(&theme)
                         .text_center()
-                        .text_color(rgb(theme.muted))
                         .child(guidance),
                 )
             })

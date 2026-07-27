@@ -39,6 +39,7 @@ use gpui::{
 use crate::bridge::hover_of;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
+use crate::typography::Typography;
 
 /// A click handler, shared so the builder can move it into gpui's own slot.
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -258,6 +259,11 @@ impl RenderOnce for Row {
             .w_full()
             .gap_2()
             .row_padding()
+            // A row's default type. Without it a row was whatever its ancestor happened
+            // to set, so the same `Row` rendered at three sizes in three screens; the
+            // children that want the meta rung say so themselves, and win, because a
+            // role sets every field it names.
+            .text_body(&theme)
             .when_some(self.group, |this, group| this.group(group))
             .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
             .when(actionable, |this| this.cursor_pointer())

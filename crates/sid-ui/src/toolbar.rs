@@ -11,11 +11,12 @@
 
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div,
-    prelude::FluentBuilder as _, rgb,
+    prelude::FluentBuilder as _,
 };
 
 use crate::styled::{StyledExt as _, h_flex};
 use crate::theme;
+use crate::typography::Typography;
 
 /// `n` of something, pluralised by the regular English rules.
 ///
@@ -135,7 +136,7 @@ impl RenderOnce for Toolbar {
             .when(!self.actions.is_empty(), |this| {
                 this.child(h_flex().flex_none().gap_1().children(self.actions))
             })
-            .text_color(rgb(theme.fg))
+            .text_body(&theme)
     }
 }
 

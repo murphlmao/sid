@@ -28,9 +28,38 @@ Borders + surface shifts only. No shadows. Hairline `border` separates regions;
   (origin, counts) are `faint`/`muted`. One accent, used sparingly.
 
 ## Typography
-Content `text_sm`; metadata/hints `text_xs` muted; monospace for addresses,
-paths, and data cells. Terminal font: CaskaydiaCove Nerd Font Mono @ 14px,
-cell height = font ascent+descent (kitty geometry).
+`crates/sid-ui/src/typography.rs` is the single source: **three sizes, two
+weights, one mono family**. Call sites name a role, never a measurement —
+`tests/hygiene.rs` fails the build on `text_xs()` / `text_sm()` /
+`text_size(..)` / `font_weight(..)` / `font_family(..)` anywhere else.
+
+| Role        | Helper              | Size | Weight | Ink         | For |
+|-------------|---------------------|------|--------|-------------|-----|
+| Title       | `.text_title(&t)`   | 16px | medium | `fg_strong` | screen / panel / modal headings |
+| Body        | `.text_body(&t)`    | 14px | normal | `fg`        | rows, values, fields, buttons, copy |
+| Label       | `.text_label(&t)`   | 12px | medium | `muted`     | UPPERCASE section headers (`· count` optional) |
+| Meta        | `.text_meta(&t)`    | 12px | normal | `muted`     | hints, counts, timestamps, badge words, status strips |
+| Mono        | `.text_mono(&t)`    | 14px | normal | `fg`        | paths, addresses, hosts, ports, data cells |
+| MonoMeta    | `.text_mono_meta(&t)` | 12px | normal | `muted`   | dim paths, ids, hashes in a row's tail |
+
+- **A role is absolute.** It sets size *and* weight *and* family *and* ink, so
+  a Meta inside a Title is still 12px normal. Only the ink is meant to be
+  overridden — `.text_meta(&t).text_color(rgb(t.danger))` is a dim error hint.
+- **Every component owns its type.** A `Badge`, `Card`, `Row`, `Toolbar` or
+  table header that sets no size renders at whatever its ancestor happened to
+  choose; each of them now states a role.
+- **A data table sits on one rung.** Columns differ by ink, never by size —
+  a grid whose cells disagree about size reads as a rendering bug.
+- **No BOLD.** 700 at 12-16px on a dark panel blooms into a colour change, and
+  colour already carries meaning here. Medium (500) is the whole emphasis
+  budget, spent on Title and Label.
+- **`px`, not `rems`.** `text_xs`/`text_sm` were `rems(0.75)`/`rems(0.875)`
+  against a 16px `rem_size` sid never changes — 12px and 14px in disguise.
+  gpui pixels are logical, so a px scale is still HiDPI-correct.
+
+The **terminal grid** is outside the scale: `sid-term` paints a PTY at
+CaskaydiaCove Nerd Font Mono @ 14px, cell height = font ascent+descent (kitty
+geometry). That is instrument metrics, not UI type.
 
 ## Interaction
 Every actionable row: hover fill, cursor_pointer, right-click menu. Modals close

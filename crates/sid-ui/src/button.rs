@@ -50,6 +50,7 @@ use crate::bridge::{contrast_ink, hover_of, mix, pressed_of};
 use crate::icon::Icon;
 use crate::styled::h_flex;
 use crate::theme::{self, Theme};
+use crate::typography::{TypeRole, Typography};
 
 /// A click handler, as both button types store it: shared so the builder can move it
 /// into the library's own `on_click` slot without a second boxing.
@@ -91,9 +92,9 @@ pub const ALL_BUTTON_VARIANTS: &[ButtonVariant] = &[
 /// screen's primary action and for anything inside a form or a modal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ButtonSize {
-    /// 24px tall, `text_xs`, 14px icon.
+    /// 24px tall, meta-rung label, 14px icon.
     Sm,
-    /// 32px tall, `text_sm`, 16px icon.
+    /// 32px tall, body-rung label, 16px icon.
     #[default]
     Md,
 }
@@ -116,13 +117,19 @@ impl ButtonSize {
         }
     }
 
-    /// The label's own text size. Set on the label child rather than inherited: the
-    /// library's `Medium` maps to `text_base` (16px), which is a size sid's type scale
-    /// does not use.
-    fn text_size(self) -> gpui::Pixels {
+    /// The label's place on the type scale. Set on the label child rather than
+    /// inherited: the library's `Medium` maps to `text_base` (16px), which is a rung
+    /// sid's ladder does not have.
+    ///
+    /// A button label is content the user is about to act on, so `Md` is [`Body`]; the
+    /// dense row-level `Sm` drops to the meta rung to sit level with the row's chips.
+    /// Only the *measurement* comes from the role — the ink is the variant's paint.
+    ///
+    /// [`Body`]: crate::typography::TypeRole::Body
+    pub const fn role(self) -> TypeRole {
         match self {
-            ButtonSize::Sm => px(12.),
-            ButtonSize::Md => px(14.),
+            ButtonSize::Sm => TypeRole::Meta,
+            ButtonSize::Md => TypeRole::Body,
         }
     }
 
@@ -434,7 +441,7 @@ impl RenderOnce for Button {
                         // the library's hover style cannot reach (see module docs).
                         div()
                             .flex_none()
-                            .text_size(size.text_size())
+                            .text_role(size.role(), &theme)
                             .text_color(rgb(paint.ink))
                             .child(self.label),
                     ),
@@ -871,7 +878,7 @@ mod tests {
     #[test]
     fn the_small_size_is_smaller_in_every_measure() {
         assert!(ButtonSize::Sm.square() < ButtonSize::Md.square());
-        assert!(ButtonSize::Sm.text_size() < ButtonSize::Md.text_size());
+        assert!(ButtonSize::Sm.role().size() < ButtonSize::Md.role().size());
         assert_eq!(ButtonSize::Sm.component(), Size::Small);
         assert_eq!(ButtonSize::Md.component(), Size::Medium);
     }

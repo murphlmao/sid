@@ -69,6 +69,7 @@ use gpui::{
 use gpui_component::table::{Column, ColumnSort, TableState};
 
 use super::FillTableDelegate;
+use crate::typography::Typography;
 
 /// The sort a click on this header should apply next, or `None` for "do nothing".
 ///
@@ -101,6 +102,7 @@ pub fn sortable_th<D: FillTableDelegate>(
     cx: &mut Context<TableState<D>>,
 ) -> impl IntoElement {
     let sortable = column.sort.is_some();
+    let theme = crate::theme::active(cx).clone();
 
     div()
         .id(("sid-th", col_ix))
@@ -113,6 +115,7 @@ pub fn sortable_th<D: FillTableDelegate>(
                     cx.stop_propagation();
                 }))
         })
+        .text_label(&theme)
         .child(column.name.clone())
 }
 

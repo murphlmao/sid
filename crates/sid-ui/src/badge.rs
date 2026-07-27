@@ -14,13 +14,14 @@
 //! element — and is not what this is.
 
 use gpui::{
-    App, IntoElement, ParentElement, RenderOnce, SharedString, Window, div,
+    App, IntoElement, ParentElement, RenderOnce, SharedString, Styled as _, Window, div,
     prelude::FluentBuilder as _, rgb, transparent_black,
 };
 use gpui_component::{Sizable as _, tag::Tag};
 
 use crate::bridge::{contrast_ink, mix};
 use crate::theme::{self, Theme};
+use crate::typography::Typography;
 
 /// What a badge is saying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -218,7 +219,15 @@ impl RenderOnce for Badge {
         Tag::custom(fill, rgb(paint.ink).into(), rgb(paint.border).into())
             .small()
             .map(|tag| if self.pill { tag.rounded_full() } else { tag })
-            .child(div().child(self.label))
+            // The label carries the badge's own type rather than inheriting: a badge is
+            // an orientation mark, so it sits on the meta rung wherever it is dropped.
+            // The ink is the tone's, not the role's — that is the whole point of a tone.
+            .child(
+                div()
+                    .text_meta(&theme)
+                    .text_color(rgb(paint.ink))
+                    .child(self.label),
+            )
     }
 }
 
