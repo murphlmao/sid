@@ -10,6 +10,10 @@ repository.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+# `privfs::Passphrase` wipes the sudo password's buffer when the last clone drops.
+# Already in the tree via `sid-secrets`' encrypted-file vault; declared here so the
+# core's own secret type owns the guarantee rather than borrowing it from an adapter.
+zeroize.workspace = true
 
 [dev-dependencies]
 serde_json = "1"
