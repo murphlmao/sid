@@ -37,7 +37,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme;
-use sid_ui::{Icon, h_flex};
+use sid_ui::{Icon, Typography as _, h_flex};
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
@@ -253,7 +253,7 @@ impl AppState {
                 div()
                     .flex_1()
                     .p_4()
-                    .text_sm()
+                    .text_body(&theme)
                     .text_color(rgb(theme.muted))
                     .child("loading…")
                     .into_any_element(),
@@ -265,7 +265,7 @@ impl AppState {
                 div()
                     .flex_1()
                     .p_4()
-                    .text_sm()
+                    .text_body(&theme)
                     .text_color(rgb(theme.muted))
                     .child(msg.clone())
                     .into_any_element(),
@@ -310,7 +310,7 @@ impl AppState {
                 // `0xRRGGBB` token shifted into `rgba`'s `0xRRGGBBAA` slot. Was a raw
                 // hex literal, which the no-raw-hex hygiene gate now forbids.
                 .bg(rgba((theme.warning << 8) | 0x26))
-                .text_sm()
+                .text_body(&theme)
                 .text_color(rgb(theme.warning))
                 .child("read-only — needs root; edit with sudoedit")
         });
@@ -319,7 +319,7 @@ impl AppState {
             div()
                 .mx_3()
                 .mt_2()
-                .text_xs()
+                .text_meta(&theme)
                 .text_color(rgb(theme.danger))
                 .child(format!("save failed: {e}"))
         });
@@ -371,16 +371,12 @@ impl AppState {
                                                 .child(
                                                     h_flex()
                                                         .gap_1p5()
-                                                        .text_sm()
-                                                        .text_color(rgb(theme.fg_strong))
+                                                        .text_title(&theme)
                                                         .child(file_name)
                                                         .children(dirty_marker),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(rgb(theme.muted))
-                                                        .child(full_path),
+                                                    div().text_mono_meta(&theme).child(full_path),
                                                 ),
                                         )
                                         .child(
@@ -396,7 +392,7 @@ impl AppState {
                                                             .px_3()
                                                             .py_1()
                                                             .rounded_md()
-                                                            .text_sm()
+                                                            .text_body(&theme)
                                                             .cursor_pointer()
                                                             .text_color(rgb(theme.accent))
                                                             .hover(|s| s.bg(rgb(theme.selection)))
@@ -420,7 +416,7 @@ impl AppState {
                                                         .py_1()
                                                         .rounded_md()
                                                         .cursor_pointer()
-                                                        .text_sm()
+                                                        .text_body(&theme)
                                                         .text_color(rgb(theme.muted))
                                                         .hover(|s| s.bg(rgb(theme.selection)))
                                                         .child("close")

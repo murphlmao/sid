@@ -9,6 +9,7 @@ use gpui::{Div, InteractiveElement, Styled, div, rgb};
 
 use crate::elevation::Elevation;
 use crate::theme::Theme;
+use crate::typography::Typography;
 
 /// A horizontal flex row, vertically centred — the default row shape.
 #[inline]
@@ -54,15 +55,21 @@ pub trait StyledExt: Styled + Sized {
         }
     }
 
-    /// A section header's type: `text_xs`, UPPERCASE is the caller's job (the string is
-    /// theirs), `muted`.
+    /// A section header's type. UPPERCASE is the caller's job (the string is theirs).
+    ///
+    /// Retained as an alias for [`Typography::text_label`] because the tab modules
+    /// still in flight during the type-scale sweep call it; wave 2 deletes it. Note
+    /// that the two used to be *identical* — `section_label` and `hint_text` both
+    /// expanded to `text_xs` + `muted`, so a section header and a footnote were the
+    /// same type. The roles they now forward to differ by weight.
     fn section_label(self, theme: &Theme) -> Self {
-        self.text_xs().text_color(rgb(theme.muted))
+        self.text_label(theme)
     }
 
-    /// Metadata / hint type: `text_xs` `muted`.
+    /// Metadata / hint type — an alias for [`Typography::text_meta`]. See
+    /// [`StyledExt::section_label`] for why it still exists.
     fn hint_text(self, theme: &Theme) -> Self {
-        self.text_xs().text_color(rgb(theme.muted))
+        self.text_meta(theme)
     }
 
     /// The house hover affordance for an actionable row: a `selection` fill.
@@ -146,9 +153,9 @@ mod tests {
             s.text.clone().unwrap_or_default().color,
             Some(Hsla::from(rgb(t.muted)))
         );
-        assert!(
-            s.text.clone().unwrap_or_default().font_size.is_some(),
-            "text_xs"
+        assert_eq!(
+            s.text.clone().unwrap_or_default().font_size,
+            Some(crate::typography::TypeRole::Label.size().into()),
         );
         let h = style_of(div().hint_text(&t));
         assert_eq!(

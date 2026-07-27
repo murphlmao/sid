@@ -19,12 +19,13 @@
 
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, Refineable as _, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, rgb,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::elevation::Elevation;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
+use crate::typography::Typography;
 
 /// The header line: UPPERCASE title, and the count appended with the design system's
 /// middot separator when there is one.
@@ -153,9 +154,11 @@ impl RenderOnce for Card {
             .gap_2()
             .children(header)
             .child(v_flex().gap_2().children(self.children))
-            // A flat section's own text colour, so its body does not inherit whatever
-            // the surrounding chrome happened to be painted in.
-            .text_color(rgb(theme.fg));
+            // A card's own type, so its body does not inherit whatever size and colour
+            // the surrounding chrome happened to be painted in. It used to set only the
+            // colour, which left the same card rendering at 12px inside a `text_xs`
+            // panel and 16px at the root.
+            .text_body(&theme);
         card.style().refine(&self.style);
         card
     }

@@ -18,6 +18,7 @@ use gpui_component::kbd::Kbd as ComponentKbd;
 
 use crate::styled::h_flex;
 use crate::theme;
+use crate::typography::Typography;
 
 /// One chip's worth of a keybinding spec.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,12 +104,11 @@ impl RenderOnce for Kbd {
                         .py_0p5()
                         .min_w_5()
                         .text_center()
-                        .text_xs()
+                        .text_meta(&theme)
                         .rounded_sm()
                         .border_1()
                         .border_color(rgb(theme.border))
                         .bg(rgb(theme.bg))
-                        .text_color(rgb(theme.muted))
                         .child(text)
                         .into_any_element(),
                 }
