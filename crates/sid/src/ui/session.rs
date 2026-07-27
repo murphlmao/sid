@@ -36,9 +36,11 @@ use sid_store::{Host, PanelSide};
 use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
+use gpui_component::tooltip::Tooltip;
+
 use crate::ssh_connect::connect_params;
-use crate::ui::TextInput;
-use sid_ui::theme;
+use crate::ui::{TextInput, is_field_submit};
+use sid_ui::{Row, theme, v_flex};
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
@@ -881,6 +883,412 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (year, m, d)
 }
 
+// ---- the entry row's horizontal space budget ---------------------------------------------
+
+/// Row geometry, stated once, so [`plan_entry_row`]'s arithmetic and the row it plans for
+/// cannot drift apart. Every one of these mirrors a value the renderer actually sets — if
+/// you change a width below, change it in [`SshSession::entry_row`] too, and the budget
+/// tests will tell you if the two stop agreeing.
+mod row_metrics {
+    use gpui::{Pixels, px};
+
+    /// `sid_ui::Row`'s `row_padding()` is `px_3` — 12px on each side.
+    pub const PAD_X: Pixels = px(12.);
+    /// `sid_ui::Row`'s `gap_2()`, between the leading/content/meta/action slots.
+    pub const SLOT_GAP: Pixels = px(8.);
+    /// `gap_1()`, inside `Row`'s meta and action clusters.
+    pub const CLUSTER_GAP: Pixels = px(4.);
+    /// The leading type glyph.
+    pub const GLYPH: Pixels = px(14.);
+    /// The size column.
+    pub const SIZE: Pixels = px(56.);
+    /// The modified-date column (`YYYY-MM-DD`).
+    pub const MTIME: Pixels = px(84.);
+    /// The action cluster, sized for the *widest* row (a file: view + download + copy).
+    ///
+    /// Fixed rather than content-sized, and identical on directory rows — which draw only
+    /// `copy path` into it — because a cluster that shrank on directory rows would slide
+    /// the size column left on every second row and turn the list into a ragged edge.
+    pub const ACTIONS: Pixels = px(80.);
+    /// What the name column must never drop below.
+    ///
+    /// Roughly sixteen characters at `text_sm`. The bug this constant exists to prevent is
+    /// two *different* files rendering as the same string: `.bashrc` and `.bash_logout`
+    /// diverge at character six, so anything that truncates earlier than that is lying
+    /// about what is in the directory.
+    pub const NAME_MIN: Pixels = px(120.);
+}
+
+/// Which orientation columns an entry row can afford, at a given row width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EntryRowPlan {
+    /// Draw the size column.
+    show_size: bool,
+    /// Draw the modified-date column.
+    show_mtime: bool,
+    /// What the name column is left with once every fixed-width slot has taken its share.
+    /// Never negative — a row narrower than its own furniture reports zero.
+    name_width: Pixels,
+}
+
+/// Decide an entry row's columns by arithmetic rather than by hope.
+///
+/// Every child of an entry row except the name is fixed-width, so what the name gets is
+/// subtraction — and at [`SIDEBAR_WIDTH`] the old row spent the lot: glyph 14 + size 60 +
+/// mtime 84 + three text buttons + five 8px gaps + 24px of padding left the name about
+/// twenty pixels, which is why `.bashrc` and `.bash_logout` both rendered as `.ba`.
+///
+/// The name is the reason the row exists, so it gets a floor and the orientation columns
+/// yield to it: **mtime first** — a date is the least load-bearing fact in a file list, and
+/// [`format_mtime`] already gave up time-of-day to this same squeeze — then **size**.
+///
+/// One plan governs the whole list (it takes no per-row input), so every row agrees on
+/// where its columns start.
+fn plan_entry_row(row_width: Pixels) -> EntryRowPlan {
+    use row_metrics as m;
+
+    // Furniture that is present no matter what: the box's padding, the leading glyph, the
+    // action cluster, and the two slot gaps that bracket the content.
+    let base = m::PAD_X * 2. + m::GLYPH + m::ACTIONS + m::SLOT_GAP * 2.;
+
+    for (show_size, show_mtime) in [(true, true), (true, false), (false, false)] {
+        let meta = match (show_size, show_mtime) {
+            (true, true) => m::SIZE + m::CLUSTER_GAP + m::MTIME + m::SLOT_GAP,
+            (true, false) => m::SIZE + m::SLOT_GAP,
+            _ => Pixels::ZERO,
+        };
+        let name_width = row_width - base - meta;
+        if name_width >= m::NAME_MIN {
+            return EntryRowPlan {
+                show_size,
+                show_mtime,
+                name_width,
+            };
+        }
+    }
+
+    // Narrower than the furniture itself. Everything has already yielded; the name takes
+    // whatever is left and the `truncate()` on it does the rest.
+    EntryRowPlan {
+        show_size: false,
+        show_mtime: false,
+        name_width: (row_width - base).max(Pixels::ZERO),
+    }
+}
+
+// ---- the breadcrumb's one line -----------------------------------------------------------
+
+/// One item on the breadcrumb line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Crumb {
+    /// What it reads.
+    label: String,
+    /// Where clicking it navigates — `None` for the inert `…` standing in for elided
+    /// segments, which has no single path it could sensibly mean.
+    target: Option<String>,
+}
+
+/// The elided-middle mark.
+const ELLIPSIS: &str = "…";
+
+/// Characters the breadcrumb line can hold at [`SIDEBAR_WIDTH`].
+///
+/// The row is the sidebar less its own `px_2` padding and the `«` collapse control; at
+/// `text_xs` in the mono face a character runs about 7px. Deliberately an estimate — it
+/// only decides *when* the middle elides, and the `overflow_hidden` on the line is what
+/// makes being a little wrong about it harmless rather than a second overlap bug.
+const CRUMB_BUDGET: usize = 34;
+
+/// Split an absolute remote path into its clickable crumbs, root first, each targeting the
+/// path built up to and including it (`/a/b` -> `/`, `a`->`/a`, `b`->`/a/b`).
+fn path_crumbs(path: &str) -> Vec<Crumb> {
+    let mut crumbs = vec![Crumb {
+        label: "/".to_string(),
+        target: Some("/".to_string()),
+    }];
+    let mut acc = String::new();
+    for part in path.split('/').filter(|s| !s.is_empty()) {
+        acc.push('/');
+        acc.push_str(part);
+        crumbs.push(Crumb {
+            label: part.to_string(),
+            target: Some(acc.clone()),
+        });
+    }
+    crumbs
+}
+
+/// What one crumb costs on the line: its text, plus the gap and padding around it.
+fn crumb_cost(label: &str) -> usize {
+    label.chars().count() + 2
+}
+
+/// The line's total cost.
+fn line_cost(crumbs: &[Crumb]) -> usize {
+    crumbs.iter().map(|c| crumb_cost(&c.label)).sum()
+}
+
+/// Middle-truncate a single label to `budget` characters (`verylongname` -> `very…name`).
+fn elide_label(label: &str, budget: usize) -> String {
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() <= budget {
+        return label.to_string();
+    }
+    if budget <= 1 {
+        return ELLIPSIS.to_string();
+    }
+    let keep = budget - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push_str(ELLIPSIS);
+    out.extend(&chars[chars.len() - tail..]);
+    out
+}
+
+/// Fit `crumbs` onto **one** line of `budget` characters by eliding the middle.
+///
+/// The breadcrumb used to `flex_wrap` instead, and its parent row keeps a single line's
+/// height, so from depth two onward the wrapped remainder painted straight over the
+/// go-to-path field below it.
+///
+/// What survives the squeeze is chosen by what a reader needs: the **root** (so "where does
+/// this tree start" never disappears) and the **current directory** (the one segment naming
+/// where you actually are), with as many of the intervening segments as fit, taken from the
+/// current end backwards — near ancestors orient you, distant ones don't. A current
+/// directory longer than the whole line is itself middle-truncated rather than dropped.
+fn truncate_crumbs(crumbs: &[Crumb], budget: usize) -> Vec<Crumb> {
+    if crumbs.len() <= 1 || line_cost(crumbs) <= budget {
+        return crumbs.to_vec();
+    }
+
+    let root = crumbs[0].clone();
+    let last = crumbs[crumbs.len() - 1].clone();
+    let gap = Crumb {
+        label: ELLIPSIS.to_string(),
+        target: None,
+    };
+    let frame = crumb_cost(&root.label) + crumb_cost(&gap.label);
+
+    // Not even `/ … <current>` fits: keep the frame and shorten the current segment, which
+    // is still more informative than showing an ancestor and hiding where you are.
+    if frame + crumb_cost(&last.label) > budget {
+        let room = budget.saturating_sub(frame + 2);
+        return vec![
+            root,
+            gap,
+            Crumb {
+                label: elide_label(&last.label, room.max(1)),
+                ..last
+            },
+        ];
+    }
+
+    // Walk back from the current directory, taking whole segments while they fit.
+    let mut kept = vec![last];
+    let mut used = frame + crumb_cost(&kept[0].label);
+    for crumb in crumbs[1..crumbs.len() - 1].iter().rev() {
+        let cost = crumb_cost(&crumb.label);
+        if used + cost > budget {
+            break;
+        }
+        used += cost;
+        kept.push(crumb.clone());
+    }
+    kept.push(gap);
+    kept.push(root);
+    kept.reverse();
+    kept
+}
+
+#[cfg(test)]
+mod entry_row_space_tests {
+    use super::*;
+
+    /// The acceptance case from the bug report, as arithmetic.
+    #[test]
+    fn at_the_sidebar_width_the_name_column_stays_readable() {
+        let plan = plan_entry_row(SIDEBAR_WIDTH);
+        assert!(
+            plan.name_width >= row_metrics::NAME_MIN,
+            "name got {:?}, floor is {:?}",
+            plan.name_width,
+            row_metrics::NAME_MIN
+        );
+    }
+
+    #[test]
+    fn mtime_is_the_first_column_to_yield() {
+        // At the sidebar's real width something has to give, and the date goes first.
+        let plan = plan_entry_row(SIDEBAR_WIDTH);
+        assert!(!plan.show_mtime, "the date should have yielded");
+        assert!(plan.show_size, "size should still fit at {SIDEBAR_WIDTH:?}");
+    }
+
+    #[test]
+    fn size_yields_next_rather_than_the_name_dropping_below_its_floor() {
+        // 280px: wide enough to seat a floor-width name *or* a name plus the size column,
+        // but not both. The name is what must survive that choice.
+        let plan = plan_entry_row(px(280.));
+        assert!(!plan.show_size, "size should have yielded too");
+        assert!(!plan.show_mtime);
+        assert!(
+            plan.name_width >= row_metrics::NAME_MIN,
+            "name got {:?}",
+            plan.name_width
+        );
+    }
+
+    #[test]
+    fn a_wide_row_affords_every_column() {
+        let plan = plan_entry_row(px(600.));
+        assert!(plan.show_size);
+        assert!(plan.show_mtime);
+        assert!(plan.name_width >= row_metrics::NAME_MIN);
+    }
+
+    #[test]
+    fn a_row_narrower_than_its_own_furniture_never_reports_a_negative_name() {
+        let plan = plan_entry_row(px(40.));
+        assert_eq!(plan.name_width, Pixels::ZERO);
+        assert!(!plan.show_size);
+        assert!(!plan.show_mtime);
+    }
+
+    #[test]
+    fn columns_only_ever_appear_as_the_row_gets_wider() {
+        // Monotonicity: widening a row must never take a column away. Without it the
+        // yield order could oscillate and the list would flicker on a resize.
+        let mut seen_size = false;
+        let mut seen_mtime = false;
+        for w in (100..800).step_by(10) {
+            let plan = plan_entry_row(px(w as f32));
+            if plan.show_size {
+                seen_size = true;
+            } else {
+                assert!(!seen_size, "size came back off at {w}px");
+            }
+            if plan.show_mtime {
+                seen_mtime = true;
+            } else {
+                assert!(!seen_mtime, "mtime came back off at {w}px");
+            }
+            // And the name is never starved at any width.
+            assert!(
+                plan.name_width >= row_metrics::NAME_MIN || (!plan.show_size && !plan.show_mtime),
+                "at {w}px the name got {:?} while still paying for a column",
+                plan.name_width
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod crumb_tests {
+    use super::*;
+
+    fn labels(crumbs: &[Crumb]) -> Vec<String> {
+        crumbs.iter().map(|c| c.label.clone()).collect()
+    }
+
+    #[test]
+    fn a_path_becomes_root_first_cumulative_targets() {
+        let crumbs = path_crumbs("/a/b");
+        assert_eq!(labels(&crumbs), vec!["/", "a", "b"]);
+        let targets: Vec<Option<&str>> = crumbs.iter().map(|c| c.target.as_deref()).collect();
+        assert_eq!(targets, vec![Some("/"), Some("/a"), Some("/a/b")]);
+    }
+
+    #[test]
+    fn a_shallow_path_keeps_every_segment() {
+        // Depth 1 and depth 2 — the depths the wrapping bug appeared at — fit whole.
+        for path in ["/home", "/home/sid_test"] {
+            let crumbs = path_crumbs(path);
+            assert_eq!(
+                truncate_crumbs(&crumbs, CRUMB_BUDGET),
+                crumbs,
+                "{path} should not have been elided"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deep_path_keeps_the_root_and_where_you_are() {
+        let crumbs = path_crumbs("/usr/local/share/applications/vendor");
+        let out = truncate_crumbs(&crumbs, CRUMB_BUDGET);
+        assert_eq!(out.first().unwrap().label, "/", "root survives");
+        assert_eq!(
+            out.last().unwrap().label,
+            "vendor",
+            "the current directory survives"
+        );
+        assert!(out.len() < crumbs.len(), "something should have been cut");
+        assert!(
+            out.iter().any(|c| c.label == ELLIPSIS),
+            "the cut is marked: {:?}",
+            labels(&out)
+        );
+    }
+
+    #[test]
+    fn the_elided_line_actually_fits() {
+        // The whole point: one line, inside the budget, at every depth.
+        let mut path = String::new();
+        for seg in ["usr", "local", "share", "applications", "vendor", "themes"] {
+            path.push('/');
+            path.push_str(seg);
+            let out = truncate_crumbs(&path_crumbs(&path), CRUMB_BUDGET);
+            assert!(
+                line_cost(&out) <= CRUMB_BUDGET,
+                "{path} -> {:?} costs {} > {CRUMB_BUDGET}",
+                labels(&out),
+                line_cost(&out)
+            );
+        }
+    }
+
+    #[test]
+    fn one_pathologically_long_segment_is_middle_truncated_not_dropped() {
+        let long = "a".repeat(200);
+        let out = truncate_crumbs(&path_crumbs(&format!("/{long}")), CRUMB_BUDGET);
+        assert!(line_cost(&out) <= CRUMB_BUDGET, "{:?}", labels(&out));
+        let current = &out.last().unwrap().label;
+        assert!(
+            current.contains(ELLIPSIS),
+            "the long segment should be elided in place, got {current:?}"
+        );
+        assert!(current.starts_with('a'), "keeps its head");
+        assert!(current.ends_with('a'), "and its tail");
+    }
+
+    #[test]
+    fn the_elision_mark_navigates_nowhere() {
+        let out = truncate_crumbs(&path_crumbs("/usr/local/share/applications/vendor"), 20);
+        let gap = out.iter().find(|c| c.label == ELLIPSIS).unwrap();
+        assert_eq!(
+            gap.target, None,
+            "the ellipsis stands for several paths, so it cannot click through to one"
+        );
+    }
+
+    #[test]
+    fn nearer_ancestors_are_kept_before_distant_ones() {
+        // Given room for exactly one intervening segment, it should be the parent — the
+        // segment that says what you are inside of, not one four levels up.
+        let crumbs = path_crumbs("/aaaa/bbbb/cccc/parent/here");
+        let out = truncate_crumbs(&crumbs, 24);
+        let kept = labels(&out);
+        assert!(kept.contains(&"parent".to_string()), "{kept:?}");
+        assert!(!kept.contains(&"aaaa".to_string()), "{kept:?}");
+    }
+
+    #[test]
+    fn the_root_alone_is_never_elided() {
+        let crumbs = path_crumbs("/");
+        assert_eq!(truncate_crumbs(&crumbs, 1), crumbs);
+    }
+}
+
 // ---- rendering: split layout (file sidebar + terminal) -----------------------------------
 
 impl SshSession {
@@ -1103,17 +1511,28 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    // `min_w(0) + overflow_hidden`: `TextInput` paints its shaped line
-                    // at its own natural width regardless of the box's flex-assigned
-                    // bounds (see `ui::ssh_home`'s quick-connect box for the writeup —
-                    // same shared `TextInput`, same fix), so a long typed/placeholder
-                    // path would otherwise bleed into the `Go` button beside it in this
-                    // fixed, narrow (`SIDEBAR_WIDTH`) toolbar.
+                    // `v_flex`, not a plain `div`: a `TextInput` sizes itself entirely in
+                    // percentages, and a `display: block` parent doesn't resolve them —
+                    // the field collapsed to its own padding and border, a ~20px stub
+                    // that swallowed clicks aimed at the field you could see. A flex
+                    // column stretches it to a real width on the cross axis, which is
+                    // exactly why the stacked form fields never had this bug.
+                    //
+                    // Enter submits, same as clicking `Go`. `TextInput` claims neither
+                    // Enter nor Escape, so the wrapper can take it — the technique
+                    // `db_tab`'s inline rename rows use for the same shape (one field,
+                    // one button beside it).
                     .child(
-                        div()
+                        v_flex()
+                            .id("session-goto-field")
                             .flex_1()
                             .min_w(px(0.))
-                            .overflow_hidden()
+                            .on_key_down(cx.listener(|session, ev: &KeyDownEvent, _window, cx| {
+                                if is_field_submit(&ev.keystroke) {
+                                    cx.stop_propagation();
+                                    session.goto_submit(cx);
+                                }
+                            }))
                             .child(self.goto_input.clone()),
                     )
                     .child(go),
@@ -1147,45 +1566,57 @@ impl SshSession {
     }
 
     /// Clickable breadcrumb of the current path's segments — root first, then each component
-    /// built up cumulatively (`/a/b` -> `/`, `a` (-> `/a`), `b` (-> `/a/b`)). Wraps onto
-    /// multiple lines if the path is longer than the sidebar is wide.
+    /// built up cumulatively (`/a/b` -> `/`, `a` (-> `/a`), `b` (-> `/a/b`)).
+    ///
+    /// **One line, always.** This used to `flex_wrap()`, and because the toolbar row that
+    /// holds it keeps a single line's height, every wrapped line from depth two onward
+    /// spilled downward and painted over the go-to-path field. [`truncate_crumbs`] decides
+    /// what to drop; `overflow_hidden` is the backstop that makes a wrong guess about the
+    /// character budget a clipped crumb rather than a second overlap.
     fn breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let mut children = vec![self.breadcrumb_segment(0, "/".into(), "/".to_string(), cx)];
-        let mut acc = String::new();
-        for (ix, part) in self.path.split('/').filter(|s| !s.is_empty()).enumerate() {
-            acc.push('/');
-            acc.push_str(part);
-            children.push(self.breadcrumb_segment(
-                ix + 1,
-                part.to_string().into(),
-                acc.clone(),
-                cx,
-            ));
-        }
+        let crumbs = truncate_crumbs(&path_crumbs(&self.path), CRUMB_BUDGET);
+        let children: Vec<_> = crumbs
+            .into_iter()
+            .enumerate()
+            .map(|(ix, crumb)| self.breadcrumb_segment(ix, crumb, cx))
+            .collect();
         div()
             .flex()
             .flex_row()
-            .flex_wrap()
             .items_center()
+            .min_w(px(0.))
+            .overflow_hidden()
             .gap_1()
             .text_xs()
             .font_family(MONO)
             .children(children)
     }
 
+    /// One crumb. A crumb with no target is the elided-middle mark: it reads as part of the
+    /// path but is deliberately inert, because `…` stands for several directories and there
+    /// is no single one it could navigate to.
     fn breadcrumb_segment(
         &self,
         ix: usize,
-        label: SharedString,
-        target: String,
+        crumb: Crumb,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (fg, muted, selection) = (t.fg, t.muted, t.selection);
+        let (fg, muted, faint, selection) = (t.fg, t.muted, t.faint, t.selection);
+        let label: SharedString = crumb.label.into();
+        let Some(target) = crumb.target else {
+            return div()
+                .px_1()
+                .flex_none()
+                .text_color(rgb(faint))
+                .child(label)
+                .into_any_element();
+        };
         let is_current = target == self.path;
         div()
             .id(("session-crumb", ix))
             .px_1()
+            .flex_none()
             .rounded_md()
             .cursor_pointer()
             .text_color(rgb(if is_current { fg } else { muted }))
@@ -1194,16 +1625,25 @@ impl SshSession {
             .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
                 session.go_to(target.clone(), cx);
             }))
+            .into_any_element()
     }
 
-    /// One row of the entry list: glyph, name, size, mtime, and per-row actions. `entry` comes
-    /// from [`Self::visible_entries`] — already filtered by the hidden-files toggle — and `ix`
-    /// is that filtered list's position, used only to keep each row's element ids unique and
-    /// to alternate row shading; it is not an index into `self.entries`. Directories are
-    /// entered by clicking their *name* specifically — not the whole row — so that click
-    /// target sits as a sibling next to the action buttons rather than an ancestor around
-    /// them; each button keeps its own independent hitbox and there is no nested-click
-    /// ambiguity to resolve.
+    /// One row of the entry list: type glyph, name, whichever orientation columns
+    /// [`plan_entry_row`] says fit, and the per-row actions.
+    ///
+    /// `entry` comes from [`Self::visible_entries`] — already filtered by the hidden-files
+    /// toggle — and `ix` is that filtered list's position, used only to keep each row's
+    /// element ids unique; it is not an index into `self.entries`.
+    ///
+    /// The name is the one child that grows, and [`plan_entry_row`] guarantees what it
+    /// grows to. Everything else is fixed-width, including the action cluster — which keeps
+    /// its full width on directory rows that draw only one button into it, so the size
+    /// column starts at the same x on every row instead of stepping in and out.
+    ///
+    /// A directory is entered by clicking anywhere on its row; the action buttons stop the
+    /// click travelling so they never also trigger it. File rows stay inert, which is why
+    /// only directory rows take a hover fill — a row that lights up under the pointer is
+    /// promising it does something.
     fn entry_row(
         &self,
         entry: &SftpEntry,
@@ -1211,8 +1651,8 @@ impl SshSession {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (fg, muted, selection, accent, surface, bg) =
-            (t.fg, t.muted, t.selection, t.accent, t.surface, t.bg);
+        let (fg, muted, selection, accent) = (t.fg, t.muted, t.selection, t.accent);
+        let plan = plan_entry_row(SIDEBAR_WIDTH);
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
         let glyph = if is_dir { "▸" } else { "·" };
@@ -1222,36 +1662,22 @@ impl SshSession {
             human_size(entry.size)
         };
         let mtime = format_mtime(entry.mtime_secs);
-        let alt = ix % 2 == 1;
         let abs_path = abs_remote_path(&self.path, &name);
 
-        let name_el = if is_dir {
-            let enter_name = name.clone();
-            div()
-                .id(("session-entry-name", ix))
-                .flex_1()
-                .truncate()
-                .cursor_pointer()
-                .text_color(rgb(fg))
-                .hover(|s| s.text_color(rgb(accent)))
-                .child(name.clone())
-                .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
-                    session.enter_dir(&enter_name, cx);
-                }))
-                .into_any_element()
+        // The full name plus the facts the row had to drop, so a truncated row is never
+        // the only place a file's identity lives.
+        let tooltip: SharedString = if is_dir {
+            format!("{name}\nmodified {mtime}").into()
         } else {
-            div()
-                .flex_1()
-                .truncate()
-                .text_color(rgb(fg))
-                .child(name.clone())
-                .into_any_element()
+            format!("{name}\n{size} · modified {mtime}").into()
         };
 
-        let action_button = |id: (&'static str, usize), label: &'static str| {
+        let action_button = |id: (&'static str, usize), label: &'static str, width: Pixels| {
             div()
                 .id(id)
-                .px_1()
+                .w(width)
+                .flex()
+                .justify_center()
                 .rounded_md()
                 .text_xs()
                 .cursor_pointer()
@@ -1260,24 +1686,27 @@ impl SshSession {
                 .child(label)
         };
 
-        // Files get `view` + `⭳ download`; directories don't (nothing to fetch/preview).
+        // Files get `view` + `⭳ download`; directories don't (nothing to fetch or preview).
+        // The cluster is `row_metrics::ACTIONS` wide either way — see the doc comment.
         let file_buttons = (!is_dir).then(|| {
             let view_name = name.clone();
             let download_name = name.clone();
             div()
                 .flex()
                 .flex_row()
-                .gap_2()
+                .gap_1()
                 .child(
-                    action_button(("session-view", ix), "view").on_click(cx.listener(
+                    action_button(("session-view", ix), "view", px(32.)).on_click(cx.listener(
                         move |session, _ev: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
                             session.view(view_name.clone(), cx)
                         },
                     )),
                 )
                 .child(
-                    action_button(("session-download", ix), "⭳").on_click(cx.listener(
+                    action_button(("session-download", ix), "⭳", px(20.)).on_click(cx.listener(
                         move |session, _ev: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
                             session.download(download_name.clone(), cx)
                         },
                     )),
@@ -1285,45 +1714,61 @@ impl SshSession {
         });
 
         // `⧉ copy path` applies to files *and* directories.
-        let copy_path_button = action_button(("session-copy-path", ix), "⧉").on_click(cx.listener(
-            move |session, _ev: &ClickEvent, _window, cx| {
+        let copy_path_button = action_button(("session-copy-path", ix), "⧉", px(20.)).on_click(
+            cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                cx.stop_propagation();
                 session.copy_path(abs_path.clone(), cx);
-            },
-        ));
+            }),
+        );
 
-        div()
-            .id(("session-entry", ix))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .px_3()
-            .py_2()
+        let meta_column = |text: String, width: Pixels| {
+            div()
+                .w(width)
+                .truncate()
+                .font_family(MONO)
+                .text_xs()
+                .text_color(rgb(muted))
+                .child(text)
+        };
+
+        let enter_name = name.clone();
+        Row::new(("session-entry", ix))
             .text_sm()
-            .bg(rgb(if alt { surface } else { bg }))
-            .child(div().w(px(14.)).text_color(rgb(muted)).child(glyph))
-            .child(name_el)
-            .child(
+            .leading(
                 div()
-                    .w(px(60.))
-                    .truncate()
-                    .font_family(MONO)
-                    .text_xs()
+                    .w(row_metrics::GLYPH)
                     .text_color(rgb(muted))
-                    .child(size),
+                    .child(glyph),
             )
             .child(
                 div()
-                    .w(px(84.))
+                    .id(("session-entry-name", ix))
                     .truncate()
-                    .font_family(MONO)
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(mtime),
+                    .text_color(rgb(fg))
+                    .child(name)
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
             )
-            .children(file_buttons)
-            .child(copy_path_button)
+            .when(plan.show_size, |row| {
+                row.meta(meta_column(size, row_metrics::SIZE))
+            })
+            .when(plan.show_mtime, |row| {
+                row.meta(meta_column(mtime, row_metrics::MTIME))
+            })
+            .action(
+                div()
+                    .w(row_metrics::ACTIONS)
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_1()
+                    .children(file_buttons)
+                    .child(copy_path_button),
+            )
+            .when(is_dir, |row| {
+                row.on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                    session.enter_dir(&enter_name, cx);
+                }))
+            })
     }
 
     /// Paint the terminal grid: one `shape_line` call per row (gpui shapes a whole

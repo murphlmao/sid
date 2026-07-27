@@ -72,15 +72,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, IntoElement, SharedString, Subscription, Window,
-    div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, SharedString,
+    Subscription, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
 use sid_sysinfo::SysinfoProvider;
 
-use super::TextInput;
+use super::{TextInput, is_field_submit};
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
@@ -177,9 +177,10 @@ pub struct SystemsTabState {
     curated: Vec<String>,
     /// Set once the config-files area has done its first pinned/curated refresh.
     config_loaded: bool,
-    /// The "pin a file…" free-text input. Submits on Enter (`.on_key_down`, same
-    /// technique `db_tab.rs`'s inline rename/folder-edit rows use) rather than a
-    /// change-event subscription — there's nothing to react to until the user commits.
+    /// The "pin a file…" free-text input. Submits on Enter — an `.on_key_down` on the
+    /// field's wrapper in [`AppState::config_files_view`], the same technique
+    /// `db_tab.rs`'s inline rename/folder-edit rows use — rather than a change-event
+    /// subscription, since there's nothing to react to until the user commits.
     pin_input: Option<Entity<TextInput>>,
     /// Inline error under the pin input (e.g. a nonexistent path) — cleared on the
     /// next successful pin or edit.
@@ -925,7 +926,24 @@ impl AppState {
                     .filter(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().max_w(px(420.)).children(pin_input))
+                            // Enter submits, same as the `pin` button beside it. This was
+                            // documented on `pin_input` but never actually wired, so the
+                            // only way to pin a typed path was the button.
+                            .child(
+                                v_flex()
+                                    .id("cfg-pin-field")
+                                    .flex_1()
+                                    .max_w(px(420.))
+                                    .on_key_down(cx.listener(
+                                        |this, ev: &KeyDownEvent, _window, cx| {
+                                            if is_field_submit(&ev.keystroke) {
+                                                cx.stop_propagation();
+                                                this.submit_pin(cx);
+                                            }
+                                        },
+                                    ))
+                                    .children(pin_input),
+                            )
                             .child(
                                 Button::new("cfg-pin-submit", "pin")
                                     .small()
