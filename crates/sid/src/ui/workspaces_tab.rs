@@ -27,15 +27,18 @@
 //! git-backed panel here is built and verified against that honest loading/error state.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::table::{Column, ColumnSort, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::git::{
     Branch, CommitInfo, GitError, GitStatus, RepoSummary, StatusEntry, StatusKind,
 };
@@ -46,12 +49,23 @@ use crate::git_registry;
 use crate::ui::TextInput;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme;
+use sid_ui::{
+    Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row, Segment,
+    SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, h_flex, sortable_th,
+};
 
 /// Monospace family for root/path subtitles; matches every other tab's `MONO`.
 const MONO: &str = "DejaVu Sans Mono";
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
 const LOG_LIMIT: usize = 50;
+
+/// How long after the fleet table paints its first frame the pane asks for one more, so
+/// `FillTable`'s prepaint-measured column widths reach a layout pass. See
+/// [`AppState::settle_fleet_layout`]. Short enough to be invisible, long enough to be a
+/// separate frame rather than the same effect cycle.
+const FLEET_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 
 // ---- pure domain types ------------------------------------------------------------
 
@@ -221,11 +235,23 @@ fn validate_workspace_path(expanded: &str, is_dir: &dyn Fn(&str) -> bool) -> Res
     Ok(())
 }
 
-/// Two-click unregister: `true` when `clicked` is the workspace already armed. Mirrors
-/// `app::delete_click_executes`, keyed on `WorkspaceId` alone — a workspace
-/// registration lives in exactly one place, unlike a host/connection's (alias, origin).
-fn unregister_click_executes(armed: Option<&WorkspaceId>, clicked: &WorkspaceId) -> bool {
-    armed == Some(clicked)
+/// A workspace's identity, reduced to something [`ConfirmArm`] can hold.
+///
+/// `ConfirmArm<K>` needs `K: Copy` — it stores the armed key next to an `Instant` and
+/// compares it on every press — and `WorkspaceId` is a `String` newtype. Hashing it
+/// yields a `Copy` stand-in that is still derived from **identity** rather than from a
+/// row's position, which is the property that matters: a list that re-sorts, re-filters
+/// or reloads between the two clicks can never redirect an unregister onto a different
+/// workspace. (A 64-bit collision would mis-target one destructive click that the user
+/// still had to make deliberately on the colliding row; the store lookup that follows is
+/// keyed on the real `WorkspaceId`, never on this.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WsKey(u64);
+
+fn ws_key(id: &WorkspaceId) -> WsKey {
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    WsKey(hasher.finish())
 }
 
 /// The active detail sub-tab for a `Repo`-shaped workspace.
@@ -279,21 +305,6 @@ impl SortDir {
             Self::Asc => order,
             Self::Desc => order.reverse(),
         }
-    }
-}
-
-/// Keep a `Column`'s sort-chevron state in sync with `active_sort` — mirrors
-/// `network_tab::mark_column_sort` exactly.
-fn mark_column_sort(columns: &mut [Column], col_ix: usize, sort: ColumnSort) {
-    for (ix, column) in columns.iter_mut().enumerate() {
-        if column.sort.is_none() {
-            continue;
-        }
-        column.sort = Some(if ix == col_ix {
-            sort
-        } else {
-            ColumnSort::Default
-        });
     }
 }
 
@@ -405,11 +416,53 @@ fn text_cell(color: u32, s: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+/// The dirty-count chip — `clean`, or an amber count of what is outstanding.
+///
+/// Shared by the fleet table and the workspace list so one repo cannot read as clean in
+/// one place and busy in the other. Tones only: `accent` means *engage*, and the state of
+/// a working tree is something to read, not something to click.
+fn dirty_badge(dirty: usize) -> AnyElement {
+    if dirty == 0 {
+        Badge::new("clean")
+            .tone(BadgeTone::Success)
+            .into_any_element()
+    } else {
+        Badge::count(dirty)
+            .tone(BadgeTone::Warning)
+            .into_any_element()
+    }
+}
+
+/// Ahead/behind as two chips, amber on whichever side is non-zero — so a scan down the
+/// fleet's column picks out the repos that owe a push or a pull without reading a number.
+/// No upstream at all is metadata rather than a state: muted text, and now that the
+/// column is sized to its header rather than to 80px, it can say so in words.
+fn ahead_behind_cell(ahead: Option<usize>, behind: Option<usize>, muted: u32) -> AnyElement {
+    if ahead.is_none() && behind.is_none() {
+        return text_cell(muted, "no upstream");
+    }
+    let (a, b) = (ahead.unwrap_or(0), behind.unwrap_or(0));
+    let chip = |label: String, n: usize| {
+        Badge::new(label).tone(if n > 0 {
+            BadgeTone::Warning
+        } else {
+            BadgeTone::Neutral
+        })
+    };
+    h_flex()
+        .gap_1()
+        .child(chip(format!("↑{a}"), a))
+        .child(chip(format!("↓{b}"), b))
+        .into_any_element()
+}
+
 /// Read-only fleet delegate — no armed/interactive state, per `network_tab::
 /// DockerDelegate`'s template for a read-only table.
 struct FleetDelegate {
     rows: Vec<FleetRow>,
-    columns: Vec<Column>,
+    /// The columns and the width each one declared, resized to the live viewport by
+    /// [`FillTable`] — see `sid_ui::table`'s module docs.
+    columns: FillColumns,
     active_sort: Option<(usize, SortDir)>,
 }
 
@@ -417,16 +470,42 @@ impl FleetDelegate {
     fn empty() -> Self {
         Self {
             rows: Vec::new(),
-            columns: vec![
-                Column::new("repo", "Repo").width(px(160.)).sortable(),
-                Column::new("branch", "Branch").width(px(120.)).sortable(),
-                Column::new("dirty", "Dirty").width(px(70.)).sortable(),
-                Column::new("ahead_behind", "↑ / ↓")
-                    .width(px(80.))
-                    .sortable(),
-                Column::new("age", "Last commit").width(px(110.)).sortable(),
-                Column::new("path", "Path").width(px(280.)).sortable(),
-            ],
+            // Widths are declared as intent, not pixels. The three numeric columns have
+            // a known upper bound and stay exactly as wide as their header; `Repo` and
+            // `Branch` hold a floor so a short name cannot collapse them; `Path` — the
+            // one column whose content is genuinely unbounded, and the one that was
+            // truncating `/home/murphy/vcs/…` inside 280px while the rest of a 2000px
+            // window sat empty — absorbs everything left over.
+            columns: FillColumns::new([
+                (
+                    Column::new("repo", "Repo").sortable(),
+                    ColumnWidth::Min(150.),
+                ),
+                // Wide enough for a real `feature/…` branch name, not just `main`.
+                (
+                    Column::new("branch", "Branch").sortable(),
+                    ColumnWidth::Min(190.),
+                ),
+                (
+                    Column::new("dirty", "Dirty").sortable(),
+                    ColumnWidth::Fixed(90.),
+                ),
+                // Fixed widths are the header's width, not the cell's: upstream lays the
+                // label and the sort chevron in one `justify_between` row, so a column
+                // sized to its content clips its own heading.
+                (
+                    Column::new("ahead_behind", "Ahead / behind").sortable(),
+                    ColumnWidth::Fixed(150.),
+                ),
+                (
+                    Column::new("age", "Last commit").sortable(),
+                    ColumnWidth::Fixed(120.),
+                ),
+                (
+                    Column::new("path", "Path").sortable(),
+                    ColumnWidth::grow().min_width(240.),
+                ),
+            ]),
             active_sort: None,
         }
     }
@@ -454,6 +533,12 @@ impl FleetDelegate {
     }
 }
 
+impl FillTableDelegate for FleetDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
 impl TableDelegate for FleetDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -464,7 +549,7 @@ impl TableDelegate for FleetDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
     }
 
     fn perform_sort(
@@ -474,10 +559,25 @@ impl TableDelegate for FleetDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        mark_column_sort(&mut self.columns, col_ix, sort);
+        // Mirror the sort onto our own columns so the header indicator survives the next
+        // `TableState::refresh` — which a viewport change now triggers on every resize.
+        // See `FillColumns::apply_sort`.
+        self.columns.apply_sort(col_ix, sort);
         self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
         self.recompute();
         cx.notify();
+    }
+
+    /// Sort on a click anywhere in the header cell, not only on the chevron — upstream's
+    /// default `render_th` hands the label to the column-selection handler and leaves a
+    /// ~6x8px sort target. See `sid_ui::table::sortable_th`.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     fn render_td(
@@ -488,7 +588,7 @@ impl TableDelegate for FleetDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let t = theme::active(cx);
-        let (fg, muted, warning) = (t.fg, t.muted, t.warning);
+        let (fg, muted) = (t.fg, t.muted);
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index, same trick `network_tab` uses.
         let cell_id = ("ws-fleet-cell", row_ix * 8 + col_ix);
@@ -507,29 +607,15 @@ impl TableDelegate for FleetDelegate {
                 },
                 2 => match &row.fetch {
                     Fetch::Loading => text_cell(muted, "…"),
-                    Fetch::Done(Ok(s)) => {
-                        let dirty = s.staged + s.unstaged + s.untracked;
-                        let color = if dirty > 0 { warning } else { muted };
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .child(div().size(px(6.)).rounded_full().bg(rgb(color)))
-                            .child(text_cell(fg, dirty.to_string()))
-                            .into_any_element()
-                    }
+                    // The chip a fleet of forty repos is scanned by: green means nothing
+                    // to do, amber means work is pending. Never accent — accent is
+                    // "engage", and a status chip is not an invitation to click.
+                    Fetch::Done(Ok(s)) => dirty_badge(s.staged + s.unstaged + s.untracked),
                     Fetch::Done(Err(e)) => text_cell(muted, e.to_string()),
                 },
                 3 => match &row.fetch {
                     Fetch::Loading => text_cell(muted, "…"),
-                    Fetch::Done(Ok(s)) => {
-                        let label = match (s.ahead, s.behind) {
-                            (None, None) => "—".to_string(),
-                            (a, b) => format!("↑{} ↓{}", a.unwrap_or(0), b.unwrap_or(0)),
-                        };
-                        text_cell(fg, label)
-                    }
+                    Fetch::Done(Ok(s)) => ahead_behind_cell(s.ahead, s.behind, muted),
                     Fetch::Done(Err(_)) => text_cell(muted, "—"),
                 },
                 4 => match &row.fetch {
@@ -614,7 +700,11 @@ pub struct WorkspacesTabState {
 
     // ---- row-level interaction state ------------------------------------------------
     renaming: Option<RenameState>,
-    armed_unregister: Option<WorkspaceId>,
+    /// The two-step unregister, keyed by workspace identity ([`WsKey`]) rather than by
+    /// row position, and *surviving* a list refresh rather than being cleared by one —
+    /// see `sid_ui::action_cell`, whose module docs record the confirm that never fired
+    /// because every refresh disarmed it.
+    unregister_arm: ConfirmArm<WsKey>,
     /// The list's single right-click target — mirrors `ssh_home::HomeTabState::
     /// right_click_target`'s doc comment on why one indirection replaces a
     /// `.context_menu()` attached per row (every row's wrapper would collide on the
@@ -650,7 +740,7 @@ impl WorkspacesTabState {
             add_input: Some(cx.new(|cx| TextInput::new(cx, "~/path/to/workspace"))),
             add_error: None,
             renaming: None,
-            armed_unregister: None,
+            unregister_arm: ConfirmArm::new(),
             right_click_target: None,
         }
     }
@@ -704,7 +794,6 @@ impl AppState {
     /// all call this (after `reload_scopes_runtime`, so the scope chips and this list
     /// never disagree about what's registered) — also reachable via the header's `⟳`.
     pub(crate) fn refresh_workspaces(&mut self, cx: &mut Context<Self>) {
-        self.workspaces.armed_unregister = None;
         self.workspaces.right_click_target = None;
         self.workspaces.list_generation += 1;
 
@@ -745,6 +834,15 @@ impl AppState {
             self.workspaces.selected = None;
             self.workspaces.shape = None;
         }
+
+        // A pending unregister confirm survives this reload unless its workspace is gone.
+        // Clearing it unconditionally is exactly the bug `ConfirmArm` was built against:
+        // `+ add`, rename and unregister all land here, so an arm that a refresh could
+        // wipe would be a race the user loses. See `ConfirmArm::retain`.
+        let live: HashSet<WsKey> = self.workspaces.list.iter().map(|m| ws_key(&m.id)).collect();
+        self.workspaces
+            .unregister_arm
+            .retain(|key| live.contains(&key));
 
         for meta in self.workspaces.list.clone() {
             self.fetch_summary(meta.id, meta.root, cx);
@@ -793,7 +891,7 @@ impl AppState {
     /// shape-appropriate git fetch (a `Repo`'s summary, or an `Umbrella`'s fleet).
     fn select_workspace(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
         self.workspaces.renaming = None;
-        self.workspaces.armed_unregister = None;
+        self.workspaces.unregister_arm.disarm();
         self.workspaces.selected = Some(id.clone());
         self.workspaces.sub_tab = DetailSubTab::Overview;
         self.workspaces.branches = None;
@@ -901,7 +999,37 @@ impl AppState {
                         cx.notify();
                     });
                 }
+                // The rows that just arrived are very likely this pane's last event ever.
+                this.settle_fleet_layout(cx);
             });
+        })
+        .detach();
+        self.settle_fleet_layout(cx);
+    }
+
+    /// Ask for one more frame, a beat from now, so the fleet table's fill-width columns
+    /// can land.
+    ///
+    /// [`FillTable`] measures the pane in **prepaint** and writes the resolved widths
+    /// back through `TableState::refresh`, which only takes effect on the *next* layout
+    /// pass. The System and Network tables never notice, because they re-probe on a timer
+    /// and a frame always follows. This pane goes quiescent the moment the last per-repo
+    /// `summary()` lands, and if that happens before the table's first paint — which it
+    /// reliably does for local repos — nothing schedules the follow-up frame and every
+    /// column sits at `gpui-component`'s 100px default. That is the dead-space bug the
+    /// fill-width model exists to kill, reproduced at 2000x1200 and fixed by exactly one
+    /// extra frame (verified: a stray click on the pane snapped the columns into place).
+    ///
+    /// A `cx.notify()` from inside `render` will not do it — gpui swallows it to keep
+    /// render pure — so the nudge comes off the background timer, once, and detaches.
+    ///
+    /// This belongs in `sid_ui::table::FillTable`, which should schedule its own
+    /// follow-up frame after a `sync` that moved something. It is worked around here
+    /// because this commit does not own that crate.
+    fn settle_fleet_layout(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLEET_SETTLE_DELAY).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
@@ -1113,7 +1241,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workspaces.armed_unregister = None;
+        self.workspaces.unregister_arm.disarm();
         let input = cx.new(|cx| {
             let mut t = TextInput::new(cx, "name");
             t.set_content(current_name, cx);
@@ -1162,28 +1290,35 @@ impl AppState {
         cx.notify();
     }
 
-    /// Context menu's "Unregister": armed two-click, like every other delete in the
-    /// app — the first click arms it (the menu's label switches to a confirm phrasing
-    /// on the next right-click), the second actually unregisters. Never touches
-    /// `.sid/config.toml` (`Store::unregister_workspace`'s own contract) — only forgets
-    /// sid's pointer, then rebuilds the scope switcher (falling back to Global if this
-    /// was the focused scope) and this list.
+    /// Armed two-click unregister, from either the row's own button or the context
+    /// menu's item — the first press arms this workspace (the button turns into a
+    /// `confirm`, the menu item's label switches phrasing), the second unregisters.
+    /// Never touches `.sid/config.toml` (`Store::unregister_workspace`'s own contract) —
+    /// only forgets sid's pointer, then rebuilds the scope switcher (falling back to
+    /// Global if this was the focused scope) and this list.
+    ///
+    /// The arm lives in [`ConfirmArm`], so it is bound to the workspace's identity and
+    /// expires on its own; the store call below is still keyed on the real `WorkspaceId`.
     fn unregister_workspace(&mut self, id: WorkspaceId, cx: &mut Context<Self>) {
-        if unregister_click_executes(self.workspaces.armed_unregister.as_ref(), &id) {
-            self.workspaces.armed_unregister = None;
-            match self.store.unregister_workspace(&id) {
-                Ok(_removed) => {
-                    if self.workspaces.selected.as_ref() == Some(&id) {
-                        self.workspaces.selected = None;
-                        self.workspaces.shape = None;
-                    }
-                    self.reload_scopes_runtime(cx);
-                    self.refresh_workspaces(cx);
+        if self
+            .workspaces
+            .unregister_arm
+            .press(ws_key(&id), Instant::now())
+            == Confirm::Armed
+        {
+            cx.notify();
+            return;
+        }
+        match self.store.unregister_workspace(&id) {
+            Ok(_removed) => {
+                if self.workspaces.selected.as_ref() == Some(&id) {
+                    self.workspaces.selected = None;
+                    self.workspaces.shape = None;
                 }
-                Err(e) => self.error = Some(e.to_string()),
+                self.reload_scopes_runtime(cx);
+                self.refresh_workspaces(cx);
             }
-        } else {
-            self.workspaces.armed_unregister = Some(id);
+            Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
     }
@@ -1209,61 +1344,34 @@ impl AppState {
     // ---- rendering: list panel --------------------------------------------------------
 
     fn workspaces_list_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, accent, selection, fg_strong) =
-            (t.border, t.muted, t.accent, t.selection, t.fg_strong);
+        let t = theme::active(cx).clone();
+        let border = t.border;
         let count = self.workspaces.list.len();
 
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(format!("WORKSPACES · {count}")),
+        // The Toolbar's wide left slot carries the panel's own label; the count and the
+        // two controls take the right edge. `⟳` and the `+ add` pill were the last two
+        // hand-styled `div`s on this screen.
+        let header = Toolbar::new()
+            .filter(div().section_label(&t).child("WORKSPACES"))
+            .count(count, "workspace")
+            .action(
+                IconButton::new("ws-refresh", Icon::Refresh, "refresh")
+                    .small()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.refresh_workspaces(cx);
+                    })),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("ws-refresh")
-                            .px_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(accent))
-                            .hover(|s| s.bg(rgb(selection)))
-                            .child("⟳")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.refresh_workspaces(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("ws-add")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .cursor_pointer()
-                            .bg(rgb(selection))
-                            .text_color(rgb(fg_strong))
-                            .child("+ add")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.open_add_workspace(window, cx);
-                            })),
-                    ),
+            .action(
+                // Secondary, not primary: the screen's one accent belongs to the empty
+                // state's `add workspace` (when there is nothing) or to the focused
+                // scope's chip (when there is), never to a permanent toolbar pill.
+                Button::new("ws-add", "add")
+                    .small()
+                    .icon(Icon::Add)
+                    .tooltip("register a repo, or a directory of repos")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_add_workspace(window, cx);
+                    })),
             );
 
         let add_row = self.workspaces.add_open.then(|| self.add_workspace_row(cx));
@@ -1277,12 +1385,21 @@ impl AppState {
             .map(|(ix, meta)| self.workspace_row(ix, meta, cx))
             .collect();
 
-        let empty_hint =
-            (self.workspaces.list.is_empty() && !self.workspaces.add_open).then(|| {
-                div().p_3().text_xs().text_color(rgb(muted)).child(
-                "no workspaces registered — + add a repo (or a directory of repos) to get started",
-            )
-            });
+        // Nothing registered: a headline, one line of what-to-do, and the control that
+        // does it — rather than a muted sentence with a `+ add` buried in its prose.
+        let empty = (self.workspaces.list.is_empty() && !self.workspaces.add_open).then(|| {
+            EmptyState::new("no workspaces yet")
+                .guidance("register a git repo — or a directory of repos — to see its branches, status and scope items here")
+                .icon(Icon::Folder)
+                .action(
+                    Button::new("ws-empty-add", "add workspace")
+                        .primary()
+                        .icon(Icon::Add)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.open_add_workspace(window, cx);
+                        })),
+                )
+        });
 
         div()
             .w(px(300.))
@@ -1294,12 +1411,7 @@ impl AppState {
             .child(header)
             .children(add_row)
             .child(
-                div()
-                    .id("ws-list")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .py_1()
+                List::scrolling("ws-list")
                     // Right-click anywhere in the list defaults to "no row" — see
                     // `ssh_home`'s identical `capture_any_mouse_down` for why the
                     // CAPTURE-phase reset must run before any row's own bubble-phase
@@ -1313,16 +1425,17 @@ impl AppState {
                         },
                     ))
                     .children(rows)
-                    .children(empty_hint)
-                    .child(div().flex_1().min_h(px(24.)))
+                    // The empty state owns the pane's height; the tail spacer is only
+                    // there to give a short list somewhere to right-click.
+                    .when_some(empty, |this, empty| this.child(empty))
+                    .when(count > 0, |this| this.child(div().flex_1().min_h(px(24.))))
                     .context_menu(self.workspaces_context_menu(cx)),
             )
     }
 
     fn add_workspace_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (border, danger, muted, accent, selection) =
-            (t.border, t.danger, t.muted, t.accent, t.selection);
+        let (border, danger, muted) = (t.border, t.danger, t.muted);
         let input = self.workspaces.add_input.clone();
         let error = self.workspaces.add_error.clone();
 
@@ -1354,18 +1467,11 @@ impl AppState {
                             _ => {}
                         }
                     }))
-                    .children(input.map(|i| div().flex_1().child(i)))
+                    .children(input.map(|i| div().flex_1().min_w(px(0.)).child(i)))
                     .child(
-                        div()
-                            .id("ws-add-submit")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_xs()
-                            .cursor_pointer()
-                            .text_color(rgb(accent))
-                            .hover(|s| s.bg(rgb(selection)))
-                            .child("add")
+                        Button::new("ws-add-submit", "add")
+                            .primary()
+                            .small()
                             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                 this.submit_add_workspace(cx);
                             })),
@@ -1382,17 +1488,8 @@ impl AppState {
 
     fn workspace_row(&self, ix: usize, meta: WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (border, muted, fg, fg_strong, accent, selection, warning, danger, bg) = (
-            t.border,
-            t.muted,
-            t.fg,
-            t.fg_strong,
-            t.accent,
-            t.selection,
-            t.warning,
-            t.danger,
-            t.bg,
-        );
+        let (muted, fg, fg_strong, warning, danger) =
+            (t.muted, t.fg, t.fg_strong, t.warning, t.danger);
 
         let is_focused_scope = matches!(&self.scope, Scope::Workspace(id) if id == &meta.id);
         let is_selected = self.workspaces.selected.as_ref() == Some(&meta.id);
@@ -1408,14 +1505,36 @@ impl AppState {
             .copied()
             .unwrap_or((0, 0));
 
-        let (chip_label, chip_color): (SharedString, u32) =
+        // The leading chip is a **bounded status word** — `clean`, a dirty count,
+        // `no git` — so a long branch name can never push the row's actions off the edge
+        // of a 300px sidebar; the branch itself, and any real error message, go on the
+        // row's metadata line where they have the whole row to truncate into.
+        let (chip, git_label, git_color): (AnyElement, SharedString, u32) =
             match self.workspaces.summaries.get(&meta.id) {
-                None | Some(Fetch::Loading) => ("…".into(), muted),
-                Some(Fetch::Done(Err(GitPanelError::NotARepo))) => ("not a git repo".into(), muted),
-                Some(Fetch::Done(Err(GitPanelError::Other(e)))) => (e.clone().into(), danger),
+                None | Some(Fetch::Loading) => (
+                    Badge::new("…").into_any_element(),
+                    "loading git status…".into(),
+                    muted,
+                ),
+                Some(Fetch::Done(Err(GitPanelError::NotARepo))) => (
+                    Badge::new("no git").into_any_element(),
+                    "not a git repo".into(),
+                    muted,
+                ),
+                Some(Fetch::Done(Err(GitPanelError::Other(e)))) => (
+                    Badge::new("error")
+                        .tone(BadgeTone::Danger)
+                        .into_any_element(),
+                    e.clone().into(),
+                    danger,
+                ),
                 Some(Fetch::Done(Ok(s))) => {
                     let branch = s.branch.clone().unwrap_or_else(|| "(detached)".into());
-                    (branch.into(), if s.is_clean() { muted } else { warning })
+                    (
+                        dirty_badge(s.staged + s.unstaged + s.untracked),
+                        branch.into(),
+                        if s.is_clean() { muted } else { warning },
+                    )
                 }
             };
 
@@ -1445,8 +1564,10 @@ impl AppState {
             div()
                 .id(("ws-name", ix))
                 .flex_1()
+                .min_w(px(0.))
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
+                .truncate()
                 .text_color(rgb(if is_selected { fg_strong } else { fg }))
                 .child(meta.name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
@@ -1462,39 +1583,55 @@ impl AppState {
                 .into_any_element()
         };
 
+        let armed = self
+            .workspaces
+            .unregister_arm
+            .is_armed(ws_key(&meta.id), Instant::now());
+        let rename_btn = {
+            let id = meta.id.clone();
+            let name = meta.name.clone();
+            IconButton::new(("ws-row-rename", ix), Icon::Rename, "rename")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                    this.start_workspace_rename(id.clone(), name.clone(), window, cx);
+                }))
+        };
+        // Icon at rest, word when armed. The trash glyph plus its tooltip is the whole
+        // label in a 300px sidebar; armed, `ConfirmButton` drops the icon and says
+        // `confirm` in filled danger — the click that does something is the one that gets
+        // the word. Arming is `ConfirmArm`'s, keyed on the workspace, not on `ix`.
+        let unregister_btn = {
+            let id = meta.id.clone();
+            ConfirmButton::new(("ws-row-unregister", ix), "")
+                .icon(Icon::Trash)
+                .armed(armed)
+                .armed_label("confirm")
+                .size(ButtonSize::Sm)
+                .tooltip(if armed {
+                    "click again to unregister — sid forgets this workspace, no files are touched"
+                } else {
+                    "unregister"
+                })
+                .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.unregister_workspace(id.clone(), cx);
+                }))
+        };
+
         let row_id = meta.id.clone();
         let row_id_for_menu = meta.id.clone();
 
-        div()
-            .id(("ws-row", ix))
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .cursor_pointer()
-            .bg(rgb(if is_selected { selection } else { bg }))
-            .hover(|s| s.bg(rgb(selection)))
-            .border_b_1()
-            .border_color(rgb(border))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
-                    this.workspaces.right_click_target = Some(row_id_for_menu.clone());
-                    cx.notify();
-                }),
-            )
+        Row::new(("ws-row", ix))
+            .selected(is_selected)
+            .leading(chip)
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                h_flex()
                     .gap_2()
+                    .child(name_area)
+                    // The focused scope was an unlabelled 6px accent dot. It is the one
+                    // genuinely "engage"-coloured fact on this screen, and now it says so.
                     .when(is_focused_scope, |el| {
-                        el.child(div().size(px(6.)).rounded_full().bg(rgb(accent)))
-                    })
-                    .child(name_area),
+                        el.child(Badge::new("focused").tone(BadgeTone::Accent))
+                    }),
             )
             .child(
                 div()
@@ -1505,25 +1642,32 @@ impl AppState {
                     .child(meta.root.display().to_string()),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                h_flex()
                     .justify_between()
                     .gap_2()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
                             .text_xs()
-                            .text_color(rgb(muted))
-                            .child(format!("{hosts_n} hosts · {conns_n} connections")),
+                            .truncate()
+                            .text_color(rgb(git_color))
+                            .child(git_label),
                     )
                     .child(
                         div()
+                            .flex_none()
                             .text_xs()
-                            .text_color(rgb(chip_color))
-                            .child(chip_label),
+                            .text_color(rgb(muted))
+                            .child(format!("{hosts_n}h · {conns_n}c")),
                     ),
             )
+            .action(rename_btn)
+            .action(unregister_btn)
+            .on_secondary_mouse_down(cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                this.workspaces.right_click_target = Some(row_id_for_menu.clone());
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.select_workspace(row_id.clone(), cx);
             }))
@@ -1539,7 +1683,11 @@ impl AppState {
         move |menu, _window, cx| {
             let target = this.read(cx).workspaces.right_click_target.clone();
             let Some(id) = target else { return menu };
-            let armed = this.read(cx).workspaces.armed_unregister.as_ref() == Some(&id);
+            let armed = this
+                .read(cx)
+                .workspaces
+                .unregister_arm
+                .is_armed(ws_key(&id), Instant::now());
             let unregister_label = if armed {
                 "Unregister — click again to confirm"
             } else {
@@ -1583,26 +1731,52 @@ impl AppState {
     // ---- rendering: detail panel -------------------------------------------------------
 
     fn workspaces_detail_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let muted = t.muted;
         let Some(id) = self.workspaces.selected.clone() else {
+            // 1700px of black with the words `select a workspace` in the middle of it was
+            // the single worst thing about this tab at a wide window.
+            //
+            // With nothing registered at all, the list panel is already showing its own
+            // empty state and its own `add workspace` button; repeating the button here
+            // would put two accent fills on one screen for the same verb, so this pane
+            // states the situation and points at the one control that exists.
+            let nothing_registered = self.workspaces.list.is_empty();
             return div()
                 .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(muted))
-                .child("select a workspace")
+                .child(
+                    EmptyState::new(if nothing_registered {
+                        "no workspaces yet"
+                    } else {
+                        "select a workspace"
+                    })
+                    .guidance(if nothing_registered {
+                        "register one on the left to see its branches, status, log and \
+                         scope items here"
+                    } else {
+                        "pick one on the left to see its branches, status, log and \
+                         scope items — or register another"
+                    })
+                    .icon(Icon::Folder)
+                    .when(!nothing_registered, |empty| {
+                        empty.action(
+                            Button::new("ws-detail-add", "add workspace")
+                                .primary()
+                                .icon(Icon::Add)
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                    this.open_add_workspace(window, cx);
+                                })),
+                        )
+                    }),
+                )
                 .into_any_element();
         };
         let Some(meta) = self.workspaces.list.iter().find(|m| m.id == id).cloned() else {
             return div()
                 .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(muted))
-                .child("workspace no longer registered")
+                .child(
+                    EmptyState::new("workspace no longer registered")
+                        .guidance("it was unregistered while it was open")
+                        .icon(Icon::Warning),
+                )
                 .into_any_element();
         };
         match self.workspaces.shape.clone() {
@@ -1620,26 +1794,19 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (muted, fg, accent, selection) = (t.muted, t.fg, t.accent, t.selection);
+        let (muted, fg) = (t.muted, t.fg);
+        let count = hosts.len() + connections.len();
 
         let host_rows: Vec<AnyElement> = hosts
             .iter()
             .enumerate()
             .map(|(ix, h)| {
                 let id = id.clone();
-                div()
-                    .id(("ws-scope-host", ix))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(selection)))
+                Row::new(("ws-scope-host", ix))
                     .child(div().text_sm().text_color(rgb(fg)).child(h.alias.clone()))
-                    .child(div().text_xs().text_color(rgb(accent)).child("→ SSH"))
+                    // Where the row goes, as orientation rather than as accent-coloured
+                    // prose (`→ SSH`) pretending to be a link.
+                    .meta(Badge::new("SSH"))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.jump_to_scope_tab(id.clone(), Tab::Ssh, window, cx);
                     }))
@@ -1657,19 +1824,9 @@ impl AppState {
                 } else {
                     c.name.clone()
                 };
-                div()
-                    .id(("ws-scope-conn", ix))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(selection)))
+                Row::new(("ws-scope-conn", ix))
                     .child(div().text_sm().text_color(rgb(fg)).child(label))
-                    .child(div().text_xs().text_color(rgb(accent)).child("→ Database"))
+                    .meta(Badge::new("Database"))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.jump_to_scope_tab(id.clone(), Tab::Database, window, cx);
                     }))
@@ -1677,21 +1834,19 @@ impl AppState {
             })
             .collect();
 
-        let empty = (host_rows.is_empty() && conn_rows.is_empty()).then(|| {
+        let empty = (count == 0).then(|| {
             div()
                 .text_xs()
                 .text_color(rgb(muted))
                 .child("no hosts or connections in this workspace's own layer")
         });
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(div().text_xs().text_color(rgb(muted)).child("SCOPE ITEMS"))
-            .children(host_rows)
-            .children(conn_rows)
-            .children(empty)
+        Card::section("Scope items").count(count).child(
+            List::stack()
+                .children(host_rows)
+                .children(conn_rows)
+                .children(empty),
+        )
     }
 
     fn plain_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
@@ -1720,12 +1875,7 @@ impl AppState {
                     .font_family(MONO)
                     .child(meta.root.display().to_string()),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child("not a git repo"),
-            )
+            .child(h_flex().child(Badge::new("not a git repo")))
             .child(self.scope_items_section(&id, &hosts, &connections, cx))
             .into_any_element()
     }
@@ -1775,46 +1925,39 @@ impl AppState {
             .into_any_element()
     }
 
+    /// The Overview/Branches/Status/Log switch.
+    ///
+    /// Four hand-rolled chips whose *unselected* state was filled with `border` and whose
+    /// selected state was filled with `selection` — on cosmos the inactive chips were the
+    /// brighter of the two, so the strip read as three raised chips and one dent. The
+    /// shared control fixes that structurally (a recessed track, one raised chip).
     fn repo_sub_tab_chips(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (selection, border, fg_strong, muted) = (t.selection, t.border, t.fg_strong, t.muted);
         let active = self.workspaces.sub_tab;
-        div()
-            .flex()
-            .flex_row()
-            .gap_1()
-            .children(DetailSubTab::ALL.iter().enumerate().map(|(ix, &tab)| {
-                let is_active = tab == active;
-                div()
-                    .id(("ws-subtab", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(if is_active { selection } else { border }))
-                    .text_color(rgb(if is_active { fg_strong } else { muted }))
-                    .child(tab.label())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.workspaces.sub_tab = tab;
-                        cx.notify();
-                    }))
+        SegmentedControl::new("ws-subtab")
+            .segments(DetailSubTab::ALL.map(|tab| Segment::new(tab.label())))
+            .selected(
+                DetailSubTab::ALL
+                    .iter()
+                    .position(|tab| *tab == active)
+                    .unwrap_or(0),
+            )
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                if let Some(&tab) = DetailSubTab::ALL.get(ev.index) {
+                    this.workspaces.sub_tab = tab;
+                    cx.notify();
+                }
             }))
     }
 
     fn repo_overview(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (fg, muted, warning, danger) = (t.fg, t.muted, t.warning, t.danger);
+        let (muted, warning, danger) = (t.muted, t.warning, t.danger);
 
         let summary_view: AnyElement = match self.workspaces.summaries.get(&meta.id) {
             None | Some(Fetch::Loading) => text_cell(muted, "loading git status…"),
             Some(Fetch::Done(Err(e))) => text_cell(danger, e.to_string()),
             Some(Fetch::Done(Ok(s))) => {
                 let branch = s.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
-                let ahead_behind = match (s.ahead, s.behind) {
-                    (None, None) => "no upstream".to_string(),
-                    (a, b) => format!("↑{} ↓{}", a.unwrap_or(0), b.unwrap_or(0)),
-                };
                 let last_commit = s
                     .last_commit
                     .as_ref()
@@ -1829,8 +1972,17 @@ impl AppState {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .child(text_cell(fg, format!("{branch} · {ahead_behind}")))
+                    .gap_2()
+                    // The same chips the fleet table and the list row use, so one repo
+                    // reads identically wherever it is shown.
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .child(Badge::new(branch))
+                            .child(dirty_badge(s.staged + s.unstaged + s.untracked))
+                            .child(ahead_behind_cell(s.ahead, s.behind, muted)),
+                    )
                     .child(text_cell(
                         if s.is_clean() { muted } else { warning },
                         format!(
@@ -1856,8 +2008,7 @@ impl AppState {
 
     fn repo_branches(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (fg, muted, danger, accent, selection) =
-            (t.fg, t.muted, t.danger, t.accent, t.selection);
+        let (fg, muted, danger, fg_strong) = (t.fg, t.muted, t.danger, t.fg_strong);
 
         let error_line = self
             .workspaces
@@ -1877,28 +2028,31 @@ impl AppState {
                         let name = b.name.clone();
                         let is_current = b.is_current;
                         let is_pending = pending.as_deref() == Some(name.as_str());
-                        let label = if is_current {
-                            format!("● {name}")
-                        } else {
-                            format!("  {name}")
-                        };
-                        div()
-                            .id(("ws-branch", ix))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .when(!is_current, |el| {
-                                el.cursor_pointer().hover(|s| s.bg(rgb(selection)))
+                        // Click-to-checkout is the row itself, exactly as before — and so
+                        // is the `DirtyWorkingTree` refusal it surfaces above. What
+                        // changes is that the row now *looks* clickable (hover fill,
+                        // pointer) and the current branch is a labelled chip instead of a
+                        // `●` prefix nudging the name two spaces right.
+                        Row::new(("ws-branch", ix))
+                            .selected(is_current)
+                            .child(text_cell(
+                                if is_current { fg_strong } else { fg },
+                                name.clone(),
+                            ))
+                            .when(is_current, |row| row.meta(Badge::new("current").solid()))
+                            .when_some(b.upstream.clone(), |row, u| {
+                                row.meta(div().text_xs().text_color(rgb(muted)).child(u))
                             })
-                            .child(text_cell(if is_current { accent } else { fg }, label))
-                            .children(b.upstream.clone().map(|u| text_cell(muted, u)))
-                            .children(is_pending.then(|| text_cell(muted, "checking out…")))
-                            .when(!is_current, |el| {
-                                el.on_click(cx.listener(
+                            .when(is_pending, |row| {
+                                row.meta(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(muted))
+                                        .child("checking out…"),
+                                )
+                            })
+                            .when(!is_current, |row| {
+                                row.on_click(cx.listener(
                                     move |this, _ev: &ClickEvent, _window, cx| {
                                         this.checkout_branch(name.clone(), cx);
                                     },
@@ -1907,7 +2061,7 @@ impl AppState {
                             .into_any_element()
                     })
                     .collect();
-                div().flex().flex_col().children(rows).into_any_element()
+                List::stack().children(rows).into_any_element()
             }
         };
 
@@ -1996,26 +2150,33 @@ impl AppState {
                     .iter()
                     .enumerate()
                     .map(|(ix, c)| {
-                        div()
-                            .id(("ws-log", ix))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .py_1()
+                        // Inert rows: `Row` paints no hover on something nothing can be
+                        // done to, which is the whole difference between a log and a list
+                        // of links.
+                        Row::new(("ws-log", ix))
                             .child(
                                 div()
-                                    .flex_1()
                                     .text_sm()
+                                    .truncate()
                                     .text_color(rgb(fg))
                                     .child(c.summary.clone()),
                             )
-                            .child(text_cell(muted, c.author_name.clone()))
-                            .child(text_cell(muted, commit_age(now, c.timestamp_secs)))
+                            .meta(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(muted))
+                                    .child(c.author_name.clone()),
+                            )
+                            .meta(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(muted))
+                                    .child(commit_age(now, c.timestamp_secs)),
+                            )
                             .into_any_element()
                     })
                     .collect();
-                div().flex().flex_col().children(rows).into_any_element()
+                List::stack().children(rows).into_any_element()
             }
         }
     }
@@ -2046,11 +2207,14 @@ impl AppState {
                     .child("sorted, live git status per repo"),
             );
 
+        // `FillTable`, not `Table`: the columns are resized to the width this pane
+        // actually got, so `Path` stops truncating `/home/murphy/vcs/…` inside 280px
+        // while the rest of a 2000px window sits empty. See `sid_ui::table`.
         let fleet_table = self.workspaces.fleet.clone().map(|table| {
             div()
                 .flex_1()
                 .w_full()
-                .child(Table::new(&table).stripe(true))
+                .child(FillTable::new(&table).stripe(true))
         });
 
         div()
@@ -2252,13 +2416,119 @@ mod tests {
         assert!(validate_workspace_path("/vcs/sid", &|_| true).is_ok());
     }
 
+    // ---- the unregister confirm, keyed by workspace identity --------------------------
+
     #[test]
-    fn unregister_click_executes_only_on_the_same_armed_id() {
-        let a = WorkspaceId("a".into());
-        let b = WorkspaceId("b".into());
-        assert!(!unregister_click_executes(None, &a));
-        assert!(unregister_click_executes(Some(&a), &a));
-        assert!(!unregister_click_executes(Some(&a), &b));
+    fn ws_key_is_a_function_of_identity_alone() {
+        // Two `WorkspaceId`s that are equal must key the same arm, and two that are not
+        // must not — that is the entire contract the `Copy` stand-in has to keep.
+        let a = WorkspaceId("/w/a".into());
+        let b = WorkspaceId("/w/b".into());
+        assert_eq!(ws_key(&a), ws_key(&WorkspaceId("/w/a".into())));
+        assert_ne!(ws_key(&a), ws_key(&b));
+    }
+
+    #[test]
+    fn the_unregister_confirm_needs_two_presses_on_the_same_workspace() {
+        let a = WorkspaceId("/w/a".into());
+        let now = Instant::now();
+        let mut arm: ConfirmArm<WsKey> = ConfirmArm::new();
+        assert_eq!(arm.press(ws_key(&a), now), Confirm::Armed);
+        assert_eq!(arm.press(ws_key(&a), now), Confirm::Fire);
+    }
+
+    #[test]
+    fn arming_one_workspace_never_fires_on_another() {
+        // The property a positional key cannot give: the list reorders (a rename, a
+        // refresh, a new registration) between the two clicks and the confirm still can
+        // only ever land on the workspace it was armed with.
+        let a = WorkspaceId("/w/a".into());
+        let b = WorkspaceId("/w/b".into());
+        let now = Instant::now();
+        let mut arm: ConfirmArm<WsKey> = ConfirmArm::new();
+        assert_eq!(arm.press(ws_key(&a), now), Confirm::Armed);
+        assert_eq!(
+            arm.press(ws_key(&b), now),
+            Confirm::Armed,
+            "a press on a different row moves the arm, it does not fire"
+        );
+        assert!(!arm.is_armed(ws_key(&a), now));
+    }
+
+    #[test]
+    fn an_armed_unregister_survives_a_list_reload_that_still_has_the_row() {
+        // `refresh_workspaces` runs on add/rename/unregister, so an arm it cleared
+        // unconditionally would be a race the user loses — the bug `ConfirmArm` exists
+        // for. Only the row disappearing may drop it.
+        let a = WorkspaceId("/w/a".into());
+        let b = WorkspaceId("/w/b".into());
+        let now = Instant::now();
+        let mut arm: ConfirmArm<WsKey> = ConfirmArm::new();
+        arm.press(ws_key(&a), now);
+
+        let still_there: HashSet<WsKey> = [ws_key(&a), ws_key(&b)].into_iter().collect();
+        arm.retain(|key| still_there.contains(&key));
+        assert!(arm.is_armed(ws_key(&a), now));
+
+        let gone: HashSet<WsKey> = [ws_key(&b)].into_iter().collect();
+        arm.retain(|key| gone.contains(&key));
+        assert!(!arm.is_armed(ws_key(&a), now));
+    }
+
+    // ---- the fleet table's column plan ------------------------------------------------
+
+    fn fleet_widths(cols: &FillColumns) -> Vec<f32> {
+        (0..cols.len())
+            .map(|ix| f32::from(cols.column(ix).width))
+            .collect()
+    }
+
+    #[test]
+    fn the_fleet_gives_every_spare_pixel_to_the_path_column() {
+        // The whole point of the migration: `Path` was 280 fixed pixels truncating
+        // `/home/murphy/vcs/…` while ~1350px sat unused to its right. The numeric columns
+        // keep their declared widths at every viewport; `Path` absorbs the difference.
+        let mut cols = FleetDelegate::empty().columns;
+        for viewport in [1000., 1400., 1700., 2600.] {
+            cols.sync(viewport);
+            let widths = fleet_widths(&cols);
+            assert_eq!(&widths[2..5], &[90., 150., 120.], "{viewport}px: numerics");
+            assert!(widths[5] >= 240., "{viewport}px: path floor");
+            let total: f32 = widths.iter().sum();
+            assert!(
+                (total - (viewport - sid_ui::table::TABLE_CHROME)).abs() < 0.01,
+                "{viewport}px: columns total {total} — dead space or an overflow"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fleet_columns_hold_their_floors_in_a_narrow_window() {
+        // Degenerate but real: too narrow to honour the declaration, so every column
+        // stays legible and the table scrolls, rather than squeezing `Path` to nothing.
+        let mut cols = FleetDelegate::empty().columns;
+        cols.sync(600.);
+        assert_eq!(fleet_widths(&cols), vec![150., 190., 90., 150., 120., 240.]);
+    }
+
+    #[test]
+    fn a_fleet_sort_is_mirrored_onto_the_delegates_own_columns() {
+        // Without this the chevron resets to the declared state on the next
+        // `TableState::refresh` — which the fill-width model now triggers on every
+        // viewport change — while the rows stay sorted the way the user asked.
+        let mut delegate = FleetDelegate::empty();
+        delegate.columns.apply_sort(2, ColumnSort::Descending);
+        assert_eq!(
+            delegate.columns.column(2).sort,
+            Some(ColumnSort::Descending)
+        );
+        for ix in [0, 1, 3, 4, 5] {
+            assert_eq!(
+                delegate.columns.column(ix).sort,
+                Some(ColumnSort::Default),
+                "column {ix} should have surrendered the chevron"
+            );
+        }
     }
 
     #[test]
