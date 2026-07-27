@@ -39,7 +39,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
-use crate::ui::TextInput;
+use crate::ui::{TextInput, is_field_submit};
 use sid_ui::{Row, theme, v_flex};
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
@@ -1511,18 +1511,28 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    // `TextInput` clips its own shaped line and sizes itself now; this
-                    // wrapper only has to hand it the row's spare width.
                     // `v_flex`, not a plain `div`: a `TextInput` sizes itself entirely in
                     // percentages, and a `display: block` parent doesn't resolve them —
                     // the field collapsed to its own padding and border, a ~20px stub
                     // that swallowed clicks aimed at the field you could see. A flex
                     // column stretches it to a real width on the cross axis, which is
                     // exactly why the stacked form fields never had this bug.
+                    //
+                    // Enter submits, same as clicking `Go`. `TextInput` claims neither
+                    // Enter nor Escape, so the wrapper can take it — the technique
+                    // `db_tab`'s inline rename rows use for the same shape (one field,
+                    // one button beside it).
                     .child(
                         v_flex()
+                            .id("session-goto-field")
                             .flex_1()
                             .min_w(px(0.))
+                            .on_key_down(cx.listener(|session, ev: &KeyDownEvent, _window, cx| {
+                                if is_field_submit(&ev.keystroke) {
+                                    cx.stop_propagation();
+                                    session.goto_submit(cx);
+                                }
+                            }))
                             .child(self.goto_input.clone()),
                     )
                     .child(go),
