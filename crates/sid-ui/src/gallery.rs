@@ -28,6 +28,9 @@ use crate::elevation::Elevation;
 use crate::empty_state::EmptyState;
 use crate::icon::Icon;
 use crate::kbd::Kbd;
+use crate::list::{List, Row};
+use crate::scope_chip::ScopeChip;
+use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::toolbar::Toolbar;
@@ -71,7 +74,8 @@ impl Render for Gallery {
                     .overflow_hidden()
                     .child(v_flex().flex_1().gap_4().children(buttons(&theme)))
                     .child(v_flex().flex_1().gap_4().children(chips(&theme)))
-                    .child(v_flex().flex_1().gap_4().children(structure(&theme))),
+                    .child(v_flex().flex_1().gap_4().children(structure(&theme)))
+                    .child(v_flex().flex_1().gap_4().children(rows(&theme))),
             )
     }
 }
@@ -336,6 +340,97 @@ fn structure(theme: &Theme) -> Vec<gpui::AnyElement> {
                                 .icon(Icon::Add),
                         ),
                 ),
+            )
+            .into_any_element(),
+    ]
+}
+
+/// Column 4 — the list row and the two chips that live in it.
+fn rows(theme: &Theme) -> Vec<gpui::AnyElement> {
+    let sub = |id: &'static str, slot: &'static str| SharedString::from(format!("{id}-{slot}"));
+    let host_row =
+        |id: &'static str, alias: &'static str, addr: &'static str, state, chip, selected| {
+            Row::new(id)
+                .selected(selected)
+                .leading(StatusDot::new(sub(id, "dot"), state))
+                .on_click(|_, _, _| {})
+                .child(div().text_sm().child(alias))
+                .child(div().hint_text(theme).child(addr))
+                .meta(chip)
+                .action(
+                    Button::new(sub(id, "connect"), "connect")
+                        .primary()
+                        .small()
+                        .icon(Icon::Terminal),
+                )
+                .action(IconButton::new(sub(id, "files"), Icon::Folder, "browse files").small())
+                .action(
+                    IconButton::new(sub(id, "delete"), Icon::Trash, "delete")
+                        .small()
+                        .danger(),
+                )
+        };
+
+    vec![
+        Card::new()
+            .title("status dot")
+            .child(row(
+                theme,
+                "legend — every dot names itself",
+                StatusLegend::new("gallery-legend"),
+            ))
+            .child(row(
+                theme,
+                "the mark alone (hover for the name)",
+                h_flex()
+                    .gap_3()
+                    .children(ALL_CONNECTION_STATES.iter().map(|&s| {
+                        StatusDot::new(SharedString::from(format!("gallery-dot-{}", s.label())), s)
+                    })),
+            ))
+            .into_any_element(),
+        Card::new()
+            .title("scope chip")
+            .child(row(
+                theme,
+                "origin — weight, never hue",
+                h_flex()
+                    .gap_2()
+                    .child(ScopeChip::global())
+                    .child(ScopeChip::workspace("acme-api"))
+                    .child(ScopeChip::global().duplicate(true))
+                    .child(ScopeChip::workspace("acme-api").duplicate(true)),
+            ))
+            .into_any_element(),
+        Card::new()
+            .title("list · row")
+            .count(3)
+            .child(
+                List::stack()
+                    .child(host_row(
+                        "gallery-row-1",
+                        "home-server",
+                        "you@192.168.1.10:22",
+                        ConnectionState::Live,
+                        ScopeChip::global(),
+                        false,
+                    ))
+                    .child(host_row(
+                        "gallery-row-2",
+                        "staging",
+                        "deploy@staging.acme-api.internal:22",
+                        ConnectionState::Offline,
+                        ScopeChip::workspace("acme-api"),
+                        true,
+                    ))
+                    .child(host_row(
+                        "gallery-row-3",
+                        "vps-1",
+                        "root@5.5.5.5:22",
+                        ConnectionState::Failed,
+                        ScopeChip::global().duplicate(true),
+                        false,
+                    )),
             )
             .into_any_element(),
     ]

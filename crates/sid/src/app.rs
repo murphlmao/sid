@@ -33,7 +33,7 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::theme;
+use sid_ui::{ScopeChip, ScopeOrigin, theme};
 
 /// Monospace family for host subtitles (gpui falls back to a proportional font if the
 /// named family is missing, so we name a concrete, near-universal Linux mono family).
@@ -925,37 +925,27 @@ impl AppState {
         }
     }
 
-    /// Badge label + color for an item's origin layer.
+    /// The origin chip for an item's layer: `global`, or the workspace's display name,
+    /// with `· dup` when the same alias also lives in the other layer.
     ///
-    /// Global uses the theme's `accent`; workspace uses `success` — the theme has no
-    /// second accent tone, and `success` reads as a clearly distinct hue from `accent`
-    /// in every built-in (cosmos pairs a pale cyan-blue against the red accent, an echo
-    /// of the pre-sweep brand blue).
-    pub(crate) fn origin_badge(
-        &self,
-        a: &Attributed<Host>,
-        cx: &Context<Self>,
-    ) -> (SharedString, u32) {
-        let t = theme::active(cx);
-        // `global` is the common, unremarkable origin — muted, not accent: the badge
-        // is orientation, not a call to action. Workspace origins (and `· dup`
-        // shadowing) are the notable cases and keep a color.
-        let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("global".into(), t.faint),
-            Scope::Workspace(id) => {
-                let name = self
-                    .scopes
+    /// This used to hand back a raw `(label, color)` pair and paint `global` in `faint`
+    /// and a workspace origin in **`success`** — a status hue spent on metadata, which
+    /// left a reader deciding whether a green word meant the row was healthy.
+    /// [`ScopeChip`] separates the two origins by weight inside one neutral tone
+    /// instead, per `.interface-design/system.md`'s "orientation badges are
+    /// `faint`/`muted`; one accent, used sparingly".
+    pub(crate) fn scope_chip(&self, a: &Attributed<Host>) -> ScopeChip {
+        let origin = match &a.origin {
+            Scope::Global => ScopeOrigin::Global,
+            Scope::Workspace(id) => ScopeOrigin::Workspace(
+                self.scopes
                     .iter()
                     .find(|c| matches!(&c.scope, Scope::Workspace(w) if w == id))
                     .map(|c| c.label.clone())
-                    .unwrap_or_else(|| "workspace".into());
-                (name, t.success)
-            }
+                    .unwrap_or_else(|| "workspace".into()),
+            ),
         };
-        if a.duplicate {
-            label = format!("{label} · dup").into();
-        }
-        (label, color)
+        ScopeChip::new(origin).duplicate(a.duplicate)
     }
 
     // ---- keyboard-driven system (2026-07-02 plan) -----------------------------
@@ -1128,12 +1118,19 @@ impl AppState {
                 cx.notify();
             }
             Action::FocusFilter => {
-                // Only the Network tab has a filter input wired up so far — other tabs
-                // simply don't have one yet, so this is a no-op there (per the plan's
-                // "other tabs: no-op for now").
-                if self.active_tab == Tab::Network {
-                    self.network.focus_filter(window, cx);
-                    cx.notify();
+                // Tabs with a filter input claim this; the rest have nothing to focus
+                // yet and it stays a no-op there. SSH Home's quick-connect box doubles
+                // as the list filter, so `Ctrl+F` lands in it.
+                match self.active_tab {
+                    Tab::Network => {
+                        self.network.focus_filter(window, cx);
+                        cx.notify();
+                    }
+                    Tab::Ssh if self.active_session.is_none() => {
+                        self.ssh_home.focus_filter(window, cx);
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             }
         }

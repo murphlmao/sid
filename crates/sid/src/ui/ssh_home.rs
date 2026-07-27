@@ -1,9 +1,9 @@
-//! SSH tab, Home state: THE connections surface — a centered, width-capped column
-//! with the quick-connect box on top and the folder-grouped connection list below
-//! (live dots, inline rename/folder edit, right-click menu incl. promote/demote,
-//! origin badges). The design review killed the old [tree sidebar | host-card list]
-//! split that showed the same hosts twice with two vocabularies; this module is now
-//! the single home for all of it.
+//! SSH tab, Home state: THE connections surface — a width-capped column anchored to
+//! the content gutter, with the quick-connect box on top and the folder-grouped
+//! connection list below (status dots, inline rename/folder edit, right-click menu
+//! incl. promote/demote, origin chips). The design review killed the old [tree sidebar
+//! | host-card list] split that showed the same hosts twice with two vocabularies;
+//! this module is now the single home for all of it.
 //!
 //! [`HomeTabState`] is a sibling cache to `AppState`'s own SSH fields, exactly like
 //! `ui::db_tab`'s `DbTabState` — see that module's doc comment for the pattern this
@@ -12,7 +12,9 @@
 //!
 //! Pure/unit-tested: [`group_by_folder`] (the tree's grouping transform), [`filter_hosts`]
 //! (the quick-connect box's search filter), [`parse_quick_connect`] (the `user@host[:port]`
-//! shorthand). Rendering is observation-gated, per the plan's pragmatic-TDD rule.
+//! shorthand), [`connection_state`] (what a row's dot says), [`row_primary`] (what its
+//! primary button does) and [`home_empty`] (which nothing the list is showing).
+//! Rendering is observation-gated, per the plan's pragmatic-TDD rule.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -24,8 +26,11 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
-use crate::ui::TextInput;
-use sid_ui::theme;
+use crate::ui::{SessionStatus, TextInput};
+use sid_ui::{
+    Button, ButtonVariant, ConnectionState, EmptyState, Icon, IconButton, List, Row, StatusDot,
+    StatusLegend, StyledExt as _, h_flex, theme,
+};
 
 const MONO: &str = "DejaVu Sans Mono";
 
@@ -119,6 +124,13 @@ pub(crate) struct HomeTabState {
 }
 
 impl HomeTabState {
+    /// Move keyboard focus into the quick-connect/filter box — `Action::FocusFilter`'s
+    /// (`Ctrl+F` / `Ctrl+/`) handler for the SSH tab, which used to be a no-op here
+    /// because Network was the only tab with a filter wired up.
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &gpui::App) {
+        self.search.read(cx).focus(window);
+    }
+
     pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
         Self {
             collapsed_folders: HashSet::new(),
@@ -202,6 +214,101 @@ pub(crate) fn filter_hosts<'a>(
         .collect()
 }
 
+/// What a saved row's dot says, given the live session (if any) that row opened.
+///
+/// The tree used to ask one question — "is there a tab whose `source` is this row?" —
+/// and paint `●` or `○` from the answer, which folded *dialling*, *authenticated* and
+/// *failed* into one indistinguishable mark. Four states now, straight off the session's
+/// own lifecycle.
+///
+/// A `Closed` session reads as [`ConnectionState::Offline`], not `Failed`: the tab is
+/// still open so the user can read its scrollback, but nothing is connected and the row
+/// is ready to dial again. A `Failed` one keeps its colour until the tab is closed —
+/// that is the one state the old dot could never show, and the one worth seeing.
+pub(crate) fn connection_state(status: Option<&SessionStatus>) -> ConnectionState {
+    match status {
+        None | Some(SessionStatus::Closed) => ConnectionState::Offline,
+        Some(SessionStatus::Connecting) => ConnectionState::Connecting,
+        Some(SessionStatus::Connected) => ConnectionState::Live,
+        Some(SessionStatus::Failed(_)) => ConnectionState::Failed,
+    }
+}
+
+/// Why the connection list is showing nothing, when it is.
+///
+/// Two different nothings that used to render identically — as literally nothing, an
+/// empty scroll area under a header saying `CONNECTIONS · 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HomeEmpty {
+    /// Nothing is saved in either layer. A first-run screen: it needs a way in.
+    NoHosts,
+    /// Hosts exist, but the filter excludes all of them. A dead end the user typed
+    /// themselves, so the way out is to undo it — not to add a host.
+    NoMatch,
+}
+
+/// Which empty state (if either) the list should show.
+///
+/// `matched` is the count *after* filtering, `total` the composed list before it. A
+/// non-empty result is never an empty state, whatever the query is.
+pub(crate) fn home_empty(total: usize, matched: usize) -> Option<HomeEmpty> {
+    match (matched, total) {
+        (1.., _) => None,
+        (0, 0) => Some(HomeEmpty::NoHosts),
+        (0, _) => Some(HomeEmpty::NoMatch),
+    }
+}
+
+/// What a row's primary button does when clicked.
+///
+/// The tab's primary verb used to be documented in a hint string — *"double-click a name
+/// to rename · right-click for more"* — rather than rendered as a control, which is the
+/// whole of the user's "doesn't feel intuitive". It is a button now, and a button has to
+/// say what it will do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowPrimary {
+    /// Dial this host: open a new session.
+    Connect,
+    /// Switch to the session this row already opened.
+    Focus,
+}
+
+impl RowPrimary {
+    /// The button's label.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            RowPrimary::Connect => "connect",
+            RowPrimary::Focus => "focus",
+        }
+    }
+
+    /// The button's tooltip — the label is a verb, this says what it acts on.
+    pub(crate) fn tooltip(self) -> &'static str {
+        match self {
+            RowPrimary::Connect => "open a session on this host",
+            RowPrimary::Focus => "switch to this host's open session",
+        }
+    }
+}
+
+/// Which verb a row's primary button offers, from the state its dot is already showing.
+///
+/// Clicking "connect" on a row that is *already connected* used to open a **second**
+/// session to the same host, silently, because `connect_host` always pushes a new tab.
+/// The live dot said a session existed and the button ignored it. Now the two agree: if
+/// something is up (or coming up), the primary verb goes to it. Opening a deliberate
+/// second session is still available from the row's right-click menu.
+///
+/// `Failed` reads as [`RowPrimary::Connect`], not `Focus`: retrying is what the user
+/// wants from a failed row, and the failed tab stays open behind it so its error text is
+/// still readable.
+pub(crate) fn row_primary(state: ConnectionState) -> RowPrimary {
+    match state {
+        ConnectionState::Connecting | ConnectionState::Live => RowPrimary::Focus,
+        ConnectionState::Offline | ConnectionState::Failed => RowPrimary::Connect,
+    }
+}
+
 /// Parse the quick-connect box's `user@host[:port]` shorthand. `None` if the text
 /// doesn't look like that shape at all — the same box doubles as a plain tree filter,
 /// so a partial query (most keystrokes) must not read as a failed connect attempt; only
@@ -233,6 +340,7 @@ impl AppState {
         let query = self.ssh_home.search.read(cx).content().to_string();
         let filtered = filter_hosts(&self.hosts, &query);
         let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
+        let empty = home_empty(self.hosts.len(), owned.len());
         let groups = group_by_folder(&owned);
 
         let mut rows = Vec::new();
@@ -257,7 +365,14 @@ impl AppState {
             .min_h(px(0.))
             .flex()
             .flex_col()
-            .items_center()
+            // LEFT-aligned, not centred. `.interface-design/system.md`'s reading-column
+            // rule caps this at 880px so a row's actions never sit a screen-width from
+            // its name — but centring that cap in a 2000px window spent 1120px on two
+            // dead margins and left the column floating with nothing to align to. The
+            // amended rule: cap the width, anchor it to the content gutter, so the
+            // column lines up with the tab strip above it and the empty canvas falls
+            // where empty canvas belongs — outside the content, not around it.
+            .items_start()
             .child(
                 div()
                     .w_full()
@@ -271,11 +386,7 @@ impl AppState {
                     .child(self.home_header(cx))
                     .child(self.quick_connect_box(cx))
                     .child(
-                        div()
-                            .id("ssh-home-tree")
-                            .flex_1()
-                            .overflow_y_scroll()
-                            .py_1()
+                        List::scrolling("ssh-home-tree")
                             // Right-click *anywhere* in the tree defaults to "no row" —
                             // `capture_any_mouse_down` fires during the CAPTURE phase, which
                             // completes in full before any BUBBLE-phase handler runs (see
@@ -298,6 +409,11 @@ impl AppState {
                                 },
                             ))
                             .children(rows)
+                            // Nothing to list: say which nothing this is, and hand back a
+                            // way out of it. See `home_empty`.
+                            .when_some(empty, |this, empty| {
+                                this.child(self.home_empty_state(empty, cx))
+                            })
                             // Trailing empty space below the last row, so "right-click empty
                             // space → Add connection" has somewhere to land even when the list
                             // is short — purely a layout spacer; the capture-phase reset above
@@ -308,6 +424,54 @@ impl AppState {
                             .context_menu(self.tree_context_menu(cx)),
                     ),
             )
+    }
+
+    /// The list's empty state: a headline, one line of what to do next, and a real
+    /// control that does it.
+    ///
+    /// `.interface-design/system.md` says empty states "say what to do next, in muted
+    /// text, without a box" — right about the box, incomplete about the rest. The
+    /// zero-host case used to render *nothing at all* under a `CONNECTIONS · 0` header,
+    /// which on a wide window is indistinguishable from a failed render; and telling a
+    /// first-run user what to do while giving them no way to do it is the same mistake
+    /// as documenting the tab's primary verb in a hint string.
+    fn home_empty_state(&self, empty: HomeEmpty, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = match empty {
+            HomeEmpty::NoHosts => EmptyState::new("no saved connections")
+                .icon(Icon::Globe)
+                .guidance(
+                    "add a host to keep it here, or type user@host above to connect once \
+                     without saving",
+                )
+                .action(
+                    Button::new("ssh-empty-add", "add connection")
+                        .primary()
+                        .icon(Icon::Add)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.open_add_form(window, cx);
+                        })),
+                ),
+            // A dead end the user typed, so the way out is to undo it — offering "add a
+            // connection" here would answer a search with a form.
+            HomeEmpty::NoMatch => EmptyState::new("no connection matches the filter")
+                .icon(Icon::Search)
+                .guidance(
+                    "clear the filter to see every saved connection, or press Enter to \
+                     connect to what you typed",
+                )
+                .action(
+                    Button::new("ssh-empty-clear", "clear filter")
+                        .icon(Icon::Close)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            this.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+                            this.ssh_home.quick_error = None;
+                            cx.notify();
+                        })),
+                ),
+        };
+        // The scroll body is a plain stack, so the panel needs a height of its own to
+        // have something to centre itself in.
+        div().w_full().h(px(280.)).child(state)
     }
 
     /// Builds the tree's single [`ContextMenuExt::context_menu`]: "+ Add connection"
@@ -450,58 +614,47 @@ impl AppState {
     /// add-connection entry point (`main`'s button, the tab-strip `+`, this tree's
     /// empty-space context menu) — see `AppState::open_add_form`.
     fn home_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, selection, fg_strong) = (t.border, t.muted, t.selection, t.fg_strong);
+        let t = theme::active(cx).clone();
         let count = self.hosts.len();
         let label: SharedString = format!("CONNECTIONS · {count}").into();
         div()
             .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
+            .flex_col()
+            .gap_1()
             .px_2()
             .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child(label))
+            .hairline_b(&t)
             .child(
-                div()
-                    .id("ssh-home-add-connection")
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .bg(rgb(selection))
-                    .text_color(rgb(fg_strong))
-                    .child("+ Add connection")
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_form(window, cx);
-                    })),
+                h_flex()
+                    .justify_between()
+                    .child(div().section_label(&t).child(label))
+                    .child(
+                        Button::new("ssh-home-add-connection", "add connection")
+                            .small()
+                            .icon(Icon::Add)
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_form(window, cx);
+                            })),
+                    ),
             )
+            // The dot vocabulary, spelled out once. The tree used to paint an unlabelled
+            // 6px circle per row with nothing on screen saying what it meant.
+            .child(StatusLegend::new("ssh-home-legend"))
     }
 
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (border, muted, accent, fg_strong, danger) =
-            (t.border, t.muted, t.accent, t.fg_strong, t.danger);
+        let t = theme::active(cx).clone();
+        let danger = t.danger;
         let search = self.ssh_home.search.clone();
-        // Fixed-width, never squeezed by a long placeholder/typed value — see the `go`
-        // doc comment on the sibling input wrapper below for why the input side needs
-        // its own clip.
-        let go = div()
-            .id("ssh-quick-connect-go")
-            .w(px(36.))
-            .h(px(34.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .text_xs()
-            .cursor_pointer()
-            .bg(rgb(accent))
-            .text_color(rgb(fg_strong))
-            .child("⏎")
+        // A red filled square with a `⏎` in it used to sit here: sid's most emphatic
+        // affordance, spent on "submit this text field", while the tab's actual primary
+        // verb had no button at all. Now it is a labelled button and says which of the
+        // box's two jobs it performs — the same box is also the list filter, and typing
+        // in it never needs this.
+        let go = Button::new("ssh-quick-connect-go", "connect")
+            .primary()
+            .icon(Icon::Terminal)
+            .tooltip("connect to the typed user@host[:port] without saving it — or press Enter")
             .on_click(
                 cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
             );
@@ -516,13 +669,13 @@ impl AppState {
             .gap_1()
             .px_2()
             .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
+            .hairline_b(&t)
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .items_center()
+                    .gap_2()
                     .child(
                         // `TextInput` paints its shaped line at its own natural width,
                         // ignoring the box's flex-assigned bounds (see `TextElement::
@@ -540,10 +693,11 @@ impl AppState {
                         div().flex_1().min_w(px(0.)).overflow_hidden().child(search),
                     )
                     .child(go),
-            )
-            .child(div().text_xs().text_color(rgb(muted)).child(
-                "saved connections below · double-click a name to rename · right-click for more",
-            ));
+            );
+        // What used to live here: "saved connections below · double-click a name to
+        // rename · right-click for more" — 12px of muted prose doing the job of three
+        // controls. Every one of those interactions still works; none of them is
+        // documentation-only any more.
         if let Some(err) = &self.ssh_home.quick_error {
             col = col.child(div().text_xs().text_color(rgb(danger)).child(err.clone()));
         }
@@ -586,24 +740,16 @@ impl AppState {
         collapsed: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (muted, selection) = (t.muted, t.selection);
-        let caret = if collapsed { "▸" } else { "▾" };
+        let t = theme::active(cx).clone();
+        let caret = if collapsed {
+            Icon::ChevronRight
+        } else {
+            Icon::ChevronDown
+        };
         let owned = folder.to_string();
-        div()
-            .id(("ssh-folder", gix))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(muted))
-            .hover(|s| s.bg(rgb(selection)))
-            .child(caret)
-            .child(folder.to_string())
+        Row::new(("ssh-folder", gix))
+            .leading(caret.el().size(px(14.)).text_color(rgb(t.muted)))
+            .child(div().section_label(&t).child(folder.to_string()))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.toggle_folder(owned.clone(), cx);
             }))
@@ -616,6 +762,59 @@ impl AppState {
         cx.notify();
     }
 
+    /// The live session this row opened, if one is still in the tab strip.
+    fn session_for_row(&self, key: &(String, Scope)) -> Option<usize> {
+        self.ssh_sessions
+            .iter()
+            .position(|t| t.source.as_ref() == Some(key))
+    }
+
+    /// A row's primary button: connect, or go to the session this row already has —
+    /// see [`row_primary`] for which, and why clicking "connect" on a connected row
+    /// used to silently open a second session.
+    fn row_primary_action(
+        &mut self,
+        host: Host,
+        key: (String, Scope),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = self.session_for_row(&key);
+        let state = connection_state(
+            existing
+                .and_then(|ix| self.ssh_sessions.get(ix))
+                .map(|t| t.session.read(cx).status()),
+        );
+        match (row_primary(state), existing) {
+            (RowPrimary::Focus, Some(ix)) => self.activate_session(ix, window, cx),
+            _ => self.connect_host(host, Some(key), window, cx),
+        }
+    }
+
+    /// A row's `browse files` button: land in this host's SFTP panel.
+    ///
+    /// A fresh session already opens with the file panel showing, so the only extra work
+    /// is for a session that is *already* open with the panel collapsed — reveal it
+    /// before switching, or the click would look like it did nothing.
+    fn row_browse_files(
+        &mut self,
+        host: Host,
+        key: (String, Scope),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.session_for_row(&key) {
+            Some(ix) => {
+                if let Some(tab) = self.ssh_sessions.get(ix) {
+                    tab.session
+                        .update(cx, |session, cx| session.reveal_files(cx));
+                }
+                self.activate_session(ix, window, cx);
+            }
+            None => self.connect_host(host, Some(key), window, cx),
+        }
+    }
+
     /// One tree row: either the normal (icon, name, live-dot, hover actions) row, or —
     /// while this exact (alias, origin) is mid-edit — the inline rename/folder box.
     fn host_tree_row(
@@ -624,8 +823,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (fg, muted, selection, accent, danger, success) =
-            (t.fg, t.muted, t.selection, t.accent, t.danger, t.success);
+        let (fg, muted) = (t.fg, t.muted);
         let host = a.item.clone();
         let origin = a.origin.clone();
 
@@ -636,55 +834,68 @@ impl AppState {
         }
 
         let key = (host.alias.clone(), origin.clone());
-        let is_live = self
-            .ssh_sessions
-            .iter()
-            .any(|t| t.source.as_ref() == Some(&key));
+        let state = connection_state(
+            self.ssh_sessions
+                .iter()
+                .find(|t| t.source.as_ref() == Some(&key))
+                .map(|t| t.session.read(cx).status()),
+        );
         let armed = delete_click_executes(self.armed_delete.as_ref(), &key);
         let alias: SharedString = host.alias.clone().into();
         let addr: SharedString = format!("{}@{}:{}", host.user, host.host, host.port).into();
-        // Where this record lives (global vs a workspace, `· dup` when shadowing) —
-        // carried over from the deleted second host list; the attributive store's one
-        // per-row fact the tree didn't already show.
-        let (badge, badge_color) = self.origin_badge(a, cx);
-
-        let action = |id: (&'static str, u64), label: SharedString, color: u32| {
-            div()
-                .id(id)
-                .px_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
         let row_id = row_hash(&host.alias, &origin);
 
+        // A short, stable per-row element id for each control. gpui wants ids unique
+        // within the window, and every one of these repeats down the list.
+        let slot = |name: &'static str| (name, row_id);
+
+        // THE primary verb of the tab, as a control instead of a sentence.
+        //
+        // `Secondary`, not `Primary`, and the reason is the design system's "one accent,
+        // used sparingly": this button repeats once per row, so an accent fill would
+        // paint a column of red down the list and train the eye to ignore it — the exact
+        // failure the audit flagged on Settings' 16 accent-red keybindings. It is still
+        // the loudest thing in the row's action cluster because it is the only one
+        // carrying a word. The screen's single accent goes to quick-connect.
+        let primary = row_primary(state);
         let connect = {
             let host = host.clone();
             let key = key.clone();
-            action(("ssh-tree-connect", row_id), "»".into(), accent).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
-                    this.connect_host(host.clone(), Some(key.clone()), window, cx);
-                },
-            ))
+            Button::new(slot("ssh-row-connect"), primary.label())
+                .small()
+                .icon(Icon::Terminal)
+                .tooltip(primary.tooltip())
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                    this.row_primary_action(host.clone(), key.clone(), window, cx);
+                }))
+        };
+        // The other half of the tab's name. SFTP was unreachable from this screen: no
+        // browse affordance, no split hint, nothing saying files were even available.
+        let files = {
+            let host = host.clone();
+            let key = key.clone();
+            IconButton::new(slot("ssh-row-files"), Icon::File, "browse files (SFTP)")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                    this.row_browse_files(host.clone(), key.clone(), window, cx);
+                }))
         };
         let rename = {
             let alias = host.alias.clone();
             let origin = origin.clone();
-            action(("ssh-tree-rename", row_id), "✎".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-row-rename"), Icon::Rename, "rename")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.start_rename(alias.clone(), origin.clone(), window, cx);
-                },
-            ))
+                }))
         };
         let folder_btn = {
             let alias = host.alias.clone();
             let origin = origin.clone();
             let current = host.folder.clone();
-            action(("ssh-tree-folder", row_id), "folder".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-row-folder"), Icon::Folder, "assign folder")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.start_folder_edit(
                         alias.clone(),
                         origin.clone(),
@@ -692,27 +903,33 @@ impl AppState {
                         window,
                         cx,
                     );
-                },
-            ))
+                }))
         };
         let delete = {
             let secret_ref = host.secret_ref.clone();
             let key = key.clone();
-            let (label, color): (SharedString, u32) = if armed {
-                ("✕?".into(), danger)
+            // Two-step, and the arming step now says so in words instead of turning a
+            // `✕` into a `✕?`: the tooltip is the confirmation prompt.
+            let tooltip = if armed {
+                "click again to delete — this cannot be undone"
             } else {
-                ("✕".into(), muted)
+                "delete"
             };
-            action(("ssh-tree-delete", row_id), label, color).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
+            IconButton::new(slot("ssh-row-delete"), Icon::Trash, tooltip)
+                .small()
+                .variant(if armed {
+                    ButtonVariant::Danger
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     if delete_click_executes(this.armed_delete.as_ref(), &key) {
                         this.delete_row(&key.0, &key.1, secret_ref.as_deref(), cx);
                     } else {
                         this.armed_delete = Some(key.clone());
                         cx.notify();
                     }
-                },
-            ))
+                }))
         };
 
         let label_click = {
@@ -739,20 +956,12 @@ impl AppState {
             })
         };
 
-        div()
-            .id(("ssh-tree-host", row_id))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .hover(|s| s.bg(rgb(selection)))
+        Row::new(slot("ssh-tree-host"))
+            .leading(StatusDot::new(slot("ssh-row-dot"), state))
             // Records this row as the tree's right-click target — read by the tree's
             // single `context_menu` (see `HomeTabState::right_click_target`'s doc
             // comment for why every row can't just have its own `.context_menu`).
-            .on_mouse_down(MouseButton::Right, {
+            .on_secondary_mouse_down({
                 let host = host.clone();
                 let origin = origin.clone();
                 cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
@@ -762,18 +971,9 @@ impl AppState {
             })
             .child(
                 div()
-                    .w(px(12.))
-                    .text_xs()
-                    .text_color(rgb(if is_live { success } else { muted }))
-                    .child(if is_live { "●" } else { "○" }),
-            )
-            .child(
-                div()
-                    .id(("ssh-tree-host-label", row_id))
+                    .id(slot("ssh-tree-host-label"))
                     .flex()
                     .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
                     .cursor_pointer()
                     .on_click(label_click)
                     .child(div().text_sm().text_color(rgb(fg)).truncate().child(alias))
@@ -786,18 +986,14 @@ impl AppState {
                             .child(addr),
                     ),
             )
-            .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(connect)
-                    .child(rename)
-                    .child(folder_btn)
-                    .child(delete),
-            )
+            // Where this record lives (global vs a workspace, `· dup` when shadowing) —
+            // the attributive store's one per-row fact the tree doesn't otherwise show.
+            .meta(self.scope_chip(a))
+            .action(connect)
+            .action(files)
+            .action(rename)
+            .action(folder_btn)
+            .action(delete)
             .into_any_element()
     }
 
@@ -1055,6 +1251,115 @@ mod tests {
         assert_eq!(parse_quick_connect("user@"), None);
         assert_eq!(parse_quick_connect("user@host:"), None);
         assert_eq!(parse_quick_connect("user@host:notaport"), None);
+    }
+
+    #[test]
+    fn a_row_with_no_session_reads_as_not_connected() {
+        assert_eq!(connection_state(None), ConnectionState::Offline);
+    }
+
+    #[test]
+    fn the_dot_now_separates_dialling_from_connected_from_failed() {
+        // The whole point of the four-state mark: the old `●`/`○` could only say
+        // "there is a tab for this row" or "there isn't".
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Connecting)),
+            ConnectionState::Connecting
+        );
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Connected)),
+            ConnectionState::Live
+        );
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Failed("no route to host".into()))),
+            ConnectionState::Failed
+        );
+    }
+
+    #[test]
+    fn a_closed_session_frees_the_row_rather_than_marking_it_failed() {
+        // The tab stays open so its scrollback is still readable, but nothing is
+        // connected — the row is ready to dial again and should look it.
+        assert_eq!(
+            connection_state(Some(&SessionStatus::Closed)),
+            ConnectionState::Offline
+        );
+    }
+
+    #[test]
+    fn a_row_with_nothing_open_offers_connect() {
+        assert_eq!(row_primary(ConnectionState::Offline), RowPrimary::Connect);
+        assert_eq!(row_primary(ConnectionState::Offline).label(), "connect");
+    }
+
+    #[test]
+    fn a_row_that_already_has_a_session_goes_to_it_instead_of_dialling_twice() {
+        // The bug this pins: `connect_host` always pushes a NEW tab, so clicking
+        // connect on an already-connected row opened a second session to the same host
+        // while the row's own dot sat there saying one was already up.
+        assert_eq!(row_primary(ConnectionState::Live), RowPrimary::Focus);
+        assert_eq!(row_primary(ConnectionState::Connecting), RowPrimary::Focus);
+        assert_eq!(row_primary(ConnectionState::Live).label(), "focus");
+    }
+
+    #[test]
+    fn a_failed_row_offers_a_retry_not_a_trip_to_the_wreckage() {
+        // Retrying is what a failed row is for. Its tab stays open behind the retry so
+        // the error text is still readable.
+        assert_eq!(row_primary(ConnectionState::Failed), RowPrimary::Connect);
+    }
+
+    #[test]
+    fn every_primary_verb_names_itself_and_its_object() {
+        // The button replaces a hint string; it cannot itself be cryptic.
+        for verb in [RowPrimary::Connect, RowPrimary::Focus] {
+            assert!(!verb.label().is_empty(), "{verb:?}: no label");
+            assert!(!verb.tooltip().is_empty(), "{verb:?}: no tooltip");
+            assert_ne!(verb.label(), verb.tooltip());
+        }
+        assert_ne!(RowPrimary::Connect.label(), RowPrimary::Focus.label());
+    }
+
+    #[test]
+    fn a_list_with_rows_in_it_is_never_an_empty_state() {
+        assert_eq!(home_empty(2, 2), None);
+        assert_eq!(
+            home_empty(2, 1),
+            None,
+            "a filtered-down list still has rows"
+        );
+        assert_eq!(home_empty(500, 1), None);
+    }
+
+    #[test]
+    fn a_first_run_screen_asks_for_a_host() {
+        assert_eq!(home_empty(0, 0), Some(HomeEmpty::NoHosts));
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_is_a_different_nothing() {
+        // The two used to render identically — as literally nothing under a
+        // `CONNECTIONS · 0` header. They need different words and different exits:
+        // answering a search with "add a connection" would be a non-sequitur.
+        assert_eq!(home_empty(3, 0), Some(HomeEmpty::NoMatch));
+        assert_ne!(home_empty(3, 0), home_empty(0, 0));
+    }
+
+    #[test]
+    fn the_empty_states_agree_with_the_filter_they_describe() {
+        // Ties `home_empty` to the real filter rather than to a hand-written count, so
+        // the two cannot drift: a blank query matches everything, so a non-empty store
+        // can never land in `NoHosts`.
+        let hosts = vec![attributed(host("web-1", None))];
+        let matched = filter_hosts(&hosts, "").len();
+        assert_eq!(home_empty(hosts.len(), matched), None);
+
+        let matched = filter_hosts(&hosts, "nothing-matches-this").len();
+        assert_eq!(home_empty(hosts.len(), matched), Some(HomeEmpty::NoMatch));
+
+        let none: Vec<Attributed<Host>> = Vec::new();
+        let matched = filter_hosts(&none, "").len();
+        assert_eq!(home_empty(none.len(), matched), Some(HomeEmpty::NoHosts));
     }
 
     #[test]

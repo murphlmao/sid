@@ -332,6 +332,19 @@ impl SshSession {
         &self.status
     }
 
+    /// Make sure the SFTP file panel is on screen.
+    ///
+    /// The panel opens with every session and only leaves when the user collapses it, so
+    /// this is almost always already true — but "browse files" on the Home row has to
+    /// *guarantee* it, or the tab named "SSH / SFTP" would answer a request for files by
+    /// showing a bare terminal.
+    pub fn reveal_files(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_collapsed {
+            self.sidebar_collapsed = false;
+            cx.notify();
+        }
+    }
+
     /// The terminal grid's own [`FocusHandle`] (keyboard-driven system, 2026-07-02
     /// plan) — `app.rs`'s root key dispatcher compares this against `window.focused(cx)`
     /// to decide [`crate::keymap::FocusContext`]. Identical to [`Focusable::focus_handle`]
