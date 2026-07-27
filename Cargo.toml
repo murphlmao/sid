@@ -14,6 +14,7 @@ members = [
     "crates/sid-sysinfo",
     "crates/sid-svcctl",
     "crates/sid-containers",
+    "crates/sid-privfs",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ sid-git = { path = "crates/sid-git" }
 sid-gpu = { path = "crates/sid-gpu" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-containers = { path = "crates/sid-containers" }
+sid-privfs = { path = "crates/sid-privfs" }
 
 # SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
 # is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154

@@ -1,0 +1,74 @@
+#!/bin/sh
+# mock-sudo — a scripted stand-in for sudo(8), for tests and captures.
+#
+# Speaks the same wire protocol sid's privileged-file adapter uses against the real
+# thing: read ONE newline-terminated password line from stdin, then either run the
+# requested command or refuse with sudo's own stderr wording. It grants no privilege
+# whatsoever — it runs the command as whoever invoked it — so a test or a capture can
+# drive the entire unlock -> read -> edit -> save loop with no root and no credentials.
+#
+# sid only consults it in a DEBUG build, and only when SID_SUDO_PROGRAM points here
+# (see `sudo_program()` in crates/sid-privfs/src/sudo.rs). A release binary always runs
+# the real `sudo` from PATH.
+#
+# Behaviour knobs (environment):
+#   MOCK_SUDO_PASSWORD  the password that is accepted (default: "correct")
+#   MOCK_SUDO_VERDICT   force a failure mode instead of checking the password:
+#                         wrong       -> "1 incorrect password attempt"  (retryable)
+#                         notsudoer   -> "is not in the sudoers file"    (fatal)
+#                         hang        -> sleep forever, to exercise the timeout
+#
+# Usage (matches sudo's own): mock-sudo -S -k -p '' -- <command> [args...]
+
+set -u
+
+expected="${MOCK_SUDO_PASSWORD:-correct}"
+verdict="${MOCK_SUDO_VERDICT:-check}"
+
+# Read the password line exactly as sudo -S does. `read` returning non-zero means EOF
+# with nothing before it, i.e. no password was provided.
+if read -r password; then :; else password=""; fi
+
+# Drop sudo's own options, up to and including the `--` that ends them.
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--)
+		shift
+		break
+		;;
+	-p)
+		# Takes a value (sid passes the empty prompt string).
+		shift 2 || shift
+		;;
+	-*)
+		shift
+		;;
+	*)
+		break
+		;;
+	esac
+done
+
+case "$verdict" in
+hang)
+	# The wedged-authenticator case: sid must kill this at its own timeout.
+	while :; do sleep 5; done
+	;;
+notsudoer)
+	printf '%s is not in the sudoers file.  This incident will be reported.\n' \
+		"$(id -un)" >&2
+	exit 1
+	;;
+wrong)
+	password="definitely not $expected"
+	;;
+esac
+
+if [ "$password" != "$expected" ]; then
+	printf 'Sorry, try again.\nsudo: 1 incorrect password attempt\n' >&2
+	exit 1
+fi
+
+[ $# -gt 0 ] || { printf 'usage: mock-sudo [options] -- command\n' >&2; exit 1; }
+
+exec "$@"
