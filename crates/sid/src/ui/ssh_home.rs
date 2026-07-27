@@ -122,6 +122,13 @@ pub(crate) struct HomeTabState {
 }
 
 impl HomeTabState {
+    /// Move keyboard focus into the quick-connect/filter box — `Action::FocusFilter`'s
+    /// (`Ctrl+F` / `Ctrl+/`) handler for the SSH tab, which used to be a no-op here
+    /// because Network was the only tab with a filter wired up.
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &gpui::App) {
+        self.search.read(cx).focus(window);
+    }
+
     pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
         Self {
             collapsed_folders: HashSet::new(),
@@ -222,6 +229,56 @@ pub(crate) fn connection_state(status: Option<&SessionStatus>) -> ConnectionStat
         Some(SessionStatus::Connecting) => ConnectionState::Connecting,
         Some(SessionStatus::Connected) => ConnectionState::Live,
         Some(SessionStatus::Failed(_)) => ConnectionState::Failed,
+    }
+}
+
+/// What a row's primary button does when clicked.
+///
+/// The tab's primary verb used to be documented in a hint string — *"double-click a name
+/// to rename · right-click for more"* — rather than rendered as a control, which is the
+/// whole of the user's "doesn't feel intuitive". It is a button now, and a button has to
+/// say what it will do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowPrimary {
+    /// Dial this host: open a new session.
+    Connect,
+    /// Switch to the session this row already opened.
+    Focus,
+}
+
+impl RowPrimary {
+    /// The button's label.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            RowPrimary::Connect => "connect",
+            RowPrimary::Focus => "focus",
+        }
+    }
+
+    /// The button's tooltip — the label is a verb, this says what it acts on.
+    pub(crate) fn tooltip(self) -> &'static str {
+        match self {
+            RowPrimary::Connect => "open a session on this host",
+            RowPrimary::Focus => "switch to this host's open session",
+        }
+    }
+}
+
+/// Which verb a row's primary button offers, from the state its dot is already showing.
+///
+/// Clicking "connect" on a row that is *already connected* used to open a **second**
+/// session to the same host, silently, because `connect_host` always pushes a new tab.
+/// The live dot said a session existed and the button ignored it. Now the two agree: if
+/// something is up (or coming up), the primary verb goes to it. Opening a deliberate
+/// second session is still available from the row's right-click menu.
+///
+/// `Failed` reads as [`RowPrimary::Connect`], not `Focus`: retrying is what the user
+/// wants from a failed row, and the failed tab stays open behind it so its error text is
+/// still readable.
+pub(crate) fn row_primary(state: ConnectionState) -> RowPrimary {
+    match state {
+        ConnectionState::Connecting | ConnectionState::Live => RowPrimary::Focus,
+        ConnectionState::Offline | ConnectionState::Failed => RowPrimary::Connect,
     }
 }
 
@@ -498,26 +555,18 @@ impl AppState {
     }
 
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (border, muted, accent, fg_strong, danger) =
-            (t.border, t.muted, t.accent, t.fg_strong, t.danger);
+        let t = theme::active(cx).clone();
+        let danger = t.danger;
         let search = self.ssh_home.search.clone();
-        // Fixed-width, never squeezed by a long placeholder/typed value — see the `go`
-        // doc comment on the sibling input wrapper below for why the input side needs
-        // its own clip.
-        let go = div()
-            .id("ssh-quick-connect-go")
-            .w(px(36.))
-            .h(px(34.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .text_xs()
-            .cursor_pointer()
-            .bg(rgb(accent))
-            .text_color(rgb(fg_strong))
-            .child("⏎")
+        // A red filled square with a `⏎` in it used to sit here: sid's most emphatic
+        // affordance, spent on "submit this text field", while the tab's actual primary
+        // verb had no button at all. Now it is a labelled button and says which of the
+        // box's two jobs it performs — the same box is also the list filter, and typing
+        // in it never needs this.
+        let go = Button::new("ssh-quick-connect-go", "connect")
+            .primary()
+            .icon(Icon::Terminal)
+            .tooltip("connect to the typed user@host[:port] without saving it — or press Enter")
             .on_click(
                 cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
             );
@@ -532,13 +581,13 @@ impl AppState {
             .gap_1()
             .px_2()
             .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
+            .hairline_b(&t)
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_1()
+                    .items_center()
+                    .gap_2()
                     .child(
                         // `TextInput` paints its shaped line at its own natural width,
                         // ignoring the box's flex-assigned bounds (see `TextElement::
@@ -556,10 +605,11 @@ impl AppState {
                         div().flex_1().min_w(px(0.)).overflow_hidden().child(search),
                     )
                     .child(go),
-            )
-            .child(div().text_xs().text_color(rgb(muted)).child(
-                "saved connections below · double-click a name to rename · right-click for more",
-            ));
+            );
+        // What used to live here: "saved connections below · double-click a name to
+        // rename · right-click for more" — 12px of muted prose doing the job of three
+        // controls. Every one of those interactions still works; none of them is
+        // documentation-only any more.
         if let Some(err) = &self.ssh_home.quick_error {
             col = col.child(div().text_xs().text_color(rgb(danger)).child(err.clone()));
         }
@@ -624,6 +674,59 @@ impl AppState {
         cx.notify();
     }
 
+    /// The live session this row opened, if one is still in the tab strip.
+    fn session_for_row(&self, key: &(String, Scope)) -> Option<usize> {
+        self.ssh_sessions
+            .iter()
+            .position(|t| t.source.as_ref() == Some(key))
+    }
+
+    /// A row's primary button: connect, or go to the session this row already has —
+    /// see [`row_primary`] for which, and why clicking "connect" on a connected row
+    /// used to silently open a second session.
+    fn row_primary_action(
+        &mut self,
+        host: Host,
+        key: (String, Scope),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = self.session_for_row(&key);
+        let state = connection_state(
+            existing
+                .and_then(|ix| self.ssh_sessions.get(ix))
+                .map(|t| t.session.read(cx).status()),
+        );
+        match (row_primary(state), existing) {
+            (RowPrimary::Focus, Some(ix)) => self.activate_session(ix, window, cx),
+            _ => self.connect_host(host, Some(key), window, cx),
+        }
+    }
+
+    /// A row's `browse files` button: land in this host's SFTP panel.
+    ///
+    /// A fresh session already opens with the file panel showing, so the only extra work
+    /// is for a session that is *already* open with the panel collapsed — reveal it
+    /// before switching, or the click would look like it did nothing.
+    fn row_browse_files(
+        &mut self,
+        host: Host,
+        key: (String, Scope),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.session_for_row(&key) {
+            Some(ix) => {
+                if let Some(tab) = self.ssh_sessions.get(ix) {
+                    tab.session
+                        .update(cx, |session, cx| session.reveal_files(cx));
+                }
+                self.activate_session(ix, window, cx);
+            }
+            None => self.connect_host(host, Some(key), window, cx),
+        }
+    }
+
     /// One tree row: either the normal (icon, name, live-dot, hover actions) row, or —
     /// while this exact (alias, origin) is mid-edit — the inline rename/folder box.
     fn host_tree_row(
@@ -658,13 +761,35 @@ impl AppState {
         // within the window, and every one of these repeats down the list.
         let slot = |name: &'static str| (name, row_id);
 
+        // THE primary verb of the tab, as a control instead of a sentence.
+        //
+        // `Secondary`, not `Primary`, and the reason is the design system's "one accent,
+        // used sparingly": this button repeats once per row, so an accent fill would
+        // paint a column of red down the list and train the eye to ignore it — the exact
+        // failure the audit flagged on Settings' 16 accent-red keybindings. It is still
+        // the loudest thing in the row's action cluster because it is the only one
+        // carrying a word. The screen's single accent goes to quick-connect.
+        let primary = row_primary(state);
         let connect = {
             let host = host.clone();
             let key = key.clone();
-            IconButton::new(slot("ssh-row-connect"), Icon::Terminal, "connect")
+            Button::new(slot("ssh-row-connect"), primary.label())
+                .small()
+                .icon(Icon::Terminal)
+                .tooltip(primary.tooltip())
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                    this.row_primary_action(host.clone(), key.clone(), window, cx);
+                }))
+        };
+        // The other half of the tab's name. SFTP was unreachable from this screen: no
+        // browse affordance, no split hint, nothing saying files were even available.
+        let files = {
+            let host = host.clone();
+            let key = key.clone();
+            IconButton::new(slot("ssh-row-files"), Icon::File, "browse files (SFTP)")
                 .small()
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                    this.connect_host(host.clone(), Some(key.clone()), window, cx);
+                    this.row_browse_files(host.clone(), key.clone(), window, cx);
                 }))
         };
         let rename = {
@@ -777,6 +902,7 @@ impl AppState {
             // the attributive store's one per-row fact the tree doesn't otherwise show.
             .meta(self.scope_chip(a))
             .action(connect)
+            .action(files)
             .action(rename)
             .action(folder_btn)
             .action(delete)
@@ -1070,6 +1196,40 @@ mod tests {
             connection_state(Some(&SessionStatus::Closed)),
             ConnectionState::Offline
         );
+    }
+
+    #[test]
+    fn a_row_with_nothing_open_offers_connect() {
+        assert_eq!(row_primary(ConnectionState::Offline), RowPrimary::Connect);
+        assert_eq!(row_primary(ConnectionState::Offline).label(), "connect");
+    }
+
+    #[test]
+    fn a_row_that_already_has_a_session_goes_to_it_instead_of_dialling_twice() {
+        // The bug this pins: `connect_host` always pushes a NEW tab, so clicking
+        // connect on an already-connected row opened a second session to the same host
+        // while the row's own dot sat there saying one was already up.
+        assert_eq!(row_primary(ConnectionState::Live), RowPrimary::Focus);
+        assert_eq!(row_primary(ConnectionState::Connecting), RowPrimary::Focus);
+        assert_eq!(row_primary(ConnectionState::Live).label(), "focus");
+    }
+
+    #[test]
+    fn a_failed_row_offers_a_retry_not_a_trip_to_the_wreckage() {
+        // Retrying is what a failed row is for. Its tab stays open behind the retry so
+        // the error text is still readable.
+        assert_eq!(row_primary(ConnectionState::Failed), RowPrimary::Connect);
+    }
+
+    #[test]
+    fn every_primary_verb_names_itself_and_its_object() {
+        // The button replaces a hint string; it cannot itself be cryptic.
+        for verb in [RowPrimary::Connect, RowPrimary::Focus] {
+            assert!(!verb.label().is_empty(), "{verb:?}: no label");
+            assert!(!verb.tooltip().is_empty(), "{verb:?}: no tooltip");
+            assert_ne!(verb.label(), verb.tooltip());
+        }
+        assert_ne!(RowPrimary::Connect.label(), RowPrimary::Focus.label());
     }
 
     #[test]

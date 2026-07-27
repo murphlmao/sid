@@ -1118,12 +1118,19 @@ impl AppState {
                 cx.notify();
             }
             Action::FocusFilter => {
-                // Only the Network tab has a filter input wired up so far — other tabs
-                // simply don't have one yet, so this is a no-op there (per the plan's
-                // "other tabs: no-op for now").
-                if self.active_tab == Tab::Network {
-                    self.network.focus_filter(window, cx);
-                    cx.notify();
+                // Tabs with a filter input claim this; the rest have nothing to focus
+                // yet and it stays a no-op there. SSH Home's quick-connect box doubles
+                // as the list filter, so `Ctrl+F` lands in it.
+                match self.active_tab {
+                    Tab::Network => {
+                        self.network.focus_filter(window, cx);
+                        cx.notify();
+                    }
+                    Tab::Ssh if self.active_session.is_none() => {
+                        self.ssh_home.focus_filter(window, cx);
+                        cx.notify();
+                    }
+                    _ => {}
                 }
             }
         }
