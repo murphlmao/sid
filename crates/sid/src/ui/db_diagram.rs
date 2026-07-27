@@ -18,7 +18,7 @@ use sid_core::db::{SchemaGraph, SchemaInfo};
 
 use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
-use sid_ui::{Icon as SidIcon, IconButton, theme};
+use sid_ui::{Icon as SidIcon, IconButton, StyledExt as _, theme};
 
 // ---- layout geometry ------------------------------------------------------------------------
 
@@ -508,12 +508,20 @@ impl DiagramView {
             .bg(rgb(selection_bg))
             .rounded_t_md()
             .cursor_pointer()
+            // The box body is `overflow_hidden`; this header is not, and `flex_1` alone
+            // does not make a text item shrinkable in gpui (a text node measures the
+            // same under MinContent as under MaxContent, so its automatic minimum size
+            // is the whole string). A name like `application_configuration_history` in a
+            // 220px box therefore escaped the box and painted over its neighbours on the
+            // canvas — the one place on this screen where two elements genuinely collide.
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.))
                     .font_weight(FontWeight::BOLD)
                     .text_sm()
                     .text_color(rgb(fg))
+                    .clamp_one_line()
                     .child(table.key.clone()),
             )
             .children((self_ref_count > 0).then(|| {

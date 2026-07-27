@@ -22,7 +22,7 @@ use gpui::{
 };
 
 use super::TextInput;
-use sid_ui::theme;
+use sid_ui::{StyledExt as _, theme};
 
 actions!(
     password_prompt,
@@ -128,9 +128,27 @@ impl Render for PasswordPromptModal {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
+                    // The title carries a `user@host` this modal has no control over, in
+                    // a box pinned to 380px. gpui text measures the same under
+                    // `MinContent` as under `MaxContent` (see `elements/text.rs`: the
+                    // wrap width is `None` for both), so a flex item holding text does
+                    // **not** shrink to its longest word the way CSS would — it keeps
+                    // its full single-line width and pushes itself and its siblings out
+                    // through the modal's border. `min_w(0)` is the only thing that
+                    // makes it shrinkable; `clamp_one_line` then cuts it with a real
+                    // ellipsis, and `flex_none` stops the hint donating its width first.
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_sm()
+                            .text_color(rgb(fg))
+                            .clamp_one_line()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
                             .text_xs()
                             .text_color(rgb(muted))
                             .child("esc cancels · enter connects"),

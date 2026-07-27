@@ -2263,6 +2263,10 @@ fn table_pane<D: FillTableDelegate + 'static>(
 /// drawn by whatever the text font happened to have, at whatever weight, with no size or
 /// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG that
 /// inherits both.
+/// The message is a flex item that has to be *allowed* to shrink: gpui text measures the
+/// same under `MinContent` as under `MaxContent`, so without `min_w(0)` the line's
+/// automatic minimum size is the whole error string and it neither wraps nor clips — and
+/// a systemd or docker error runs to 100+ characters.
 fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
         .gap_1p5()
@@ -2270,7 +2274,7 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
         .text_xs()
         .text_color(rgb(theme.danger))
         .child(Icon::Error.small())
-        .child(message)
+        .child(div().flex_1().min_w(px(0.)).child(message))
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
@@ -2712,7 +2716,7 @@ fn render_iface_row(
             div()
                 .w(px(184.))
                 .flex_none()
-                .truncate()
+                .clamp_one_line()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(theme.fg_strong))
@@ -2732,7 +2736,7 @@ fn render_iface_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .clamp_one_line()
                 .text_xs()
                 .text_color(rgb(theme.muted))
                 .child(addrs),

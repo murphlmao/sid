@@ -1123,6 +1123,10 @@ impl AppState {
 /// drawn by whatever the text font happened to have, at whatever weight, with no size or
 /// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG
 /// that inherits both.
+/// The message is a flex item that has to be *allowed* to shrink: gpui text measures the
+/// same under `MinContent` as under `MaxContent`, so without `min_w(0)` the line's
+/// automatic minimum size is the whole error string and it neither wraps nor clips — an
+/// OS error walks straight out of whichever panel it was rendered into.
 fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
         .gap_1p5()
@@ -1130,7 +1134,7 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
         .text_meta(theme)
         .text_color(rgb(theme.danger))
         .child(Icon::Error.small())
-        .child(message)
+        .child(div().flex_1().min_w(px(0.)).child(message))
 }
 
 /// One of the two config-file lists, as a bounded card.
