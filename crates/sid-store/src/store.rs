@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use crate::composer::{ViewFilters, compose};
-use crate::entities::{DbConnection, Host, PinnedFile, Settings};
+use crate::entities::{DbConnection, Host, KeyBinding, PinnedFile, Settings};
 use crate::error::{Result, StoreError};
 use crate::global::GlobalStore;
 use crate::scope::{Attributed, Scope, WorkspaceId, WorkspaceMeta};
@@ -45,6 +45,29 @@ impl Store {
     /// Persist the machine-local [`Settings`].
     pub fn set_settings(&self, s: &Settings) -> Result<()> {
         self.global.set_settings(s)
+    }
+
+    /// Every user keybinding override (Settings → Keymap). Global-only and never
+    /// layered — a keymap belongs to the person at the keyboard, not to a repository,
+    /// so there is no scope argument here (same rule as [`Store::settings`]).
+    pub fn keybindings(&self) -> Result<Vec<KeyBinding>> {
+        self.global.list_keybindings()
+    }
+
+    /// Bind (or re-bind) one action. Upsert on the action id — see
+    /// [`GlobalStore::set_keybinding`].
+    pub fn set_keybinding(&self, b: &KeyBinding) -> Result<()> {
+        self.global.set_keybinding(b)
+    }
+
+    /// Reset one action to its default, returning whether an override was set.
+    pub fn clear_keybinding(&self, action: &str) -> Result<bool> {
+        self.global.remove_keybinding(action)
+    }
+
+    /// Reset the whole keymap, returning how many overrides were dropped.
+    pub fn clear_all_keybindings(&self) -> Result<usize> {
+        self.global.clear_keybindings()
     }
 
     /// List every pinned config-file path (Round E §D). Global-only — see
