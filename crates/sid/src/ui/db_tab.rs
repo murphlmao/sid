@@ -30,10 +30,10 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_component::input::{Input, InputEvent, InputState, Position};
-use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::table::{Column, TableDelegate, TableState};
 use sid_core::db::{
-    DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo,
-    TableInfo,
+    Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
+    Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
@@ -46,7 +46,11 @@ use crate::ui::db_conn_form::{
 };
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
-use sid_ui::theme;
+use sid_ui::{
+    Badge, Button, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState, FillColumns,
+    FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip, StatusDot,
+    StyledExt as _, Theme, Toolbar, h_flex, sortable_th, theme, v_flex,
+};
 
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
 const MONO: &str = "DejaVu Sans Mono";
@@ -250,11 +254,143 @@ impl ExportFormat {
     }
 }
 
-/// Backs the results [`Table`]. Constructed empty by `ensure_query_widgets`, then
-/// mutated in place (`set_page`) whenever a query completes — see the `results` field
-/// doc comment for why it's never rebuilt.
+// ---- results grid: the column plan (pure `result-set shape -> ColumnWidth`) -------------
+
+/// How wide one character of the results grid's `text_xs` cells is, in logical pixels.
+///
+/// Every other table in sid declares its columns by hand, once, because its schema is
+/// known at compile time. This one's is not: the shape arrives with the data, so the
+/// widths have to be *derived*, and deriving them needs a character advance. gpui only
+/// measures text inside a `Window`, and a plan that needed a window could not be a pure
+/// function — so this is a deliberately slightly-generous average for the bundled
+/// proportional face at 12px. Over-estimating costs a few pixels of slack inside a
+/// column; under-estimating truncates, which is the bug being fixed.
+const CELL_CHAR_PX: f32 = 6.8;
+
+/// Chrome inside one cell that is not available to its text: `render_td`'s `px_2` on
+/// both sides, plus room in the header for the sort chevron `render_th` leaves space for.
+const CELL_CHROME_PX: f32 = 28.0;
+
+/// The narrowest a bounded column (integer, float, bool, null) may render. Wide enough
+/// for a 7-digit value or a short header; narrow enough that a table of counters does
+/// not push its text columns off the screen.
+const NUMERIC_MIN_PX: f32 = 88.0;
+
+/// The widest a bounded column is *floored* at. A 40-digit bignum is real, but it must
+/// not be allowed to claim a third of the grid before the text columns have had any.
+const NUMERIC_MAX_PX: f32 = 200.0;
+
+/// The narrowest an unbounded column (text, bytes, driver-specific) may render — the old
+/// hard-coded width every column used to get, kept as the floor so no result set is
+/// worse off than before.
+const TEXT_MIN_PX: f32 = 140.0;
+
+/// The widest an unbounded column is *floored* at. Past this the column is a `Grow`
+/// anyway, so a wide window still gives it more; the cap only stops one JSON blob column
+/// from pushing every sibling into horizontal scroll on a narrow one.
+const TEXT_MAX_PX: f32 = 320.0;
+
+/// Whether a column's values have a known upper bound on their rendered width.
+///
+/// The split that the plan turns on: bounded columns stay compact (`Min`), unbounded ones
+/// absorb the leftover (`Grow`). `Other` — the driver-specific escape hatch, which is
+/// where `uuid`, `json`, `timestamptz` and friends land — counts as unbounded: guessing
+/// "narrow" for a type sid does not recognise is how a uuid column ends up truncated.
+fn is_bounded(ty: &ColumnType) -> bool {
+    matches!(
+        ty,
+        ColumnType::Integer | ColumnType::Float | ColumnType::Bool | ColumnType::Null
+    )
+}
+
+/// Plan one result page's column widths from its **shape** — the column names and types,
+/// plus the widest value each column actually holds on this page.
+///
+/// This is the one decision the results grid makes that is worth testing, so it is a pure
+/// function of the page: no `Window`, no delegate, no theme. `set_page` is the only
+/// caller.
+///
+/// The rules, in order:
+///
+/// 1. A column's *ideal* width is its widest content — header name or cell value,
+///    whichever is longer — at [`CELL_CHAR_PX`] plus [`CELL_CHROME_PX`]. Measuring the
+///    header too is what stops `avg_order_value_usd` from being clipped above a column of
+///    three-digit numbers.
+/// 2. A **bounded** column ([`is_bounded`]) becomes `Min`, clamped to
+///    [`NUMERIC_MIN_PX`]..[`NUMERIC_MAX_PX`]. `Min`, not `Fixed`, on purpose: a result set
+///    with no text column at all (`select count(*)`) would otherwise leave the grid's
+///    right edge empty, and `sid_ui`'s resolver hands the leftover to `Min` columns
+///    precisely when nothing grows.
+/// 3. An **unbounded** column becomes `Grow`, floored the same way into
+///    [`TEXT_MIN_PX`]..[`TEXT_MAX_PX`], with its **weight set to its content length** —
+///    so a `description` beside a `city` takes the larger share of a wide window instead
+///    of the two splitting it evenly and both being wrong.
+/// 4. No columns in, no widths out: a statement that returned no result set plans nothing
+///    rather than a phantom column.
+fn plan_result_columns(columns: &[DbColumn], rows: &[Row]) -> Vec<ColumnWidth> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(ix, column)| {
+            let widest_value = rows
+                .iter()
+                .filter_map(|row| row.values.get(ix))
+                .map(|v| v.chars().count())
+                .max()
+                .unwrap_or(0);
+            let chars = column.name.chars().count().max(widest_value) as f32;
+            let ideal = chars * CELL_CHAR_PX + CELL_CHROME_PX;
+            if is_bounded(&column.ty) {
+                ColumnWidth::Min(ideal.clamp(NUMERIC_MIN_PX, NUMERIC_MAX_PX))
+            } else {
+                ColumnWidth::grow()
+                    .min_width(ideal.clamp(TEXT_MIN_PX, TEXT_MAX_PX))
+                    // Weight is a ratio, so the unit does not matter — only that a column
+                    // holding twice the text asks for twice the slack. Floored at 1 so a
+                    // column of empty strings still counts as a grower.
+                    .weight(chars.max(1.0))
+            }
+        })
+        .collect()
+}
+
+/// One grid cell's text, collapsed onto a single line.
+///
+/// A result value is whatever the driver rendered, and plenty of them carry newlines: a
+/// `sqlite_master.sql` row is a whole `CREATE TABLE` statement, a `jsonb` column is a
+/// pretty-printed document, a `text` column is a pasted log. A grid row is one line tall,
+/// so an unmodified multi-line value paints straight through the rows beneath it and is
+/// clipped mid-glyph — which is what the fill-width columns made impossible to miss.
+///
+/// Runs of whitespace (including the newline) become one space, and the ends are trimmed.
+/// Nothing is lost: the untouched value is one click away in the view popover, the
+/// clipboard copy takes the original, and CSV export writes from `last_page` and never
+/// sees this.
+fn single_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        pending_space = false;
+        out.push(c);
+    }
+    out
+}
+
+/// Backs the results grid. Constructed empty by `ensure_query_widgets`, then mutated in
+/// place (`set_page`) whenever a query completes — see the `results` field doc comment
+/// for why it's never rebuilt.
 struct ResultDelegate {
-    columns: Vec<Column>,
+    /// The columns and the width each one declared, resized to the live viewport by
+    /// [`FillTable`]. Rebuilt from [`plan_result_columns`] on every page, because unlike
+    /// every other table in sid this one's *schema* changes with the data.
+    columns: FillColumns,
     rows: Vec<Row>,
     /// Handle back to the owning [`AppState`], used only by D2's `view` click (open
     /// the popover on `AppState.db.cell_view`) and copy-notice (`AppState.db.notice`).
@@ -269,19 +405,32 @@ struct ResultDelegate {
 impl ResultDelegate {
     fn empty() -> Self {
         Self {
-            columns: Vec::new(),
+            columns: FillColumns::new([]),
             rows: Vec::new(),
             app: None,
         }
     }
 
+    /// Replace the displayed page — and, with it, the whole column declaration. The
+    /// widths come from [`plan_result_columns`]; [`FillTable`]'s viewport probe resolves
+    /// them against the grid's real width on the next frame.
+    ///
+    /// Columns are declared **not sortable**: see [`ResultDelegate::render_th`].
     fn set_page(&mut self, page: QueryPage) {
-        self.columns = page
-            .columns
-            .iter()
-            .map(|c| Column::new(c.name.clone(), c.name.clone()).width(px(140.)))
-            .collect();
+        let plan = plan_result_columns(&page.columns, &page.rows);
+        self.columns = FillColumns::new(
+            page.columns
+                .iter()
+                .zip(plan)
+                .map(|(c, width)| (Column::new(c.name.clone(), c.name.clone()), width)),
+        );
         self.rows = page.rows;
+    }
+}
+
+impl FillTableDelegate for ResultDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
     }
 }
 
@@ -295,14 +444,39 @@ impl TableDelegate for ResultDelegate {
     }
 
     fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+        self.columns.column(col_ix)
+    }
+
+    /// The full-header-width sort target every other sid table now gets
+    /// (`sid_ui::table::sortable_th`) — which, for this table, renders the plain label,
+    /// because **result columns are not sortable**.
+    ///
+    /// Not an oversight: there is no sort to wire this to. Every other delegate in sid
+    /// sorts a typed domain collection with a comparator it owns; a result page is
+    /// `Vec<Row>` of *display strings* the driver already rendered, and sorting it would
+    /// mean inventing answers to questions this migration has no business deciding —
+    /// whether `"10" < "9"` (string or numeric, per column type), where `NULL` goes, and
+    /// above all whether a click sorts the 100 rows on this page or re-issues the query
+    /// with an `ORDER BY` (the only sort that is actually true of the result set). That
+    /// is a feature with a design, not a rename. `sortable_th` is adopted anyway so the
+    /// seam is already in place: the day a column is declared `.sortable()`, the header
+    /// works.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
     }
 
     /// D2: the whole cell copies its text to the clipboard on click; a cell over
-    /// [`CELL_VIEW_THRESHOLD`] chars also gets a `view` button opening the read-only view
-    /// popover. The `view` click sits inside the cell's own click area, so it fires the
-    /// copy handler too (harmless — the same convention `app.rs`'s row action buttons
-    /// use: "a click here also fires the row's on_click... which is harmless").
+    /// [`CELL_VIEW_THRESHOLD`] chars also gets an expand button opening the read-only view
+    /// popover.
+    ///
+    /// The expand button is now a real [`IconButton`], which consumes its own click — so
+    /// unlike the bare `view` word it replaces, opening the popover no longer also copies
+    /// the cell (`sid_ui::button`'s `consume`).
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -311,17 +485,13 @@ impl TableDelegate for ResultDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let t = theme::active(cx);
-        let (fg, accent, selection) = (t.fg, t.accent, t.selection);
+        let (fg, selection) = (t.fg, t.selection);
         let text = self.rows[row_ix]
             .values
             .get(col_ix)
             .cloned()
             .unwrap_or_default();
-        let column_name = self
-            .columns
-            .get(col_ix)
-            .map(|c| c.name.to_string())
-            .unwrap_or_default();
+        let column_name = self.columns.column(col_ix).name.to_string();
         let cell_ix = row_ix * 4096 + col_ix;
 
         let copy_text = text.clone();
@@ -330,36 +500,41 @@ impl TableDelegate for ResultDelegate {
             let view_app = self.app.clone();
             let view_text = text.clone();
             let view_column = column_name.clone();
-            div()
-                .id(("db-cell-view", cell_ix))
-                .px_1()
-                .rounded_sm()
-                .cursor_pointer()
-                .text_color(rgb(accent))
-                .hover(|s| s.bg(rgb(selection)))
-                .child("view")
-                .on_click(move |_ev, _window, cx| {
-                    let Some(app) = &view_app else { return };
-                    let _ = app.update(cx, |state, cx| {
-                        state.db.cell_view = Some(CellView {
-                            column: view_column.clone(),
-                            text: view_text.clone(),
-                        });
-                        cx.notify();
+            IconButton::new(
+                ("db-cell-view", cell_ix),
+                Icon::Maximize,
+                "view the whole value",
+            )
+            .small()
+            .on_click(move |_ev, _window, cx| {
+                let Some(app) = &view_app else { return };
+                let _ = app.update(cx, |state, cx| {
+                    state.db.cell_view = Some(CellView {
+                        column: view_column.clone(),
+                        text: view_text.clone(),
                     });
-                })
+                    cx.notify();
+                });
+            })
         });
 
-        div()
+        h_flex()
             .id(("db-cell", cell_ix))
-            .flex()
-            .flex_row()
-            .items_center()
+            .w_full()
+            .min_w_0()
             .gap_1()
             .px_2()
             .cursor_pointer()
             .hover(|s| s.bg(rgb(selection)))
-            .child(div().flex_1().text_xs().text_color(rgb(fg)).child(text))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(fg))
+                    .child(single_line(&text)),
+            )
             .children(view_button)
             .on_click(move |_ev, _window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
@@ -471,6 +646,29 @@ fn group_connections(
     rows
 }
 
+/// The state mark one connection row shows, from the four facts the tab knows about it.
+///
+/// A saved connection is not a session, so "live" here means what it can mean: sid is
+/// holding an **open client** for this row (`DbTabState::client`/`client_for`), which is
+/// exactly the state that makes the next Run skip the connect. Kept pure — the four
+/// booleans are all the render path has, and the precedence between them is the only
+/// thing worth getting right:
+///
+/// - **live wins over busy**: a query running against an already-open connection is a
+///   connected connection doing work, not one that is still dialling.
+/// - **busy wins over failed**: a retry in flight supersedes the error it is retrying.
+/// - **failed and busy are only ever the *active* row's** — `schema_error` and the
+///   in-flight flags are single-slot state belonging to the current selection, so
+///   attributing either to a row that is not selected would light up the wrong dot.
+fn connection_dot(live: bool, active: bool, busy: bool, errored: bool) -> ConnectionState {
+    match (live, active, busy, errored) {
+        (true, ..) => ConnectionState::Live,
+        (false, true, true, _) => ConnectionState::Connecting,
+        (false, true, false, true) => ConnectionState::Failed,
+        _ => ConnectionState::Offline,
+    }
+}
+
 /// `schema.table` for Postgres (non-empty schema), or the bare table name for SQLite
 /// and the redb browse engine (no schema namespace). Doubles as the tree row's expanded
 /// key and the identifier `SELECT * FROM <table_display_name>` inserts.
@@ -529,6 +727,46 @@ fn where_filter_scaffold(table: &str, column: &str) -> String {
         quote_ident(table),
         quote_ident(column)
     )
+}
+
+// ---- shared chrome ------------------------------------------------------------------
+
+/// The header strip of one left-rail panel: an uppercase section label with its count,
+/// and whatever controls the caller adds, right-aligned.
+///
+/// Not [`sid_ui::Card`]: a card's body is a fixed `v_flex`, and all three panels here need
+/// a `flex_1` scrolling list under the header. What the card *does* own — the label's
+/// wording and type — comes from `sid_ui::card::header_text` and `section_label`, so the
+/// three headers cannot drift apart.
+fn panel_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
+    h_flex()
+        .justify_between()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .flex_none()
+        .hairline_b(theme)
+        .child(
+            div()
+                .section_label(theme)
+                .child(sid_ui::card::header_text(title, count)),
+        )
+}
+
+/// An inline failure notice: the registry's error glyph, then the message.
+///
+/// The same shape `systems_tab.rs` uses (that copy is file-private, so this is a second
+/// spelling of four lines rather than an import — a candidate for `sid-ui` proper).
+/// Replaces this tab's three literal `✗` prefixes, each of which was drawn by whatever
+/// the text font had at whatever weight.
+fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
+    h_flex()
+        .gap_1p5()
+        .py_1()
+        .text_xs()
+        .text_color(rgb(theme.danger))
+        .child(Icon::Error.small())
+        .child(message)
 }
 
 impl DbTabState {
@@ -604,8 +842,7 @@ impl AppState {
     pub(crate) fn db_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_query_widgets(window, cx);
 
-        let t = theme::active(cx);
-        let (border, danger) = (t.border, t.danger);
+        let t = theme::active(cx).clone();
         // The saved-connection picker lives in the unified left panel (`connection_panel`,
         // built inside `query_pane`, stacked above the schema tree) — DBeaver-style, per
         // Murphy: "connections on the left, like dbeaver" (an earlier pass had put this
@@ -613,22 +850,14 @@ impl AppState {
         // strip is now just the tab's shared error line (still needed: promote/demote/
         // delete/rename/folder-edit failures all land in `self.error`), collapsing to
         // nothing when there is none rather than reserving dead space.
-        let error_line = self.error.clone().map(|e| {
-            div()
-                .px_4()
-                .py_2()
-                .border_b_1()
-                .border_color(rgb(border))
-                .text_sm()
-                .text_color(rgb(danger))
-                .child(format!("error: {e}"))
-        });
+        let error_banner = self
+            .error
+            .clone()
+            .map(|e| div().px_4().hairline_b(&t).child(error_line(&t, e)));
 
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .flex_1()
-            .children(error_line)
+            .children(error_banner)
             .child(self.query_pane(cx))
             .children(self.cell_view_overlay(window, cx))
             .into_any_element()
@@ -649,8 +878,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let t = theme::active(cx);
-        let (surface, border, fg, muted, selection) =
-            (t.surface, t.border, t.fg, t.muted, t.selection);
+        let (surface, border, fg) = (t.surface, t.border, t.fg);
         let cell = self.db.cell_view.clone()?;
         let viewport = window.viewport_size();
 
@@ -692,21 +920,20 @@ impl AppState {
                                                 .child(cell.column.clone()),
                                         )
                                         .child(
-                                            div()
-                                                .id("db-cell-view-close")
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .text_color(rgb(muted))
-                                                .hover(|s| s.bg(rgb(selection)))
-                                                .child("✕ close")
-                                                .on_click(cx.listener(
+                                            IconButton::new(
+                                                "db-cell-view-close",
+                                                Icon::Close,
+                                                "close",
+                                            )
+                                            .small()
+                                            .on_click(
+                                                cx.listener(
                                                     |this, _ev: &ClickEvent, _window, cx| {
                                                         this.db.cell_view = None;
                                                         cx.notify();
                                                     },
-                                                )),
+                                                ),
+                                            ),
                                         ),
                                 )
                                 .child(
@@ -784,16 +1011,7 @@ impl AppState {
     /// connection picker. Always rendered; Run/next-page are no-ops (surfaced as a
     /// status message) with no active connection rather than being conditionally absent.
     fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, danger, accent, selection, fg_strong, well) = (
-            t.border,
-            t.muted,
-            t.danger,
-            t.accent,
-            t.selection,
-            t.fg_strong,
-            t.well,
-        );
+        let t = theme::active(cx).clone();
         let active_label: SharedString = match &self.db.active_id {
             Some(id) => self
                 .db
@@ -812,27 +1030,33 @@ impl AppState {
             None => "no connection selected".into(),
         };
 
-        let (status_text, status_color): (SharedString, u32) = match &self.db.status {
-            QueryStatus::Idle => ("".into(), muted),
-            QueryStatus::Err(e) => (format!("✗ {e}").into(), danger),
-            QueryStatus::Ok {
-                rows, duration_ms, ..
-            } => (format!("✓ {rows} rows · {duration_ms} ms").into(), muted),
-        };
+        // The successful-run summary reads as the toolbar's count (`"340 rows · 12 ms"`,
+        // the shape `Toolbar::count_label` exists for); only a *failure* still needs its
+        // own line below the editor, where it can be as long as the driver made it.
+        let (count_label, error_text): (Option<SharedString>, Option<String>) =
+            match &self.db.status {
+                QueryStatus::Idle => (None, None),
+                QueryStatus::Err(e) => (None, Some(e.clone())),
+                QueryStatus::Ok {
+                    rows, duration_ms, ..
+                } => (
+                    Some(
+                        format!(
+                            "{} · {duration_ms} ms",
+                            sid_ui::toolbar::count_label(*rows, "row")
+                        )
+                        .into(),
+                    ),
+                    None,
+                ),
+            };
         let has_more = matches!(&self.db.status, QueryStatus::Ok { has_more: true, .. });
-        let run_label = if self.db.running { "…" } else { "▶ Run" };
 
         let next_page = has_more.then(|| {
-            div()
-                .id("db-next-page")
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(rgb(accent))
-                .hover(|s| s.bg(rgb(selection)))
-                .child("⭳ next page")
+            Button::new("db-next-page", "next page")
+                .small()
+                .icon(Icon::ChevronRight)
+                .tooltip("fetch the next page of this result set")
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                     this.next_page(cx);
                 }))
@@ -842,82 +1066,123 @@ impl AppState {
             div()
                 .h(px(140.))
                 .rounded_md()
-                .border_1()
-                .border_color(rgb(border))
-                .bg(rgb(well))
+                .elevation(Elevation::Well, &t)
                 .child(Input::new(&sql))
         });
-        let results_table = self
-            .db
-            .results
-            .clone()
-            .map(|t| div().flex_1().w_full().child(Table::new(&t).stripe(true)));
 
-        let notice = self
-            .db
-            .notice
-            .clone()
-            .map(|n| div().text_xs().text_color(rgb(muted)).child(n));
+        let notice = self.db.notice.clone().map(|n| div().hint_text(&t).child(n));
 
-        let editor_and_results = div()
-            .flex()
-            .flex_col()
+        let editor_and_results = v_flex()
             .flex_1()
+            // A flex child's default minimum is content-sized: without this the results
+            // grid pushes the pane wider than the window instead of scrolling inside it.
+            .min_w(px(0.))
             .gap_2()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child(active_label),
-                    )
-                    .children(next_page)
-                    .child(
-                        div()
-                            .id("db-run")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(rgb(fg_strong))
-                            .bg(rgb(accent))
-                            .hover(|s| s.opacity(0.85))
-                            .child(run_label)
+                Toolbar::new()
+                    .filter(div().hint_text(&t).child(active_label))
+                    .when_some(count_label, |bar, label| bar.count_label(label))
+                    .when_some(next_page, |bar, button| bar.action(button))
+                    .action(
+                        Button::new("db-run", "Run")
+                            .primary()
+                            .loading(self.db.running)
+                            .tooltip("run the query (Ctrl-Enter)")
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.run_query(window, cx);
                             })),
                     )
                     // Far right, after Run (Murphy: "download as csv should be on the
                     // far right") — the generic export control (Task 1).
-                    .child(self.export_control(cx)),
+                    .action(self.export_control(cx)),
             )
             .children(sql_editor)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(status_color))
-                    .child(status_text),
-            )
+            .children(error_text.map(|e| error_line(&t, e)))
             .children(notice)
-            .children(results_table);
+            .child(self.results_area(cx));
 
+        // Deliberately not `h_flex`: that centres its children on the cross axis, and
+        // this row's children must *stretch* to it. A content-height query column gives
+        // the results grid nothing to be `flex_1` of, and a zero-height grid paints its
+        // header and not one row — the same failure mode `sid_ui::table`'s `TABLE_CHROME`
+        // documents, reached from the other direction.
         div()
             .flex()
             .flex_row()
             .flex_1()
+            .min_h(px(0.))
             .gap_2()
             .p_3()
-            .border_t_1()
-            .border_color(rgb(border))
+            .hairline_t(&t)
             .child(self.left_panel(cx))
             .child(editor_and_results)
+    }
+
+    /// The results grid, or — with no connection chosen yet — the tab's empty state.
+    ///
+    /// The grid is a [`FillTable`]: its columns are resized to the width this pane
+    /// actually got, so a 2000px window shows 2000px of data instead of a 140px-per-column
+    /// ribbon with the rest of the screen black (`sid_ui::table`).
+    fn results_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.db.active_id.is_none() {
+            let empty = if self.db.connections.is_empty() {
+                EmptyState::new("no database connections yet")
+                    .guidance("add one to browse its schema, run queries and export the results")
+                    .icon(Icon::Dashboard)
+                    .action(
+                        Button::new("db-empty-add", "add a connection")
+                            .primary()
+                            .icon(Icon::Add)
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_db_form(window, cx);
+                            })),
+                    )
+            } else {
+                EmptyState::new("no connection selected")
+                    .guidance("pick a connection on the left to load its schema and run queries")
+                    .icon(Icon::Dashboard)
+                    .action(
+                        Button::new("db-empty-add", "add a connection")
+                            .icon(Icon::Add)
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_db_form(window, cx);
+                            })),
+                    )
+            };
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .child(empty)
+                .into_any_element();
+        }
+        // Selected, but nothing run yet. The grid at this point is a header strip with no
+        // columns over the library's own generic "no data" illustration — which says
+        // nothing about *why* it is empty. One line of guidance does; the Run button it
+        // points at is already on the toolbar above.
+        if self.db.last_page.is_none() && !self.db.running {
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .child(
+                    EmptyState::new("no results yet")
+                        .guidance(
+                            "write a query above and Run it, or click a table in the schema tree",
+                        )
+                        .icon(Icon::Terminal),
+                )
+                .into_any_element();
+        }
+        match self.db.results.clone() {
+            Some(table) => div()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .child(FillTable::new(&table).stripe(true))
+                .into_any_element(),
+            None => div().flex_1().into_any_element(),
+        }
     }
 
     /// The "⭳ Export ▾" control: a button that toggles [`DbTabState::export_menu_open`],
@@ -929,19 +1194,10 @@ impl AppState {
     /// of a window-pinned point, since this is a small trigger-attached menu, not a
     /// full-viewport modal.
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (accent, selection, border, surface, fg) =
-            (t.accent, t.selection, t.border, t.surface, t.fg);
-        let button = div()
-            .id("db-export-open")
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_xs()
-            .cursor_pointer()
-            .text_color(rgb(accent))
-            .hover(|s| s.bg(rgb(selection)))
-            .child("⭳ Export ▾")
+        let t = theme::active(cx).clone();
+        let button = Button::new("db-export-open", "Export")
+            .small()
+            .tooltip("export the results now on screen")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.db.export_menu_open = !this.db.export_menu_open;
                 cx.notify();
@@ -953,29 +1209,18 @@ impl AppState {
                     .anchor(Corner::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
-                        div()
+                        v_flex()
                             .id("db-export-menu")
                             .occlude()
                             .mt_1()
                             .min_w(px(180.))
-                            .flex()
-                            .flex_col()
                             .rounded_md()
-                            .border_1()
-                            .border_color(rgb(border))
-                            .bg(rgb(surface))
-                            .py_1()
+                            .elevation(Elevation::Surface, &t)
+                            .p_1()
                             .children(ExportFormat::ALL.iter().enumerate().map(|(ix, fmt)| {
                                 let fmt = *fmt;
-                                div()
-                                    .id(("db-export-item", ix))
-                                    .px_3()
-                                    .py_1()
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .text_color(rgb(fg))
-                                    .hover(|s| s.bg(rgb(selection)))
-                                    .child(fmt.label())
+                                UiRow::new(("db-export-item", ix))
+                                    .child(div().text_xs().child(fmt.label()))
                                     .on_click(cx.listener(
                                         move |this, _ev: &ClickEvent, _window, cx| {
                                             this.export(fmt, cx);
@@ -1007,11 +1252,14 @@ impl AppState {
     /// at the bottom. One column, three stacked sections — a second side-by-side column
     /// would crowd the tab.
     fn left_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        div()
-            .w(px(260.))
+        v_flex()
+            // 280 rather than the old 260: a connection row now carries a status dot and
+            // an origin chip beside its name, and the DSN subtitle under it was already
+            // the first thing to truncate. The 20px comes out of a query pane that has
+            // ~1700px at the capture width.
+            .w(px(280.))
+            .flex_none()
             .h_full()
-            .flex()
-            .flex_col()
             .gap_2()
             .child(self.connection_panel(cx))
             .child(self.schema_tree_panel(cx))
@@ -1023,54 +1271,29 @@ impl AppState {
     /// show columns). Pure-from-cache: reads `self.db.schema`/`schema_expanded` only,
     /// never touches the runtime itself (that's `refresh_schema`'s job).
     fn schema_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, danger, accent, selection, well) =
-            (t.border, t.muted, t.danger, t.accent, t.selection, t.well);
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_xs().text_color(rgb(muted)).child("SCHEMA"))
+        let t = theme::active(cx).clone();
+        let table_count = self.db.schema.as_ref().map(|s| s.tables.len());
+        let header = panel_header(&t, "SCHEMA", table_count)
+            .child(self.diagram_button(cx))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(self.diagram_button(cx))
-                    .child(
-                        div()
-                            .id("db-schema-refresh")
-                            .px_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .text_color(rgb(accent))
-                            .hover(|s| s.bg(rgb(selection)))
-                            .child(if self.db.schema_loading { "…" } else { "⟳" })
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.refresh_schema(window, cx);
-                            })),
-                    ),
+                IconButton::new("db-schema-refresh", Icon::Refresh, "reload the schema")
+                    .small()
+                    .loading(self.db.schema_loading)
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.refresh_schema(window, cx);
+                    })),
             );
 
         let body: AnyElement = if self.db.schema_loading && self.db.schema.is_none() {
             div()
                 .p_2()
-                .text_xs()
-                .text_color(rgb(muted))
+                .hint_text(&t)
                 .child("loading schema…")
                 .into_any_element()
         } else if let Some(err) = &self.db.schema_error {
             div()
-                .p_2()
-                .text_xs()
-                .text_color(rgb(danger))
-                .child(format!("✗ {err}"))
+                .px_2()
+                .child(error_line(&t, err.clone()))
                 .into_any_element()
         } else {
             let rows = match &self.db.schema {
@@ -1080,17 +1303,12 @@ impl AppState {
             if rows.is_empty() {
                 div()
                     .p_2()
-                    .text_xs()
-                    .text_color(rgb(muted))
+                    .hint_text(&t)
                     .child("no schema loaded — select a connection")
                     .into_any_element()
             } else {
-                div()
-                    .id("db-schema-tree-body")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .overflow_y_scroll()
+                List::scrolling("db-schema-tree-body")
+                    .px_1()
                     .children(
                         rows.into_iter()
                             .enumerate()
@@ -1100,14 +1318,11 @@ impl AppState {
             }
         };
 
-        div()
+        v_flex()
             .flex_1()
-            .flex()
-            .flex_col()
+            .min_h(px(0.))
             .rounded_md()
-            .border_1()
-            .border_color(rgb(border))
-            .bg(rgb(well))
+            .elevation(Elevation::Well, &t)
             .child(header)
             .child(body)
     }
@@ -1117,27 +1332,17 @@ impl AppState {
     /// schema is cached for the active connection; otherwise rendered dim and inert
     /// rather than hidden, matching this tab's convention of always-present, sometimes
     /// no-op controls (see `query_pane`'s doc comment on Run/next-page).
-    fn diagram_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (accent, muted, selection) = (t.accent, t.muted, t.selection);
-        let enabled = self.db.schema.is_some();
-        let button = div()
-            .id("db-diagram-open")
-            .px_1()
-            .rounded_sm()
-            .text_color(rgb(if enabled { accent } else { muted }))
-            .child("diagram");
-        if enabled {
-            button
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(selection)))
-                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                    this.open_diagram_window(window, cx);
-                }))
-                .into_any_element()
-        } else {
-            button.into_any_element()
-        }
+    fn diagram_button(&self, cx: &mut Context<Self>) -> Button {
+        // `Button::disabled` installs no click handler at all, so "inert until a schema
+        // is cached" is structural here rather than an `if` around the listener.
+        Button::new("db-diagram-open", "diagram")
+            .small()
+            .ghost()
+            .disabled(self.db.schema.is_none())
+            .tooltip("open the relationships diagram in its own window")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                this.open_diagram_window(window, cx);
+            }))
     }
 
     /// Open the relationships diagram in its own OS window — a snapshot of the cached
@@ -1221,8 +1426,7 @@ impl AppState {
     /// One [`SchemaRow`]'s rendering — a table header (chevron toggles expand, name
     /// inserts `SELECT * FROM <table>`) or an indented column leaf.
     fn schema_tree_row(&self, ix: usize, row: SchemaRow, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (fg, muted, selection) = (t.fg, t.muted, t.selection);
+        let t = theme::active(cx).clone();
         match row {
             SchemaRow::Table {
                 display_name,
@@ -1230,48 +1434,45 @@ impl AppState {
             } => {
                 let chevron_name = display_name.clone();
                 let insert_name = display_name.clone();
-                div()
-                    .id(("db-schema-table", ix))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .child(
-                        div()
-                            .id(("db-schema-toggle", ix))
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child(if expanded { "▾" } else { "▸" })
+                let (chevron, hint) = match expanded {
+                    true => (Icon::ChevronDown, "hide this table's columns"),
+                    false => (Icon::ChevronRight, "show this table's columns"),
+                };
+                UiRow::new(("db-schema-table", ix))
+                    // Tree rows are the densest list in the app — three panels share one
+                    // 280px column — so they take the row language at the tighter of the
+                    // system's two vertical rhythms.
+                    .py_0p5()
+                    .px_1()
+                    .leading(
+                        IconButton::new(("db-schema-toggle", ix), chevron, hint)
+                            .small()
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 this.toggle_schema_table(&chevron_name, cx);
                             })),
                     )
                     .child(
                         div()
-                            .id(("db-schema-name", ix))
-                            .flex_1()
-                            .cursor_pointer()
+                            .truncate()
                             .text_xs()
-                            .text_color(rgb(fg))
-                            .hover(|s| s.bg(rgb(selection)))
-                            .child(display_name.clone())
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                                this.insert_select_star(&insert_name, window, cx);
-                            })),
+                            .text_color(rgb(t.fg))
+                            .child(display_name),
                     )
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                        this.insert_select_star(&insert_name, window, cx);
+                    }))
                     .into_any_element()
             }
-            SchemaRow::Column { name } => div()
-                .id(("db-schema-col", ix))
-                .pl_6()
+            // Inert by design: a column leaf has no behaviour, and `Row` paints no hover
+            // on a row that does nothing (`sid_ui::list`'s "an inert row promises
+            // nothing").
+            // Indented past the table name above it, not merely past the chevron: at the
+            // same x the two levels read as one flat list.
+            SchemaRow::Column { name } => UiRow::new(("db-schema-col", ix))
+                .py_0p5()
+                .pl_12()
                 .pr_2()
-                .py_1()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(name)
+                .child(div().truncate().hint_text(&t).child(name))
                 .into_any_element(),
         }
     }
@@ -1279,32 +1480,19 @@ impl AppState {
     /// D4: the query-history panel — most-recent-first, click an entry to reload it
     /// (unmodified) into the SQL editor.
     fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, fg, selection, well) = (t.border, t.muted, t.fg, t.selection, t.well);
+        let t = theme::active(cx).clone();
         let entries = self.db.history.clone();
-        let header = div()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .text_xs()
-            .text_color(rgb(muted))
-            .child("HISTORY");
+        let header = panel_header(&t, "HISTORY", Some(entries.len()));
 
         let body: AnyElement = if entries.is_empty() {
             div()
                 .p_2()
-                .text_xs()
-                .text_color(rgb(muted))
+                .hint_text(&t)
                 .child("no queries run yet")
                 .into_any_element()
         } else {
-            div()
-                .id("db-history-body")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .overflow_y_scroll()
+            List::scrolling("db-history-body")
+                .px_1()
                 .children(entries.into_iter().enumerate().map(|(ix, sql)| {
                     let full = sql.clone();
                     let label: SharedString = if sql.chars().count() > 34 {
@@ -1313,15 +1501,16 @@ impl AppState {
                     } else {
                         sql.clone().into()
                     };
-                    div()
-                        .id(("db-history", ix))
+                    UiRow::new(("db-history", ix))
+                        .py_0p5()
                         .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(fg))
-                        .hover(|s| s.bg(rgb(selection)))
-                        .child(label)
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(rgb(t.fg))
+                                .child(label),
+                        )
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                             this.reload_history_entry(&full, window, cx);
                         }))
@@ -1329,14 +1518,11 @@ impl AppState {
                 .into_any_element()
         };
 
-        div()
+        v_flex()
             .h(px(160.))
-            .flex()
-            .flex_col()
+            .flex_none()
             .rounded_md()
-            .border_1()
-            .border_color(rgb(border))
-            .bg(rgb(well))
+            .elevation(Elevation::Well, &t)
             .child(header)
             .child(body)
     }
@@ -1351,54 +1537,26 @@ impl AppState {
     /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
     /// `render_connection_row`) needs no focus of its own.
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted, accent, selection, well) =
-            (t.border, t.muted, t.accent, t.selection, t.well);
+        let t = theme::active(cx).clone();
         let count = self.db.connections.len();
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .child(format!("connections · {count}")),
-            )
-            .child(
-                div()
-                    .id("db-conn-add")
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_color(rgb(accent))
-                    .hover(|s| s.bg(rgb(selection)))
-                    .child("+")
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_db_form(window, cx);
-                    })),
-            );
+        let header = panel_header(&t, "CONNECTIONS", Some(count)).child(
+            IconButton::new("db-conn-add", Icon::Add, "add a connection")
+                .small()
+                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                    this.open_add_db_form(window, cx);
+                })),
+        );
 
         let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
         let body: AnyElement = if rows.is_empty() {
             div()
                 .p_2()
-                .text_xs()
-                .text_color(rgb(muted))
+                .hint_text(&t)
                 .child("no connections yet")
                 .into_any_element()
         } else {
-            div()
-                .id("db-conn-body")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .overflow_y_scroll()
+            List::scrolling("db-conn-body")
+                .px_1()
                 .children(
                     rows.into_iter()
                         .enumerate()
@@ -1408,16 +1566,13 @@ impl AppState {
         };
 
         let focus_handle = self.db.conn_focus.clone();
-        div()
+        v_flex()
             .id("db-conn-panel")
             .w_full()
-            .h(px(220.))
-            .flex()
-            .flex_col()
+            .h(px(240.))
+            .flex_none()
             .rounded_md()
-            .border_1()
-            .border_color(rgb(border))
-            .bg(rgb(well))
+            .elevation(Elevation::Well, &t)
             .when_some(focus_handle, |el, fh| {
                 el.track_focus(&fh).on_key_down(cx.listener(
                     |this, ev: &KeyDownEvent, window, cx| {
@@ -1436,8 +1591,7 @@ impl AppState {
     /// `group_connections` snapshotting the list and this call) renders nothing —
     /// `refresh_db` drops it from the row list on the very next paint.
     fn connection_panel_row(&self, ix: usize, row: ConnRow, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (muted, selection) = (t.muted, t.selection);
+        let t = theme::active(cx).clone();
         match row {
             ConnRow::Folder {
                 name,
@@ -1445,28 +1599,16 @@ impl AppState {
                 count,
             } => {
                 let toggle_name = name.clone();
-                div()
-                    .id(("db-folder", ix))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
+                let chevron = match expanded {
+                    true => Icon::ChevronDown,
+                    false => Icon::ChevronRight,
+                };
+                UiRow::new(("db-folder", ix))
                     .py_1()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(selection)))
-                    .child(div().text_xs().text_color(rgb(muted)).child(if expanded {
-                        "▾"
-                    } else {
-                        "▸"
-                    }))
-                    .child(div().flex_1().text_xs().text_color(rgb(muted)).child(name))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child(count.to_string()),
-                    )
+                    .px_2()
+                    .leading(chevron.small().text_color(rgb(t.muted)))
+                    .child(div().truncate().hint_text(&t).child(name))
+                    .meta(Badge::count(count))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.toggle_conn_folder(&toggle_name, cx);
                     }))
@@ -1481,29 +1623,28 @@ impl AppState {
         }
     }
 
-    /// One connection's row in the panel: its name (a live rename [`TextInput`] in
-    /// place, mid-rename) plus origin badge and `★` active marker, a DSN subtitle (a
-    /// live folder-edit [`TextInput`] in place, mid-folder-edit), and the
-    /// promote/demote/edit/folder/delete action strip. Structurally the pre-selector-move
-    /// row (W3's `db_connection_row`), restacked into the panel's narrower column and
-    /// extended with the rename/folder affordances.
+    /// One connection's row in the panel: a state dot, its name (a live rename
+    /// [`TextInput`] in place, mid-rename) with its origin chip, a DSN subtitle (a live
+    /// folder-edit [`TextInput`] in place, mid-folder-edit), and the
+    /// promote/demote/edit/folder/delete action strip.
+    ///
+    /// # Why the actions are a third line rather than `Row`'s action slot
+    ///
+    /// [`UiRow`]'s slot order — mark, content, metadata, engagement — assumes a row as
+    /// wide as a table. This one lives in a 280px rail: a dot, a name, an origin chip and
+    /// five 24px controls on one line leaves the name about 20px, and the DSN under it
+    /// less. So the row keeps `Row`'s box, hover, selection and click, and stacks
+    /// name / DSN / actions inside its content slot. The alternative — moving four of the
+    /// five actions into a right-click menu — is a real design, but it needs the
+    /// container-owned context menu `sid_ui::list` documents, and that is a different
+    /// commit.
     fn render_connection_row(
         &self,
         ix: usize,
         a: &Attributed<DbConnection>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let t = theme::active(cx);
-        let (bg, border, fg, muted, selection, fg_strong, accent, danger) = (
-            t.bg,
-            t.border,
-            t.fg,
-            t.muted,
-            t.selection,
-            t.fg_strong,
-            t.accent,
-            t.danger,
-        );
+        let t = theme::active(cx).clone();
         let conn = a.item.clone();
         let display_name: SharedString = if conn.name.is_empty() {
             conn.id.clone().into()
@@ -1511,7 +1652,6 @@ impl AppState {
             conn.name.clone().into()
         };
         let subtitle: SharedString = format!("{} · {}", conn.kind.label(), conn.dsn).into();
-        let (badge, badge_color) = self.db_origin_badge(a, cx);
         let is_active = self.db.active_id.as_deref() == Some(conn.id.as_str());
         let click_id = conn.id.clone();
         let origin = a.origin.clone();
@@ -1519,82 +1659,83 @@ impl AppState {
             self.db.armed_delete.as_ref(),
             &(conn.id.clone(), origin.clone()),
         );
+        let state = connection_dot(
+            self.db.client.is_some() && self.db.client_for.as_deref() == Some(conn.id.as_str()),
+            is_active,
+            self.db.running || self.db.schema_loading,
+            self.db.schema_error.is_some(),
+        );
 
-        // Small text-button factory for the row's action strip. Mirrors `app.rs`'s
-        // `host_row::action` closure exactly. Note: these buttons sit inside the row's
-        // own click-to-select area — a click here also fires the row's `on_click`
-        // (selecting it), which is harmless (selection isn't destructive).
-        let action = |id: (&'static str, usize), label: SharedString, color: u32| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(rgb(color))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
-
-        // ⤒ promote: workspace-origin rows only.
+        // Promote: workspace-origin rows only.
         let promote = can_promote(&origin).then(|| {
             let id = conn.id.clone();
             let origin = origin.clone();
-            action(("db-promote", ix), "⤒".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.promote_db_row(&id, &origin, cx);
-                },
-            ))
+            IconButton::new(
+                ("db-promote", ix),
+                Icon::ChevronUp,
+                "promote this connection to the global store",
+            )
+            .small()
+            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                this.promote_db_row(&id, &origin, cx);
+            }))
         });
 
-        // ⤓ demote: global-origin rows while a workspace scope is active.
+        // Demote: global-origin rows while a workspace scope is active.
         let demote = can_demote(&origin, &self.scope).then(|| {
             let id = conn.id.clone();
-            action(("db-demote", ix), "⤓".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
-                    this.demote_db_row(&id, cx);
-                },
-            ))
+            IconButton::new(
+                ("db-demote", ix),
+                Icon::ChevronDown,
+                "demote this connection into the active workspace",
+            )
+            .small()
+            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                this.demote_db_row(&id, cx);
+            }))
         });
 
-        // ✎ edit: opens the form prefilled with this row's record.
+        // Edit: opens the form prefilled with this row's record.
         let edit = {
             let conn = conn.clone();
             let origin = origin.clone();
-            action(("db-edit", ix), "✎".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(("db-edit", ix), Icon::Rename, "edit this connection")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.open_edit_db_form(conn.clone(), origin.clone(), window, cx);
-                },
-            ))
+                }))
         };
 
-        // folder: opens the minimal inline folder-assignment editor (Task 2's "row
+        // Folder: opens the minimal inline folder-assignment editor (Task 2's "row
         // hover-menu → small input" — see `Self::begin_folder_edit`).
         let folder_btn = {
             let id = conn.id.clone();
             let origin = origin.clone();
             let current = conn.folder.clone();
-            action(("db-folder-edit", ix), "folder".into(), muted).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, window, cx| {
-                    this.begin_folder_edit(&id, &origin, current.as_deref(), window, cx);
-                },
-            ))
+            IconButton::new(
+                ("db-folder-edit", ix),
+                Icon::Folder,
+                "put this row in a folder",
+            )
+            .small()
+            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                this.begin_folder_edit(&id, &origin, current.as_deref(), window, cx);
+            }))
         };
 
-        // ✕ delete: two-click confirm — the first click arms this row, the second
-        // deletes from the row's origin layer (and its secret from the keyring).
+        // Delete: two-click confirm — the first click arms this row, the second deletes
+        // from the row's origin layer (and its secret from the keyring). `ConfirmButton`
+        // renders the arm; the arm itself stays `DbTabState::armed_delete`, which is keyed
+        // by (id, origin) — `ConfirmArm` requires a `Copy` key and this one is not.
         let delete = {
             let id = conn.id.clone();
             let origin = origin.clone();
             let secret_ref = conn.secret_ref.clone();
-            let (label, color) = if armed {
-                ("✕ confirm?", danger)
-            } else {
-                ("✕", muted)
-            };
-            action(("db-delete", ix), label.into(), color).on_click(cx.listener(
-                move |this, _ev: &ClickEvent, _window, cx| {
+            ConfirmButton::new(("db-delete", ix), "delete")
+                .armed(armed)
+                .icon(Icon::Trash)
+                .tooltip("delete this connection and its stored secret")
+                .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     let key = (id.clone(), origin.clone());
                     if delete_click_executes(this.db.armed_delete.as_ref(), &key) {
                         this.delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
@@ -1602,8 +1743,7 @@ impl AppState {
                         this.db.armed_delete = Some(key);
                         cx.notify();
                     }
-                },
-            ))
+                }))
         };
 
         // Name area — the live rename `TextInput` in place of the label while this row
@@ -1638,10 +1778,10 @@ impl AppState {
             let name_text = display_name.clone();
             div()
                 .id(("db-conn-name", ix))
-                .flex_1()
+                .truncate()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(if is_active { fg_strong } else { fg }))
+                .text_color(rgb(if is_active { t.fg_strong } else { t.fg }))
                 .child(display_name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                     // Double-click (VS Code convention) starts the inline rename; a
@@ -1682,25 +1822,18 @@ impl AppState {
                 .into_any_element()
         } else {
             div()
+                .truncate()
                 .font_family(MONO)
-                .text_xs()
-                .text_color(rgb(muted))
+                .hint_text(&t)
                 .child(subtitle)
                 .into_any_element()
         };
 
-        div()
-            .id(("db-conn", ix))
-            .flex()
-            .flex_col()
-            .gap_1()
-            .w_full()
+        UiRow::new(("db-conn", ix))
+            .selected(is_active)
+            .py_1p5()
             .px_2()
-            .py_2()
-            .cursor_pointer()
-            .bg(rgb(if is_active { selection } else { bg }))
-            .border_b_1()
-            .border_color(rgb(border))
+            .leading(StatusDot::new(("db-conn-dot", ix), state))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if this.db.active_id.as_deref() != Some(click_id.as_str()) {
                     // Switching connections: drop the previous connection's schema
@@ -1758,30 +1891,25 @@ impl AppState {
                 cx.notify();
             }))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(name_area)
-                    .child(div().text_xs().text_color(rgb(badge_color)).child(badge))
-                    .when(is_active, |el| {
-                        el.child(div().text_xs().text_color(rgb(accent)).child("★"))
-                    }),
-            )
-            .child(subtitle_area)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .children(promote)
-                    .children(demote)
-                    .child(folder_btn)
-                    .child(edit)
-                    .child(delete),
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().child(name_area))
+                            .child(self.db_scope_chip(a)),
+                    )
+                    .child(subtitle_area)
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_1()
+                            .children(promote)
+                            .children(demote)
+                            .child(folder_btn)
+                            .child(edit)
+                            .child(delete),
+                    ),
             )
             .into_any_element()
     }
@@ -1796,31 +1924,25 @@ impl AppState {
         cx.notify();
     }
 
-    /// Badge label + color for a connection's origin layer — the `DbConnection` mirror
-    /// of `AppState::origin_badge` (same accent/success split — see that method's doc
-    /// comment for why `success` stands in for a second accent tone).
-    fn db_origin_badge(
-        &self,
-        a: &Attributed<DbConnection>,
-        cx: &Context<Self>,
-    ) -> (SharedString, u32) {
-        let t = theme::active(cx);
-        let (mut label, color): (SharedString, u32) = match &a.origin {
-            Scope::Global => ("global".into(), t.accent),
-            Scope::Workspace(id) => {
-                let name = self
-                    .scopes
+    /// The origin chip for a connection's layer.
+    ///
+    /// Replaces this tab's hand-rolled `db_origin_badge`, whose workspace rows were
+    /// coloured `success` — green for "this lives in a workspace", which the design system
+    /// reads as a *state*, not an origin. [`ScopeChip`] separates the two layers by weight
+    /// instead of hue (`sid_ui::scope_chip`), and carries the `· dup` mark the lossless
+    /// store needs.
+    fn db_scope_chip(&self, a: &Attributed<DbConnection>) -> ScopeChip {
+        let chip = match &a.origin {
+            Scope::Global => ScopeChip::global(),
+            Scope::Workspace(id) => ScopeChip::workspace(
+                self.scopes
                     .iter()
                     .find(|c| matches!(&c.scope, Scope::Workspace(w) if w == id))
                     .map(|c| c.label.clone())
-                    .unwrap_or_else(|| "workspace".into());
-                (name, t.success)
-            }
+                    .unwrap_or_else(|| "workspace".into()),
+            ),
         };
-        if a.duplicate {
-            label = format!("{label} · dup").into();
-        }
-        (label, color)
+        chip.duplicate(a.duplicate)
     }
 
     // ---- connections panel: inline rename / folder edit (Tasks 2-3) -------------------
@@ -2799,6 +2921,300 @@ fn write_csv_export(conn_label: &str, csv: &str) -> Result<PathBuf, String> {
     let path = next_csv_export_path(&dir, conn_label);
     fs::write(&path, csv).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod result_column_plan_tests {
+    use sid_ui::table::resolve_widths;
+
+    use super::*;
+
+    /// The grid's own reserve, so a test can assert against the width the columns
+    /// actually get. Mirrors `FillColumns::sync`, which is what runs in the app.
+    fn resolved(columns: &[DbColumn], rows: &[Row], viewport: f32) -> Vec<f32> {
+        resolve_widths(
+            &plan_result_columns(columns, rows),
+            viewport - sid_ui::table::TABLE_CHROME,
+        )
+    }
+
+    fn col(name: &str, ty: ColumnType) -> DbColumn {
+        DbColumn {
+            name: name.to_string(),
+            ty,
+        }
+    }
+
+    fn row(values: &[&str]) -> Row {
+        Row {
+            values: values.iter().map(|v| v.to_string()).collect(),
+        }
+    }
+
+    /// A realistic mixed page: a numeric key, a uuid, a short label, and a long note.
+    fn mixed() -> (Vec<DbColumn>, Vec<Row>) {
+        (
+            vec![
+                col("id", ColumnType::Integer),
+                col("external_id", ColumnType::Other("uuid".into())),
+                col("city", ColumnType::Text),
+                col("note", ColumnType::Text),
+            ],
+            vec![
+                row(&[
+                    "1",
+                    "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+                    "Phoenix",
+                    "shipped late, customer called twice about the missing pallet",
+                ]),
+                row(&[
+                    "2",
+                    "9c858901-8a57-4791-81fe-4c455b099bc9",
+                    "Austin",
+                    "fine",
+                ]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_statement_with_no_result_set_plans_no_columns() {
+        // `create table …` and friends come back with zero columns. The grid must plan
+        // nothing rather than a phantom column filling the pane.
+        assert!(plan_result_columns(&[], &[]).is_empty());
+        assert!(plan_result_columns(&[], &[row(&[])]).is_empty());
+    }
+
+    #[test]
+    fn a_uuid_column_is_floored_wide_enough_to_show_a_whole_uuid() {
+        // The headline case: 36 characters at the old fixed 140px was a guaranteed
+        // truncation on every row. The floor alone — before any leftover — has to cover
+        // it, so a cramped window truncates every other column before this one.
+        let (columns, rows) = mixed();
+        let plan = plan_result_columns(&columns, &rows);
+        let uuid_floor = plan[1].floor();
+        assert!(
+            uuid_floor >= 36.0 * CELL_CHAR_PX,
+            "a uuid needs {}px of text, the floor is {uuid_floor}",
+            36.0 * CELL_CHAR_PX
+        );
+    }
+
+    #[test]
+    fn a_numeric_column_stays_compact_while_the_text_columns_take_the_room() {
+        // "Narrow numeric columns stay compact" is the other half of the fill-width
+        // promise: reclaiming 1300px is no good if it goes to the `id` column.
+        let (columns, rows) = mixed();
+        let widths = resolved(&columns, &rows, 2000.);
+        assert!(
+            widths[0] <= NUMERIC_MAX_PX,
+            "id took {}px of a 2000px grid",
+            widths[0]
+        );
+        assert!(widths[3] > 500., "note only got {}px", widths[3]);
+    }
+
+    #[test]
+    fn the_widest_text_column_takes_the_largest_share() {
+        // Weight follows content: `note` holds an order of magnitude more text than
+        // `city`, so an even split would leave one wrapped and the other mostly padding.
+        let (columns, rows) = mixed();
+        let widths = resolved(&columns, &rows, 2000.);
+        assert!(
+            widths[3] > widths[2],
+            "note {} vs city {}",
+            widths[3],
+            widths[2]
+        );
+    }
+
+    #[test]
+    fn the_planned_columns_fill_the_grid_with_no_dead_space() {
+        // The property the whole migration exists for, at the width the capture is taken
+        // at and either side of it.
+        let (columns, rows) = mixed();
+        for viewport in [900., 1440., 2000., 3440.] {
+            let total: f32 = resolved(&columns, &rows, viewport).iter().sum();
+            assert!(
+                (total - (viewport - sid_ui::table::TABLE_CHROME)).abs() < 0.01,
+                "{viewport}px: columns total {total}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_header_widens_the_narrow_column_under_it() {
+        // A count column holding two-digit values still has to show its own name, or the
+        // header is the thing that truncates.
+        let columns = vec![col("orders_placed_last_quarter", ColumnType::Integer)];
+        let rows = vec![row(&["12"])];
+        let plan = plan_result_columns(&columns, &rows);
+        assert!(
+            plan[0].floor() > NUMERIC_MIN_PX,
+            "a 26-character header got the bare minimum {}",
+            plan[0].floor()
+        );
+    }
+
+    #[test]
+    fn a_bounded_column_is_never_floored_past_its_cap() {
+        // A 60-digit bignum is representable; letting it claim 450px before any text
+        // column has had a pixel is not.
+        let columns = vec![col("n", ColumnType::Integer)];
+        let rows = vec![row(&["9".repeat(60).as_str()])];
+        assert_eq!(
+            plan_result_columns(&columns, &rows)[0],
+            ColumnWidth::Min(NUMERIC_MAX_PX)
+        );
+    }
+
+    #[test]
+    fn an_unbounded_column_is_never_floored_past_its_cap() {
+        // One JSON blob column must not push its siblings into horizontal scroll: it is
+        // a `Grow`, so a wide window still gives it everything spare.
+        let columns = vec![col("doc", ColumnType::Text), col("id", ColumnType::Integer)];
+        let rows = vec![row(&["x".repeat(4000).as_str(), "1"])];
+        assert_eq!(
+            plan_result_columns(&columns, &rows)[0].floor(),
+            TEXT_MAX_PX,
+            "capped at the readable maximum"
+        );
+    }
+
+    #[test]
+    fn an_all_numeric_result_still_fills_the_grid() {
+        // `select count(*)` has no grower at all. Bounded columns are `Min`, not `Fixed`,
+        // exactly so this case fills instead of leaving 1800px of black beside a number.
+        let columns = vec![col("count", ColumnType::Integer)];
+        let rows = vec![row(&["3"])];
+        let widths = resolved(&columns, &rows, 2000.);
+        assert!(
+            (widths[0] - (2000. - sid_ui::table::TABLE_CHROME)).abs() < 0.01,
+            "a lone count column resolved to {}px",
+            widths[0]
+        );
+    }
+
+    #[test]
+    fn an_empty_result_set_with_columns_still_plans_from_its_headers() {
+        // `select * from t where false`: no rows to measure, but the headers still have
+        // to render untruncated.
+        let columns = vec![
+            col("id", ColumnType::Integer),
+            col("customer_reference", ColumnType::Text),
+        ];
+        let plan = plan_result_columns(&columns, &[]);
+        assert_eq!(plan.len(), 2);
+        assert!(plan[0].floor() >= NUMERIC_MIN_PX);
+        assert!(plan[1].floor() >= TEXT_MIN_PX);
+    }
+
+    #[test]
+    fn a_driver_specific_type_is_treated_as_unbounded() {
+        // `Other` is where `uuid`, `json`, `timestamptz` and every unmapped Postgres type
+        // land. Guessing "narrow" for a type sid does not recognise is how a uuid column
+        // ends up clipped.
+        for ty in [
+            ColumnType::Text,
+            ColumnType::Bytes,
+            ColumnType::Other("jsonb".into()),
+        ] {
+            assert!(!is_bounded(&ty), "{ty:?} should grow");
+        }
+        for ty in [
+            ColumnType::Integer,
+            ColumnType::Float,
+            ColumnType::Bool,
+            ColumnType::Null,
+        ] {
+            assert!(is_bounded(&ty), "{ty:?} should stay compact");
+        }
+    }
+
+    #[test]
+    fn a_multi_line_value_is_flattened_onto_the_cell_s_one_line() {
+        // `sqlite_master.sql` is the case that made this visible: a whole CREATE TABLE
+        // statement in a 32px row, painting through every row under it.
+        assert_eq!(
+            single_line("CREATE TABLE t (\n  id INTEGER,\n  name TEXT\n)"),
+            "CREATE TABLE t ( id INTEGER, name TEXT )"
+        );
+        assert_eq!(single_line("a\r\n\tb"), "a b");
+    }
+
+    #[test]
+    fn a_single_line_value_survives_flattening_unchanged() {
+        assert_eq!(single_line("Phoenix"), "Phoenix");
+        assert_eq!(single_line("R. Runner"), "R. Runner");
+        assert_eq!(single_line(""), "");
+        assert_eq!(single_line("   "), "", "whitespace-only collapses to empty");
+        assert_eq!(single_line("  padded  "), "padded", "ends are trimmed");
+    }
+
+    #[test]
+    fn a_column_shorter_than_the_rest_of_the_row_does_not_panic() {
+        // Ragged rows are a driver bug, not a crash: the plan reads values through `get`.
+        let columns = vec![col("a", ColumnType::Text), col("b", ColumnType::Text)];
+        assert_eq!(
+            plan_result_columns(&columns, &[row(&["only-one"])]).len(),
+            2
+        );
+    }
+}
+
+#[cfg(test)]
+mod connection_dot_tests {
+    use super::*;
+
+    #[test]
+    fn an_open_client_reads_as_connected_even_while_a_query_runs() {
+        // Live beats busy: a query running against an already-open connection is not a
+        // connection that is still dialling.
+        assert_eq!(
+            connection_dot(true, true, true, false),
+            ConnectionState::Live
+        );
+        assert_eq!(
+            connection_dot(true, false, false, false),
+            ConnectionState::Live
+        );
+    }
+
+    #[test]
+    fn the_selected_row_shows_the_work_in_flight() {
+        assert_eq!(
+            connection_dot(false, true, true, false),
+            ConnectionState::Connecting
+        );
+    }
+
+    #[test]
+    fn a_retry_in_flight_supersedes_the_error_it_is_retrying() {
+        assert_eq!(
+            connection_dot(false, true, true, true),
+            ConnectionState::Connecting
+        );
+        assert_eq!(
+            connection_dot(false, true, false, true),
+            ConnectionState::Failed
+        );
+    }
+
+    #[test]
+    fn an_unselected_row_never_wears_the_selection_s_state() {
+        // `schema_error`, `running` and `schema_loading` are single-slot fields belonging
+        // to the active connection. Painting them on every row would light up the whole
+        // list on one failure.
+        for busy in [true, false] {
+            for errored in [true, false] {
+                assert_eq!(
+                    connection_dot(false, false, busy, errored),
+                    ConnectionState::Offline,
+                    "busy={busy} errored={errored}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
