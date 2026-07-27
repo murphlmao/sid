@@ -79,6 +79,44 @@ impl Action {
             Action::FocusFilter => "Find / Filter",
         }
     }
+
+    /// The stable, persisted identity of this action — the key a user keybinding
+    /// override is stored under (`sid_store::KeyBinding::action`).
+    ///
+    /// This string is **on disk**: renaming one silently drops that action's override
+    /// (the row no longer parses, so [`parse_override`] skips it and the default wins).
+    /// Add variants freely; never rename an existing id. `Action::label` is deliberately
+    /// *not* reused for this — labels are prose and get reworded.
+    pub fn id(self) -> &'static str {
+        match self {
+            Action::CommandPalette => "command_palette",
+            Action::PrimaryTab(1) => "primary_tab_1",
+            Action::PrimaryTab(2) => "primary_tab_2",
+            Action::PrimaryTab(3) => "primary_tab_3",
+            Action::PrimaryTab(4) => "primary_tab_4",
+            Action::PrimaryTab(5) => "primary_tab_5",
+            Action::PrimaryTab(6) => "primary_tab_6",
+            // Unreachable through `ALL_ACTIONS`; an unbindable tab index gets no
+            // persistable id rather than one that would collide with a real tab.
+            Action::PrimaryTab(_) => "primary_tab_unbound",
+            Action::CycleTabForward => "cycle_tab_forward",
+            Action::CycleTabBack => "cycle_tab_back",
+            Action::CycleSessionForward => "cycle_session_forward",
+            Action::CycleSessionBack => "cycle_session_back",
+            Action::NewSession => "new_session",
+            Action::CloseSession => "close_session",
+            Action::Settings => "settings",
+            Action::CheatSheet => "cheat_sheet",
+            Action::FocusFilter => "focus_filter",
+        }
+    }
+
+    /// The inverse of [`Action::id`], over [`ALL_ACTIONS`]. `None` for an id this build
+    /// doesn't know — a stored override for an action that was removed (or written by a
+    /// newer sid) is skipped, never a decode error.
+    pub fn from_id(id: &str) -> Option<Action> {
+        ALL_ACTIONS.iter().copied().find(|a| a.id() == id)
+    }
 }
 
 /// The full v1 action set, in the order the command palette lists them.
@@ -375,6 +413,794 @@ pub fn find_conflicts(bindings: &[Binding]) -> Vec<(Binding, Binding)> {
         }
     }
     conflicts
+}
+
+// ---- rebinding (Settings -> Keymap; pure, unit-tested) ---------------------------
+//
+// The rebinding editor's entire policy lives here, decided by pure functions over
+// `(registry, action, chord)`; `ui::settings_tab` only renders the verdicts and writes
+// the accepted ones to the store. Three rules carry the weight:
+//
+// 1. **A conflict is refused, never resolved.** A chord another action already owns is
+//    rejected with that action's name — sid will not silently unbind something to make
+//    room. Every action therefore always keeps at least one binding, which is what makes
+//    "the user cannot strand themselves" a structural fact rather than a special case.
+// 2. **The terminal keeps plain `Ctrl+<letter>`.** Not by blocklist: [`override_context`]
+//    *derives* `NormalOnly` for every letter chord and mints its `Ctrl+Shift+<letter>`
+//    in-terminal twin, exactly as the shipped defaults do. No override can be expressed
+//    that claims a shell control code inside a focused terminal.
+// 3. **Only [`REBINDABLE_KEYS`] exist.** The allowlist is the validator *and* the source
+//    of the `&'static str` in a runtime-built [`Chord`], so neither a captured keystroke
+//    nor a hand-edited store can produce a chord this app can't render or match.
+
+/// Every key a user override may bind.
+///
+/// What's absent matters as much as what's present: `escape`, `enter`, `backspace`,
+/// `delete`, the arrows and `space` belong to whichever widget has focus, and a registry
+/// entry on one of them would shadow it app-wide with nothing to notice it by.
+pub const REBINDABLE_KEYS: &[&str] = &[
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z", //
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", //
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", //
+    "tab", "pageup", "pagedown", "home", "end", //
+    ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`", "?",
+];
+
+/// Intern `key` into the [`REBINDABLE_KEYS`] allowlist, case-insensitively. `None` means
+/// "not a key sid will bind" — the single validation gate every runtime-built [`Chord`]
+/// passes through.
+pub fn intern_key(key: &str) -> Option<&'static str> {
+    REBINDABLE_KEYS
+        .iter()
+        .copied()
+        .find(|k| k.eq_ignore_ascii_case(key))
+}
+
+/// Whether `key` is a single ASCII letter — the only key class that collides with a
+/// shell control code, and so the only one that needs a terminal-focus fallback.
+fn is_letter_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_alphabetic())
+}
+
+/// Whether `key` is a single non-alphanumeric character (`,`, `?`, `/`) — the class
+/// whose *shifted* form gpui resolves into `key` itself, so demanding an exact shift
+/// state would make the chord untypeable (see [`Chord::shift`]).
+fn is_symbol_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if !c.is_ascii_alphanumeric())
+}
+
+/// The shift discipline for `key`: exact for letters/digits/named keys, ignored for
+/// symbols.
+fn shift_for(key: &str, shift_held: bool) -> Option<bool> {
+    if is_symbol_key(key) {
+        None
+    } else {
+        Some(shift_held)
+    }
+}
+
+/// Turn a captured keystroke into a bindable [`Chord`], or say why it isn't one. The
+/// `Err` is the message the editor shows verbatim.
+pub fn chord_from_keystroke(k: &Keystroke) -> Result<Chord, &'static str> {
+    let m = &k.modifiers;
+    if m.alt || m.platform {
+        return Err("shortcuts use Ctrl, optionally with Shift");
+    }
+    if !m.control {
+        return Err("a shortcut must include Ctrl");
+    }
+    let key = intern_key(&k.key).ok_or("that key can't be used in a shortcut")?;
+    Ok(Chord {
+        key,
+        ctrl: true,
+        shift: shift_for(key, m.shift),
+    })
+}
+
+/// Chords the rest of the app already owns, and why. A rebind may never take one.
+///
+/// The clipboard/editing set (`c`/`v`/`x`/`a`/`z`/`d`) is needed by every `TextInput`,
+/// the SQL editor and the terminal's own copy/paste; `n`/`p` are claimed by the command
+/// palette's navigation in `app::handle_root_key_down` *ahead of* this registry, so a
+/// binding on one would silently not fire whenever the palette is open. Reserving the
+/// letter covers its shifted form too — `Ctrl+Shift+C` is the terminal's copy.
+const RESERVED_LETTERS: &[(&str, &str)] = &[
+    ("c", "Ctrl+C is copy (and SIGINT in a shell)"),
+    ("v", "Ctrl+V is paste"),
+    ("x", "Ctrl+X is cut"),
+    ("a", "Ctrl+A is select-all"),
+    ("z", "Ctrl+Z is undo"),
+    ("d", "Ctrl+D is end-of-input"),
+    ("n", "Ctrl+N moves down the command palette"),
+    ("p", "Ctrl+P moves up the command palette"),
+];
+
+/// Why `chord` is reserved, if it is. Keys the app can't bind at all (`escape`, `enter`,
+/// the arrows) never reach this — they're not in [`REBINDABLE_KEYS`], so they come back
+/// as [`RebindOutcome::Invalid`] instead.
+fn reserved_reason(chord: &Chord) -> Option<&'static str> {
+    if !chord.ctrl {
+        return None;
+    }
+    RESERVED_LETTERS
+        .iter()
+        .find(|(k, _)| chord.key.eq_ignore_ascii_case(k))
+        .map(|&(_, why)| why)
+}
+
+/// Which [`BindingContext`] a user override on `chord` gets.
+///
+/// The load-bearing rule, and the reason no blocklist is needed: a plain `Ctrl+<letter>`
+/// is a shell control code, so an override on a letter is `NormalOnly` — the focused
+/// terminal still gets the keystroke. Everything else (digits, Tab, the page keys,
+/// symbols, function keys, and any shifted chord) never collides with readline and is
+/// `Global`, exactly as the shipped defaults are.
+pub fn override_context(chord: &Chord) -> BindingContext {
+    if is_letter_key(chord.key) && chord.shift != Some(true) {
+        BindingContext::NormalOnly
+    } else {
+        BindingContext::Global
+    }
+}
+
+/// The full set of bindings a user override becomes: the chord itself, plus — for a
+/// letter — the `Ctrl+Shift+<letter>` twin that reaches the action from inside a focused
+/// terminal. Same shape the defaults hand-write for `Ctrl+K`/`Ctrl+T`/`Ctrl+W`.
+pub fn expand_override(action: Action, chord: Chord) -> Vec<Binding> {
+    let context = override_context(&chord);
+    let mut out = vec![binding(chord, context, action)];
+    if context == BindingContext::NormalOnly {
+        out.push(binding(
+            Chord {
+                shift: Some(true),
+                ..chord
+            },
+            BindingContext::TerminalOnly,
+            action,
+        ));
+    }
+    out
+}
+
+/// The result of asking to bind `chord` to `action`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebindOutcome {
+    /// The rebind is legal; these bindings replace **every** binding for that action.
+    Applied { bindings: Vec<Binding> },
+    /// Another action already owns that chord — nothing is changed, and the editor names
+    /// `with` so the user can reset that action first. sid never steals a chord, because
+    /// stealing means silently unbinding something the user can't see from here.
+    Conflict { with: Action },
+    /// The chord belongs to the rest of the app (clipboard, palette navigation, the
+    /// shell) and can never be taken. `reason` is shown verbatim.
+    Reserved { reason: &'static str },
+    /// The chord isn't a bindable chord at all (no Ctrl, or a key outside
+    /// [`REBINDABLE_KEYS`]). `reason` is shown verbatim.
+    Invalid { reason: &'static str },
+}
+
+/// The first binding in `registry` that would race `candidate`, ignoring `candidate`'s
+/// own action (rebinding an action onto a chord it already holds is a no-op, not a
+/// conflict). Same predicate pair [`find_conflicts`] uses, asked about one candidate.
+fn colliding_action(registry: &[Binding], candidate: &Binding) -> Option<Action> {
+    registry
+        .iter()
+        .find(|b| {
+            b.action != candidate.action
+                && chords_collide(&b.chord, &candidate.chord)
+                && contexts_overlap(b.context, candidate.context)
+        })
+        .map(|b| b.action)
+}
+
+/// Decide whether `action` may be bound to `chord`, given the currently effective
+/// `registry`. Pure: it changes nothing and allocates only the expansion it hands back.
+pub fn resolve_rebind(registry: &[Binding], action: Action, chord: Chord) -> RebindOutcome {
+    if !chord.ctrl {
+        return RebindOutcome::Invalid {
+            reason: "a shortcut must include Ctrl",
+        };
+    }
+    let Some(key) = intern_key(chord.key) else {
+        return RebindOutcome::Invalid {
+            reason: "that key can't be used in a shortcut",
+        };
+    };
+    let chord = Chord { key, ..chord };
+    if let Some(reason) = reserved_reason(&chord) {
+        return RebindOutcome::Reserved { reason };
+    }
+    let bindings = expand_override(action, chord);
+    for candidate in &bindings {
+        if let Some(with) = colliding_action(registry, candidate) {
+            return RebindOutcome::Conflict { with };
+        }
+    }
+    RebindOutcome::Applied { bindings }
+}
+
+/// A user override that has been validated: the action id was known to this build and
+/// the key interned. Produced by [`parse_override`] from a stored row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyOverride {
+    pub action: Action,
+    pub chord: Chord,
+}
+
+/// Parse one stored override row (`sid_store::KeyBinding`'s fields) into a
+/// [`KeyOverride`]. `None` for anything this build can't trust — an unknown action id, a
+/// key outside the allowlist, a chord without Ctrl — in which case that action simply
+/// keeps its default. A store written by a newer sid degrades; it never fails to open.
+pub fn parse_override(action_id: &str, key: &str, ctrl: bool, shift: bool) -> Option<KeyOverride> {
+    if !ctrl {
+        return None;
+    }
+    let action = Action::from_id(action_id)?;
+    let key = intern_key(key)?;
+    Some(KeyOverride {
+        action,
+        chord: Chord {
+            key,
+            ctrl: true,
+            shift: shift_for(key, shift),
+        },
+    })
+}
+
+/// The one function that answers "what is bound right now": the defaults, with each
+/// overridden action's defaults *replaced* (not shadowed) by its override's expansion.
+///
+/// Total by construction. An override that would make the registry ambiguous — not
+/// reachable through the editor, which refuses conflicts, but reachable by hand-editing
+/// the store — is dropped and that action keeps its default rather than the app becoming
+/// ambiguous or panicking. Overrides are applied in action-id order so which one loses
+/// is deterministic rather than dependent on redb's iteration.
+pub fn effective_bindings(overrides: &[KeyOverride]) -> Vec<Binding> {
+    if overrides.is_empty() {
+        return default_bindings();
+    }
+    let mut overrides = overrides.to_vec();
+    overrides.sort_by_key(|o| o.action.id());
+    overrides.dedup_by_key(|o| o.action.id());
+
+    let defaults = default_bindings();
+    let mut out: Vec<Binding> = defaults
+        .iter()
+        .copied()
+        .filter(|b| !overrides.iter().any(|o| o.action == b.action))
+        .collect();
+
+    let mut rejected = Vec::new();
+    for o in &overrides {
+        if !push_if_free(&mut out, expand_override(o.action, o.chord)) {
+            rejected.push(o.action);
+        }
+    }
+    for action in rejected {
+        let restored = defaults
+            .iter()
+            .copied()
+            .filter(|b| b.action == action)
+            .collect();
+        push_if_free(&mut out, restored);
+    }
+    out
+}
+
+/// Append `candidates` to `out` only if none of them would race something already there.
+/// All-or-nothing: a half-applied override (the primary in, the terminal twin dropped)
+/// would be a binding that works outside a terminal and vanishes inside one.
+fn push_if_free(out: &mut Vec<Binding>, candidates: Vec<Binding>) -> bool {
+    if candidates
+        .iter()
+        .any(|c| colliding_action(out, c).is_some())
+    {
+        return false;
+    }
+    out.extend(candidates);
+    true
+}
+
+#[cfg(test)]
+mod rebinding_tests {
+    //! Settings -> Keymap's decision logic. Everything here is pure: no store, no
+    //! window — the rebind editor's whole policy (validate, reserve, conflict, expand,
+    //! compose) is decided by these functions and only rendered by `ui::settings_tab`.
+
+    use super::*;
+    use gpui::Modifiers;
+
+    fn ks(key: &str, ctrl: bool, shift: bool) -> Keystroke {
+        Keystroke {
+            modifiers: Modifiers {
+                control: ctrl,
+                shift,
+                ..Default::default()
+            },
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    fn ctrl_chord(key: &'static str) -> Chord {
+        Chord {
+            key,
+            ctrl: true,
+            shift: Some(false),
+        }
+    }
+
+    // ---- action ids are the persisted key ---------------------------------------
+
+    #[test]
+    fn every_action_id_round_trips() {
+        for &action in ALL_ACTIONS {
+            let id = action.id();
+            assert!(!id.is_empty(), "{action:?} has no id");
+            assert_eq!(
+                Action::from_id(id),
+                Some(action),
+                "{id} must map back to {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_ids_are_unique() {
+        let mut ids: Vec<&str> = ALL_ACTIONS.iter().map(|a| a.id()).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "two actions share a persisted id");
+    }
+
+    #[test]
+    fn an_unknown_action_id_is_not_an_error() {
+        assert_eq!(Action::from_id("from_a_newer_sid"), None);
+    }
+
+    // ---- key interning is the validation gate -----------------------------------
+
+    #[test]
+    fn intern_key_accepts_the_rebindable_set() {
+        assert!(!REBINDABLE_KEYS.is_empty(), "nothing would be rebindable");
+        for &key in REBINDABLE_KEYS {
+            assert_eq!(intern_key(key), Some(key), "{key} must intern");
+        }
+        // Letters, digits, function keys, the page keys and the symbol row are the
+        // shape the editor offers.
+        for key in ["k", "9", "f5", "tab", "pagedown", ","] {
+            assert!(intern_key(key).is_some(), "{key} should be rebindable");
+        }
+    }
+
+    #[test]
+    fn intern_key_is_case_insensitive() {
+        assert_eq!(intern_key("K"), Some("k"));
+        assert_eq!(intern_key("PageDown"), Some("pagedown"));
+    }
+
+    #[test]
+    fn intern_key_rejects_keys_the_app_needs() {
+        // Not a matter of taste: every one of these is a widget's own key (text entry,
+        // list navigation, modal dismissal). A registry entry on one would shadow it
+        // app-wide with no way to notice.
+        for key in [
+            "escape",
+            "enter",
+            "backspace",
+            "delete",
+            "up",
+            "down",
+            "left",
+            "right",
+            "space",
+            "",
+            "ctrl",
+            "shift",
+            "nonsense",
+        ] {
+            assert_eq!(intern_key(key), None, "{key:?} must not be rebindable");
+        }
+    }
+
+    // ---- capture: keystroke -> chord ---------------------------------------------
+
+    #[test]
+    fn capture_requires_ctrl() {
+        // A bare key is text. The bare-`?` cheat-sheet default is grandfathered as a
+        // *default*; a user override always carries Ctrl so it can never eat typing.
+        assert!(chord_from_keystroke(&ks("k", false, false)).is_err());
+        assert!(chord_from_keystroke(&ks("k", false, true)).is_err());
+    }
+
+    #[test]
+    fn capture_rejects_alt_and_platform_modifiers() {
+        let mut k = ks("k", true, false);
+        k.modifiers.alt = true;
+        assert!(chord_from_keystroke(&k).is_err());
+        let mut k = ks("k", true, false);
+        k.modifiers.platform = true;
+        assert!(chord_from_keystroke(&k).is_err());
+    }
+
+    #[test]
+    fn capture_interns_the_key_and_keeps_shift_exact_for_letters() {
+        assert_eq!(
+            chord_from_keystroke(&ks("G", true, false)),
+            Ok(Chord {
+                key: "g",
+                ctrl: true,
+                shift: Some(false)
+            })
+        );
+        assert_eq!(
+            chord_from_keystroke(&ks("g", true, true)),
+            Ok(Chord {
+                key: "g",
+                ctrl: true,
+                shift: Some(true)
+            })
+        );
+    }
+
+    #[test]
+    fn capture_treats_a_symbol_key_as_shift_agnostic() {
+        // gpui's xkb glue resolves the *shifted* character into `key` itself, so
+        // demanding an exact shift state on a symbol makes the binding untypeable on
+        // layouts where the symbol needs a physical Shift (see `Chord::shift`).
+        assert_eq!(
+            chord_from_keystroke(&ks("?", true, true)),
+            Ok(Chord {
+                key: "?",
+                ctrl: true,
+                shift: None
+            })
+        );
+    }
+
+    #[test]
+    fn capture_rejects_a_key_that_is_not_rebindable() {
+        assert!(chord_from_keystroke(&ks("escape", true, false)).is_err());
+        assert!(chord_from_keystroke(&ks("backspace", true, false)).is_err());
+    }
+
+    // ---- the terminal-passthrough invariant, made structural --------------------
+
+    #[test]
+    fn a_plain_ctrl_letter_override_is_normal_only() {
+        // The load-bearing one: inside a focused terminal `Ctrl+<letter>` is a shell
+        // control code. An override on a letter must therefore be NormalOnly — never
+        // Global — or the user has just broken their own shell.
+        assert_eq!(
+            override_context(&ctrl_chord("g")),
+            BindingContext::NormalOnly
+        );
+    }
+
+    #[test]
+    fn a_non_letter_override_is_global() {
+        for key in ["9", "tab", "pagedown", ",", "f5"] {
+            assert_eq!(
+                override_context(&ctrl_chord(key)),
+                BindingContext::Global,
+                "{key} never collides with a shell control code"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_override_gives_a_letter_its_terminal_fallback() {
+        let bindings = expand_override(Action::Settings, ctrl_chord("g"));
+        assert_eq!(bindings.len(), 2, "primary + terminal fallback");
+        assert_eq!(bindings[0].context, BindingContext::NormalOnly);
+        assert_eq!(bindings[0].chord.label(), "Ctrl+G");
+        assert_eq!(bindings[1].context, BindingContext::TerminalOnly);
+        assert_eq!(bindings[1].chord.label(), "Ctrl+Shift+G");
+        assert!(bindings.iter().all(|b| b.action == Action::Settings));
+    }
+
+    #[test]
+    fn expand_override_gives_a_non_letter_no_fallback() {
+        let bindings = expand_override(Action::Settings, ctrl_chord("9"));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].context, BindingContext::Global);
+    }
+
+    // ---- resolve_rebind: the four outcomes ---------------------------------------
+
+    #[test]
+    fn a_free_chord_applies() {
+        let registry = default_bindings();
+        let outcome = resolve_rebind(&registry, Action::Settings, ctrl_chord("g"));
+        assert_eq!(
+            outcome,
+            RebindOutcome::Applied {
+                bindings: expand_override(Action::Settings, ctrl_chord("g"))
+            }
+        );
+    }
+
+    #[test]
+    fn a_chord_owned_by_another_action_conflicts_and_names_it() {
+        // The whole conflict policy: a chord already spoken for is REFUSED, and the
+        // refusal names the owner so the user can go reset that one first. Nothing is
+        // silently stolen and nothing is silently unbound.
+        let registry = default_bindings();
+        assert_eq!(
+            resolve_rebind(&registry, Action::Settings, ctrl_chord("k")),
+            RebindOutcome::Conflict {
+                with: Action::CommandPalette
+            }
+        );
+        assert_eq!(
+            resolve_rebind(&registry, Action::CheatSheet, ctrl_chord("3")),
+            RebindOutcome::Conflict {
+                with: Action::PrimaryTab(3)
+            }
+        );
+    }
+
+    #[test]
+    fn a_conflict_leaves_the_registry_untouched() {
+        let registry = default_bindings();
+        let before = registry.clone();
+        let _ = resolve_rebind(&registry, Action::Settings, ctrl_chord("k"));
+        assert_eq!(registry, before);
+    }
+
+    #[test]
+    fn the_terminal_fallback_of_another_action_also_conflicts() {
+        // `Ctrl+Shift+K` is CommandPalette's in-terminal fallback. Handing it to another
+        // action would make the palette unreachable from a focused terminal.
+        let registry = default_bindings();
+        assert_eq!(
+            resolve_rebind(
+                &registry,
+                Action::Settings,
+                Chord {
+                    key: "k",
+                    ctrl: true,
+                    shift: Some(true)
+                }
+            ),
+            RebindOutcome::Conflict {
+                with: Action::CommandPalette
+            }
+        );
+    }
+
+    #[test]
+    fn rebinding_an_action_onto_its_own_chord_is_not_a_conflict() {
+        let registry = default_bindings();
+        assert!(matches!(
+            resolve_rebind(&registry, Action::CommandPalette, ctrl_chord("k")),
+            RebindOutcome::Applied { .. }
+        ));
+    }
+
+    #[test]
+    fn reserved_chords_are_refused_with_a_reason() {
+        let registry = default_bindings();
+        for key in ["c", "v", "x", "a", "z", "d", "n", "p"] {
+            let outcome = resolve_rebind(&registry, Action::Settings, ctrl_chord(key));
+            match outcome {
+                RebindOutcome::Reserved { reason } => {
+                    assert!(!reason.is_empty(), "Ctrl+{key} needs a stated reason")
+                }
+                other => panic!("Ctrl+{key} must be reserved, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_reserved_letter_is_reserved_in_its_shifted_form_too() {
+        // Ctrl+Shift+C is the terminal's copy; reserving only the unshifted form would
+        // leave the shifted one takeable.
+        let registry = default_bindings();
+        assert!(matches!(
+            resolve_rebind(
+                &registry,
+                Action::Settings,
+                Chord {
+                    key: "c",
+                    ctrl: true,
+                    shift: Some(true)
+                }
+            ),
+            RebindOutcome::Reserved { .. }
+        ));
+    }
+
+    #[test]
+    fn no_default_binding_sits_on_a_reserved_chord() {
+        // The reservation table and the shipped defaults must agree: a default on a
+        // reserved chord would be a binding the editor can describe but never restore.
+        let registry = default_bindings();
+        for b in &registry {
+            if !b.chord.ctrl {
+                continue;
+            }
+            let outcome = resolve_rebind(&registry, b.action, b.chord);
+            assert!(
+                !matches!(outcome, RebindOutcome::Reserved { .. }),
+                "default {:?} sits on a reserved chord",
+                b.chord
+            );
+        }
+    }
+
+    #[test]
+    fn a_chord_without_ctrl_is_invalid() {
+        let registry = default_bindings();
+        assert!(matches!(
+            resolve_rebind(
+                &registry,
+                Action::Settings,
+                Chord {
+                    key: "g",
+                    ctrl: false,
+                    shift: Some(false)
+                }
+            ),
+            RebindOutcome::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unbindable_key_is_invalid() {
+        let registry = default_bindings();
+        assert!(matches!(
+            resolve_rebind(&registry, Action::Settings, ctrl_chord("enter")),
+            RebindOutcome::Invalid { .. }
+        ));
+    }
+
+    // ---- effective bindings: default union override ------------------------------
+
+    #[test]
+    fn with_no_overrides_the_effective_registry_is_the_defaults() {
+        assert_eq!(effective_bindings(&[]), default_bindings());
+    }
+
+    #[test]
+    fn an_override_replaces_every_default_binding_for_its_action() {
+        let over = parse_override("command_palette", "g", true, false).expect("parses");
+        let bindings = effective_bindings(&[over]);
+        // The new chord resolves...
+        assert_eq!(
+            resolve(&ks("g", true, false), FocusContext::Normal, &bindings),
+            Some(Action::CommandPalette)
+        );
+        // ...its derived in-terminal fallback resolves...
+        assert_eq!(
+            resolve(&ks("g", true, true), FocusContext::Terminal, &bindings),
+            Some(Action::CommandPalette)
+        );
+        // ...and the old chord is gone in BOTH contexts (no leftover default).
+        assert_eq!(
+            resolve(&ks("k", true, false), FocusContext::Normal, &bindings),
+            None
+        );
+        assert_eq!(
+            resolve(&ks("k", true, true), FocusContext::Terminal, &bindings),
+            None
+        );
+        // Every other action is untouched.
+        assert_eq!(
+            resolve(&ks("3", true, false), FocusContext::Normal, &bindings),
+            Some(Action::PrimaryTab(3))
+        );
+    }
+
+    #[test]
+    fn parse_override_rejects_what_it_cannot_trust() {
+        assert!(parse_override("no_such_action", "g", true, false).is_none());
+        assert!(parse_override("settings", "nonsense", true, false).is_none());
+        assert!(
+            parse_override("settings", "g", false, false).is_none(),
+            "a stored chord without Ctrl was never reachable through the editor"
+        );
+    }
+
+    #[test]
+    fn parse_override_derives_shift_from_the_key_class() {
+        let letter = parse_override("settings", "g", true, true).expect("parses");
+        assert_eq!(letter.chord.shift, Some(true));
+        let symbol = parse_override("settings", "?", true, true).expect("parses");
+        assert_eq!(symbol.chord.shift, None, "symbols ignore shift");
+    }
+
+    #[test]
+    fn the_effective_registry_is_conflict_free_even_when_two_overrides_collide() {
+        // Not reachable through the editor (the second rebind would be refused), but a
+        // hand-edited or half-written store must not make the app ambiguous — and must
+        // never panic. The loser keeps its default, so no action ends up unbound.
+        let a = parse_override("settings", "g", true, false).expect("parses");
+        let b = parse_override("cheat_sheet", "g", true, false).expect("parses");
+        let bindings = effective_bindings(&[a, b]);
+        assert!(
+            find_conflicts(&bindings).is_empty(),
+            "effective registry must stay unambiguous: {:?}",
+            find_conflicts(&bindings)
+        );
+        for &action in ALL_ACTIONS {
+            assert!(
+                bindings.iter().any(|x| x.action == action),
+                "{action:?} lost every binding"
+            );
+        }
+    }
+
+    // ---- the two safety properties, over the whole rebindable space --------------
+
+    #[test]
+    fn no_single_rebind_can_strand_an_action_or_break_the_registry() {
+        let defaults = default_bindings();
+        for &action in ALL_ACTIONS {
+            for &key in REBINDABLE_KEYS {
+                let chord = Chord {
+                    key,
+                    ctrl: true,
+                    shift: Some(false),
+                };
+                let RebindOutcome::Applied { .. } = resolve_rebind(&defaults, action, chord) else {
+                    continue; // refused outcomes change nothing at all
+                };
+                let over = KeyOverride { action, chord };
+                let bindings = effective_bindings(&[over]);
+                assert!(
+                    find_conflicts(&bindings).is_empty(),
+                    "{action:?} -> {key} made the registry ambiguous"
+                );
+                for &other in ALL_ACTIONS {
+                    assert!(
+                        bindings.iter().any(|b| b.action == other),
+                        "{action:?} -> {key} left {other:?} unbound"
+                    );
+                }
+                // Settings stays reachable by keyboard, always (the brief's brick).
+                assert!(
+                    bindings.iter().any(|b| b.action == Action::Settings)
+                        && bindings.iter().any(|b| b.action == Action::PrimaryTab(6)),
+                    "{action:?} -> {key} stranded Settings"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_rebind_can_take_a_plain_ctrl_letter_away_from_a_focused_terminal() {
+        // The invariant the whole app rests on: inside a terminal, plain Ctrl+<letter>
+        // must reach the PTY. Checked for EVERY applicable override, not just the
+        // defaults — the expansion rule, not a blocklist, is what guarantees it.
+        let defaults = default_bindings();
+        let letters = "abcdefghijklmnopqrstuvwxyz";
+        for &action in ALL_ACTIONS {
+            for &key in REBINDABLE_KEYS {
+                let chord = Chord {
+                    key,
+                    ctrl: true,
+                    shift: Some(false),
+                };
+                let RebindOutcome::Applied { .. } = resolve_rebind(&defaults, action, chord) else {
+                    continue;
+                };
+                let bindings = effective_bindings(&[KeyOverride { action, chord }]);
+                for letter in letters.chars() {
+                    let stroke = ks(&letter.to_string(), true, false);
+                    assert_eq!(
+                        resolve(&stroke, FocusContext::Terminal, &bindings),
+                        None,
+                        "{action:?} -> {key} stole Ctrl+{letter} from the terminal"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

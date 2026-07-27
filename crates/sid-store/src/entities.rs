@@ -410,6 +410,45 @@ impl Identity for QuickAction {
     }
 }
 
+/// One user keybinding override — the chord the user bound an action to in
+/// Settings → Keymap. Machine-local and **global only**, like [`Settings`]: a keymap is
+/// a property of the person at the keyboard, not of a repository.
+///
+/// Deliberately its **own table**, not fields on [`Settings`]. `Settings` is a single
+/// positional-postcard blob with a V1→V4 migration chain whose field list is mirrored in
+/// `sid-db`'s redb browse engine; a keymap is a *collection* keyed by action, so it is a
+/// table in the shape of [`QuickAction`]/[`PinnedFile`] — and adding an action later then
+/// costs no schema hop at all.
+///
+/// The frontend owns the meaning of these strings ([`sid_core`] has no notion of a
+/// keyboard); this layer only stores them. `action` is the frontend's stable action id
+/// and the identity used for dedup — rebinding the same action twice is an upsert, never
+/// a second row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyBinding {
+    /// Stable action id (e.g. `"command_palette"`); the identity used for dedup.
+    pub action: String,
+    /// The chord's base key, in the frontend's own key vocabulary (`"k"`, `"tab"`,
+    /// `"pagedown"`, `","`). Stored lowercase.
+    pub key: String,
+    /// Whether the chord carries Ctrl. Always `true` for anything the editor writes;
+    /// the field exists so the record is a full chord rather than an implication.
+    #[serde(default)]
+    pub ctrl: bool,
+    /// Whether the chord carries Shift, as physically held. Whether shift is then
+    /// *matched* is the frontend's business — for symbol keys it deliberately isn't
+    /// (a shifted symbol resolves into the key itself) — so this records the keystroke,
+    /// not the match rule.
+    #[serde(default)]
+    pub shift: bool,
+}
+
+impl Identity for KeyBinding {
+    fn identity(&self) -> &str {
+        &self.action
+    }
+}
+
 /// A pinned config-file path (Round E §D, Systems tab). Machine-local and **global
 /// only** — the path itself is the identity, so pinning is idempotent. Workspace-scoped
 /// pins (e.g. a repo pinning its own `.env`) are future work; every pin lives in the
