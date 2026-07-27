@@ -61,12 +61,6 @@ const MONO: &str = "DejaVu Sans Mono";
 /// Recent-commits cap for the Log sub-tab, per the plan.
 const LOG_LIMIT: usize = 50;
 
-/// How long after the fleet table paints its first frame the pane asks for one more, so
-/// `FillTable`'s prepaint-measured column widths reach a layout pass. See
-/// [`AppState::settle_fleet_layout`]. Short enough to be invisible, long enough to be a
-/// separate frame rather than the same effect cycle.
-const FLEET_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
-
 // ---- pure domain types ------------------------------------------------------------
 
 /// One workspace root's shape, driving which detail sub-view renders — see the module
@@ -999,37 +993,7 @@ impl AppState {
                         cx.notify();
                     });
                 }
-                // The rows that just arrived are very likely this pane's last event ever.
-                this.settle_fleet_layout(cx);
             });
-        })
-        .detach();
-        self.settle_fleet_layout(cx);
-    }
-
-    /// Ask for one more frame, a beat from now, so the fleet table's fill-width columns
-    /// can land.
-    ///
-    /// [`FillTable`] measures the pane in **prepaint** and writes the resolved widths
-    /// back through `TableState::refresh`, which only takes effect on the *next* layout
-    /// pass. The System and Network tables never notice, because they re-probe on a timer
-    /// and a frame always follows. This pane goes quiescent the moment the last per-repo
-    /// `summary()` lands, and if that happens before the table's first paint — which it
-    /// reliably does for local repos — nothing schedules the follow-up frame and every
-    /// column sits at `gpui-component`'s 100px default. That is the dead-space bug the
-    /// fill-width model exists to kill, reproduced at 2000x1200 and fixed by exactly one
-    /// extra frame (verified: a stray click on the pane snapped the columns into place).
-    ///
-    /// A `cx.notify()` from inside `render` will not do it — gpui swallows it to keep
-    /// render pure — so the nudge comes off the background timer, once, and detaches.
-    ///
-    /// This belongs in `sid_ui::table::FillTable`, which should schedule its own
-    /// follow-up frame after a `sync` that moved something. It is worked around here
-    /// because this commit does not own that crate.
-    fn settle_fleet_layout(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FLEET_SETTLE_DELAY).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
