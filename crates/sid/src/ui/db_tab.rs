@@ -80,6 +80,44 @@ const PAGE_SIZE: u32 = 100;
 /// the tab — it is the only `Primary` (accent fill) — without also being the tallest.
 const QUERY_ACTION_SIZE: ButtonSize = ButtonSize::Sm;
 
+/// The id the synthetic "sid store" row carries in `active_id` (inc-3).
+///
+/// Not a stored connection — nothing in redb has this id, and nothing ever will. It
+/// exists so browse mode can reuse `active_id` (and therefore every generation guard,
+/// selection highlight and reset path already built around it) instead of adding a
+/// parallel "what is selected" flag that the next feature would forget to check.
+///
+/// Double-underscore-bracketed because a user's connection ids come from
+/// `DbConnection::id` and a collision would make the store row and a real connection
+/// indistinguishable. `STORE_BROWSE_ID` is not a legal id the add-connection form can
+/// produce.
+const STORE_BROWSE_ID: &str = "__sid_store__";
+
+/// What the store-browse selection is called wherever a connection name would go.
+const STORE_BROWSE_LABEL: &str = "sid store";
+
+/// Whether `active_id` designates the synthetic store-browse row.
+///
+/// `taken_by_a_connection` is the collision case, and it is a real one: a
+/// [`DbConnection`]'s id **is** its user-typed name (`db_conn_form`'s `FormMode::Add`
+/// arm), and `validate_name` rejects only the empty string — so a user can name a
+/// connection `__sid_store__`. When they have, the real connection wins. It is a live
+/// target with a DSN and possibly a secret, and the alternative is the tab browsing
+/// sid's own store while the panel shows a Postgres box selected. See
+/// `store_browse_tests::a_real_connection_that_claims_the_sentinel_id_wins`.
+fn is_store_browse_id(active_id: Option<&str>, taken_by_a_connection: bool) -> bool {
+    active_id == Some(STORE_BROWSE_ID) && !taken_by_a_connection
+}
+
+/// The CSV filename stem for a store-browse export — `sid-store-hosts`, never the
+/// `__sid_store__` sentinel that `sanitize_filename_component` would otherwise be handed.
+fn browse_export_stem(table: Option<&str>) -> String {
+    match table {
+        Some(table) => format!("sid-store-{table}"),
+        None => "sid-store".to_string(),
+    }
+}
+
 // ---- increment 2: schema tree / cell copy-view / CSV export / history --------------------
 
 /// A result cell longer than this (in `char`s) gets a `view` affordance opening the
@@ -1446,7 +1484,14 @@ impl AppState {
     /// status message) with no active connection rather than being conditionally absent.
     fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
+        let browse = self.browse_mode();
         let active_label: SharedString = match &self.db.active_id {
+            // Browse mode has no `DbConnection` behind its id, so the generic lookup
+            // would fall through to printing the raw `__sid_store__` sentinel.
+            Some(_) if browse => match self.browse_table() {
+                Some(table) => format!("{STORE_BROWSE_LABEL} · {table}").into(),
+                None => format!("{STORE_BROWSE_LABEL} · pick a table").into(),
+            },
             Some(id) => self
                 .db
                 .connections
@@ -1524,13 +1569,44 @@ impl AppState {
                 }))
         });
 
-        let sql_editor = self.db.sql.clone().map(|sql| {
-            div()
-                .h(px(140.))
-                .rounded_md()
-                .elevation(Elevation::Well, &t)
-                .child(Input::new(&sql))
-        });
+        // Browse mode replaces the editor rather than disabling it. A greyed-out SQL box
+        // in front of an engine that has no query language invites the user to try
+        // anyway; a short statement of what this selection *is* does not. This is also
+        // the structural half of "read-only": with no `Input` there is no text for
+        // `run_query` to reach, so the store cannot be written to through this surface
+        // even if a future edit forgot the guard in `run_query`.
+        let sql_editor: Option<AnyElement> = if browse {
+            Some(
+                v_flex()
+                    .h(px(140.))
+                    .justify_center()
+                    .gap_1p5()
+                    .p_3()
+                    .rounded_md()
+                    .elevation(Elevation::Well, &t)
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .text_color(rgb(t.fg))
+                            .child(Icon::Info.small())
+                            .child("browsing sid's own configuration store — read-only"),
+                    )
+                    .child(div().hint_text(&t).child(
+                        "redb is a key-value store, not a SQL engine: pick a table on the \
+                         left to list its rows. Nothing here can write to the store.",
+                    ))
+                    .into_any_element(),
+            )
+        } else {
+            self.db.sql.clone().map(|sql| {
+                div()
+                    .h(px(140.))
+                    .rounded_md()
+                    .elevation(Elevation::Well, &t)
+                    .child(Input::new(&sql))
+                    .into_any_element()
+            })
+        };
 
         let notice = self.db.notice.clone().map(|n| div().hint_text(&t).child(n));
 
@@ -1565,11 +1641,19 @@ impl AppState {
                     .when_some(next_page, |bar, button| bar.action(button))
                     .action(self.explain_button(cx))
                     .action(
-                        Button::new("db-run", "Run")
+                        // Browse mode's Run re-reads the table already on screen, so it
+                        // is labelled for what it does. Same id, same slot, same size —
+                        // only the word and the tooltip change.
+                        Button::new("db-run", if browse { "Reload" } else { "Run" })
                             .primary()
                             .size(QUERY_ACTION_SIZE)
                             .loading(self.db.running)
-                            .tooltip("run the query (Ctrl-Enter)")
+                            .disabled(browse && self.browse_table().is_none())
+                            .tooltip(if browse {
+                                "re-read this table from the store"
+                            } else {
+                                "run the query (Ctrl-Enter)"
+                            })
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.run_query(window, cx);
                             })),
@@ -1601,8 +1685,141 @@ impl AppState {
             .child(editor_and_results)
     }
 
+    /// Whether the tab is browsing sid's own redb store rather than a connection.
+    /// See [`is_store_browse_id`] for the id-collision case it has to rule out.
+    fn browse_mode(&self) -> bool {
+        is_store_browse_id(
+            self.db.active_id.as_deref(),
+            self.db
+                .connections
+                .iter()
+                .any(|a| a.item.id == STORE_BROWSE_ID),
+        )
+    }
+
+    /// The store table currently loaded in browse mode, if any.
+    ///
+    /// Browse mode reuses `last_sql` to hold the **table name** — which is exactly what
+    /// it holds for the other engines too, since `RedbBrowseClient::query_paged`'s `sql`
+    /// argument *is* a table-name selector (see `sid_db::redb_browse`'s module doc).
+    /// `next_page` therefore needs no browse-specific plumbing beyond the read itself.
+    fn browse_table(&self) -> Option<&str> {
+        if !self.browse_mode() {
+            return None;
+        }
+        self.db.last_sql.as_deref()
+    }
+
+    /// Select the store-browse row.
+    ///
+    /// The schema loads **synchronously**, unlike every other engine's. That is not a
+    /// shortcut: [`sid_db::redb_browse::browse_schema`] is a fixed table list — no I/O,
+    /// no store handle, nothing to wait on — so spawning a task would add a frame of
+    /// "loading…" to a value that is already in hand. The generation bump in
+    /// [`Self::reset_for_selection_change`] still runs first, so a real fetch that was
+    /// in flight for the connection the user just left cannot overwrite it.
+    fn select_store_browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.browse_mode() {
+            self.reset_for_selection_change(cx);
+        }
+        self.db.active_id = Some(STORE_BROWSE_ID.to_string());
+        // Browse mode never dials, so the cached client for the connection we just left
+        // must go too — otherwise `next_page`/`Export` could still reach it.
+        self.db.client = None;
+        self.db.client_for = None;
+        self.db.schema = Some(sid_db::redb_browse::browse_schema());
+        self.db.schema_graph = Some(sid_db::redb_browse::browse_graph());
+        self.db.schema_error = None;
+        self.ensure_query_widgets(window, cx);
+        if let Some(fh) = self.db.conn_focus.clone() {
+            window.focus(&fh);
+        }
+        cx.notify();
+    }
+
+    /// Load one store table into the results grid.
+    ///
+    /// Reads through `self.store.global()` — the handle the app is **already** holding.
+    /// It has to: redb takes an exclusive file lock, so `DbClient::open` on sid's own
+    /// live store would fail, which is why `sid-db` grew the borrowed-store
+    /// [`sid_db::redb_browse::browse_page`] entry point. Synchronous for the same reason
+    /// the schema is: an in-memory dump of at most a few hundred rows, with no socket
+    /// anywhere in it.
+    ///
+    /// Browse loads are deliberately **not** pushed into query history: the history
+    /// panel replays SQL into the editor, and "hosts" is not SQL.
+    fn load_browse_table(&mut self, table: &str, cx: &mut Context<Self>) {
+        // Bump the generation even though this completes inline — it invalidates any
+        // real query still in flight from before the store was selected, on exactly the
+        // same principle as every async path here.
+        self.db.query_generation += 1;
+        self.db.plan = None;
+        self.db.next_cursor = None;
+        self.db.last_sql = Some(table.to_string());
+        match sid_db::redb_browse::browse_page(self.store.global(), table, None, PAGE_SIZE) {
+            Ok(page) => {
+                self.apply_query_page(&page, cx);
+                self.db.last_page = Some(page);
+            }
+            Err(e) => {
+                self.db.status = QueryStatus::Err(e.to_string());
+                self.db.last_page = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Everything the previous selection owned, dropped in one place.
+    ///
+    /// Shared by the connection rows and the store-browse row (see
+    /// [`Self::select_store_browse`]) precisely so a new selection target cannot ship
+    /// with three of these five resets and quietly leak the last one's state. Switching
+    /// *to* a connection and switching *away* to the store are the same event.
+    ///
+    /// The schema is dropped immediately rather than left up until the new fetch
+    /// resolves, so the tree never shows a stale, wrong-connection schema mid-load
+    /// (D1's "on connect" trigger). Bumping **both** generations makes every pending
+    /// `fetch_schema`/`run_query`/`explain` completion a guarded no-op, so an in-flight
+    /// result can never land under the newly-selected target (bug-hunt round D, HIGH).
+    fn reset_for_selection_change(&mut self, cx: &mut Context<Self>) {
+        self.db.schema = None;
+        self.db.schema_graph = None;
+        self.db.schema_error = None;
+        self.db.schema_expanded.clear();
+        self.db.schema_generation += 1;
+        self.db.query_generation += 1;
+        self.db.schema_loading = false;
+        self.db.running = false;
+        self.db.status = QueryStatus::Idle;
+        self.db.last_sql = None;
+        self.db.next_cursor = None;
+        self.db.last_page = None;
+        // A plan describes one engine's execution of one statement — as
+        // selection-scoped as the rows beside it.
+        self.db.plan = None;
+        if let Some(results) = self.db.results.clone() {
+            results.update(cx, |state, cx| {
+                state.delegate_mut().set_page(QueryPage {
+                    columns: Vec::new(),
+                    rows: Vec::new(),
+                    next_cursor: None,
+                    duration_ms: 0,
+                });
+                state.refresh(cx);
+                cx.notify();
+            });
+        }
+    }
+
     /// The engine behind the active selection, or `None` with nothing selected.
+    ///
+    /// In browse mode this is [`DbKind::Redb`] with no stored connection behind it at
+    /// all — which is exactly what lets `explain_button` and the rest of the toolbar
+    /// treat the store like any other engine without special-casing each one.
     fn active_kind(&self) -> Option<DbKind> {
+        if self.browse_mode() {
+            return Some(DbKind::Redb);
+        }
         let id = self.db.active_id.as_deref()?;
         self.db
             .connections
@@ -1781,9 +1998,13 @@ impl AppState {
                 .w_full()
                 .child(
                     EmptyState::new("no results yet")
-                        .guidance(
-                            "write a query above and Run it, or click a table in the schema tree",
-                        )
+                        .guidance(if self.browse_mode() {
+                            // There is no query to write here, so pointing at Run would
+                            // be pointing at a control that is disabled.
+                            "click one of sid's store tables on the left to list its rows"
+                        } else {
+                            "write a query above and Run it, or click a table in the schema tree"
+                        })
                         .icon(Icon::Terminal),
                 )
                 .into_any_element();
@@ -1992,19 +2213,22 @@ impl AppState {
         };
         let graph = self.db.schema_graph.clone().unwrap_or_default();
         let connection_id = self.db.active_id.clone();
-        let connection_label = self
-            .db
-            .active_id
-            .as_deref()
-            .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
-            .map(|a| {
-                if a.item.name.is_empty() {
-                    a.item.id.clone()
-                } else {
-                    a.item.name.clone()
-                }
-            })
-            .unwrap_or_else(|| "connection".to_string());
+        let connection_label = if self.browse_mode() {
+            STORE_BROWSE_LABEL.to_string()
+        } else {
+            self.db
+                .active_id
+                .as_deref()
+                .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
+                .map(|a| {
+                    if a.item.name.is_empty() {
+                        a.item.id.clone()
+                    } else {
+                        a.item.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "connection".to_string())
+        };
         let title = format!("sid — relationships · {connection_label}");
         let main_window = window.window_handle();
         let app = cx.entity().downgrade();
@@ -2162,22 +2386,29 @@ impl AppState {
         );
 
         let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
-        let body: AnyElement = if rows.is_empty() {
-            div()
-                .p_2()
-                .hint_text(&t)
-                .child("no connections yet")
-                .into_any_element()
-        } else {
-            List::scrolling("db-conn-body")
-                .px_1()
-                .children(
-                    rows.into_iter()
-                        .enumerate()
-                        .map(|(ix, row)| self.connection_panel_row(ix, row, cx)),
+        // The store row is always present and always first — it is not a connection the
+        // user configured, so it cannot be grouped into a folder, sorted among them, or
+        // absent. Pinning it above the list also means the panel is never empty, which
+        // is why the "no connections yet" hint moved *inside* the list rather than
+        // replacing the whole body.
+        let body: AnyElement = List::scrolling("db-conn-body")
+            .px_1()
+            .child(self.store_browse_row(cx))
+            .when(rows.is_empty(), |list| {
+                list.child(
+                    div()
+                        .p_2()
+                        .hint_text(&t)
+                        .child("no connections yet")
+                        .into_any_element(),
                 )
-                .into_any_element()
-        };
+            })
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(ix, row)| self.connection_panel_row(ix, row, cx)),
+            )
+            .into_any_element();
 
         let focus_handle = self.db.conn_focus.clone();
         v_flex()
@@ -2198,6 +2429,50 @@ impl AppState {
             })
             .child(header)
             .child(body)
+    }
+
+    /// The always-present "sid store" row (inc-3).
+    ///
+    /// Carries a `read-only` badge rather than relying on the user discovering that the
+    /// editor is disabled once they get there: the promise that sid will not write to
+    /// its own store through this surface belongs on the thing you click, not two panels
+    /// away. The dot is `Live` unconditionally and honestly — the store is open for the
+    /// whole process lifetime, which is the same fact that makes browsing it possible at
+    /// all (see [`Self::load_browse_table`]).
+    fn store_browse_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx).clone();
+        UiRow::new("db-store-browse")
+            .selected(self.browse_mode())
+            .py_1p5()
+            .px_2()
+            .leading(StatusDot::new("db-store-dot", ConnectionState::Live))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(rgb(t.fg))
+                                    .child(STORE_BROWSE_LABEL),
+                            )
+                            .child(Badge::new("read-only")),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .font_family(MONO)
+                            .hint_text(&t)
+                            .child("redb · sid's own configuration store"),
+                    ),
+            )
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                this.select_store_browse(window, cx);
+            }))
+            .into_any_element()
     }
 
     /// One [`ConnRow`]'s rendering: a folder header (click toggles collapse) or a
@@ -2450,44 +2725,7 @@ impl AppState {
             .leading(StatusDot::new(("db-conn-dot", ix), state))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if this.db.active_id.as_deref() != Some(click_id.as_str()) {
-                    // Switching connections: drop the previous connection's schema
-                    // immediately (rather than leaving it up until the new fetch
-                    // resolves) so the tree never shows a stale, wrong-connection
-                    // schema mid-load — D1's "on connect" trigger.
-                    this.db.schema = None;
-                    this.db.schema_graph = None;
-                    this.db.schema_error = None;
-                    this.db.schema_expanded.clear();
-                    // ...and invalidate everything still in flight for the previous
-                    // connection: bumping both generations makes any pending
-                    // fetch_schema/run_query completion a guarded no-op, so its result
-                    // can never land under this newly-selected connection (bug-hunt
-                    // round D, HIGH). The query pane resets with it — results, status,
-                    // paging cursor and export cache all belonged to the old
-                    // connection.
-                    this.db.schema_generation += 1;
-                    this.db.query_generation += 1;
-                    this.db.schema_loading = false;
-                    this.db.running = false;
-                    this.db.status = QueryStatus::Idle;
-                    this.db.last_sql = None;
-                    this.db.next_cursor = None;
-                    this.db.last_page = None;
-                    // A plan describes one engine's execution of one statement — it is
-                    // as connection-scoped as the rows beside it.
-                    this.db.plan = None;
-                    if let Some(results) = this.db.results.clone() {
-                        results.update(cx, |state, cx| {
-                            state.delegate_mut().set_page(QueryPage {
-                                columns: Vec::new(),
-                                rows: Vec::new(),
-                                next_cursor: None,
-                                duration_ms: 0,
-                            });
-                            state.refresh(cx);
-                            cx.notify();
-                        });
-                    }
+                    this.reset_for_selection_change(cx);
                 }
                 this.db.active_id = Some(click_id.clone());
                 // Selecting a row is also this panel's one focus entry point — F2
@@ -2927,6 +3165,20 @@ impl AppState {
             cx.notify();
             return;
         };
+        if self.browse_mode() {
+            // Browse mode's Run is a Reload of the table already showing. There is no
+            // statement to run — the store engine has no query language — so a Run with
+            // no table picked says so rather than silently doing nothing.
+            match self.browse_table().map(str::to_string) {
+                Some(table) => self.load_browse_table(&table, cx),
+                None => {
+                    self.db.status =
+                        QueryStatus::Err("pick a table in the schema panel to browse".into());
+                    cx.notify();
+                }
+            }
+            return;
+        }
         let Some(conn) = self
             .db
             .connections
@@ -3131,8 +3383,34 @@ impl AppState {
     }
 
     /// ⭳ next page: repeat `last_sql` against the cached client with `next_cursor`.
+    ///
+    /// Browse mode has no client to repeat against, so it re-reads the borrowed store
+    /// directly — the one branch it needs, because `last_sql` already carries the table
+    /// name (see [`Self::browse_table`]).
     fn next_page(&mut self, cx: &mut Context<Self>) {
         if self.db.running {
+            return;
+        }
+        if self.browse_mode() {
+            let (Some(cursor), Some(table)) = (self.db.next_cursor, self.db.last_sql.clone())
+            else {
+                return;
+            };
+            self.db.query_generation += 1;
+            self.db.plan = None;
+            match sid_db::redb_browse::browse_page(
+                self.store.global(),
+                &table,
+                Some(cursor),
+                PAGE_SIZE,
+            ) {
+                Ok(page) => {
+                    self.apply_query_page(&page, cx);
+                    self.db.last_page = Some(page);
+                }
+                Err(e) => self.db.status = QueryStatus::Err(e.to_string()),
+            }
+            cx.notify();
             return;
         }
         let (Some(cursor), Some(sql), Some(client)) = (
@@ -3209,6 +3487,19 @@ impl AppState {
         let Some(id) = self.db.active_id.clone() else {
             return;
         };
+        if self.browse_mode() {
+            // Browse mode: a fixed table list, in hand, no I/O. Refresh means re-read
+            // the constant — which is still worth doing rather than short-circuiting,
+            // because it is also the path the ⟳ button takes and it must not look dead.
+            self.db.schema = Some(sid_db::redb_browse::browse_schema());
+            self.db.schema_graph = Some(sid_db::redb_browse::browse_graph());
+            self.db.schema_error = None;
+            self.db.schema_loading = false;
+            self.db.schema_generation += 1;
+            self.push_schema_to_diagram(cx);
+            cx.notify();
+            return;
+        }
         let Some(conn) = self
             .db
             .connections
@@ -3317,12 +3608,20 @@ impl AppState {
     }
 
     /// D1: name-click — replace the editor contents with `SELECT * FROM <table>`.
+    ///
+    /// In browse mode there is no editor to write into and no SQL to write: the store
+    /// engine takes a table name, so clicking the name **is** the whole request and the
+    /// rows load straight away (inc-3).
     fn insert_select_star(
         &mut self,
         display_name: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.browse_mode() {
+            self.load_browse_table(display_name, cx);
+            return;
+        }
         let Some(sql_entity) = self.db.sql.clone() else {
             return;
         };
@@ -3397,13 +3696,19 @@ impl AppState {
             cx.notify();
             return;
         };
-        let conn_label = self
-            .db
-            .active_id
-            .as_deref()
-            .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
-            .map(|a| a.item.name.clone())
-            .unwrap_or_else(|| "query".to_string());
+        // Browse mode has no `DbConnection` to name the file after; `sid-store-hosts.csv`
+        // beats the `__sid_store__` sentinel `sanitize_filename_component` would
+        // otherwise be handed.
+        let conn_label = if self.browse_mode() {
+            browse_export_stem(self.browse_table())
+        } else {
+            self.db
+                .active_id
+                .as_deref()
+                .and_then(|id| self.db.connections.iter().find(|a| a.item.id == id))
+                .map(|a| a.item.name.clone())
+                .unwrap_or_else(|| "query".to_string())
+        };
 
         let csv = page_to_csv(&page);
         self.db.notice = Some(match write_csv_export(&conn_label, &csv) {
@@ -4776,6 +5081,61 @@ mod result_view_tests {
         }
     }
 }
+#[cfg(test)]
+mod store_browse_tests {
+    use super::*;
+
+    #[test]
+    fn the_store_row_is_browse_mode_when_nothing_else_claims_its_id() {
+        assert!(is_store_browse_id(Some(STORE_BROWSE_ID), false));
+    }
+
+    #[test]
+    fn nothing_selected_is_not_browse_mode() {
+        assert!(!is_store_browse_id(None, false));
+    }
+
+    #[test]
+    fn an_ordinary_connection_is_not_browse_mode() {
+        assert!(!is_store_browse_id(Some("prod db"), false));
+    }
+
+    #[test]
+    fn a_real_connection_that_claims_the_sentinel_id_wins() {
+        // A `DbConnection`'s id is its user-typed *name* (`db_conn_form`'s
+        // `FormMode::Add` arm: `id = name.clone()`), and `validate_name` rejects only
+        // the empty string — so a user really can name a connection `__sid_store__`.
+        // When they have, that connection is a live target with a DSN and possibly a
+        // secret, and it must win: the alternative is the tab quietly browsing sid's own
+        // store while the panel shows the user's Postgres box selected.
+        //
+        // The store row then renders unselected and clicking it selects the collided
+        // connection instead. Degraded, visibly so, and never wrong about which database
+        // it is talking to — which is the property that matters.
+        assert!(!is_store_browse_id(Some(STORE_BROWSE_ID), true));
+    }
+
+    #[test]
+    fn the_sentinel_is_not_a_name_a_user_would_reach_for() {
+        // Not a security boundary — see the collision test above for what happens when
+        // it is taken. This is just the reason the sentinel is shaped the way it is: a
+        // display name nobody types by accident.
+        assert!(STORE_BROWSE_ID.starts_with("__"));
+        assert!(STORE_BROWSE_ID.ends_with("__"));
+        assert_ne!(STORE_BROWSE_ID, STORE_BROWSE_LABEL);
+    }
+
+    #[test]
+    fn the_browse_export_stem_names_the_table_not_the_sentinel() {
+        // What `export_csv` hands `sanitize_filename_component`. The sentinel would
+        // sanitize into a filename with the underscores in it, which is not a name
+        // anyone wants in ~/Downloads.
+        assert_eq!(browse_export_stem(Some("hosts")), "sid-store-hosts");
+        assert_eq!(browse_export_stem(None), "sid-store");
+        assert!(!browse_export_stem(Some("hosts")).contains("__"));
+    }
+}
+
 #[cfg(test)]
 mod plan_view_tests {
     use super::*;
