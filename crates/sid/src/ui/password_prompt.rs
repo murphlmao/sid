@@ -17,12 +17,12 @@
 //! for the pure decisions that trigger opening this modal.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString,
-    Window, actions, div, prelude::*, px, rgb,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
+    SharedString, Window, actions, div, prelude::*,
 };
 
 use super::TextInput;
-use sid_ui::theme;
+use sid_ui::{Button, Modal, Toast};
 
 actions!(
     password_prompt,
@@ -92,20 +92,12 @@ impl Focusable for PasswordPromptModal {
 
 impl Render for PasswordPromptModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (surface, border, well, fg, muted, danger, selection, accent, fg_strong) = (
-            t.surface,
-            t.border,
-            t.well,
-            t.fg,
-            t.muted,
-            t.danger,
-            t.selection,
-            t.accent,
-            t.fg_strong,
-        );
         let title: SharedString = format!("password for {}", self.label).into();
 
+        // The key context, the focus handle and the two actions stay on a wrapper around
+        // the panel: `Modal` is a plain element with no lifecycle, and Escape/Enter are
+        // this entity's own bindings (see `sid_ui::modal`'s "what the panel does not
+        // own").
         div()
             .key_context("PasswordPrompt")
             .track_focus(&self.focus_handle)
@@ -113,80 +105,38 @@ impl Render for PasswordPromptModal {
                 cx.emit(PasswordPromptEvent::Cancel);
             }))
             .on_action(cx.listener(|this, _: &PasswordPromptSubmit, _window, cx| this.submit(cx)))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w(px(380.))
-            .p_4()
-            .rounded_lg()
-            .bg(rgb(surface))
-            .border_1()
-            .border_color(rgb(border))
-            .text_color(rgb(fg))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child("esc cancels · enter connects"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_xs().text_color(rgb(muted)).child(
+                Modal::new("password-prompt", title)
+                    // The forms' width, not the old 380: a narrower panel drops the
+                    // footer's `Enter connects` hint (`sid_ui::modal::shows_key_hint`),
+                    // and every modal being the same size is worth more than 80px.
+                    .submit_hint("connects")
+                    .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
+                        cx.emit(PasswordPromptEvent::Cancel);
+                    }))
+                    // Why the prompt exists at all, stated before the field rather than
+                    // as a caption under it: what the user types here does not persist.
+                    .child(Toast::info(
                         "no OS keyring — this password is used once and held only \
-                             for this session",
+                         for this session",
                     ))
-                    .child(self.password.clone()),
-            )
-            .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(danger)).child(err))
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("password-prompt-cancel")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(well))
-                            .border_1()
-                            .border_color(rgb(border))
-                            .text_color(rgb(muted))
-                            .child("Cancel")
-                            .on_click(cx.listener(|_this, _ev, _window, cx| {
+                    .child(self.password.clone())
+                    .when_some(self.error.clone(), |modal, err| {
+                        modal.child(Toast::danger(err))
+                    })
+                    .footer(
+                        Button::new("password-prompt-cancel", "Cancel")
+                            .ghost()
+                            .on_click(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                                 cx.emit(PasswordPromptEvent::Cancel);
                             })),
                     )
-                    .child(
-                        div()
-                            .id("password-prompt-submit")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(selection))
-                            .border_1()
-                            .border_color(rgb(accent))
-                            .text_color(rgb(fg_strong))
-                            .child("Connect")
-                            .on_click(cx.listener(|this, _ev, _window, cx| this.submit(cx))),
+                    .footer(
+                        Button::new("password-prompt-submit", "Connect")
+                            .primary()
+                            .on_click(
+                                cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx)),
+                            ),
                     ),
             )
     }

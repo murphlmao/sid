@@ -285,13 +285,7 @@ const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
     ("sid/src/ui/db_tab.rs", "Database overhaul, in flight"),
     // Not held by anyone; simply not reached in wave 1. No blocker beyond the diff size.
     ("sid/src/ui/command_palette.rs", "wave 2"),
-    (
-        "sid/src/ui/db_conn_form.rs",
-        "wave 2 — moves with the DB tab",
-    ),
     ("sid/src/ui/db_diagram.rs", "wave 2 — moves with the DB tab"),
-    ("sid/src/ui/host_form.rs", "wave 2 — moves with SSH home"),
-    ("sid/src/ui/password_prompt.rs", "wave 2"),
     (
         "sid/src/ui/text_input.rs",
         "wave 2 — a custom Element that measures its own line height from the style, so \
