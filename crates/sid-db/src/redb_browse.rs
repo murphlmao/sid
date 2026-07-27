@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use sid_core::db::{
-    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, OpenParams, PageCursor, QueryPage,
-    Row, SchemaGraph, SchemaInfo, TableInfo,
+    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ExplainSupport, OpenParams,
+    PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use sid_store::GlobalStore;
 
@@ -139,6 +139,16 @@ impl DbClient for RedbBrowseClient {
             foreign_keys: Vec::new(),
             primary_keys,
         })
+    }
+
+    fn explain_support(&self) -> ExplainSupport {
+        // Not "unsupported" in the sense of "not built yet" — there is nothing
+        // here to plan. `query_paged`'s argument is a table name, not a query
+        // (see the module doc), so the whole execution strategy is "read that
+        // table". The reason is worded for the user reading a disabled control.
+        ExplainSupport::Unsupported {
+            reason: "the sid store browser reads a table by name — there is no query to plan",
+        }
     }
 
     async fn cancel(&self) -> Result<(), DbError> {
