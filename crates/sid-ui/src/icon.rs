@@ -15,13 +15,13 @@
 //! is monochrome line art, which is the house rule already.
 
 use gpui::{App, IntoElement, RenderOnce, SharedString, Window};
-use gpui_component::{IconName, IconNamed as _};
+use gpui_component::{IconName, IconNamed as _, Sizable as _, Size};
 
 /// A named icon from the bundled Lucide set.
 ///
 /// Names are sid's, not Lucide's: they say what the glyph *means* here, so a call site
 /// reads as intent and a substitution (see [`Icon::Refresh`]) is invisible to it.
-#[derive(IntoElement, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(IntoElement, Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Icon {
     /// Re-run a fetch. The bundle has no `refresh-cw`; Lucide's `redo` (a curved
     /// arrow) is the closest monochrome stand-in and reads correctly at 14px.
@@ -35,6 +35,17 @@ pub enum Icon {
     /// Dismiss: close a modal, clear a field.
     Close,
     /// Destroy: delete a saved item.
+    ///
+    /// **A known substitution.** Lucide has `trash`/`trash-2`, but neither is in the
+    /// 86-icon `gpui-component-assets` 0.5.1 bundle, and the entry that *looks* like the
+    /// obvious candidate — `delete` — is Lucide's **backspace key**: a pointed-left
+    /// rectangle with an X in it (`M20 5H9l-7 7 7 7h11…`), which reads as "erase a
+    /// character", not as "destroy this". It was the mapping here until the System-tab
+    /// migration; `circle-x` is the least-wrong bundled stand-in — an unambiguous
+    /// destroy mark, monochrome, `currentColor`, legible at 14px. It shares its asset
+    /// with [`Icon::Error`] on purpose: the *names* say what a call site means, and two
+    /// meanings sharing one glyph is better than one meaning drawn as a keyboard key.
+    /// Revisit if a future bundle ships a bin.
     Trash,
     /// Copy to clipboard.
     Copy,
@@ -167,7 +178,7 @@ impl Icon {
             Icon::Add => IconName::Plus,
             Icon::Remove => IconName::Minus,
             Icon::Close => IconName::Close,
-            Icon::Trash => IconName::Delete,
+            Icon::Trash => IconName::CircleX,
             Icon::Copy => IconName::Copy,
             Icon::Check => IconName::Check,
             Icon::Warning => IconName::TriangleAlert,
@@ -218,6 +229,16 @@ impl Icon {
     pub fn el(self) -> gpui_component::Icon {
         gpui_component::Icon::new(self.name())
     }
+
+    /// The icon at 14px — the size that sits level with `text_xs` and `text_sm`, which
+    /// is nearly every inline use: an error line, a row marker, a caption.
+    ///
+    /// It exists so a call site does not have to import `gpui_component::Sizable` to say
+    /// "small". Tab modules are supposed to stop naming the library (CLAUDE.md rule 1),
+    /// and a sizing trait is exactly the kind of import that quietly puts it back.
+    pub fn small(self) -> gpui_component::Icon {
+        self.el().with_size(Size::Small)
+    }
 }
 
 impl RenderOnce for Icon {
@@ -253,13 +274,30 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_exactly_once() {
-        // `ALL` is hand-maintained; this keeps it honest against the match arms below
-        // by requiring the set of resolved paths to be the same size as the list.
-        let paths: HashSet<_> = Icon::ALL.iter().map(|i| i.path()).collect();
+        // `ALL` is hand-maintained and has to stay in step with the enum. This asserts
+        // on the *variants*, not on their resolved paths: the path-based version was a
+        // proxy that also forbade two names deliberately sharing one asset, which is a
+        // real and documented situation (see `Icon::Trash`) rather than a mistake.
+        let variants: HashSet<_> = Icon::ALL.iter().copied().collect();
         assert_eq!(
-            paths.len(),
+            variants.len(),
             Icon::ALL.len(),
-            "duplicate or missing entry in Icon::ALL"
+            "duplicate entry in Icon::ALL"
+        );
+    }
+
+    #[test]
+    fn destroy_is_not_drawn_as_a_keyboard_key() {
+        // Lucide's `delete` is the backspace key, not a bin — it shipped as the `Trash`
+        // glyph until the System-tab migration and read as "erase a character" on every
+        // destructive control in the app. Pinned so a future bundle bump cannot quietly
+        // restore it.
+        assert_ne!(Icon::Trash.path(), IconName::Delete.path());
+        assert!(
+            Icon::ALL
+                .iter()
+                .all(|i| i.path() != IconName::Delete.path()),
+            "the backspace glyph is back in the registry"
         );
     }
 }

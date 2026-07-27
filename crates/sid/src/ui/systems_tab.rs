@@ -13,7 +13,7 @@
 //!
 //! ## Refresh
 //!
-//! Unlike the Network tab (manual `⟳` only), the Systems tab also self-refreshes every
+//! Unlike the Network tab (manual refresh only), the Systems tab also self-refreshes every
 //! 2 seconds *while it is the active primary tab* — a process/CPU monitor that goes
 //! stale the moment you tab away and stays stale until you notice is a worse UX than
 //! the extra background polling costs. The `AppState` impl block below spawns a
@@ -141,7 +141,7 @@ pub struct SystemsTabState {
     /// paint) — guards against re-triggering it on every subsequent render.
     loaded: bool,
     /// True while an overview/processes refresh task is in flight — guards re-entrant
-    /// ⟳ clicks and the periodic loop's own tick.
+    /// refresh clicks and the periodic loop's own tick.
     refreshing: bool,
     /// True while the periodic 2s refresh loop (`AppState::start_systems_refresh_loop`)
     /// is alive. The loop clears this to `false` right before it stops itself (having
@@ -657,15 +657,7 @@ impl AppState {
                     .w_full()
                     .child(FillTable::new(&t).stripe(true))
             }))
-            .children(kill_error.map(|e| {
-                h_flex()
-                    .gap_1p5()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(theme.danger))
-                    .child("✗")
-                    .child(e)
-            }))
+            .children(kill_error.map(|e| error_line(theme, e)))
             .into_any_element()
     }
 
@@ -712,7 +704,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// ⟳ refresh: re-probe the overview + processes on the shared runtime, then apply
+    /// Refresh: re-probe the overview + processes on the shared runtime, then apply
     /// the results. No blocking in `render` — this only ever runs from a click, the
     /// lazy first-paint trigger in `systems_tab`, or the periodic loop's tick. Mirrors
     /// `network_tab.rs`'s `refresh_network` (overview + processes share the one
@@ -906,15 +898,7 @@ impl AppState {
             })
             .collect();
 
-        let pin_error = self.systems.pin_error.clone().map(|e| {
-            h_flex()
-                .gap_1p5()
-                .py_1()
-                .text_xs()
-                .text_color(rgb(theme.danger))
-                .child("✗")
-                .child(e)
-        });
+        let pin_error = self.systems.pin_error.clone().map(|e| error_line(theme, e));
         let pin_input = self.systems.pin_input.clone();
 
         v_flex()
@@ -1055,6 +1039,22 @@ impl AppState {
                 this.open_config_editor(open_path.clone(), window, cx);
             }))
     }
+}
+
+/// An inline failure notice: the registry's error glyph, then the message.
+///
+/// Both of this tab's error lines used to open with a literal `✗` — a Dingbats codepoint
+/// drawn by whatever the text font happened to have, at whatever weight, with no size or
+/// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG
+/// that inherits both.
+fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
+    h_flex()
+        .gap_1p5()
+        .py_1()
+        .text_xs()
+        .text_color(rgb(theme.danger))
+        .child(Icon::Error.small())
+        .child(message)
 }
 
 /// One of the two config-file lists, as a bounded card.
