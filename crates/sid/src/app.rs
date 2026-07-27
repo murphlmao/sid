@@ -33,7 +33,7 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, theme};
+use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, modal, theme};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -1820,63 +1820,19 @@ impl Render for AppState {
             Tab::Settings => self.settings_tab(cx),
         };
 
-        // Modal overlay: `anchored` pins a viewport-sized, occluding backdrop at the
-        // window origin; `deferred` paints it above everything else.
-        let overlay = self.form.clone().map(|form| {
-            let viewport = window.viewport_size();
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(0x000000a8))
-                        .child(form),
-                ),
-            )
-            .with_priority(1)
-        });
-        // The DB connection add/edit modal (W4) — the exact mirror of `overlay` above,
-        // over `self.db.form` instead of `self.form`.
-        let db_overlay = self.db.form.clone().map(|form| {
-            let viewport = window.viewport_size();
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(0x000000a8))
-                        .child(form),
-                ),
-            )
-            .with_priority(1)
-        });
-        // The connect-time password prompt — the exact mirror of `overlay` above, over
-        // `self.password_prompt` instead of `self.form`.
-        let password_prompt_overlay = self.password_prompt.clone().map(|modal| {
-            let viewport = window.viewport_size();
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(0x000000a8))
-                        .child(modal),
-                ),
-            )
-            .with_priority(1)
-        });
+        // The three modal scrims. `sid_ui::modal::overlay` owns the shape — viewport
+        // sized, occluding, deferred above everything, `SCRIM`-washed — which this
+        // function used to spell out three times in eighteen identical lines each.
+        let overlay = self.form.clone().map(|form| modal::overlay(window, form));
+        let db_overlay = self
+            .db
+            .form
+            .clone()
+            .map(|form| modal::overlay(window, form));
+        let password_prompt_overlay = self
+            .password_prompt
+            .clone()
+            .map(|prompt| modal::overlay(window, prompt));
 
         // Keyboard-driven system (2026-07-02 plan): the palette + cheat-sheet overlays,
         // and the root-level key handler that opens/dispatches them. `capture_key_down`

@@ -9,9 +9,12 @@
 //! The field set is **descriptor-driven**: [`DbConnForm::new_add`]/[`DbConnForm::new_edit`]
 //! ask the [`DbRegistry`] for the chosen [`DbKind`]'s [`DbClientDescriptor::connection_fields`]
 //! and build one widget per [`ConnField`] — a masked [`TextInput`] for `Password`, a
-//! segmented pill row for `Choice`/`Bool`, a plain [`TextInput`] otherwise. Redb has no
+//! [`SegmentedControl`] for `Choice`/`Bool`, a plain [`TextInput`] otherwise. Redb has no
 //! descriptor (a synthetic, always-present connection, never a form choice — see
 //! `db_registry.rs`), so it never appears in the engine selector.
+//!
+//! The panel itself is a [`sid_ui::Modal`]; the scrim that centres it is
+//! `sid_ui::modal::overlay`, mounted by `app.rs`.
 //!
 //! Two deliberate simplifications vs. the host form: the engine (`DbKind`) is **locked**
 //! in edit mode (switching engines mid-edit would reshape the DSN/field set entirely —
@@ -24,7 +27,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, SharedString, Window, actions, div, prelude::*, px, rgb,
+    KeyDownEvent, SharedString, Window, actions, div, prelude::*, rgb,
 };
 use sid_core::db::{ConnField, ConnFieldKind, DbKind};
 use sid_secrets::{SecretId, SecretStore};
@@ -33,7 +36,11 @@ use sid_store::{DbConnection, DefaultScope, Scope};
 use super::TextInput;
 use super::text_input::next_focus_index;
 use crate::db_registry::DbRegistry;
-use sid_ui::theme;
+use sid_ui::theme::{self, Theme};
+use sid_ui::{
+    Button, Elevation, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
+    Typography as _, h_flex, v_flex,
+};
 
 actions!(
     db_conn_form,
@@ -446,9 +453,11 @@ impl DbConnForm {
 
     // ---- render pieces ------------------------------------------------------
 
+    /// A field's caption. `Meta` (12px, muted): orientation above the value, not a
+    /// section header.
     fn field_label(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
-        let muted = theme::active(cx).muted;
-        div().text_xs().text_color(rgb(muted)).child(text.into())
+        let theme = theme::active(cx).clone();
+        div().text_meta(&theme).child(text.into())
     }
 
     fn field(
@@ -457,82 +466,61 @@ impl DbConnForm {
         input: &Entity<TextInput>,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_1()
             .child(Self::field_label(label, cx))
             .child(input.clone())
     }
 
-    /// The engine row in edit mode: static text, visibly locked (see the module doc's
-    /// "engine locked in edit" note).
+    /// The engine row in edit mode: static text in an input-shaped recess, so it reads
+    /// as a field that cannot be changed (see the module doc's "engine locked in edit").
     fn locked_kind(&self, cx: &App) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, muted) = (t.well, t.border, t.muted);
-        div()
-            .flex()
-            .flex_col()
+        let theme = theme::active(cx).clone();
+        v_flex()
             .gap_1()
             .child(Self::field_label("engine — locked while editing", cx))
             .child(
                 div()
-                    .px(px(8.))
-                    .py(px(6.))
+                    .px_2()
+                    .py_1p5()
                     .rounded_md()
-                    .bg(rgb(well))
-                    .border_1()
-                    .border_color(rgb(border))
-                    .text_sm()
-                    .text_color(rgb(muted))
+                    .elevation(Elevation::Well, &theme)
+                    .text_body(&theme)
+                    .text_color(rgb(theme.muted))
                     .child(self.kind.label()),
             )
     }
 
-    fn kind_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg_strong) = (
-            t.well,
-            t.border,
-            t.selection,
-            t.accent,
-            t.muted,
-            t.fg_strong,
-        );
-        let kinds: Vec<DbKind> = self
-            .registry
+    /// The engines with a descriptor, in registry order — the only ones a form can
+    /// build fields for (redb is synthetic and never a choice; see `db_registry.rs`).
+    fn selectable_kinds(&self) -> Vec<DbKind> {
+        self.registry
             .kinds()
             .into_iter()
             .filter(|k| self.registry.descriptor(*k).is_some())
-            .collect();
-        div()
-            .flex()
-            .flex_col()
+            .collect()
+    }
+
+    fn kind_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let kinds = self.selectable_kinds();
+        let selected = kind_index(&kinds, self.kind);
+        let by_index = kinds.clone();
+        v_flex()
             .gap_1()
             .child(Self::field_label("engine", cx))
+            // The `h_flex` wrapper keeps the control hugging its chips — see
+            // `host_form::auth_selector` for the cross-axis stretch it prevents.
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .children(kinds.into_iter().enumerate().map(|(ix, k)| {
-                        let active = self.kind == k;
-                        div()
-                            .id(("db-kind", ix))
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .bg(rgb(if active { selection } else { well }))
-                            .border_1()
-                            .border_color(rgb(if active { accent } else { border }))
-                            .text_color(rgb(if active { fg_strong } else { muted }))
-                            .child(k.label())
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.set_kind(k, cx);
-                            }))
-                    })),
+                h_flex().child(
+                    SegmentedControl::new("db-form-kind")
+                        .segments(kinds.iter().map(|k| k.label()))
+                        .selected(selected)
+                        .on_select(cx.listener(move |this, ev: &SegmentSelect, _window, cx| {
+                            if let Some(&kind) = by_index.get(ev.index) {
+                                this.set_kind(kind, cx);
+                            }
+                        })),
+                ),
             )
     }
 
@@ -541,15 +529,6 @@ impl DbConnForm {
     /// helper line when `secrets_degraded` (round-D §A.5) — every other field is
     /// unaffected, same as before this change.
     fn field_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg_strong) = (
-            t.well,
-            t.border,
-            t.selection,
-            t.accent,
-            t.muted,
-            t.fg_strong,
-        );
         let (field, widget) = &self.fields[ix];
         let label = field.label.clone();
         let password_hint =
@@ -557,48 +536,34 @@ impl DbConnForm {
                 "no OS keyring — passwords last this session only; you'll be asked at connect",
             );
         match widget {
-            FieldWidget::Text(input) => div()
-                .flex()
-                .flex_col()
+            FieldWidget::Text(input) => v_flex()
                 .gap_1()
                 .child(Self::field_label(label, cx))
                 .child(input.clone())
-                .when_some(password_hint, |el, hint| {
-                    el.child(div().text_xs().text_color(rgb(muted)).child(hint))
-                })
+                // Framed rather than captioned: what this says is that the value will
+                // not survive the session, which is a consequence, not a placeholder.
+                .when_some(password_hint, |el, hint| el.child(Toast::info(hint)))
                 .into_any_element(),
             FieldWidget::Choice { options, selected } => {
                 let selected = *selected;
-                div()
-                    .flex()
-                    .flex_col()
+                v_flex()
                     .gap_1()
                     .child(Self::field_label(label, cx))
-                    .child(div().flex().flex_row().gap_2().children(
-                        options.iter().cloned().enumerate().map(|(opt_ix, opt)| {
-                            let active = opt_ix == selected;
-                            div()
-                                .id(("field-choice", ix * 1000 + opt_ix))
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .text_sm()
-                                .cursor_pointer()
-                                .bg(rgb(if active { selection } else { well }))
-                                .border_1()
-                                .border_color(rgb(if active { accent } else { border }))
-                                .text_color(rgb(if active { fg_strong } else { muted }))
-                                .child(opt)
-                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                    .child(
+                        SegmentedControl::new(SharedString::from(format!("db-form-choice-{ix}")))
+                            .segments(options.clone())
+                            .selected(selected)
+                            .on_select(cx.listener(
+                                move |this, ev: &SegmentSelect, _window, cx| {
                                     if let Some((_, FieldWidget::Choice { selected, .. })) =
                                         this.fields.get_mut(ix)
                                     {
-                                        *selected = opt_ix;
+                                        *selected = ev.index;
                                     }
                                     cx.notify();
-                                }))
-                        }),
-                    ))
+                                },
+                            )),
+                    )
                     .into_any_element()
             }
         }
@@ -607,9 +572,7 @@ impl DbConnForm {
     fn save_to_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
-        let t = theme::active(cx);
-        let (well, border, selection, accent, muted, fg) =
-            (t.well, t.border, t.selection, t.accent, t.muted, t.fg);
+        let theme = theme::active(cx).clone();
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -617,38 +580,27 @@ impl DbConnForm {
                       target: SaveTarget,
                       enabled: bool,
                       selected: bool,
+                      theme: &Theme,
                       cx: &mut Context<Self>| {
-            div()
-                .id(id)
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .border_1()
-                .border_color(rgb(if selected { accent } else { border }))
-                .bg(rgb(if selected { selection } else { well }))
+            let ink = if enabled { theme.fg } else { theme.faint };
+            Row::new(id)
+                .selected(selected)
+                .leading(radio_mark(selected, enabled, theme))
+                // Title and note in the same slot — see `host_form::save_to_selector`
+                // for why the right-anchored meta slot is the wrong home for it.
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(if selected { accent } else { muted }))
-                        .child(if selected { "●" } else { "○" }),
+                    h_flex()
+                        .gap_2()
+                        .child(div().text_body(theme).text_color(rgb(ink)).child(title))
+                        .child(div().text_meta(theme).child(note)),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(if enabled { fg } else { muted }))
-                        .child(title),
-                )
-                .child(div().text_xs().text_color(rgb(muted)).child(note))
-                .when(enabled, |el| {
-                    el.cursor_pointer()
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            this.save_to = Some(target);
-                            cx.notify();
-                        }))
+                // A disabled option installs no click handler at all, so `Row` renders
+                // it inert — no pointer, no hover fill.
+                .when(enabled, |row| {
+                    row.on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.save_to = Some(target);
+                        cx.notify();
+                    }))
                 })
         };
 
@@ -658,85 +610,60 @@ impl DbConnForm {
             "save to:".into()
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(Self::field_label(label, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(option(
-                        "save-workspace",
-                        "workspace",
-                        "— .sid/ · travels with git",
-                        SaveTarget::Workspace,
-                        ws_active && !locked,
-                        self.save_to == Some(SaveTarget::Workspace),
-                        cx,
-                    ))
-                    .child(option(
-                        "save-global",
-                        "global",
-                        "— everywhere · never lost",
-                        SaveTarget::Global,
-                        !locked,
-                        self.save_to == Some(SaveTarget::Global),
-                        cx,
-                    )),
-            )
+        v_flex().gap_1().child(Self::field_label(label, cx)).child(
+            v_flex()
+                .gap_0p5()
+                .child(option(
+                    "save-workspace",
+                    "workspace",
+                    "— .sid/ · travels with git",
+                    SaveTarget::Workspace,
+                    ws_active && !locked,
+                    self.save_to == Some(SaveTarget::Workspace),
+                    &theme,
+                    cx,
+                ))
+                .child(option(
+                    "save-global",
+                    "global",
+                    "— everywhere · never lost",
+                    SaveTarget::Global,
+                    !locked,
+                    self.save_to == Some(SaveTarget::Global),
+                    &theme,
+                    cx,
+                )),
+        )
     }
+}
 
-    fn buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (well, border, muted, selection, accent, fg_strong) = (
-            t.well,
-            t.border,
-            t.muted,
-            t.selection,
-            t.accent,
-            t.fg_strong,
-        );
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                div()
-                    .id("db-form-cancel")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(well))
-                    .border_1()
-                    .border_color(rgb(border))
-                    .text_color(rgb(muted))
-                    .child("Cancel")
-                    .on_click(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
-                        cx.emit(DbConnFormEvent::Cancel);
-                    })),
-            )
-            .child(
-                div()
-                    .id("db-form-save")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_sm()
-                    .cursor_pointer()
-                    .bg(rgb(selection))
-                    .border_1()
-                    .border_color(rgb(accent))
-                    .text_color(rgb(fg_strong))
-                    .child("Save")
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx))),
-            )
-    }
+/// Which segment is lit for `kind`, or the first when the registry no longer offers it.
+fn kind_index(kinds: &[DbKind], kind: DbKind) -> usize {
+    kinds.iter().position(|k| *k == kind).unwrap_or(0)
+}
+
+/// The save-to picker's radio mark — see `host_form::radio_mark`, which this duplicates
+/// on purpose: `SaveTarget`, `preselect` and `add_guard` are already duplicated between
+/// these two modules under this file's "kept local so `ui` stays self-contained" rule,
+/// and a shared `Radio`/scope-picker component in `sid-ui` is the right way to collapse
+/// all four at once rather than making the DB form depend on the SSH form.
+fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
+    let edge = match (selected, enabled) {
+        (true, _) => theme.accent,
+        (false, true) => theme.border,
+        (false, false) => theme.faint,
+    };
+    div()
+        .size_3()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(edge))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |mark| {
+            mark.child(div().size_1p5().rounded_full().bg(rgb(theme.accent)))
+        })
 }
 
 impl EventEmitter<DbConnFormEvent> for DbConnForm {}
@@ -749,8 +676,6 @@ impl Focusable for DbConnForm {
 
 impl Render for DbConnForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (surface, border, fg, muted, danger) = (t.surface, t.border, t.fg, t.muted, t.danger);
         let title = match &self.mode {
             FormMode::Add => "Add connection",
             FormMode::Edit { .. } => "Edit connection",
@@ -759,6 +684,8 @@ impl Render for DbConnForm {
             .map(|ix| self.field_row(ix, cx))
             .collect();
 
+        // The key context, the focus handle and the three key handlers stay on a wrapper
+        // around the panel — see `host_form`'s render for why.
         div()
             .key_context("DbConnForm")
             .track_focus(&self.focus_handle)
@@ -767,40 +694,33 @@ impl Render for DbConnForm {
             }))
             .on_action(cx.listener(|this, _: &DbFormSubmit, _window, cx| this.submit(cx)))
             .on_key_down(cx.listener(Self::handle_key_down))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .w(px(460.))
-            .p_4()
-            .rounded_lg()
-            .bg(rgb(surface))
-            .border_1()
-            .border_color(rgb(border))
-            .text_color(rgb(fg))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(div().flex_1().text_sm().text_color(rgb(fg)).child(title))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child("esc cancels · enter saves"),
-                    ),
+                Modal::new("db-conn-form", title)
+                    .submit_hint("saves")
+                    .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
+                        cx.emit(DbConnFormEvent::Cancel);
+                    }))
+                    .child(self.field("name", &self.name, cx))
+                    .child(match &self.mode {
+                        FormMode::Add => self.kind_selector(cx).into_any_element(),
+                        FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),
+                    })
+                    .children(field_rows)
+                    .child(self.save_to_selector(cx))
+                    .when_some(self.error.clone(), |modal, err| {
+                        modal.child(Toast::danger(err))
+                    })
+                    .footer(
+                        Button::new("db-form-cancel", "Cancel")
+                            .ghost()
+                            .on_click(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
+                                cx.emit(DbConnFormEvent::Cancel);
+                            })),
+                    )
+                    .footer(Button::new("db-form-save", "Save").primary().on_click(
+                        cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx)),
+                    )),
             )
-            .child(self.field("name", &self.name, cx))
-            .child(match &self.mode {
-                FormMode::Add => self.kind_selector(cx).into_any_element(),
-                FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),
-            })
-            .children(field_rows)
-            .child(self.save_to_selector(cx))
-            .when_some(self.error.clone(), |el, err| {
-                el.child(div().text_sm().text_color(rgb(danger)).child(err))
-            })
-            .child(self.buttons(cx))
     }
 }
 
@@ -992,6 +912,24 @@ mod tests {
 
     fn port_field(key: &str) -> ConnField {
         ConnField::new(key, key, ConnFieldKind::Port)
+    }
+
+    // ---- engine segments ------------------------------------------------------------
+
+    #[test]
+    fn the_lit_engine_segment_is_the_selected_kind() {
+        let kinds = [DbKind::Postgres, DbKind::Sqlite];
+        assert_eq!(kind_index(&kinds, DbKind::Postgres), 0);
+        assert_eq!(kind_index(&kinds, DbKind::Sqlite), 1);
+    }
+
+    #[test]
+    fn an_engine_the_registry_no_longer_offers_lights_the_first_segment() {
+        // A strip with no chip lit reads as "the app forgot which engine you picked".
+        // Falling back to the first segment keeps the control and the form agreeing on
+        // *something*, and the form's own `kind` is what a save uses regardless.
+        assert_eq!(kind_index(&[DbKind::Sqlite], DbKind::Postgres), 0);
+        assert_eq!(kind_index(&[], DbKind::Postgres), 0);
     }
 
     // ---- validate_name --------------------------------------------------------------
