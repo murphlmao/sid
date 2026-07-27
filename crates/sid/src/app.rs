@@ -1329,6 +1329,13 @@ impl AppState {
             .items_center()
             .w_full()
             .h(px(42.))
+            // The chrome's height is not negotiable. Without this the strip is an
+            // ordinary shrinkable flex item in the window's column, so any tab whose
+            // content reports a taller intrinsic height than the window has left
+            // (Settings' four stacked sections measure ~1053px at 1080p) takes the
+            // difference out of the bar above it: the whole navbar visibly rode up —
+            // 42px tall on SSH/Network, 27px on Settings — as you switched tabs.
+            .flex_shrink_0()
             .px_3()
             .gap_1()
             .bg(rgb(surface))
@@ -1879,7 +1886,21 @@ impl Render for AppState {
             .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(Self::handle_root_key_down))
             .child(self.tab_strip(cx))
-            .child(div().flex().flex_col().flex_1().child(content))
+            // `min_h(0)` is the other half of pinning the chrome. A flex item's automatic
+            // minimum height is its content's intrinsic height, and gpui's `flex_1` sets a
+            // `0%` basis — a percentage that is indefinite during the intrinsic pass, so it
+            // falls back to content-based sizing. A tall tab therefore claimed the height it
+            // wanted (Settings: 1053 of 1080px) instead of the height it was given, and the
+            // strip above absorbed the difference. With the floor dropped, the active tab
+            // gets exactly what is left under the chrome and scrolls inside it.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(content),
+            )
             .children(overlay)
             .children(db_overlay)
             .children(password_prompt_overlay)
