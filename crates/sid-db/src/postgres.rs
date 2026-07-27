@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sid_core::db::{
-    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ForeignKey, OpenParams, PageCursor,
-    QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
+    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ExplainSupport, ForeignKey,
+    OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use tokio::sync::Mutex;
 
@@ -328,6 +328,79 @@ impl DbClient for PostgresClient {
             columns,
             rows: rows_out,
             next_cursor,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    fn explain_support(&self) -> ExplainSupport {
+        // Plain `EXPLAIN`, never `EXPLAIN ANALYZE` — the ANALYZE option runs the
+        // statement for real, so a "show me the plan" button carrying it would
+        // execute the `DELETE` it was asked to describe. See `ExplainSupport`.
+        ExplainSupport::Supported { keyword: "EXPLAIN" }
+    }
+
+    async fn explain(&self, sql: &str) -> Result<QueryPage, DbError> {
+        let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
+        // Same trailing-trivia hazard `query_paged` documents: the editor's own
+        // seed SQL ends in `;`, and a `; --` paste artifact would otherwise sit
+        // between the keyword and the statement it modifies.
+        let stripped = crate::lexer::strip_trailing_trivia(sql);
+        const PREFIX: &str = "EXPLAIN ";
+        let statement = format!("{PREFIX}{stripped}");
+        // `query` (extended protocol), not `simple_query`: it refuses to run more
+        // than one statement per call, so `EXPLAIN select 1; drop table x` is a
+        // driver error rather than a dropped table. That refusal is the only thing
+        // standing between a plan affordance and arbitrary execution, because the
+        // statement text comes straight from the editor.
+        let start = std::time::Instant::now();
+        let guard = inner.lock().await;
+        // BUG 5's offset correction, reused: Postgres reports a syntax error's
+        // position relative to the string it parsed (which carries the prefix),
+        // and an uncorrected offset can run past the caller's own text.
+        let fix_offset = |e: tokio_postgres::Error| -> DbError {
+            adjust_wrapped_syntax_offset(map_pg_error(e), PREFIX.len(), sql.len())
+        };
+        let rows = guard
+            .client
+            .query(&statement, &[])
+            .await
+            .map_err(fix_offset)?;
+        let columns: Vec<Column> = match rows.first() {
+            Some(r) => r
+                .columns()
+                .iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    ty: pg_type_to_column_type(c.type_()),
+                })
+                .collect(),
+            None => guard
+                .client
+                .prepare(&statement)
+                .await
+                .map_err(fix_offset)?
+                .columns()
+                .iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    ty: pg_type_to_column_type(c.type_()),
+                })
+                .collect(),
+        };
+        let rows_out: Vec<Row> = rows
+            .iter()
+            .map(|r| Row {
+                values: (0..r.columns().len())
+                    .map(|i| render_pg_value(r, i))
+                    .collect(),
+            })
+            .collect();
+        Ok(QueryPage {
+            columns,
+            rows: rows_out,
+            // A plan is returned whole: there is nothing to page through, and a
+            // cursor would offer a "next page" that came back empty.
+            next_cursor: None,
             duration_ms: start.elapsed().as_millis() as u64,
         })
     }

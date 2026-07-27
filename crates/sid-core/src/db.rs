@@ -371,6 +371,79 @@ pub struct SchemaGraph {
     pub primary_keys: std::collections::BTreeMap<String, Vec<String>>,
 }
 
+/// Whether an engine can show a statement's execution plan, and — when it cannot —
+/// what to tell the user.
+///
+/// A *classification*, not a call: a frontend has to decide whether to enable its
+/// plan affordance before anything is connected, so
+/// [`DbClient::explain_support`] answers from a bare factory and touches no
+/// connection.
+///
+/// # Plain `EXPLAIN` only — never `EXPLAIN ANALYZE`
+///
+/// Postgres's `ANALYZE` option *executes* the statement to collect real row counts
+/// and timings. "Show me the plan for this `DELETE`" would delete the rows. Every
+/// keyword declared through this type is therefore a plan-only form, and
+/// `sid-db`'s `tests/explain_matrix.rs` fails the build on any keyword containing
+/// `ANALYZE`. Real timings are a different feature with its own confirmation, not a
+/// variation on this one.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::db::ExplainSupport;
+/// let pg = ExplainSupport::Supported { keyword: "EXPLAIN" };
+/// assert_eq!(pg.keyword(), Some("EXPLAIN"));
+/// assert_eq!(pg.reason(), None);
+/// assert!(pg.is_supported());
+///
+/// let none = ExplainSupport::Unsupported { reason: "no query planner" };
+/// assert_eq!(none.keyword(), None);
+/// assert_eq!(none.reason(), Some("no query planner"));
+/// assert!(!none.is_supported());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplainSupport {
+    /// The engine has a plan syntax.
+    Supported {
+        /// The exact prefix the adapter puts in front of the statement —
+        /// `"EXPLAIN"` for Postgres, `"EXPLAIN QUERY PLAN"` for SQLite. Doubles as
+        /// the label a UI can show, so the reader knows which dialect's plan they
+        /// are looking at.
+        keyword: &'static str,
+    },
+    /// The engine has no plan syntax at all.
+    Unsupported {
+        /// A user-facing sentence for the disabled affordance — "this engine has
+        /// no query planner", not "unsupported". Shown verbatim, so it has to read
+        /// as an explanation rather than an error code.
+        reason: &'static str,
+    },
+}
+
+impl ExplainSupport {
+    /// The plan keyword, or `None` when the engine has none.
+    pub fn keyword(self) -> Option<&'static str> {
+        match self {
+            ExplainSupport::Supported { keyword } => Some(keyword),
+            ExplainSupport::Unsupported { .. } => None,
+        }
+    }
+
+    /// Why the affordance is unavailable, or `None` when it is available.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            ExplainSupport::Supported { .. } => None,
+            ExplainSupport::Unsupported { reason } => Some(reason),
+        }
+    }
+
+    /// Whether a plan can be asked for at all.
+    pub fn is_supported(self) -> bool {
+        matches!(self, ExplainSupport::Supported { .. })
+    }
+}
+
 /// Async database client trait. Implementations live in `sid-db`.
 ///
 /// # Object safety
@@ -435,6 +508,46 @@ pub trait DbClient: Send + Sync {
     /// than an error.
     async fn schema_graph(&self) -> Result<SchemaGraph, DbError> {
         Ok(SchemaGraph::default())
+    }
+
+    /// Whether this engine can produce an execution plan, and what it calls it.
+    ///
+    /// Defaulted for the same reason [`schema_graph`](Self::schema_graph) is: a new
+    /// engine is honest about what it cannot do without implementing anything, and
+    /// a frontend disables its plan affordance *with a reason* instead of offering
+    /// a control that errors when pressed.
+    ///
+    /// Answerable without a connection — see [`ExplainSupport`], which also records
+    /// why no engine may declare an `ANALYZE` form here.
+    fn explain_support(&self) -> ExplainSupport {
+        ExplainSupport::Unsupported {
+            reason: "this engine has no query planner",
+        }
+    }
+
+    /// Run `sql` through the engine's plan syntax and return the plan.
+    ///
+    /// The plan comes back as a [`QueryPage`] because that is the shape both
+    /// dialects already produce — Postgres one `QUERY PLAN` text column, SQLite's
+    /// `EXPLAIN QUERY PLAN` four (`id`, `parent`, `notused`, `detail`). Whatever
+    /// indentation the engine put inside those strings is preserved verbatim: on
+    /// Postgres that indentation *is* the plan tree.
+    ///
+    /// The statement is **not executed** — see [`ExplainSupport`]. Paging does not
+    /// apply either: a plan is short, and is returned whole with
+    /// `next_cursor: None`.
+    ///
+    /// The default carries [`explain_support`](Self::explain_support)'s own reason
+    /// into the error, so an engine that declares itself unsupported cannot end up
+    /// telling the user one story on a disabled button and a different one here.
+    async fn explain(&self, sql: &str) -> Result<QueryPage, DbError> {
+        let _ = sql;
+        Err(DbError::Invalid(
+            self.explain_support()
+                .reason()
+                .unwrap_or("this engine has no query planner")
+                .to_string(),
+        ))
     }
 
     /// Best-effort cancel of an in-flight query. SQLite and the redb browse
