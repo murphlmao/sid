@@ -441,7 +441,7 @@ impl RenderOnce for Button {
             )
             .when_some(self.tooltip, |this, tip| this.tooltip(tip))
             .when_some(self.on_click.filter(|_| interactive), |this, on_click| {
-                this.on_click(move |ev, window, cx| on_click(ev, window, cx))
+                this.on_click(move |ev, window, cx| consume(ev, window, cx, &on_click))
             });
         refined(button, self.style)
     }
@@ -565,10 +565,22 @@ impl RenderOnce for IconButton {
             })
             .tooltip(self.tooltip)
             .when_some(self.on_click.filter(|_| interactive), |this, on_click| {
-                this.on_click(move |ev, window, cx| on_click(ev, window, cx))
+                this.on_click(move |ev, window, cx| consume(ev, window, cx, &on_click))
             });
         refined(button, self.style)
     }
+}
+
+/// Run a button's handler and **stop the click there**.
+///
+/// A button's click belongs to the button. Without this, a button inside a clickable
+/// [`crate::Row`] fires both — gpui dispatches click listeners in the bubble phase,
+/// child first, and `gpui-component`'s own `Button` does not stop propagation on a
+/// normal click. On the SSH row that would mean "connect" opening one session from the
+/// button and a second from the row underneath it.
+fn consume(ev: &ClickEvent, window: &mut Window, cx: &mut App, handler: &ClickHandler) {
+    cx.stop_propagation();
+    handler(ev, window, cx);
 }
 
 /// The shared box: the library's button with every colour it uses replaced by a sid
