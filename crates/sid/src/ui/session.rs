@@ -26,8 +26,9 @@ use std::time::Duration;
 use gpui::{
     App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent,
-    Keystroke, Pixels, Render, ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored,
-    canvas, deferred, div, fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
+    Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
+    ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred, div,
+    fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -48,8 +49,40 @@ use sid_ui::{Row, theme, v_flex};
 const MONO: &str = "CaskaydiaCove Nerd Font Mono";
 const TERM_FONT_SIZE: Pixels = px(14.);
 
-/// The file sidebar's fixed width (plan: "~320px").
-const SIDEBAR_WIDTH: Pixels = px(320.);
+/// The split's sizing rules — see [`sidebar_width`] for how they compose.
+///
+/// A pinned pixel width is an anti-pattern: it is right at exactly one window size and
+/// wrong at every other. What replaces it is the pair every responsive split actually
+/// needs — **content floors** (what each pane must have to still do its job) and a
+/// **proportion** for the space above those floors.
+mod sidebar_metrics {
+    use gpui::{Pixels, px};
+
+    /// The sidebar's content floor.
+    ///
+    /// At this width [`super::plan_entry_row`] still seats the name column at its own
+    /// floor (`row_metrics::NAME_MIN`, sixteen-odd characters — enough that `.bashrc`
+    /// and `.bash_logout` don't render as the same string). The orientation columns
+    /// return as the sidebar widens: **size** from 318px, **modified** from 406px, both
+    /// of which fall inside this band — which is the reason the band is where it is.
+    pub const MIN: Pixels = px(280.);
+    /// The sidebar's ceiling. Past this a file list is just wasting the terminal's
+    /// space: every column [`super::plan_entry_row`] has to offer already fits.
+    pub const MAX: Pixels = px(480.);
+    /// The sidebar's share of the split when the user hasn't dragged it.
+    pub const RATIO: f32 = 0.25;
+    /// The terminal's content floor — roughly forty columns at [`TERM_FONT_SIZE`].
+    ///
+    /// Deliberately *not* eighty columns: the grid reflows to whatever it is given
+    /// (see `render_grid`'s canvas), so this is not "what a terminal needs to be
+    /// correct" but "what it needs to still be a shell you can read".
+    ///
+    /// [`TERM_FONT_SIZE`]: super::TERM_FONT_SIZE
+    pub const TERMINAL_MIN: Pixels = px(360.);
+    /// The drag divider's hit strip. Wider than the 1px border it draws over, because a
+    /// hit target you have to aim at is a hit target you miss.
+    pub const DIVIDER: Pixels = px(6.);
+}
 
 /// How often the read-loop hops onto the Tokio runtime to drain the shell's output buffer.
 // ponytail: fixed-interval poll, not event-driven — fine at ~30Hz for a terminal; revisit only
@@ -128,6 +161,23 @@ enum PreviewContent {
     /// Why the raw bytes aren't shown (too large, binary, or the fetch failed) — the file's
     /// contents themselves are never dumped into the UI.
     Notice(String),
+}
+
+/// A divider drag in progress: where the pointer went down, and how wide the sidebar
+/// was at that moment.
+///
+/// Both are needed because the new width is computed from the *absolute* pointer
+/// position (`width_at_grab + (x - grab_x)`, signed by the dock side — see
+/// [`dragged_width`]) rather than accumulated per move event. That makes the drag
+/// idempotent: a dropped or coalesced move event costs nothing, and the sidebar can
+/// never drift away from the pointer over a long drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SidebarDrag {
+    /// Pointer x at mouse-down, in window coordinates.
+    grab_x: Pixels,
+    /// The sidebar's rendered width at mouse-down — the *clamped* one, so the drag
+    /// starts from the edge the user is actually looking at.
+    width_at_grab: Pixels,
 }
 
 /// A live (or connecting/failed/closed) SSH session: one adapter-backed client with a shell
@@ -261,11 +311,28 @@ pub struct SshSession {
     /// the connection's own lifecycle. A listing failure here does not fail the session:
     /// the terminal keeps working even if e.g. the home directory can't be read.
     file_error: Option<String>,
-    /// Split-layout collapse toggle (P5.2): no draggable divider is cheaply available in
-    /// gpui 0.2.2, so per the plan's fallback the sidebar is fixed-width with a `«`/`»`
-    /// collapse control instead, letting the terminal reclaim the full pane when browsing
-    /// files isn't needed.
+    /// Split-layout collapse toggle (P5.2): the `«`/`»` control that lets the terminal
+    /// reclaim the whole pane when browsing files isn't needed. Complements the drag
+    /// divider rather than substituting for it — collapse is "not now", drag is "this
+    /// much".
     sidebar_collapsed: bool,
+    /// What the user dragged the sidebar to, if they have. `None` means "follow the
+    /// window" — [`sidebar_width`]'s proportional default.
+    ///
+    /// Stored **unclamped**, and clamped on every read: a window too narrow to honor it
+    /// borrows the space rather than overwriting the preference, so widening the window
+    /// hands it back (see [`sidebar_width`]'s rule 1).
+    ///
+    /// Session-local, per connection tab, and deliberately not persisted. The dock
+    /// *side* lives in `Settings` because it is one enum shared by every tab; a width is
+    /// a per-tab, per-window judgement — the same setting would be wrong on a laptop and
+    /// on a 4K panel, which is the pixel-pinning problem again one level up. (`Settings`
+    /// is also postcard-positional with a four-hop version chain, so a field there is
+    /// never a small change.)
+    sidebar_width_pref: Option<Pixels>,
+    /// An in-flight divider drag — see [`SidebarDrag`]. `None` whenever the pointer
+    /// isn't holding the divider.
+    sidebar_drag: Option<SidebarDrag>,
     /// Hidden-files toggle: when `false`, dotfile entries (`.config`, `.cache`, …) are
     /// filtered out of the rendered listing by [`filter_hidden`]. Session-local UI state only
     /// — not persisted, not part of the layered store. Defaults `true` (show hidden) to
@@ -320,6 +387,8 @@ impl SshSession {
                 entries: Vec::new(),
                 file_error: None,
                 sidebar_collapsed: false,
+                sidebar_width_pref: None,
+                sidebar_drag: None,
                 show_hidden: true,
                 goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
                 preview: None,
@@ -559,6 +628,66 @@ impl SshSession {
     pub fn set_dock_side(&mut self, side: PanelSide, cx: &mut Context<Self>) {
         if self.dock_side != side {
             self.dock_side = side;
+            cx.notify();
+        }
+    }
+
+    // ---- the drag divider ------------------------------------------------------------------
+
+    /// Divider mouse-down: arm a drag, or — on the second click of a double-click —
+    /// drop the user's width and hand the sidebar back to [`sidebar_width`]'s
+    /// proportional default. Double-click-to-reset is the escape hatch for a drag that
+    /// went somewhere silly; without it the only way back to the default is to guess it.
+    fn start_sidebar_drag(
+        &mut self,
+        event: &MouseDownEvent,
+        width_at_grab: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        if event.click_count >= 2 {
+            self.sidebar_drag = None;
+            self.sidebar_width_pref = None;
+            cx.notify();
+            return;
+        }
+        self.sidebar_drag = Some(SidebarDrag {
+            grab_x: event.position.x,
+            width_at_grab,
+        });
+        cx.notify();
+    }
+
+    /// Bound to the whole split, not to the divider: six pixels is a fine thing to
+    /// *grab* and a hopeless thing to stay inside of, so once the drag is armed the
+    /// pointer's position matters wherever it is (the pattern `db_diagram`'s draggable
+    /// boxes use — handlers on the container, not the handle).
+    ///
+    /// The preference is stored raw; [`sidebar_width`] is what clamps it, on every
+    /// render, against the live window.
+    fn on_sidebar_drag_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.sidebar_drag else {
+            return;
+        };
+        let dx = event.position.x - drag.grab_x;
+        self.sidebar_width_pref = Some(dragged_width(drag.width_at_grab, dx, self.dock_side));
+        cx.notify();
+    }
+
+    /// Mouse-up (inside the split or out of it) ends the drag. Nothing to commit — every
+    /// move already wrote the preference — so this only drops the drag state, which is
+    /// what stops the sidebar following an unpressed pointer.
+    fn on_sidebar_drag_up(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.sidebar_drag.take().is_some() {
             cx.notify();
         }
     }
@@ -857,7 +986,7 @@ fn human_size(bytes: u64) -> String {
 
 /// Format a Unix `mtime_secs` as a bare `YYYY-MM-DD` (UTC; no timezone/locale support — good
 /// enough for a browse view). Date-only rather than `YYYY-MM-DD HH:MM`: at the file sidebar's
-/// fixed `SIDEBAR_WIDTH`, a full timestamp doesn't fit cleanly next to the name/size columns
+/// narrow end, a full timestamp doesn't fit cleanly next to the name/size columns
 /// and the per-row action buttons — it either clips mid-glyph or crushes the name column to
 /// nothing — so the modified column trades the time-of-day for a width that always fits.
 /// Display-only, same as `human_size`.
@@ -934,7 +1063,7 @@ struct EntryRowPlan {
 /// Decide an entry row's columns by arithmetic rather than by hope.
 ///
 /// Every child of an entry row except the name is fixed-width, so what the name gets is
-/// subtraction — and at [`SIDEBAR_WIDTH`] the old row spent the lot: glyph 14 + size 60 +
+/// subtraction — and at the old fixed 320px sidebar the row spent the lot: glyph 14 + size 60 +
 /// mtime 84 + three text buttons + five 8px gaps + 24px of padding left the name about
 /// twenty pixels, which is why `.bashrc` and `.bash_logout` both rendered as `.ba`.
 ///
@@ -976,6 +1105,67 @@ fn plan_entry_row(row_width: Pixels) -> EntryRowPlan {
     }
 }
 
+// ---- the split's own width ----------------------------------------------------------------
+
+/// How wide the file sidebar is, given the split's total width and whatever the user
+/// dragged it to.
+///
+/// **The rules, in precedence order.**
+///
+/// 1. *The terminal's floor outranks the sidebar's preference.* A drag — or a window
+///    that shrinks under an already-wide sidebar — can never push the terminal below
+///    [`sidebar_metrics::TERMINAL_MIN`]. The user's dragged width is kept verbatim in
+///    session state and clamped here, at read time, so a squeeze is borrowed rather than
+///    destructive: widen the window again and their width comes back.
+/// 2. *Within that room, the sidebar's own band governs:* the dragged width, or
+///    [`sidebar_metrics::RATIO`] of the split when there isn't one, clamped to
+///    `[MIN, MAX]`.
+/// 3. *Below the point where both floors fit, neither one wins — they degrade together.*
+///    The split is divided in proportion to the two floors (sidebar `280/640` ≈ 44%,
+///    terminal ≈ 56%), so a genuinely tiny window gets a cramped-but-present file list
+///    and a cramped-but-larger terminal, instead of one pane eating the other. That
+///    proportion is chosen to meet rule 2 exactly at the changeover, so the width is
+///    *continuous* across it — no jump as the window crosses 646px.
+///
+/// `viewport_px` is the whole split (both panes plus the divider);
+/// [`sidebar_metrics::DIVIDER`] is reserved off the top, since the strip is a sibling of
+/// both panes rather than part of either.
+fn sidebar_width(viewport_px: Pixels, preferred: Option<Pixels>) -> Pixels {
+    use sidebar_metrics as s;
+
+    let usable = viewport_px - s::DIVIDER;
+    if usable <= Pixels::ZERO {
+        return Pixels::ZERO;
+    }
+
+    // Rule 3: not enough room for both floors — split in proportion to them. At exactly
+    // `MIN + TERMINAL_MIN` this yields `MIN`, which is what makes the changeover
+    // continuous with the clamp below.
+    if usable < s::MIN + s::TERMINAL_MIN {
+        let share = f32::from(s::MIN) / f32::from(s::MIN + s::TERMINAL_MIN);
+        return usable * share;
+    }
+
+    // Rule 2, bounded by rule 1: the sidebar's own band, with the terminal's floor as a
+    // hard ceiling on top of it. `usable - TERMINAL_MIN >= MIN` in this branch, so the
+    // effective ceiling can never fall below the floor.
+    let desired = preferred.unwrap_or(viewport_px * s::RATIO);
+    let ceiling = (usable - s::TERMINAL_MIN).min(s::MAX);
+    desired.max(s::MIN).min(ceiling)
+}
+
+/// Where a divider drag puts the sidebar's edge, before [`sidebar_width`] clamps it:
+/// the width at the moment of grab, plus the pointer's horizontal travel — *signed by
+/// which side the panel is docked to*. Dragging right widens a left-docked sidebar and
+/// narrows a right-docked one, because the divider is on the panel's inner edge either
+/// way.
+fn dragged_width(width_at_grab: Pixels, dx: Pixels, side: PanelSide) -> Pixels {
+    match side {
+        PanelSide::Left => width_at_grab + dx,
+        PanelSide::Right => width_at_grab - dx,
+    }
+}
+
 // ---- the breadcrumb's one line -----------------------------------------------------------
 
 /// One item on the breadcrumb line.
@@ -991,13 +1181,30 @@ struct Crumb {
 /// The elided-middle mark.
 const ELLIPSIS: &str = "…";
 
-/// Characters the breadcrumb line can hold at [`SIDEBAR_WIDTH`].
+/// The breadcrumb row's furniture: the sidebar's own `px_2` padding on both sides plus
+/// the `«` collapse control beside the line.
+const CRUMB_CHROME: Pixels = px(82.);
+
+/// One `text_xs` mono character, near enough.
+const CRUMB_CHAR_PX: f32 = 7.;
+
+/// The narrowest breadcrumb worth computing — below this the line is `/ … x` and the
+/// `overflow_hidden` backstop is doing the work anyway.
+const CRUMB_BUDGET_MIN: usize = 8;
+
+/// Characters the breadcrumb line can hold at a given sidebar width.
 ///
-/// The row is the sidebar less its own `px_2` padding and the `«` collapse control; at
-/// `text_xs` in the mono face a character runs about 7px. Deliberately an estimate — it
-/// only decides *when* the middle elides, and the `overflow_hidden` on the line is what
-/// makes being a little wrong about it harmless rather than a second overlap bug.
-const CRUMB_BUDGET: usize = 34;
+/// Deliberately an estimate — it only decides *when* the middle elides, and the
+/// `overflow_hidden` on the line is what makes being a little wrong about it harmless
+/// rather than a second overlap bug. Calibrated to the 34 characters the old fixed
+/// 320px sidebar used, so a sidebar left at its old size elides exactly where it did.
+fn crumb_budget(sidebar_width: Pixels) -> usize {
+    let room = f32::from(sidebar_width) - f32::from(CRUMB_CHROME);
+    if room <= 0. {
+        return CRUMB_BUDGET_MIN;
+    }
+    ((room / CRUMB_CHAR_PX).floor() as usize).max(CRUMB_BUDGET_MIN)
+}
 
 /// Split an absolute remote path into its clickable crumbs, root first, each targeting the
 /// path built up to and including it (`/a/b` -> `/`, `a`->`/a`, `b`->`/a/b`).
@@ -1105,10 +1312,15 @@ fn truncate_crumbs(crumbs: &[Crumb], budget: usize) -> Vec<Crumb> {
 mod entry_row_space_tests {
     use super::*;
 
-    /// The acceptance case from the bug report, as arithmetic.
+    /// A 1600px window's default sidebar — 25% of the split, well inside the clamp.
+    const DEFAULT_AT_1600: Pixels = px(400.);
+
+    /// The acceptance case from the bug report, as arithmetic. Checked at the *floor*,
+    /// not at some comfortable width: the floor is the only width the sidebar is
+    /// guaranteed to be at least, so it is the one the name column has to survive.
     #[test]
-    fn at_the_sidebar_width_the_name_column_stays_readable() {
-        let plan = plan_entry_row(SIDEBAR_WIDTH);
+    fn at_the_sidebar_floor_the_name_column_stays_readable() {
+        let plan = plan_entry_row(sidebar_metrics::MIN);
         assert!(
             plan.name_width >= row_metrics::NAME_MIN,
             "name got {:?}, floor is {:?}",
@@ -1119,10 +1331,31 @@ mod entry_row_space_tests {
 
     #[test]
     fn mtime_is_the_first_column_to_yield() {
-        // At the sidebar's real width something has to give, and the date goes first.
-        let plan = plan_entry_row(SIDEBAR_WIDTH);
+        // At a typical default width something has to give, and the date goes first.
+        let plan = plan_entry_row(DEFAULT_AT_1600);
         assert!(!plan.show_mtime, "the date should have yielded");
-        assert!(plan.show_size, "size should still fit at {SIDEBAR_WIDTH:?}");
+        assert!(
+            plan.show_size,
+            "size should still fit at {DEFAULT_AT_1600:?}"
+        );
+    }
+
+    /// The two thresholds `sidebar_metrics::MIN`'s doc comment quotes, pinned, so the
+    /// prose and the arithmetic can't drift: size returns at 318px, modified at 406px.
+    /// Both sit inside `[MIN, MAX]`, which is what makes dragging the sidebar wider a
+    /// *visible* trade rather than a cosmetic one.
+    #[test]
+    fn the_orientation_columns_return_inside_the_clamp_band() {
+        assert!(!plan_entry_row(px(317.)).show_size);
+        assert!(plan_entry_row(px(318.)).show_size);
+        assert!(!plan_entry_row(px(405.)).show_mtime);
+        assert!(plan_entry_row(px(406.)).show_mtime);
+        for w in [px(318.), px(406.)] {
+            assert!(
+                w > sidebar_metrics::MIN && w < sidebar_metrics::MAX,
+                "{w:?} should fall inside the clamp band"
+            );
+        }
     }
 
     #[test]
@@ -1184,8 +1417,185 @@ mod entry_row_space_tests {
 }
 
 #[cfg(test)]
+mod sidebar_width_tests {
+    use super::sidebar_metrics as s;
+    use super::*;
+
+    /// What the terminal is left with, which is the half of the split the sidebar's
+    /// arithmetic is really about. Floored at zero: a viewport too small to seat even
+    /// the divider has no terminal, not a negative one.
+    fn terminal_width(viewport: f32, preferred: Option<Pixels>) -> Pixels {
+        (px(viewport) - sidebar_width(px(viewport), preferred) - s::DIVIDER).max(Pixels::ZERO)
+    }
+
+    #[test]
+    fn the_default_is_a_proportion_of_the_split() {
+        // The middle of the band: 25% of 1600 is 400, which is neither floor nor ceiling.
+        assert_eq!(sidebar_width(px(1600.), None), px(400.));
+    }
+
+    #[test]
+    fn a_narrow_window_clamps_up_to_the_content_floor() {
+        // 25% of 900 is 225 — narrower than a file list can say anything useful in.
+        assert_eq!(sidebar_width(px(900.), None), s::MIN);
+    }
+
+    #[test]
+    fn a_wide_window_clamps_down_to_the_ceiling() {
+        // 25% of a 4K-ish window is 640px of file list, which is just stolen terminal.
+        assert_eq!(sidebar_width(px(2560.), None), s::MAX);
+    }
+
+    #[test]
+    fn the_terminal_floor_outranks_a_dragged_width() {
+        // Dragged to the ceiling, then the window shrinks to 800: honoring 480 would
+        // leave the terminal 314px. It gets its floor and the sidebar yields.
+        let w = sidebar_width(px(800.), Some(s::MAX));
+        assert!(w < s::MAX, "the sidebar should have yielded, got {w:?}");
+        assert_eq!(terminal_width(800., Some(s::MAX)), s::TERMINAL_MIN);
+    }
+
+    #[test]
+    fn a_squeeze_is_borrowed_not_destructive() {
+        // The same stored preference, read at two window sizes: squeezed at 800,
+        // returned whole at 1600. Nothing clamps the *stored* value.
+        let pref = Some(px(440.));
+        assert!(sidebar_width(px(800.), pref) < px(440.));
+        assert_eq!(sidebar_width(px(1600.), pref), px(440.));
+    }
+
+    #[test]
+    fn below_both_floors_the_panes_shrink_together_rather_than_one_starving() {
+        let sidebar = sidebar_width(px(500.), None);
+        let terminal = terminal_width(500., None);
+        assert!(
+            sidebar < s::MIN,
+            "the sidebar is under its floor, as expected"
+        );
+        assert!(terminal < s::TERMINAL_MIN, "so is the terminal");
+        assert!(
+            sidebar > px(0.),
+            "but the sidebar is still present: {sidebar:?}"
+        );
+        assert!(
+            terminal > sidebar,
+            "and the terminal keeps the larger share: {terminal:?} vs {sidebar:?}"
+        );
+    }
+
+    #[test]
+    fn the_two_regimes_meet_without_a_jump() {
+        // Both floors fit exactly at MIN + TERMINAL_MIN + DIVIDER = 646px. The
+        // proportional rule below it and the clamped rule above it must agree there,
+        // or the sidebar would snap as the window crossed that width.
+        let boundary = f32::from(s::MIN + s::TERMINAL_MIN + s::DIVIDER);
+        assert_eq!(sidebar_width(px(boundary), None), s::MIN);
+        let just_below = sidebar_width(px(boundary - 1.), None);
+        assert!(
+            f32::from(s::MIN - just_below) < 1.,
+            "a 1px narrower window moved the sidebar {:?}",
+            s::MIN - just_below
+        );
+    }
+
+    #[test]
+    fn a_degenerate_viewport_never_returns_a_negative_width() {
+        for viewport in [0., 1., 6., 6.5] {
+            let w = sidebar_width(px(viewport), None);
+            assert!(
+                w >= Pixels::ZERO && w <= px(viewport),
+                "viewport {viewport} gave {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn widening_the_window_never_narrows_the_sidebar() {
+        // Monotonicity, with and without a dragged preference: a resize that only adds
+        // space must never take space away from either pane, or the split would jitter
+        // as the window is dragged.
+        for pref in [None, Some(px(440.)), Some(px(100.)), Some(px(9000.))] {
+            let mut last_sidebar = Pixels::ZERO;
+            let mut last_terminal = Pixels::ZERO;
+            for v in (0..3000).step_by(10) {
+                let sidebar = sidebar_width(px(v as f32), pref);
+                let terminal = terminal_width(v as f32, pref);
+                assert!(
+                    sidebar >= last_sidebar - px(0.01),
+                    "sidebar shrank at {v}px ({sidebar:?} < {last_sidebar:?}), pref {pref:?}"
+                );
+                assert!(
+                    terminal >= last_terminal - px(0.01),
+                    "terminal shrank at {v}px ({terminal:?} < {last_terminal:?}), pref {pref:?}"
+                );
+                last_sidebar = sidebar;
+                last_terminal = terminal.max(Pixels::ZERO);
+            }
+        }
+    }
+
+    #[test]
+    fn the_sidebar_never_takes_the_whole_split() {
+        for v in (0..3000).step_by(7) {
+            let sidebar = sidebar_width(px(v as f32), Some(px(9000.)));
+            assert!(
+                sidebar <= px(v as f32),
+                "at {v}px the sidebar claimed {sidebar:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dragging_moves_the_edge_in_the_direction_the_panel_faces() {
+        // The divider is on the panel's *inner* edge, so the same rightward pointer
+        // travel widens a left-docked sidebar and narrows a right-docked one.
+        assert_eq!(dragged_width(px(320.), px(40.), PanelSide::Left), px(360.));
+        assert_eq!(dragged_width(px(320.), px(40.), PanelSide::Right), px(280.));
+        assert_eq!(dragged_width(px(320.), px(-40.), PanelSide::Left), px(280.));
+        assert_eq!(
+            dragged_width(px(320.), px(-40.), PanelSide::Right),
+            px(360.)
+        );
+    }
+
+    #[test]
+    fn a_drag_can_never_leave_the_clamp_band() {
+        // A wide window, so the terminal floor isn't the binding constraint: whatever
+        // the pointer does, the width it produces is inside [MIN, MAX].
+        for dx in (-2000..2000).step_by(37) {
+            let raw = dragged_width(px(320.), px(dx as f32), PanelSide::Left);
+            let w = sidebar_width(px(1920.), Some(raw));
+            assert!(
+                (s::MIN..=s::MAX).contains(&w),
+                "dx {dx} produced {raw:?} -> {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_breadcrumb_budget_follows_the_live_width() {
+        // Calibration: the old fixed 320px sidebar's budget was 34 characters.
+        assert_eq!(crumb_budget(px(320.)), 34);
+        assert!(crumb_budget(s::MAX) > crumb_budget(s::MIN));
+        assert!(crumb_budget(px(0.)) >= CRUMB_BUDGET_MIN);
+        let mut last = 0;
+        for w in (0..600).step_by(5) {
+            let b = crumb_budget(px(w as f32));
+            assert!(b >= last, "budget shrank as the sidebar widened at {w}px");
+            last = b;
+        }
+    }
+}
+
+#[cfg(test)]
 mod crumb_tests {
     use super::*;
+
+    /// The budget the old fixed-width sidebar had — the width these cases were written
+    /// against, kept so they keep testing elision rather than arithmetic.
+    fn budget() -> usize {
+        crumb_budget(px(320.))
+    }
 
     fn labels(crumbs: &[Crumb]) -> Vec<String> {
         crumbs.iter().map(|c| c.label.clone()).collect()
@@ -1205,7 +1615,7 @@ mod crumb_tests {
         for path in ["/home", "/home/sid_test"] {
             let crumbs = path_crumbs(path);
             assert_eq!(
-                truncate_crumbs(&crumbs, CRUMB_BUDGET),
+                truncate_crumbs(&crumbs, budget()),
                 crumbs,
                 "{path} should not have been elided"
             );
@@ -1215,7 +1625,7 @@ mod crumb_tests {
     #[test]
     fn a_deep_path_keeps_the_root_and_where_you_are() {
         let crumbs = path_crumbs("/usr/local/share/applications/vendor");
-        let out = truncate_crumbs(&crumbs, CRUMB_BUDGET);
+        let out = truncate_crumbs(&crumbs, budget());
         assert_eq!(out.first().unwrap().label, "/", "root survives");
         assert_eq!(
             out.last().unwrap().label,
@@ -1237,12 +1647,13 @@ mod crumb_tests {
         for seg in ["usr", "local", "share", "applications", "vendor", "themes"] {
             path.push('/');
             path.push_str(seg);
-            let out = truncate_crumbs(&path_crumbs(&path), CRUMB_BUDGET);
+            let out = truncate_crumbs(&path_crumbs(&path), budget());
             assert!(
-                line_cost(&out) <= CRUMB_BUDGET,
-                "{path} -> {:?} costs {} > {CRUMB_BUDGET}",
+                line_cost(&out) <= budget(),
+                "{path} -> {:?} costs {} > {}",
                 labels(&out),
-                line_cost(&out)
+                line_cost(&out),
+                budget()
             );
         }
     }
@@ -1250,8 +1661,8 @@ mod crumb_tests {
     #[test]
     fn one_pathologically_long_segment_is_middle_truncated_not_dropped() {
         let long = "a".repeat(200);
-        let out = truncate_crumbs(&path_crumbs(&format!("/{long}")), CRUMB_BUDGET);
-        assert!(line_cost(&out) <= CRUMB_BUDGET, "{:?}", labels(&out));
+        let out = truncate_crumbs(&path_crumbs(&format!("/{long}")), budget());
+        assert!(line_cost(&out) <= budget(), "{:?}", labels(&out));
         let current = &out.last().unwrap().label;
         assert!(
             current.contains(ELLIPSIS),
@@ -1292,11 +1703,22 @@ mod crumb_tests {
 // ---- rendering: split layout (file sidebar + terminal) -----------------------------------
 
 impl SshSession {
-    /// The `Connected` view: file sidebar (fixed `SIDEBAR_WIDTH`) beside the terminal grid,
-    /// filling whatever space the parent gives it — the MobaXterm-style split. Docks left
-    /// or right per `self.dock_side` (ssh-v3's `⇄ dock` toggle).
+    /// The `Connected` view: file sidebar beside the terminal grid, with a drag divider
+    /// between them — the MobaXterm-style split. Docks left or right per
+    /// `self.dock_side` (ssh-v3's `⇄ dock` toggle).
+    ///
+    /// The sidebar's width is [`sidebar_width`] of the live window rather than a pinned
+    /// constant, so it is a share of the split at every window size instead of being
+    /// right at one. The split is the tab's full width (the SSH tab stacks its chrome
+    /// *above* this, never beside it), so `viewport_size().width` is the split's width;
+    /// reading it here — not from a measured canvas — is what keeps the sidebar, the
+    /// entry-row plan and the breadcrumb budget all agreeing within a single frame.
     fn render_split(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = self.file_sidebar(cx).into_any_element();
+        let width = sidebar_width(window.viewport_size().width, self.sidebar_width_pref);
+        let collapsed = self.sidebar_collapsed;
+        let dragging = self.sidebar_drag.is_some();
+        let sidebar = self.file_sidebar(width, cx).into_any_element();
+        let divider = (!collapsed).then(|| self.split_divider(width, cx).into_any_element());
         let terminal = div()
             .flex_1()
             .size_full()
@@ -1307,11 +1729,55 @@ impl SshSession {
             PanelSide::Right => (terminal, sidebar),
         };
         div()
+            .id("session-split")
             .flex()
             .flex_row()
             .size_full()
+            // Only while a drag is live: an always-on mouse-move listener over the whole
+            // split would re-enter this entity on every pointer motion across the
+            // terminal for nothing.
+            .when(dragging, |el| {
+                el.on_mouse_move(cx.listener(Self::on_sidebar_drag_move))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_sidebar_drag_up))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_sidebar_drag_up))
+            })
             .child(first)
+            .children(divider)
             .child(second)
+    }
+
+    /// The drag handle between the two panes: a [`sidebar_metrics::DIVIDER`]-wide strip
+    /// on the sidebar's inner edge, which lights up under the pointer and takes the
+    /// `col-resize` cursor so it reads as grabbable before it is grabbed.
+    ///
+    /// It is a sibling of both panes rather than a child of the sidebar, so grabbing it
+    /// never lands on a file row, and the sidebar's width stays exactly the file panel's
+    /// width — which is the number [`plan_entry_row`] and [`crumb_budget`] are given.
+    fn split_divider(&self, width: Pixels, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        let (accent, bg) = (t.accent, t.bg);
+        let active = self.sidebar_drag.is_some();
+        div()
+            .id("session-split-divider")
+            .w(sidebar_metrics::DIVIDER)
+            .h_full()
+            .flex_none()
+            .cursor_col_resize()
+            // Idle it is just the seam between the panes — the sidebar's own 1px border
+            // is the visible line. It fills with the accent under the pointer and stays
+            // filled for the length of the drag, so the handle is *findable* without
+            // being a permanent 6px stripe down the middle of the tab.
+            .bg(rgb(if active { accent } else { bg }))
+            .hover(|s| s.bg(rgb(accent)))
+            .tooltip(|window, cx| {
+                Tooltip::new("drag to resize · double-click to reset").build(window, cx)
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |session, ev: &MouseDownEvent, _window, cx| {
+                    session.start_sidebar_drag(ev, width, cx);
+                }),
+            )
     }
 
     /// The file panel: the [`toolbar`](Self::toolbar) above a scrollable, read-only listing
@@ -1319,7 +1785,11 @@ impl SshSession {
     /// them. Painted purely from `self.entries`/`self.path`/`self.show_hidden` — every SFTP
     /// call that could change them already ran, off gpui's executor, before `cx.notify()`
     /// scheduled this render.
-    fn file_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    ///
+    /// `width` is the live one from [`sidebar_width`], and it is what the entry-row plan
+    /// and the breadcrumb budget are computed from — both are pure functions of a width,
+    /// so a resize re-plans the list on the same frame it re-sizes the panel.
+    fn file_sidebar(&self, width: Pixels, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (bg, border, muted) = (t.bg, t.border, t.muted);
         if self.sidebar_collapsed {
@@ -1345,19 +1815,20 @@ impl SshSession {
 
         let visible = self.visible_entries();
         let count = visible.len();
-        let divider = match self.dock_side {
+        let plan = plan_entry_row(width);
+        let edge = match self.dock_side {
             PanelSide::Left => div().border_r_1(),
             PanelSide::Right => div().border_l_1(),
         };
-        divider
-            .w(SIDEBAR_WIDTH)
+        edge.w(width)
+            .flex_none()
             .h_full()
             .flex()
             .flex_col()
             .bg(rgb(bg))
             .border_color(rgb(border))
             .child(self.sidebar_header(cx))
-            .child(self.toolbar(cx))
+            .child(self.toolbar(crumb_budget(width), cx))
             .when_some(self.file_error.clone(), |el, msg| {
                 el.child(status_line(&format!("file panel: {msg}"), cx))
             })
@@ -1365,10 +1836,10 @@ impl SshSession {
                 uniform_list(
                     "session-sftp-entries",
                     count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _win, cx| {
+                    cx.processor(move |this, range: std::ops::Range<usize>, _win, cx| {
                         let visible = this.visible_entries();
                         range
-                            .map(|ix| this.entry_row(visible[ix], ix, cx))
+                            .map(|ix| this.entry_row(visible[ix], ix, plan, cx))
                             .collect::<Vec<_>>()
                     }),
                 )
@@ -1422,16 +1893,18 @@ impl SshSession {
             )
     }
 
-    /// Toolbar: three stacked rows, each of which fits [`SIDEBAR_WIDTH`] on its own with no
-    /// overlap — cramming the breadcrumb, path field, nav icons, and entry count onto fewer,
-    /// wider rows is what caused them to pile on top of each other at 320px.
+    /// Toolbar: three stacked rows, each of which fits the sidebar's *floor* width on its
+    /// own with no overlap — cramming the breadcrumb, path field, nav icons, and entry
+    /// count onto fewer, wider rows is what caused them to pile on top of each other at
+    /// 320px. `crumb_budget` is [`crumb_budget`] of the live width, handed down to the
+    /// breadcrumb so its elision follows the panel instead of a constant.
     ///
     /// - Row 1: the breadcrumb (flexes, wraps onto multiple lines if long) plus the `«`
     ///   collapse control (fixed).
     /// - Row 2: the go-to-path field (flexes) plus `Go` (fixed).
     /// - Row 3: `↑ up` / `⟳ refresh` / the hidden-files toggle on the left, the entry count
     ///   right-aligned.
-    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn toolbar(&self, crumb_budget: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (border, muted, selection, accent, fg_strong) =
             (t.border, t.muted, t.selection, t.accent, t.fg_strong);
@@ -1499,7 +1972,7 @@ impl SshSession {
                     .justify_between()
                     .px_2()
                     .pt_1()
-                    .child(div().flex_1().child(self.breadcrumb(cx)))
+                    .child(div().flex_1().child(self.breadcrumb(crumb_budget, cx)))
                     .child(collapse),
             )
             .child(
@@ -1573,8 +2046,8 @@ impl SshSession {
     /// spilled downward and painted over the go-to-path field. [`truncate_crumbs`] decides
     /// what to drop; `overflow_hidden` is the backstop that makes a wrong guess about the
     /// character budget a clipped crumb rather than a second overlap.
-    fn breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let crumbs = truncate_crumbs(&path_crumbs(&self.path), CRUMB_BUDGET);
+    fn breadcrumb(&self, budget: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let crumbs = truncate_crumbs(&path_crumbs(&self.path), budget);
         let children: Vec<_> = crumbs
             .into_iter()
             .enumerate()
@@ -1648,11 +2121,11 @@ impl SshSession {
         &self,
         entry: &SftpEntry,
         ix: usize,
+        plan: EntryRowPlan,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (fg, muted, selection, accent) = (t.fg, t.muted, t.selection, t.accent);
-        let plan = plan_entry_row(SIDEBAR_WIDTH);
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
         let glyph = if is_dir { "▸" } else { "·" };
