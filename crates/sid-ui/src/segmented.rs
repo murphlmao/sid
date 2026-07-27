@@ -39,6 +39,7 @@ use crate::elevation::Elevation;
 use crate::icon::Icon;
 use crate::styled::{StyledExt as _, h_flex};
 use crate::theme::{self, Theme};
+use crate::typography::Typography;
 
 /// A selection handler, shared so the render path can clone one per segment without
 /// re-boxing it.
@@ -211,7 +212,7 @@ impl RenderOnce for SegmentedControl {
                     .py_1()
                     .rounded_md()
                     .cursor_pointer()
-                    .text_sm()
+                    .text_body(&theme)
                     // Always a 1px border, transparent when unselected: without it the
                     // chips would resize by 2px as the selection moves.
                     .border_1()

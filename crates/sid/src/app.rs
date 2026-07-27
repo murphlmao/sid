@@ -11,8 +11,8 @@
 //! are placeholders for later slices.
 
 use gpui::{
-    ClickEvent, Context, Corner, Entity, FocusHandle, FontWeight, KeyDownEvent, SharedString,
-    Subscription, Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
+    ClickEvent, Context, Corner, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
+    Window, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
@@ -33,11 +33,7 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, theme};
-
-/// Monospace family for host subtitles (gpui falls back to a proportional font if the
-/// named family is missing, so we name a concrete, near-universal Linux mono family).
-const MONO: &str = "DejaVu Sans Mono";
+use sid_ui::{ScopeChip, ScopeOrigin, Typography as _, theme};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -1172,8 +1168,8 @@ impl AppState {
             return None;
         }
         let t = theme::active(cx);
-        let (fg, accent, surface, border, muted, selection) =
-            (t.fg, t.accent, t.surface, t.border, t.muted, t.selection);
+        let (accent, surface, border, muted, selection) =
+            (t.accent, t.surface, t.border, t.muted, t.selection);
         let bindings = keymap::default_bindings();
         let viewport = window.viewport_size();
         let rows: Vec<_> = keymap::ALL_ACTIONS
@@ -1188,8 +1184,8 @@ impl AppState {
                     .gap_4()
                     .px_3()
                     .py_2()
-                    .child(div().text_sm().text_color(rgb(fg)).child(action.label()))
-                    .child(div().text_sm().text_color(rgb(accent)).child(shortcut))
+                    .child(div().text_body(t).child(action.label()))
+                    .child(div().text_body(t).text_color(rgb(accent)).child(shortcut))
             })
             .collect();
 
@@ -1224,13 +1220,7 @@ impl AppState {
                                         .py_2()
                                         .border_b_1()
                                         .border_color(rgb(border))
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(fg))
-                                                .child("Keyboard Shortcuts"),
-                                        )
+                                        .child(div().text_title(t).child("Keyboard Shortcuts"))
                                         .child(
                                             div()
                                                 .id("cheat-sheet-close")
@@ -1287,7 +1277,7 @@ impl AppState {
                     .h_full()
                     .flex()
                     .items_center()
-                    .text_sm()
+                    .text_body(t)
                     .cursor_pointer()
                     .text_color(rgb(if is_active { fg_strong } else { muted }))
                     .border_b_2()
@@ -1320,7 +1310,7 @@ impl AppState {
                     .px_2()
                     .py(px(3.))
                     .rounded_md()
-                    .text_xs()
+                    .text_meta(t)
                     .cursor_pointer()
                     .bg(rgb(if is_active { selection } else { surface }))
                     .text_color(rgb(if is_active { fg_strong } else { muted }))
@@ -1345,10 +1335,14 @@ impl AppState {
             .border_b_1()
             .border_color(rgb(border))
             .child(
+                // The wordmark is the one Title in the chrome. It used to be the
+                // only *unsized* element in the bar, which meant it rendered at gpui's
+                // 16px default by accident and shouted with BOLD to make up for having
+                // no rung of its own.
                 div()
                     .pr_2()
+                    .text_title(t)
                     .text_color(rgb(accent))
-                    .font_weight(FontWeight::BOLD)
                     .child("✦ sid"),
             )
             .children(tabs)
@@ -1377,8 +1371,7 @@ impl AppState {
             .px_2()
             .py(px(2.))
             .rounded_full()
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
+            .text_meta(t)
             .cursor_pointer()
             .bg(rgb(warning))
             // Deliberately not a theme token: a near-black label reads clearly against
@@ -1416,7 +1409,7 @@ impl AppState {
                             .border_1()
                             .border_color(rgb(border))
                             .bg(rgb(surface))
-                            .text_xs()
+                            .text_body(t)
                             .text_color(rgb(fg))
                             .child(self.secrets_status_detail.clone()),
                     ),
@@ -1448,8 +1441,7 @@ impl AppState {
             .px_2()
             .py(px(2.))
             .rounded_full()
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
+            .text_meta(t)
             .cursor_pointer()
             .bg(rgb(warning))
             // Same non-token near-black as `secret_status_badge` — readable on every
@@ -1484,7 +1476,7 @@ impl AppState {
                             .border_1()
                             .border_color(rgb(border))
                             .bg(rgb(surface))
-                            .text_xs()
+                            .text_body(t)
                             .text_color(rgb(fg))
                             .child(detail),
                     ),
@@ -1553,7 +1545,7 @@ impl AppState {
                 .border_b_1()
                 .border_color(rgb(border))
                 .bg(rgb(surface))
-                .text_xs()
+                .text_meta(t)
                 .text_color(rgb(danger))
                 .truncate()
                 .child(text),
@@ -1581,8 +1573,7 @@ impl AppState {
             .id("ssh-tab-home")
             .px_2()
             .h(px(30.))
-            .text_xs()
-            .font_family(MONO)
+            .text_mono_meta(t)
             .flex()
             .items_center()
             .justify_center()
@@ -1606,7 +1597,7 @@ impl AppState {
                     SessionStatus::Connecting => warning,
                     SessionStatus::Failed(_) | SessionStatus::Closed => danger,
                 };
-                let dot = div().text_color(rgb(dot_color)).child("●");
+                let dot = div().text_meta(t).text_color(rgb(dot_color)).child("●");
                 div()
                     .id(("ssh-session-tab", ix))
                     .flex()
@@ -1627,8 +1618,10 @@ impl AppState {
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .text_xs()
-                            .font_family(MONO)
+                            .text_mono_meta(t)
+                            // The role would paint every tab `muted`; the strip's own
+                            // selected/resting ink has to land after it.
+                            .text_color(rgb(if selected { fg_strong } else { muted }))
                             .cursor_pointer()
                             .child(dot)
                             .child(tab.label.clone())
@@ -1641,9 +1634,8 @@ impl AppState {
                             .id(("ssh-session-tab-close", ix))
                             .px_1()
                             .rounded_md()
-                            .text_xs()
+                            .text_meta(t)
                             .cursor_pointer()
-                            .text_color(rgb(muted))
                             .hover(|s| s.bg(rgb(selection)).text_color(rgb(danger)))
                             .child("×")
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
@@ -1662,6 +1654,7 @@ impl AppState {
             .justify_center()
             .rounded_t_md()
             .cursor_pointer()
+            .text_body(t)
             .text_color(rgb(muted))
             .hover(|s| s.bg(rgb(selection)))
             .child("+")
@@ -1734,7 +1727,7 @@ impl AppState {
                             .px_3()
                             .py_1()
                             .rounded_md()
-                            .text_sm()
+                            .text_body(t)
                             .cursor_pointer()
                             .bg(rgb(selection))
                             .text_color(rgb(fg_strong))
@@ -1746,7 +1739,7 @@ impl AppState {
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
+                            .text_body(t)
                             .text_color(rgb(muted))
                             .child(header),
                     ),
