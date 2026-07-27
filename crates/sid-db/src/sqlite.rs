@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use sid_core::db::{
-    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ForeignKey, OpenParams, PageCursor,
-    QueryPage, Row, SchemaGraph, SchemaInfo, SqliteMode, TableInfo,
+    Column, ColumnType, DbClient, DbError, DbKind, ExecResult, ExplainSupport, ForeignKey,
+    OpenParams, PageCursor, QueryPage, Row, SchemaGraph, SchemaInfo, SqliteMode, TableInfo,
 };
 
 /// Factory + per-connection client.
@@ -198,6 +198,68 @@ impl DbClient for SqliteClient {
             columns,
             rows,
             next_cursor,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    fn explain_support(&self) -> ExplainSupport {
+        // `EXPLAIN QUERY PLAN`, not bare `EXPLAIN`: SQLite's bare form dumps VDBE
+        // bytecode, which is a debugging aid for the engine's authors rather than
+        // an answer to "why is this slow". Neither form executes the statement.
+        ExplainSupport::Supported {
+            keyword: "EXPLAIN QUERY PLAN",
+        }
+    }
+
+    async fn explain(&self, sql: &str) -> Result<QueryPage, DbError> {
+        let conn = self.inner.clone().ok_or(DbError::NotConnected)?;
+        let sql = sql.to_string();
+        let start = std::time::Instant::now();
+        let (columns, rows) =
+            tokio::task::spawn_blocking(move || -> Result<(Vec<Column>, Vec<Row>), DbError> {
+                let guard = conn
+                    .lock()
+                    .map_err(|e| DbError::Other(format!("mutex poisoned: {e}")))?;
+                // Same lexer-backed strip as `query_paged`, for the same reason: a
+                // trailing `;` or `--` comment between the keyword and the
+                // statement it modifies.
+                let stripped = crate::lexer::strip_trailing_trivia(&sql);
+                let statement = format!("EXPLAIN QUERY PLAN {stripped}");
+                // `prepare` compiles exactly one statement and returns
+                // `Error::MultipleStatement` on a trailing second one, so an
+                // EXPLAIN cannot be used to smuggle a mutation past the plan — the
+                // statement text comes straight from the editor.
+                let mut stmt = guard.prepare(&statement).map_err(map_rusqlite_error)?;
+                // Every plan column is reported as text: they are computed columns
+                // with no declared type, and a plan is read, not calculated with.
+                let columns: Vec<Column> = stmt
+                    .columns()
+                    .iter()
+                    .map(|c| Column {
+                        name: c.name().to_string(),
+                        ty: ColumnType::Text,
+                    })
+                    .collect();
+                let col_count = columns.len();
+                let mut rows_out: Vec<Row> = Vec::new();
+                let mut rs = stmt.query([]).map_err(map_rusqlite_error)?;
+                while let Some(row) = rs.next().map_err(map_rusqlite_error)? {
+                    let mut values = Vec::with_capacity(col_count);
+                    for i in 0..col_count {
+                        let v: rusqlite::types::Value = row.get(i).map_err(map_rusqlite_error)?;
+                        values.push(render_sqlite_value(v));
+                    }
+                    rows_out.push(Row { values });
+                }
+                Ok((columns, rows_out))
+            })
+            .await
+            .map_err(|e| DbError::Other(format!("join: {e}")))??;
+        Ok(QueryPage {
+            columns,
+            rows,
+            // Returned whole — see `PostgresClient::explain`.
+            next_cursor: None,
             duration_ms: start.elapsed().as_millis() as u64,
         })
     }

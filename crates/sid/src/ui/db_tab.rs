@@ -50,7 +50,7 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::{
     Badge, Button, ButtonSize, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip,
-    StatusDot, StyledExt as _, Theme, Toolbar, h_flex, sortable_th, theme, v_flex,
+    StatusDot, StyledExt as _, Theme, Toolbar, Typography as _, h_flex, sortable_th, theme, v_flex,
 };
 
 /// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
@@ -141,6 +141,10 @@ pub struct DbTabState {
     /// callback, so an observation of its `cx.notify()` is the wiring — the same
     /// pattern `systems_tab`/`network_tab` use for theirs.
     _result_filter_sub: Option<Subscription>,
+    /// The plan the user last asked for, while it is showing (inc-3). `Some` swaps the
+    /// results grid for the plan pane; the grid's own state is untouched underneath, so
+    /// closing the plan restores it with its sort and filter intact.
+    plan: Option<PlanView>,
     /// The most recently completed [`QueryPage`] — the source [`export_csv`] writes
     /// from. Kept as the raw domain type (not derived back out of `results`'s
     /// `gpui-component` delegate) so CSV export stays a pure function over data sid
@@ -623,6 +627,42 @@ fn page_view_caveat(sorted: bool, filtered: bool, has_more: bool) -> Option<&'st
         ),
         (false, false) => None,
     }
+}
+
+// ---- inc-3: EXPLAIN -----------------------------------------------------------------
+
+/// A plan the user asked for, while it is on screen.
+///
+/// Held beside `last_page` rather than replacing it: the plan is a detour, and closing
+/// it puts the results the user was looking at back exactly as they were, with their
+/// sort and filter intact.
+struct PlanView {
+    /// The engine's own plan keyword (`ExplainSupport::keyword`), so the panel says
+    /// which dialect's plan this is — `EXPLAIN` and `EXPLAIN QUERY PLAN` read very
+    /// differently and confusing them wastes real time.
+    keyword: SharedString,
+    /// The plan, one entry per printable line — see [`plan_lines`].
+    lines: Vec<String>,
+}
+
+/// Flatten an `EXPLAIN` result page into printable plan lines.
+///
+/// # Why a plan does not go in the results grid
+///
+/// Postgres returns one `QUERY PLAN` text column whose rows already carry the tree's
+/// indentation — `"  ->  Seq Scan on orders"` — and that indentation *is* the tree.
+/// The grid's `single_line` collapses runs of whitespace (it has to: a cell is one row
+/// tall and a `CREATE TABLE` statement in a cell paints through everything under it),
+/// which would flatten every plan into an unreadable single-level list. So the plan
+/// gets its own monospace pane, and this function is the seam between the engine's
+/// page and that pane.
+///
+/// A row with several columns — SQLite's `EXPLAIN QUERY PLAN` returns `id`, `parent`,
+/// `notused`, `detail` — is joined rather than reduced to its "interesting" column.
+/// `detail` is the readable part, but which of an engine's plan columns a reader is
+/// allowed to see is not sid's call to make.
+fn plan_lines(page: &QueryPage) -> Vec<String> {
+    page.rows.iter().map(|row| row.values.join("  ")).collect()
 }
 
 /// Backs the results grid. Constructed empty by `ensure_query_widgets`, then mutated in
@@ -1152,6 +1192,7 @@ impl DbTabState {
             next_cursor: None,
             result_filter: None,
             _result_filter_sub: None,
+            plan: None,
             last_page: None,
             schema: None,
             schema_graph: None,
@@ -1448,11 +1489,22 @@ impl AppState {
                 QueryStatus::Idle => (None, None),
                 QueryStatus::Err(e) => (None, Some(e.clone())),
                 QueryStatus::Ok { duration_ms, .. } => {
-                    let rows = sid_ui::toolbar::count_label(total, "row");
-                    let label = if is_filtered {
-                        format!("{shown} of {rows} · {duration_ms} ms")
-                    } else {
-                        format!("{rows} · {duration_ms} ms")
+                    // While a plan is up the grid is not on screen, so counting *its*
+                    // rows would report on something invisible — and "0 rows" beside a
+                    // plan that ran fine reads as a failure. Count the plan instead.
+                    let label = match &self.db.plan {
+                        Some(plan) => format!(
+                            "{} · {duration_ms} ms",
+                            sid_ui::toolbar::count_label(plan.lines.len(), "plan line")
+                        ),
+                        None => {
+                            let rows = sid_ui::toolbar::count_label(total, "row");
+                            if is_filtered {
+                                format!("{shown} of {rows} · {duration_ms} ms")
+                            } else {
+                                format!("{rows} · {duration_ms} ms")
+                            }
+                        }
                     };
                     (Some(label.into()), None)
                 }
@@ -1511,6 +1563,7 @@ impl AppState {
                     )
                     .when_some(count_label, |bar, label| bar.count_label(label))
                     .when_some(next_page, |bar, button| bar.action(button))
+                    .action(self.explain_button(cx))
                     .action(
                         Button::new("db-run", "Run")
                             .primary()
@@ -1548,12 +1601,143 @@ impl AppState {
             .child(editor_and_results)
     }
 
+    /// The engine behind the active selection, or `None` with nothing selected.
+    fn active_kind(&self) -> Option<DbKind> {
+        let id = self.db.active_id.as_deref()?;
+        self.db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| a.item.kind)
+    }
+
+    /// What the active engine can tell us about a plan.
+    ///
+    /// Read off the *factory* (`registry.client(kind)`), not an open client:
+    /// [`sid_core::db::DbClient::explain_support`] is a classification that needs no
+    /// connection, which is the whole reason it exists — the button has to know
+    /// whether to enable itself before anything is dialled.
+    fn explain_support(&self) -> Option<sid_core::db::ExplainSupport> {
+        self.active_kind()
+            .map(|kind| self.db.registry.client(kind).explain_support())
+    }
+
+    /// The "Explain" control.
+    ///
+    /// Present in every state, never hidden — a control that appears and disappears
+    /// with the selected engine teaches nothing. When the engine cannot explain, the
+    /// button is disabled and its tooltip carries the engine's **own** reason
+    /// verbatim ("the sid store browser reads a table by name — there is no query to
+    /// plan"), so "why is this greyed out" has an answer on hover instead of in the
+    /// source. `Button::disabled` installs no click handler at all, so inert is
+    /// structural here rather than a guard inside the listener.
+    fn explain_button(&self, cx: &mut Context<Self>) -> Button {
+        let support = self.explain_support();
+        let (disabled, tooltip): (bool, SharedString) = match support {
+            None => (true, "select a connection first".into()),
+            Some(s) => match (s.keyword(), s.reason()) {
+                (Some(keyword), _) => (false, format!("show the query plan ({keyword})").into()),
+                (None, Some(reason)) => (true, reason.into()),
+                // Unreachable: `ExplainSupport` has exactly one of the two, and
+                // `support_and_keyword_and_reason_agree` pins that for every engine.
+                (None, None) => (true, "no query plan available".into()),
+            },
+        };
+        Button::new("db-explain", "Explain")
+            .size(QUERY_ACTION_SIZE)
+            .icon(Icon::Info)
+            .disabled(disabled || self.db.running)
+            .tooltip(tooltip)
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.explain_query(cx);
+            }))
+    }
+
+    /// The plan pane — what [`Self::results_area`] shows instead of the grid while a
+    /// plan is up.
+    ///
+    /// Monospace, one line per plan row, in a scrolling well. Monospace and
+    /// *unprocessed*: a Postgres plan's leading spaces are its tree structure (see
+    /// [`plan_lines`]), and a proportional face would misalign the columns SQLite's
+    /// `EXPLAIN QUERY PLAN` puts in its `detail` strings.
+    fn plan_pane(&self, plan: &PlanView, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx).clone();
+        let header = h_flex()
+            .justify_between()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .flex_none()
+            .hairline_b(&t)
+            .child(
+                div()
+                    .section_label(&t)
+                    .child(sid_ui::card::header_text("QUERY PLAN", None)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().hint_text(&t).child(plan.keyword.clone()))
+                    .child(
+                        IconButton::new("db-plan-close", Icon::Close, "back to the results")
+                            .small()
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.db.plan = None;
+                                cx.notify();
+                            })),
+                    ),
+            );
+
+        let body: AnyElement = if plan.lines.is_empty() {
+            div()
+                .p_3()
+                .hint_text(&t)
+                .child("the engine returned an empty plan for this statement")
+                .into_any_element()
+        } else {
+            v_flex()
+                .id("db-plan-body")
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_scroll()
+                .p_3()
+                .gap_0p5()
+                .children(plan.lines.iter().map(|line| {
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_mono(&t)
+                        .text_color(rgb(t.fg))
+                        .child(line.clone())
+                }))
+                .into_any_element()
+        };
+
+        v_flex()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .rounded_md()
+            .elevation(Elevation::Well, &t)
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
     /// The results grid, or — with no connection chosen yet — the tab's empty state.
     ///
     /// The grid is a [`FillTable`]: its columns are resized to the width this pane
     /// actually got, so a 2000px window shows 2000px of data instead of a 140px-per-column
     /// ribbon with the rest of the screen black (`sid_ui::table`).
     fn results_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // A plan takes the whole area while it is up. The grid keeps its page, sort
+        // and filter underneath, so closing the plan is a genuine "back", not a
+        // re-render from scratch.
+        if let Some(plan) = self.db.plan.take() {
+            let element = self.plan_pane(&plan, cx);
+            self.db.plan = Some(plan);
+            return element;
+        }
         if self.db.active_id.is_none() {
             let empty = if self.db.connections.is_empty() {
                 EmptyState::new("no database connections yet")
@@ -2289,6 +2473,9 @@ impl AppState {
                     this.db.last_sql = None;
                     this.db.next_cursor = None;
                     this.db.last_page = None;
+                    // A plan describes one engine's execution of one statement — it is
+                    // as connection-scoped as the rows beside it.
+                    this.db.plan = None;
                     if let Some(results) = this.db.results.clone() {
                         results.update(cx, |state, cx| {
                             state.delegate_mut().set_page(QueryPage {
@@ -2798,6 +2985,9 @@ impl AppState {
 
         self.db.running = true;
         self.db.next_cursor = None;
+        // Running a statement puts the results back on screen: a plan for the previous
+        // statement left up beside fresh rows would be describing the wrong query.
+        self.db.plan = None;
         self.db.last_sql = Some(sql.clone());
         push_history(&mut self.db.history, sql.clone(), HISTORY_CAP);
         self.db.query_generation += 1;
@@ -2828,6 +3018,118 @@ impl AppState {
         .detach();
     }
 
+    /// Explain: run the editor's statement through the active engine's plan syntax and
+    /// show the result in the plan pane.
+    ///
+    /// Guarded by `query_generation` exactly as `run_query` is — a plan is a query
+    /// result like any other, and one arriving under a connection the user has since
+    /// switched away from would be a plan for a different database.
+    ///
+    /// # Why this one does not open the password prompt
+    ///
+    /// `run_query`/`refresh_schema` pause for the connect-time prompt on a dangling
+    /// Postgres `secret_ref` (round-D §A.4). Explain reports the error instead. The
+    /// retry is dispatched through `crate::app::PendingSecretPrompt::Db`'s [`DbRetry`],
+    /// whose match arm lives in `app.rs` — a file this slice does not own — so a third
+    /// variant would be a cross-file change for a case with a one-step workaround: Run
+    /// prompts, and Explain works from then on.
+    fn explain_query(&mut self, cx: &mut Context<Self>) {
+        if self.db.running {
+            return;
+        }
+        let Some(support) = self.explain_support() else {
+            self.db.status = QueryStatus::Err("select a connection first".into());
+            cx.notify();
+            return;
+        };
+        let Some(keyword) = support.keyword() else {
+            // Belt and braces: the button is already disabled in this state, so
+            // reaching here means a keyboard path found it anyway. Say the same thing
+            // the tooltip does.
+            self.db.status = QueryStatus::Err(
+                support
+                    .reason()
+                    .unwrap_or("this engine has no query planner")
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        };
+        let Some(id) = self.db.active_id.clone() else {
+            return;
+        };
+        let Some(conn) = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| a.item.clone())
+        else {
+            self.db.status = QueryStatus::Err("selected connection no longer exists".into());
+            cx.notify();
+            return;
+        };
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        let sql = sql_entity.read(cx).value().to_string();
+        if sql.trim().is_empty() {
+            self.db.status = QueryStatus::Err("SQL is empty".into());
+            cx.notify();
+            return;
+        }
+        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.db.status = QueryStatus::Err(e);
+                cx.notify();
+                return;
+            }
+        };
+        let cached = if self.db.client_for.as_deref() == Some(id.as_str()) {
+            self.db.client.clone()
+        } else {
+            None
+        };
+        let factory = self.db.registry.client(conn.kind);
+
+        self.db.running = true;
+        self.db.query_generation += 1;
+        let generation = self.db.query_generation;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = run_explain(factory, conn, secret, cached, sql).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.db.query_generation != generation {
+                    // Stale — see `run_query`'s identical guard.
+                    return;
+                }
+                this.db.running = false;
+                match outcome {
+                    Ok((client, page)) => {
+                        this.db.client = Some(client);
+                        this.db.client_for = Some(id);
+                        this.db.plan = Some(PlanView {
+                            keyword: keyword.into(),
+                            lines: plan_lines(&page),
+                        });
+                        // A plan is not a result set: it must not become what Export
+                        // writes, nor reset the paging cursor of the results still
+                        // sitting behind it.
+                        this.db.status = QueryStatus::Ok {
+                            duration_ms: page.duration_ms,
+                            has_more: false,
+                        };
+                    }
+                    Err(e) => this.db.status = QueryStatus::Err(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// ⭳ next page: repeat `last_sql` against the cached client with `next_cursor`.
     fn next_page(&mut self, cx: &mut Context<Self>) {
         if self.db.running {
@@ -2842,6 +3144,9 @@ impl AppState {
         };
 
         self.db.running = true;
+        // Same reason as `run_query`: fetching rows means the grid is what the user is
+        // looking at, so the plan pane steps aside.
+        self.db.plan = None;
         self.db.query_generation += 1;
         let generation = self.db.query_generation;
         cx.notify();
@@ -3181,6 +3486,40 @@ async fn run_first_page(
         Ok(Ok(pair)) => Ok(pair),
         Ok(Err(e)) => Err(e.to_string()),
         Err(join_err) => Err(format!("query task panicked: {join_err}")),
+    }
+}
+
+/// The connect-or-reuse-then-explain body of [`AppState::explain_query`] — the same
+/// shape as [`run_first_page`], calling [`sid_core::db::DbClient::explain`] instead of
+/// `query_paged`. The statement is described, never executed (see
+/// [`sid_core::db::ExplainSupport`]).
+async fn run_explain(
+    factory: Arc<dyn DbClient>,
+    conn: DbConnection,
+    secret: Option<String>,
+    cached: Option<Arc<dyn DbClient>>,
+    sql: String,
+) -> Result<(Arc<dyn DbClient>, QueryPage), String> {
+    let handle = ssh_runtime().spawn(async move {
+        let client = match cached {
+            Some(c) => c,
+            None => {
+                let params = OpenParams {
+                    kind: conn.kind,
+                    dsn: conn.dsn.clone(),
+                    password: secret,
+                    sqlite_mode: None,
+                };
+                factory.open(params).await?
+            }
+        };
+        let page = client.explain(&sql).await?;
+        Ok::<_, DbError>((client, page))
+    });
+    match handle.await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(join_err) => Err(format!("explain task panicked: {join_err}")),
     }
 }
 
@@ -4435,5 +4774,80 @@ mod result_view_tests {
                 "{sorted}/{filtered}: {caveat:?} never says which rows it means"
             );
         }
+    }
+}
+#[cfg(test)]
+mod plan_view_tests {
+    use super::*;
+
+    fn page(columns: &[&str], rows: &[&[&str]]) -> QueryPage {
+        QueryPage {
+            columns: columns
+                .iter()
+                .map(|c| DbColumn {
+                    name: c.to_string(),
+                    ty: ColumnType::Text,
+                })
+                .collect(),
+            rows: rows
+                .iter()
+                .map(|r| Row {
+                    values: r.iter().map(|v| v.to_string()).collect(),
+                })
+                .collect(),
+            next_cursor: None,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_single_column_plan_keeps_each_row_verbatim() {
+        // Postgres returns one `QUERY PLAN` column whose rows already carry the
+        // tree's indentation. That indentation IS the tree — this is the entire
+        // reason a plan does not go through the results grid, where `single_line`
+        // would collapse it.
+        let plan = page(
+            &["QUERY PLAN"],
+            &[
+                &["Hash Join  (cost=1.09..2.20 rows=3 width=68)"],
+                &["  Hash Cond: (o.customer_id = c.id)"],
+                &["  ->  Seq Scan on orders o  (cost=0.00..1.03 rows=3 width=40)"],
+            ],
+        );
+        assert_eq!(
+            plan_lines(&plan),
+            vec![
+                "Hash Join  (cost=1.09..2.20 rows=3 width=68)".to_string(),
+                "  Hash Cond: (o.customer_id = c.id)".to_string(),
+                "  ->  Seq Scan on orders o  (cost=0.00..1.03 rows=3 width=40)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_multi_column_plan_joins_its_columns_rather_than_dropping_any() {
+        // SQLite's `EXPLAIN QUERY PLAN` returns id/parent/notused/detail. `detail` is
+        // the readable part, but sid is not in the business of deciding which of an
+        // engine's plan columns the user is allowed to see.
+        let plan = page(
+            &["id", "parent", "notused", "detail"],
+            &[&["3", "0", "0", "SCAN customers"]],
+        );
+        assert_eq!(plan_lines(&plan), vec!["3  0  0  SCAN customers"]);
+    }
+
+    #[test]
+    fn an_empty_plan_produces_no_lines() {
+        // An engine can legitimately return nothing (a statement with no plan). The
+        // pane shows its own "no plan" hint rather than a blank scroll area.
+        assert!(plan_lines(&page(&["QUERY PLAN"], &[])).is_empty());
+        assert!(plan_lines(&page(&[], &[])).is_empty());
+    }
+
+    #[test]
+    fn a_plan_row_with_no_values_is_still_a_line() {
+        // A blank line in a plan is a blank line, not a row to skip — dropping it
+        // would silently re-flow the tree.
+        assert_eq!(plan_lines(&page(&["QUERY PLAN"], &[&[""]])), vec![""]);
     }
 }
