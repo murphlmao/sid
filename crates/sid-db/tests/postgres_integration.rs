@@ -289,3 +289,114 @@ async fn trailing_semicolon_then_line_comment_no_longer_swallows_the_wrapper_tai
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].values[0], "1");
 }
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn explain_returns_the_plan_tree_with_its_indentation_intact() {
+    // inc-3's EXPLAIN, against a real planner. Two things have to be true and only a
+    // real server can show them: the plan comes back as rows of a single `QUERY PLAN`
+    // text column, and the nested nodes carry **leading spaces** — that indentation is
+    // the tree, and it is the reason the Database tab renders a plan in a monospace
+    // pane rather than through the results grid (whose `single_line` would collapse it).
+    let client = open_client().await;
+    let plan = client
+        .explain("SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id")
+        .await
+        .expect("postgres explains a join");
+    assert_eq!(
+        plan.columns.len(),
+        1,
+        "postgres returns one QUERY PLAN column"
+    );
+    assert_eq!(plan.columns[0].name, "QUERY PLAN");
+    assert!(!plan.rows.is_empty());
+    assert!(
+        plan.next_cursor.is_none(),
+        "a plan is returned whole, never paged"
+    );
+    let lines: Vec<&str> = plan.rows.iter().map(|r| r.values[0].as_str()).collect();
+    assert!(
+        lines.iter().any(|l| l.starts_with("  ")),
+        "no indented child node — the tree structure was lost: {lines:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn explain_does_not_execute_the_statement() {
+    // The safety property `ExplainSupport` is built around, proved rather than
+    // asserted: EXPLAIN a `DELETE` that would empty a scratch table, then confirm the
+    // rows are still there. If sid ever declared `EXPLAIN ANALYZE`, this fails.
+    let client = open_client().await;
+    client
+        .execute("DROP TABLE IF EXISTS sid_explain_probe")
+        .await
+        .expect("drop");
+    client
+        .execute("CREATE TABLE sid_explain_probe (id int)")
+        .await
+        .expect("create");
+    client
+        .execute("INSERT INTO sid_explain_probe (id) VALUES (1), (2), (3)")
+        .await
+        .expect("insert");
+
+    client
+        .explain("DELETE FROM sid_explain_probe")
+        .await
+        .expect("explaining a DELETE is legal");
+
+    let after = client
+        .query_paged("SELECT count(*) FROM sid_explain_probe", None, 10)
+        .await
+        .expect("count");
+    assert_eq!(
+        after.rows[0].values[0], "3",
+        "EXPLAIN executed the DELETE — the plan affordance is destructive"
+    );
+    client
+        .execute("DROP TABLE sid_explain_probe")
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn explain_refuses_a_second_statement() {
+    // The other half of the safety story. The statement text comes straight from the
+    // editor, so `EXPLAIN <sql>` must not become a way to run `sql; DROP TABLE x`.
+    // `client.query` uses the extended protocol, which rejects multi-statement input —
+    // this pins that it really does, rather than trusting the protocol note.
+    let client = open_client().await;
+    client
+        .execute("DROP TABLE IF EXISTS sid_explain_smuggle")
+        .await
+        .expect("drop");
+    client
+        .execute("CREATE TABLE sid_explain_smuggle (id int)")
+        .await
+        .expect("create");
+
+    let result = client
+        .explain("SELECT 1; DROP TABLE sid_explain_smuggle")
+        .await;
+    assert!(result.is_err(), "a second statement must be refused");
+
+    let still_there = client
+        .query_paged(
+            "SELECT count(*) FROM information_schema.tables \
+             WHERE table_name = 'sid_explain_smuggle'",
+            None,
+            10,
+        )
+        .await
+        .expect("count");
+    assert_eq!(
+        still_there.rows[0].values[0], "1",
+        "the smuggled DROP ran — EXPLAIN is an execution path"
+    );
+    client
+        .execute("DROP TABLE sid_explain_smuggle")
+        .await
+        .expect("cleanup");
+}
