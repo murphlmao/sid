@@ -16,8 +16,8 @@ use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
-    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, PinnedFile,
-    QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
+    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, KeyBinding,
+    PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -31,6 +31,11 @@ const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 /// comment). Follows the [`QUICK_ACTIONS`] table's shape exactly: no versioning, keyed
 /// by the entity's own identity.
 const PINNED_FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("pinned_files");
+/// User keybinding overrides (Settings → Keymap) — global-only, keyed by the frontend's
+/// stable action id. Follows the [`QUICK_ACTIONS`] table's shape exactly: no versioning
+/// yet, keyed by the entity's own identity. A separate table rather than fields on
+/// [`Settings`] — see [`KeyBinding`]'s doc comment for why.
+const KEYBINDINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("keybindings");
 
 /// The single key under which [`Settings`] lives in the [`SETTINGS`] table.
 const SETTINGS_KEY: &str = "settings";
@@ -73,6 +78,7 @@ impl GlobalStore {
         write_table(&txn, WORKSPACES, "open workspaces")?;
         write_table(&txn, SETTINGS, "open settings")?;
         write_table(&txn, PINNED_FILES, "open pinned_files")?;
+        write_table(&txn, KEYBINDINGS, "open keybindings")?;
         txn.commit()
             .map_err(|e| StoreError::Storage(format!("commit: {e}")))?;
         Ok(Self { db })
@@ -241,6 +247,54 @@ impl GlobalStore {
     }
     pub fn unpin_file(&self, path: &str) -> Result<bool> {
         self.remove(PINNED_FILES, path)
+    }
+
+    // ---- keybinding overrides (Settings -> Keymap; global-only) ----
+
+    /// Every user override. Order is redb's key order (the action id) — the frontend
+    /// composes them against its own defaults, so it never depends on this order.
+    pub fn list_keybindings(&self) -> Result<Vec<KeyBinding>> {
+        self.list(KEYBINDINGS)
+    }
+
+    /// Bind (or re-bind) one action. Keyed by [`KeyBinding::action`], so a second rebind
+    /// of the same action overwrites the first rather than adding an ambiguous row.
+    pub fn set_keybinding(&self, b: &KeyBinding) -> Result<()> {
+        self.upsert(KEYBINDINGS, b.identity(), b)
+    }
+
+    /// Drop one action's override (Settings → Keymap's per-row "reset"), returning
+    /// whether one was set. The action falls back to the frontend's default.
+    pub fn remove_keybinding(&self, action: &str) -> Result<bool> {
+        self.remove(KEYBINDINGS, action)
+    }
+
+    /// Drop every override ("reset all"), returning how many were dropped. Idempotent:
+    /// resetting an already-default keymap is `Ok(0)`, not an error.
+    pub fn clear_keybindings(&self) -> Result<usize> {
+        self.with_write("commit", |txn| {
+            let mut tbl = write_table(txn, KEYBINDINGS, "open keybindings")?;
+            // Collected first: the iterator borrows the table immutably and `remove`
+            // needs it mutably.
+            let keys: Vec<String> = {
+                let iter = tbl
+                    .iter()
+                    .map_err(|e| StoreError::Storage(format!("iter: {e}")))?;
+                let mut keys = Vec::new();
+                for entry in iter {
+                    let (k, _v) =
+                        entry.map_err(|e| StoreError::Storage(format!("iter step: {e}")))?;
+                    keys.push(k.value().to_string());
+                }
+                keys
+            };
+            let removed = keys.len();
+            for key in keys {
+                tbl.remove(key.as_str())
+                    .map_err(|e| StoreError::Storage(format!("remove: {e}")))?;
+            }
+            Ok(removed)
+        })
     }
 
     // ---- workspace registry (metadata; the config lives in each repo's file) ----

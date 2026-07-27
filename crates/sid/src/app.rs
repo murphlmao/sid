@@ -983,6 +983,16 @@ impl AppState {
             return;
         }
 
+        // Settings -> Keymap capture mode owns the next chord outright: a rebind has to
+        // be able to capture chords this dispatcher would otherwise claim (`Ctrl+2`
+        // switches tabs). Self-terminating — see `ui::settings_tab::capture_rebind`,
+        // where the capture itself lives.
+        if self.settings.is_capturing() {
+            cx.stop_propagation();
+            self.capture_rebind(&event.keystroke, cx);
+            return;
+        }
+
         let key = event.keystroke.key.as_str();
         let m = &event.keystroke.modifiers;
         let plain_ctrl = m.control && !m.alt && !m.shift && !m.platform;
@@ -1035,7 +1045,7 @@ impl AppState {
         }
 
         let focus = self.focus_context(window, cx);
-        let Some(action) = keymap::resolve(&event.keystroke, focus, &keymap::default_bindings())
+        let Some(action) = keymap::resolve(&event.keystroke, focus, &self.effective_bindings())
         else {
             return;
         };
@@ -1170,7 +1180,7 @@ impl AppState {
         let t = theme::active(cx);
         let (accent, surface, border, muted, selection) =
             (t.accent, t.surface, t.border, t.muted, t.selection);
-        let bindings = keymap::default_bindings();
+        let bindings = self.effective_bindings();
         let viewport = window.viewport_size();
         let rows: Vec<_> = keymap::ALL_ACTIONS
             .iter()
