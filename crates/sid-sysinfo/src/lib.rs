@@ -15,10 +15,12 @@
 //! - `list_processes`: refreshes the process list, CPU, memory, user, and
 //!   command line for every visible process (`sysinfo`'s `ProcessRefreshKind`
 //!   wired to the matching subset).
-//! - `list_listening_ports`: enumerates sockets via `netstat2` on each call
-//!   and uses the cached `sysinfo::System` only to map PID → command name.
-//!   No `sysinfo` refresh is performed inside `list_listening_ports` itself,
-//!   so PID-to-command attribution lags a `list_processes` call.
+//! - `list_listening_ports`: enumerates sockets via `netstat2` on each call,
+//!   then refreshes *only* the socket-owning PIDs on the cached
+//!   `sysinfo::System` (name-only, no dead-process pruning) to map PID →
+//!   command name. It must do its own refresh: a consumer such as the Network
+//!   tab never calls `list_processes`, so the handle would otherwise know about
+//!   no process and every row's Process column would be blank.
 //! - `list_interfaces`: builds a fresh `sysinfo::Networks` each call. This
 //!   is intentional — sysinfo's `Networks` is cheap relative to a full
 //!   `System` refresh.
@@ -83,7 +85,7 @@ impl SysProvider for SysinfoProvider {
     }
 
     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
-        ports::list_listening_ports(&self.inner)
+        ports::list_listening_ports(&mut self.inner)
     }
 
     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
