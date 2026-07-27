@@ -40,7 +40,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::TextInput;
-use sid_ui::{Row, theme};
+use sid_ui::{Row, theme, v_flex};
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
@@ -1511,17 +1511,18 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    // `min_w(0) + overflow_hidden`: `TextInput` paints its shaped line
-                    // at its own natural width regardless of the box's flex-assigned
-                    // bounds (see `ui::ssh_home`'s quick-connect box for the writeup —
-                    // same shared `TextInput`, same fix), so a long typed/placeholder
-                    // path would otherwise bleed into the `Go` button beside it in this
-                    // fixed, narrow (`SIDEBAR_WIDTH`) toolbar.
+                    // `TextInput` clips its own shaped line and sizes itself now; this
+                    // wrapper only has to hand it the row's spare width.
+                    // `v_flex`, not a plain `div`: a `TextInput` sizes itself entirely in
+                    // percentages, and a `display: block` parent doesn't resolve them —
+                    // the field collapsed to its own padding and border, a ~20px stub
+                    // that swallowed clicks aimed at the field you could see. A flex
+                    // column stretches it to a real width on the cross axis, which is
+                    // exactly why the stacked form fields never had this bug.
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w(px(0.))
-                            .overflow_hidden()
                             .child(self.goto_input.clone()),
                     )
                     .child(go),

@@ -780,6 +780,19 @@ impl Render for TextInput {
         let (well, border, fg) = (t.well, t.border, t.fg);
         div()
             .flex()
+            // The widget has no intrinsic width: its inner box is `w_full()` and
+            // `TextElement` asks for `relative(1.)`, so every width in here is a
+            // percentage of this element and *this* element used to size to `auto`.
+            // Wherever a parent didn't force a definite width on it — a flex row, where a
+            // flex item's base size is its content — the whole chain resolved against
+            // nothing and the field collapsed to its own padding plus border, about
+            // twenty pixels. That is the "~20px stub that eats clicks" in the SFTP
+            // toolbar's go-to-path field: the box was real and focusable, just almost
+            // invisible. Sites that happened to work did so because they stack their
+            // fields in a `flex_col`, whose cross-axis stretch supplied the width this
+            // element should have been asking for itself.
+            .w_full()
+            .overflow_hidden()
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
