@@ -119,6 +119,28 @@ impl<D: FillTableDelegate> FillTable<D> {
     }
 }
 
+/// Ask for exactly one more frame, because the widths this frame just resolved cannot
+/// reach the screen inside it.
+///
+/// The measure happens in **prepaint**, which is after taffy has already laid the columns
+/// out at their previous widths; `TableState::refresh` re-reads them, but nothing repaints
+/// unless something asks. Inside a draw, nothing will: `Window::refresh` is a no-op while
+/// the invalidator is drawing (`gpui-0.2.2/src/window.rs:1367`, `if not_drawing()`), which
+/// is the same rule that makes a `cx.notify()` from `render` disappear. A table on a poll
+/// timer never noticed — the next tick brought a frame along. A **quiescent** one did: the
+/// Workspaces fleet table settled its data before its first paint, so nothing followed the
+/// measure and every column sat at `gpui-component`'s 100px default until a stray click
+/// woke it. That tab worked around it with a 120ms timer of its own
+/// (`ui::workspaces_tab::AppState::settle_fleet_layout`), which this makes deletable.
+///
+/// [`Window::on_next_frame`] is the escape hatch: the callback runs from
+/// `on_request_frame`, outside the draw, where `refresh` takes. One frame, only after a
+/// `sync` that actually moved a width — a steady viewport still costs one comparison and
+/// schedules nothing, so this cannot become a render loop.
+fn settle(window: &mut Window) {
+    window.on_next_frame(|window, _| window.refresh());
+}
+
 impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let measured = self.state.clone();
@@ -134,13 +156,18 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
                 // The viewport probe. See the module docs: this is upstream's own
                 // bounds-capture mechanism, pointed at the column widths.
                 canvas(
-                    move |bounds, _, cx| {
+                    move |bounds, window, cx| {
                         let width = f32::from(bounds.size.width);
-                        measured.update(cx, |table, cx| {
-                            if table.delegate_mut().fill_columns().sync(width) {
+                        let moved = measured.update(cx, |table, cx| {
+                            let moved = table.delegate_mut().fill_columns().sync(width);
+                            if moved {
                                 table.refresh(cx);
                             }
+                            moved
                         });
+                        if moved {
+                            settle(window);
+                        }
                     },
                     |_, _, _, _| {},
                 )
