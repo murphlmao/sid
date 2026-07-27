@@ -69,6 +69,6 @@ pub use scope_chip::{ScopeChip, ScopeOrigin};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use status_dot::{ConnectionState, StatusDot, StatusLegend};
 pub use styled::{StyledExt, h_flex, v_flex};
-pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate};
+pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate, sortable_th};
 pub use theme::Theme;
 pub use toolbar::Toolbar;
