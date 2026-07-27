@@ -33,7 +33,7 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, Typography as _, theme};
+use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, theme};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -1525,9 +1525,10 @@ impl AppState {
     }
 
     /// The SSH Home tab's error notice: a **full-width bar** between the session tab
-    /// strip and the connections surface. `.truncate()` (clip + ellipsis, not wrap)
-    /// keeps it to one line no matter how long the message is. `None` — the common
-    /// case with no error — renders nothing.
+    /// strip and the connections surface. `clamp_one_line` (clip + a real ellipsis, not
+    /// wrap — see [`sid_ui::StyledExt::clamp_one_line`] for why gpui's own `truncate()`
+    /// silently doesn't) keeps it to one line no matter how long the message is. `None` —
+    /// the common case with no error — renders nothing.
     ///
     /// Round-D §A dropped the startup secrets-backend notice this bar used to double as
     /// (a persistent "secrets: …" line) — a degraded backend now shows as the small
@@ -1547,7 +1548,7 @@ impl AppState {
                 .bg(rgb(surface))
                 .text_meta(t)
                 .text_color(rgb(danger))
-                .truncate()
+                .clamp_one_line()
                 .child(text),
         )
     }
@@ -1624,7 +1625,19 @@ impl AppState {
                             .text_color(rgb(if selected { fg_strong } else { muted }))
                             .cursor_pointer()
                             .child(dot)
-                            .child(tab.label.clone())
+                            // A session tab is only ever as wide as a name you can read:
+                            // an unclamped label (`deploy@prod-eu-west-1-application-
+                            // server-01.internal.acme-api.example.com`) grew one tab to
+                            // 570px and pushed the strip's own `×`/`+` off the window.
+                            // `min_w(0)` drops the text's content-sized minimum so the
+                            // cap can actually bite, and the clamp cuts it with a real `…`.
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .max_w(px(240.))
+                                    .clamp_one_line()
+                                    .child(tab.label.clone()),
+                            )
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                                 this.activate_session(ix, window, cx);
                             })),
@@ -1737,10 +1750,17 @@ impl AppState {
                             })),
                     )
                     .child(
+                        // `min_w(0)` + one clamped line: gpui measures a text element's
+                        // MIN-content width as its full single-line width (see
+                        // `sid_ui::StyledExt::clamp_one_line`), so `flex_1` alone leaves
+                        // this header with a minimum it can never shrink below and a long
+                        // `user@host · status` walks straight out of the strip.
                         div()
                             .flex_1()
+                            .min_w(px(0.))
                             .text_body(t)
                             .text_color(rgb(muted))
+                            .clamp_one_line()
                             .child(header),
                     ),
             )

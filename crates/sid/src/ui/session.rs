@@ -41,7 +41,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, theme, v_flex};
+use sid_ui::{Row, StyledExt as _, theme, v_flex};
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
@@ -2197,7 +2197,7 @@ impl SshSession {
         let meta_column = |text: String, width: Pixels| {
             div()
                 .w(width)
-                .truncate()
+                .clamp_one_line()
                 .font_family(MONO)
                 .text_xs()
                 .text_color(rgb(muted))
@@ -2214,9 +2214,14 @@ impl SshSession {
                     .child(glyph),
             )
             .child(
+                // `clamp_one_line`, never gpui's `truncate()` — see
+                // [`sid_ui::StyledExt::clamp_one_line`]. Under `truncate()` the ellipsis
+                // never landed and the row's own clip cut the name mid-glyph, hard against
+                // the size column: `a-very-long-remot—`, `this-is-an-extreme0 B`.
                 div()
                     .id(("session-entry-name", ix))
-                    .truncate()
+                    .min_w(px(0.))
+                    .clamp_one_line()
                     .text_color(rgb(fg))
                     .child(name)
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
@@ -2564,10 +2569,28 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
+        .px_6()
+        // The backstop: whatever the text does, it stops at the pane's edge.
+        .overflow_hidden()
         .bg(rgb(t.bg))
         .text_color(rgb(t.muted))
         .font_family(MONO)
-        .child(text.to_string())
+        .child(
+            // gpui reports a text element's MIN-content width as its FULL single-line
+            // width (`elements/text.rs` only derives a wrap width from an
+            // `AvailableSpace::Definite`), so a bare string is a flex item with an
+            // automatic minimum it can never shrink below. Centred, that means a long
+            // message overflows *both* sides: "Connection failed: connect failed: failed
+            // to lookup address information: No address associated with hostname" ran off
+            // the left and right edges of an 800px window with its first letters painted
+            // outside the app. `min_w(0)` drops that floor, which is what finally hands
+            // the text a definite width — and therefore a wrap width — to lay out inside.
+            div()
+                .min_w(px(0.))
+                .max_w(px(720.))
+                .text_center()
+                .child(text.to_string()),
+        )
 }
 
 fn status_line(text: &str, cx: &App) -> impl IntoElement {
