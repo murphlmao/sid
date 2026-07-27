@@ -20,10 +20,11 @@
 //! ```
 
 use gpui::{
-    Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
+    Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb, rgba,
 };
 
 use crate::badge::{ALL_BADGE_FILLS, ALL_BADGE_TONES, Badge, BadgeFill, BadgeTone};
+use crate::bridge::SCRIM;
 use crate::button::{ALL_BUTTON_VARIANTS, Button, ButtonSize, ButtonVariant, IconButton};
 use crate::card::Card;
 use crate::elevation::Elevation;
@@ -32,10 +33,12 @@ use crate::grid::{CardGrid, GridCard};
 use crate::icon::Icon;
 use crate::kbd::Kbd;
 use crate::list::{List, Row};
+use crate::modal::Modal;
 use crate::scope_chip::ScopeChip;
 use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
+use crate::toast::{ALL_TOAST_TONES, Toast};
 use crate::toolbar::Toolbar;
 use crate::typography::{ALL_TYPE_ROLES, TypeRole, Typography};
 
@@ -85,6 +88,10 @@ impl Render for Gallery {
             // The specimen is a full-width band rather than a fifth column: the samples
             // are sentences, and a fifth of 1920px is not a line of text.
             .child(type_specimen(&theme))
+            // The overlays are a band for the same reason, plus one of their own: a
+            // modal panel is 460px wide at its real size, and a fifth column that wide
+            // squeezed the other four until the host rows wrapped mid-word.
+            .child(overlays(&theme))
             .child(
                 h_flex()
                     .flex_1()
@@ -93,12 +100,22 @@ impl Render for Gallery {
                     .px_4()
                     .pb_4()
                     .overflow_hidden()
-                    .child(v_flex().flex_1().gap_4().children(buttons(&theme)))
-                    .child(v_flex().flex_1().gap_4().children(chips(&theme)))
-                    .child(v_flex().flex_1().gap_4().children(structure(&theme)))
-                    .child(v_flex().flex_1().gap_4().children(rows(&theme))),
+                    // `min_w_0` on every column: a flex item's default minimum is its
+                    // content width, so without it the widest card (the grid) pins the
+                    // row wider than the window and the last column is clipped off the
+                    // right edge.
+                    .child(column().children(buttons(&theme)))
+                    .child(column().children(chips(&theme)))
+                    .child(column().children(structure(&theme)))
+                    .child(column().children(rows(&theme))),
             )
     }
+}
+
+/// One elastic gallery column: an equal share of the row, allowed to shrink below its
+/// content width.
+fn column() -> gpui::Div {
+    v_flex().flex_1().min_w_0().gap_4()
 }
 
 /// The top bar: what this screen is, and which palette is on — so a capture identifies
@@ -502,6 +519,135 @@ fn rows(theme: &Theme) -> Vec<gpui::AnyElement> {
             )
             .into_any_element(),
     ]
+}
+
+/// Column 5 — the overlays: a modal over its scrim, and every notice tone.
+///
+/// The modal is drawn *in place* over a stand-in canvas rather than through
+/// [`crate::modal::overlay`], which anchors to the window and would black out the rest of
+/// the gallery. Everything inside the panel is the real thing: the real header, the real
+/// scrim colour, the real footer buttons, a real [`Toast`].
+fn overlays(theme: &Theme) -> impl IntoElement + use<> {
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap_4()
+        .px_4()
+        .child(
+            Card::new()
+                .title("modal")
+                .w(px(620.))
+                .flex_none()
+                .child(div().hint_text(theme).child(
+                    "a panel over the scrim: title, close button, a body that scrolls \
+                     when the fields outrun the window, and a footer with the keyboard \
+                     contract on the left and the primary action on the right",
+                ))
+                .child(
+                    div()
+                        .relative()
+                        // Taller than the panel by design: the scrim has to be visible
+                        // above and below it, or the demo reads as a docked pane.
+                        .h(px(380.))
+                        .w_full()
+                        .overflow_hidden()
+                        .rounded_md()
+                        .elevation(Elevation::Bg, theme)
+                        // The app underneath, so the scrim has something to darken.
+                        .child(
+                            v_flex()
+                                .p_2()
+                                .gap_1()
+                                .child(div().text_label(theme).child("SAVED CONNECTIONS · 3"))
+                                .children(GRID_CARDS.iter().take(3).map(|(name, addr, _)| {
+                                    h_flex()
+                                        .w_full()
+                                        .justify_between()
+                                        .gap_2()
+                                        .row_padding()
+                                        .child(div().text_body(theme).child(*name))
+                                        .child(div().text_mono_meta(theme).child(*addr))
+                                })),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(rgba(SCRIM))
+                                .child(
+                                    // At its real width, so the gallery shows the panel
+                                    // the forms render rather than a scaled-down one.
+                                    Modal::new("gallery-modal", "Add host")
+                                        .submit_hint("saves")
+                                        .on_dismiss(|_, _, _| {})
+                                        .child(fake_field(theme, "alias", "prod-eu-west-1"))
+                                        .child(fake_field(theme, "user", "deploy"))
+                                        .child(Toast::danger("port must be a number in 1-65535"))
+                                        .footer(
+                                            Button::new("gallery-modal-cancel", "Cancel").ghost(),
+                                        )
+                                        .footer(
+                                            Button::new("gallery-modal-save", "Save").primary(),
+                                        ),
+                                ),
+                        ),
+                ),
+        )
+        .child(
+            Card::new()
+                .title("toast")
+                .count(ALL_TOAST_TONES.len())
+                .flex_1()
+                .min_w_0()
+                .child(div().hint_text(theme).child(
+                    "the tone frames the notice; the sentence stays fg so it is readable \
+                     in every palette",
+                ))
+                .children(
+                    ALL_TOAST_TONES
+                        .iter()
+                        .zip(TOAST_SAMPLES)
+                        .map(|(&tone, sample)| Toast::new(tone, sample)),
+                )
+                .child(
+                    Toast::warning(
+                        "the workspace config was written, but the keyring refused the \
+                         secret — it is held in memory for this session",
+                    )
+                    .title("saved with a warning")
+                    .action(Button::new("gallery-toast-retry", "retry").small())
+                    .on_dismiss(|_, _, _| {}),
+                ),
+        )
+}
+
+/// One sample sentence per tone, in [`ALL_TOAST_TONES`] order.
+const TOAST_SAMPLES: [&str; 4] = [
+    "no OS keyring — this password is held for this session only",
+    "connection saved to the workspace",
+    "sid is running without a GPU adapter; rendering is on llvmpipe",
+    "alias exists in global — edit it instead",
+];
+
+/// A stand-in for a labelled text field. The real one is a `TextInput`, which is an
+/// entity rather than an element and so cannot be built from this stateless screen.
+fn fake_field(theme: &Theme, label: &'static str, value: &'static str) -> impl IntoElement + use<> {
+    v_flex()
+        .gap_1()
+        .child(div().text_meta(theme).child(label))
+        .child(
+            div()
+                .w_full()
+                .px_2()
+                .py_1p5()
+                .rounded_md()
+                .elevation(Elevation::Well, theme)
+                .text_body(theme)
+                .child(value),
+        )
 }
 
 /// The type specimen — every role on the scale, once, with its own measurements
