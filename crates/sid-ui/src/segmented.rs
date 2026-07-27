@@ -34,7 +34,6 @@ use gpui::{
     RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window,
     prelude::FluentBuilder as _, rgb, transparent_black,
 };
-use gpui_component::{Sizable as _, Size};
 
 use crate::elevation::Elevation;
 use crate::icon::Icon;
@@ -227,7 +226,7 @@ impl RenderOnce for SegmentedControl {
                     })
                     .text_color(rgb(paint.ink))
                     .when_some(segment.icon, |this, icon| {
-                        this.child(icon.el().with_size(Size::Small).text_color(rgb(paint.ink)))
+                        this.child(icon.small().text_color(rgb(paint.ink)))
                     })
                     .child(segment.label)
                     .when_some(on_select, |this, on_select| {
