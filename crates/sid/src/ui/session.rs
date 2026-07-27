@@ -2223,14 +2223,13 @@ impl SshSession {
                     .child(glyph),
             )
             .child(
-                // `clamp_one_line`, never `truncate()` — see `sid_ui::StyledExt::
-                // clamp_one_line`'s doc comment. `truncate()`'s `Nowrap` pins the
-                // measured-layout cache's `wrap_width` to `None`, so the ellipsis pass
-                // never runs: `2026-07-14-backup-postgres-prod-full.dump.gz` painted its
-                // full width straight across the size and mtime columns beside it, and
-                // was only cut where the list's own scroll clip happened to fall.
+                // `clamp_one_line`, never gpui's `truncate()` — see
+                // [`sid_ui::StyledExt::clamp_one_line`]. Under `truncate()` the ellipsis
+                // never landed and the row's own clip cut the name mid-glyph, hard against
+                // the size column: `a-very-long-remot—`, `this-is-an-extreme0 B`.
                 div()
                     .id(("session-entry-name", ix))
+                    .min_w(px(0.))
                     .clamp_one_line()
                     .text_color(rgb(fg))
                     .child(name)
@@ -2609,10 +2608,21 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
         .items_center()
         .justify_center()
         .px_6()
+        // The backstop: whatever the text does, it stops at the pane's edge.
+        .overflow_hidden()
         .bg(rgb(t.bg))
         .text_color(rgb(t.muted))
         .font_family(MONO)
         .child(
+            // gpui reports a text element's MIN-content width as its FULL single-line
+            // width (`elements/text.rs` only derives a wrap width from an
+            // `AvailableSpace::Definite`), so a bare string is a flex item with an
+            // automatic minimum it can never shrink below. Centred, that means a long
+            // message overflows *both* sides: "Connection failed: connect failed: failed
+            // to lookup address information: No address associated with hostname" ran off
+            // the left and right edges of an 800px window with its first letters painted
+            // outside the app. `min_w(0)` drops that floor, which is what finally hands
+            // the text a definite width — and therefore a wrap width — to lay out inside.
             div()
                 .min_w(px(0.))
                 .max_w(px(720.))
