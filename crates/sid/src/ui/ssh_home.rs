@@ -1109,7 +1109,23 @@ impl AppState {
                     // Where this record lives (global vs a workspace, `· dup` when
                     // shadowing) — the attributive store's one per-card fact nothing
                     // else on screen shows.
-                    .child(div().flex_none().child(self.scope_chip(a))),
+                    //
+                    // Bounded, because the workspace layer's chip carries a *workspace
+                    // name* the card has no say in. `flex_none` alone means the chip
+                    // never gives up a pixel, and `GridCard` has no clip of its own, so
+                    // a workspace called `platform-infrastructure-monorepo` pushed the
+                    // chip clean out through the card's right border — the alias beside
+                    // it is already `flex_1 + min_w(0) + clamp_one_line` and so was
+                    // busy shrinking to make room for something that would not stop
+                    // growing. A third of the card is all a provenance mark gets.
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(120.))
+                            .overflow_hidden()
+                            .clamp_one_line()
+                            .child(self.scope_chip(a)),
+                    ),
             )
             .child(
                 div()

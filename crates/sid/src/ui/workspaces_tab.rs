@@ -1567,7 +1567,7 @@ impl AppState {
                 .min_w(px(0.))
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .truncate()
+                .clamp_one_line()
                 .text_color(rgb(if is_selected { fg_strong } else { fg }))
                 .child(meta.name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
@@ -1638,7 +1638,7 @@ impl AppState {
                     .text_xs()
                     .text_color(rgb(muted))
                     .font_family(MONO)
-                    .truncate()
+                    .clamp_one_line()
                     .child(meta.root.display().to_string()),
             )
             .child(
@@ -1650,7 +1650,7 @@ impl AppState {
                             .flex_1()
                             .min_w(px(0.))
                             .text_xs()
-                            .truncate()
+                            .clamp_one_line()
                             .text_color(rgb(git_color))
                             .child(git_label),
                     )
@@ -2157,7 +2157,7 @@ impl AppState {
                             .child(
                                 div()
                                     .text_sm()
-                                    .truncate()
+                                    .clamp_one_line()
                                     .text_color(rgb(fg))
                                     .child(c.summary.clone()),
                             )

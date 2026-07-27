@@ -41,7 +41,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, theme, v_flex};
+use sid_ui::{Row, StyledExt as _, theme, v_flex};
 
 /// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
 /// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
@@ -1972,7 +1972,16 @@ impl SshSession {
                     .justify_between()
                     .px_2()
                     .pt_1()
-                    .child(div().flex_1().child(self.breadcrumb(crumb_budget, cx)))
+                    // `min_w(0)` on the wrapper as well as on the breadcrumb inside it:
+                    // the breadcrumb's own clip only bounds *its* children, and this
+                    // flex item would still refuse to shrink below its content width and
+                    // shove `collapse` out of the fixed-width sidebar.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.breadcrumb(crumb_budget, cx)),
+                    )
                     .child(collapse),
             )
             .child(
@@ -2197,7 +2206,7 @@ impl SshSession {
         let meta_column = |text: String, width: Pixels| {
             div()
                 .w(width)
-                .truncate()
+                .clamp_one_line()
                 .font_family(MONO)
                 .text_xs()
                 .text_color(rgb(muted))
@@ -2214,9 +2223,15 @@ impl SshSession {
                     .child(glyph),
             )
             .child(
+                // `clamp_one_line`, never `truncate()` — see `sid_ui::StyledExt::
+                // clamp_one_line`'s doc comment. `truncate()`'s `Nowrap` pins the
+                // measured-layout cache's `wrap_width` to `None`, so the ellipsis pass
+                // never runs: `2026-07-14-backup-postgres-prod-full.dump.gz` painted its
+                // full width straight across the size and mtime columns beside it, and
+                // was only cut where the list's own scroll clip happened to fall.
                 div()
                     .id(("session-entry-name", ix))
-                    .truncate()
+                    .clamp_one_line()
                     .text_color(rgb(fg))
                     .child(name)
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
@@ -2465,15 +2480,27 @@ impl SshSession {
                                         .py_2()
                                         .border_b_1()
                                         .border_color(rgb(border))
+                                        // A remote file name is arbitrary length and the
+                                        // modal is a fixed 640px, so the name has to be
+                                        // the part that gives: `flex_1 + min_w(0)` lets
+                                        // it shrink (a flex item's default min-width is
+                                        // its content, which would push both the name
+                                        // and the close button out through the modal's
+                                        // border), and `clamp_one_line` then cuts it
+                                        // with a real ellipsis instead of a hard clip.
                                         .child(
                                             div()
+                                                .flex_1()
+                                                .min_w(px(0.))
                                                 .text_sm()
                                                 .text_color(rgb(fg))
+                                                .clamp_one_line()
                                                 .child(preview.name.clone()),
                                         )
                                         .child(
                                             div()
                                                 .id("session-preview-close")
+                                                .flex_none()
                                                 .px_2()
                                                 .py_1()
                                                 .rounded_md()
@@ -2557,6 +2584,23 @@ fn key_to_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
     keystroke.key_char.as_ref().map(|s| s.as_bytes().to_vec())
 }
 
+/// The whole-tab message a session paints instead of a terminal: connecting, closed, or
+/// the connect error.
+///
+/// **The text block is a separate, shrinkable child, and it has to be.** This used to
+/// hand the string straight to a `justify_center` row, which put the text in as a flex
+/// item whose min-width is `auto` — i.e. its *content* width. A flex item that cannot
+/// shrink below its content does not wrap; it overflows, and because the row centres it
+/// the overflow goes out **both** edges at once. `Connection failed: connect failed:
+/// failed to lookup address information: Name or service not known` on a 640px-wide
+/// window rendered as `…ction failed: connect failed: failed to lookup address
+/// information: Name or service not…`, sentence-ends amputated on the left and the right
+/// with no ellipsis anywhere — the exact "text jumping out of bounds" report, reached by
+/// double-clicking a host card (double-click connects) on a host that won't answer.
+///
+/// `min_w(0)` restores the ability to shrink, which is what gives the text a real wrap
+/// width and lets it wrap to as many lines as it needs; `max_w` keeps it to a reading
+/// measure on a wide window instead of one 1900px line; `px_6` keeps it off the frame.
 fn message_pane(text: &str, cx: &App) -> impl IntoElement {
     let t = theme::active(cx);
     div()
@@ -2564,10 +2608,17 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
+        .px_6()
         .bg(rgb(t.bg))
         .text_color(rgb(t.muted))
         .font_family(MONO)
-        .child(text.to_string())
+        .child(
+            div()
+                .min_w(px(0.))
+                .max_w(px(720.))
+                .text_center()
+                .child(text.to_string()),
+        )
 }
 
 fn status_line(text: &str, cx: &App) -> impl IntoElement {

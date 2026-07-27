@@ -22,7 +22,7 @@ use gpui::{
 use crate::app::AppState;
 use crate::keymap::{self, Action};
 use crate::ui::TextInput;
-use sid_ui::theme;
+use sid_ui::{StyledExt as _, theme};
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list
@@ -297,24 +297,34 @@ impl AppState {
             .cursor_pointer()
             .bg(rgb(if selected { selection_bg } else { surface }))
             .text_color(rgb(if selected { fg_strong } else { fg }))
+            // The label/subtitle column carries whatever a saved host or connection is
+            // called, inside a panel pinned to 560px. `flex_1` alone does not make it
+            // shrinkable — a flex item holding text measures the same under MinContent
+            // as under MaxContent in gpui (`elements/text.rs`), so its automatic minimum
+            // size is the whole string and it simply overruns, painting under the
+            // shortcut column on its right. `min_w(0)` restores the shrink; the two
+            // clamps then cut each line with a real ellipsis instead of letting the
+            // results list's scroll clip hard-cut it mid-glyph.
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .child(div().text_sm().child(entry.label.clone()))
-                    .children(
-                        entry
-                            .subtitle
-                            .clone()
-                            .map(|s| div().text_xs().text_color(rgb(muted)).child(s)),
-                    ),
+                    .min_w(px(0.))
+                    .child(div().text_sm().clamp_one_line().child(entry.label.clone()))
+                    .children(entry.subtitle.clone().map(|s| {
+                        div()
+                            .text_xs()
+                            .text_color(rgb(muted))
+                            .clamp_one_line()
+                            .child(s)
+                    })),
             )
             .children(
                 entry
                     .shortcut
                     .clone()
-                    .map(|s| div().text_xs().text_color(rgb(accent)).child(s)),
+                    .map(|s| div().flex_none().text_xs().text_color(rgb(accent)).child(s)),
             )
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if let Some(palette) = &mut this.palette {
