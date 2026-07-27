@@ -20,9 +20,20 @@ use sid_core::ssh::{
 use crate::auth::authenticate;
 use crate::known_hosts::{self, Verdict};
 
-/// Factory carrying the app-level known_hosts path; per-host clients are
-/// produced by `new_client`. The caller supplies `<data_dir>/known_hosts` —
-/// the adapter contains no XDG logic.
+/// How long [`RusshClient::connect`] may spend on the TCP dial plus the SSH
+/// transport handshake before it gives up.
+///
+/// Without an app-level bound the dial rides the kernel's SYN-retry budget —
+/// ~127 s on Linux for a blackholed address — during which the UI can only say
+/// "Connecting…". `russh`'s `Config::inactivity_timeout` does not help: it is a
+/// *post-handshake* idle timer. Ten seconds is generous for a real host on a
+/// slow link and short enough that a black hole is reported as a normal connect
+/// error while the user is still watching.
+pub const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Factory carrying the app-level known_hosts path and dial timeout; per-host
+/// clients are produced by `new_client`. The caller supplies
+/// `<data_dir>/known_hosts` — the adapter contains no XDG logic.
 ///
 /// # Examples
 ///
@@ -34,6 +45,7 @@ use crate::known_hosts::{self, Verdict};
 /// ```
 pub struct RusshClientFactory {
     app_known_hosts: PathBuf,
+    dial_timeout: Duration,
 }
 
 impl RusshClientFactory {
@@ -48,7 +60,29 @@ impl RusshClientFactory {
     /// let _f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"));
     /// ```
     pub fn new(app_known_hosts: PathBuf) -> Self {
-        Self { app_known_hosts }
+        Self {
+            app_known_hosts,
+            dial_timeout: DEFAULT_DIAL_TIMEOUT,
+        }
+    }
+
+    /// Override the dial+handshake timeout every client from this factory uses
+    /// (see [`DEFAULT_DIAL_TIMEOUT`]). The value enters as configuration rather
+    /// than being pinned at the `russh` call site, so tests can bound the dial
+    /// in milliseconds and a future settings knob has somewhere to land.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{path::PathBuf, time::Duration};
+    /// use sid_ssh::RusshClientFactory;
+    /// let f = RusshClientFactory::new(PathBuf::from("/tmp/sid/known_hosts"))
+    ///     .with_dial_timeout(Duration::from_secs(3));
+    /// let _c = f.new_client();
+    /// ```
+    pub fn with_dial_timeout(mut self, dial_timeout: Duration) -> Self {
+        self.dial_timeout = dial_timeout;
+        self
     }
 
     /// Construct a fresh per-host client. Not yet connected.
@@ -65,6 +99,7 @@ impl RusshClientFactory {
         RusshClient {
             handle: None,
             app_known_hosts: self.app_known_hosts.clone(),
+            dial_timeout: self.dial_timeout,
         }
     }
 }
@@ -82,6 +117,8 @@ impl RusshClientFactory {
 pub struct RusshClient {
     pub(crate) handle: Option<Handle<ClientHandler>>,
     app_known_hosts: PathBuf,
+    /// Deadline for the dial + handshake in `connect` (see [`DEFAULT_DIAL_TIMEOUT`]).
+    dial_timeout: Duration,
 }
 
 /// The user's read-only `~/.ssh/known_hosts`, if a home directory is known.
@@ -206,7 +243,25 @@ impl SshClient for RusshClient {
             user_known_hosts: user_known_hosts_path(),
             verdict: verdict.clone(),
         };
-        let mut handle = match russh::client::connect(config, addr.as_str(), handler).await {
+        // Bound the TCP dial *and* the SSH transport handshake. `russh` bounds
+        // neither: `Config::inactivity_timeout` above only arms once the
+        // connection is up, so without this a blackholed address burns the
+        // kernel's SYN-retry budget (~127 s) and a peer that accepts but never
+        // sends an identification string hangs forever. The deadline is
+        // configuration (`RusshClientFactory::with_dial_timeout`), not a literal
+        // at this call site, so tests can bound it in milliseconds.
+        //
+        // Cancellation: this is a plain future with no background task of its
+        // own, so a future "cancel connect" button needs no new adapter API —
+        // dropping the `connect` future, or aborting the task it runs in via the
+        // `JoinHandle` the UI already holds (`sid/src/ui/session.rs`'s
+        // `ssh_runtime().spawn`), tears the dial down immediately.
+        let dial = russh::client::connect(config, addr.as_str(), handler);
+        let dialed = match tokio::time::timeout(self.dial_timeout, dial).await {
+            Ok(dialed) => dialed,
+            Err(_elapsed) => return Err(SshError::Timeout(self.dial_timeout)),
+        };
+        let mut handle = match dialed {
             Ok(handle) => handle,
             Err(e) => {
                 // If the handshake aborted because of host-key verification,
@@ -345,6 +400,80 @@ mod tests {
             map_russh_error(russh::Error::RequestDenied),
             SshError::Other(_)
         ));
+    }
+
+    /// Bug-hunt 2026-07-26 #5: a connect to a blackholed address hung for ~127 s
+    /// (the kernel's SYN-retry budget) with the tab stuck on "Connecting…".
+    /// The dial must fail on *our* deadline instead.
+    ///
+    /// 192.0.2.1 is TEST-NET-1 (RFC 5737): routable-looking, never answers. On a
+    /// host with no route to it the dial fails immediately with `ConnectFailed`
+    /// instead of timing out — also a pass, since the property under test is the
+    /// bounded wait, not which of the two error shapes wins the race.
+    #[tokio::test]
+    async fn connect_to_a_blackholed_host_fails_within_the_dial_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let dial_timeout = Duration::from_millis(300);
+        let factory =
+            RusshClientFactory::new(dir.path().join("known_hosts")).with_dial_timeout(dial_timeout);
+        let mut client = factory.new_client();
+        let spec = SshHostSpec {
+            host: "192.0.2.1".into(),
+            port: 22,
+            user: "nobody".into(),
+        };
+
+        let started = std::time::Instant::now();
+        let err = client
+            .connect(&spec, &SshAuth::None)
+            .await
+            .expect_err("a blackholed address cannot connect");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < dial_timeout + Duration::from_secs(2),
+            "dial was not bounded: gave up after {elapsed:?}, expected ~{dial_timeout:?}"
+        );
+        assert!(
+            matches!(err, SshError::Timeout(_) | SshError::ConnectFailed(_)),
+            "unexpected error shape: {err:?}"
+        );
+    }
+
+    /// The other half of the same hang: a peer that completes the TCP handshake
+    /// and then never sends its SSH identification string. Hermetic — a local
+    /// listening socket that is never accepted from — so this one pins the exact
+    /// error mapping (`SshError::Timeout`) that the UI renders.
+    #[tokio::test]
+    async fn connect_to_a_peer_that_never_sends_a_banner_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let dial_timeout = Duration::from_millis(300);
+        let factory =
+            RusshClientFactory::new(dir.path().join("known_hosts")).with_dial_timeout(dial_timeout);
+        let mut client = factory.new_client();
+        let spec = SshHostSpec {
+            host: "127.0.0.1".into(),
+            port,
+            user: "nobody".into(),
+        };
+
+        let started = std::time::Instant::now();
+        let err = client
+            .connect(&spec, &SshAuth::None)
+            .await
+            .expect_err("a silent peer cannot complete the SSH handshake");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(err, SshError::Timeout(d) if d == dial_timeout),
+            "expected a Timeout carrying the configured deadline, got {err:?}"
+        );
+        assert!(
+            elapsed < dial_timeout + Duration::from_secs(2),
+            "handshake was not bounded: gave up after {elapsed:?}"
+        );
     }
 
     #[test]

@@ -12,4 +12,4 @@ pub mod known_hosts;
 pub mod sftp;
 pub mod shell;
 
-pub use client::{RusshClient, RusshClientFactory};
+pub use client::{DEFAULT_DIAL_TIMEOUT, RusshClient, RusshClientFactory};
