@@ -118,7 +118,15 @@ impl Render for Gallery {
         let filter = fields.filter.clone();
         let field_band = fields_band(&theme, fields);
         v_flex()
+            .id("gallery")
             .size_full()
+            // The screen has outgrown 1080px, and it should: it is an inventory, not a
+            // dashboard. Scrolling the root is what keeps it *usable* at a normal window
+            // size — before this, the bands took the height and the four component
+            // columns (a `flex_1` under an `overflow_hidden`) were squeezed to nothing
+            // and simply could not be reached. Captures pass `--size 1920x2400` and get
+            // the whole thing in one frame.
+            .overflow_y_scroll()
             .bg(rgb(theme.bg))
             .text_body(&theme)
             .child(chrome(&theme))
@@ -135,12 +143,14 @@ impl Render for Gallery {
             .child(overlays(&theme))
             .child(
                 h_flex()
-                    .flex_1()
+                    // `flex_none`, not `flex_1`: inside a scrolling parent an item that
+                    // grows to fill takes the *viewport's* leftover height instead of
+                    // its own, which is another way of saying it disappears.
+                    .flex_none()
                     .items_start()
                     .gap_4()
                     .px_4()
                     .pb_4()
-                    .overflow_hidden()
                     // `min_w_0` on every column: a flex item's default minimum is its
                     // content width, so without it the widest card (the grid) pins the
                     // row wider than the window and the last column is clipped off the
@@ -1010,16 +1020,21 @@ fn fields_band(theme: &Theme, fields: &Fields) -> impl IntoElement + use<> {
                         .items_start()
                         .gap_4()
                         .child(
+                            // `items_start` on the caption stack as well, or the caption
+                            // stretches the field under it and the demo ends up
+                            // measuring the caption.
                             v_flex()
+                                .items_start()
                                 .gap_1()
                                 .child(div().hint_text(theme).child("TextInput"))
-                                .child(div().child(TextInput::new(&fields.unhelpful))),
+                                .child(TextInput::new(&fields.unhelpful)),
                         )
                         .child(
                             v_flex()
+                                .items_start()
                                 .gap_1()
                                 .child(div().hint_text(theme).child("the old shape"))
-                                .child(div().child(no_floor_field(theme))),
+                                .child(no_floor_field(theme)),
                         ),
                 ),
         )
