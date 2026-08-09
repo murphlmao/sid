@@ -959,20 +959,25 @@ fn fields_band(theme: &Theme, fields: &Fields) -> impl IntoElement + use<> {
                      ctrl-shift-arrow extends the selection by one, and Tab leaves the \
                      field instead of being swallowed",
                 ))
+                // Explicit, increasing tab indices — the point of the demo. Every other
+                // tab stop in the window (and there are dozens: each Button is one) sits
+                // at the default 0, so these three sort after all of them and Tab walks
+                // them in order. Left at the default they would be three more index-0
+                // stops and Tab would visit them in whatever order the frame was built.
                 .child(labelled_field(
                     theme,
-                    "Fill — a form field",
-                    TextInput::new(&fields.alias),
+                    "Fill — a form field · tab 1",
+                    TextInput::new(&fields.alias).tab_index(1),
                 ))
                 .child(labelled_field(
                     theme,
-                    "Fixed(90px) — a port",
-                    TextInput::new(&fields.port).fixed(px(90.)),
+                    "Fixed(90px) — a port · tab 2",
+                    TextInput::new(&fields.port).fixed(px(90.)).tab_index(2),
                 ))
                 .child(labelled_field(
                     theme,
-                    "disabled",
-                    TextInput::new(&fields.off).disabled(true),
+                    "disabled · tab 3 (still a stop — see the module docs)",
+                    TextInput::new(&fields.off).disabled(true).tab_index(3),
                 )),
         )
         .child(
@@ -996,8 +1001,10 @@ fn fields_band(theme: &Theme, fields: &Fields) -> impl IntoElement + use<> {
                 )
                 .child(labelled_field(
                     theme,
-                    "at Md, filling its line",
-                    SearchInput::new(&fields.filter).width(FieldWidth::Fill),
+                    "at Md, filling its line · tab 4",
+                    SearchInput::new(&fields.filter)
+                        .width(FieldWidth::Fill)
+                        .tab_index(4),
                 )),
         )
         .child(

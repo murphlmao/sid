@@ -40,8 +40,16 @@
 //! nowhere. [`TextInput`] is single-line by construction and takes those two actions on
 //! its own wrapper, turning them back into [`Window::focus_next`] /
 //! [`Window::focus_prev`]. Give the fields of one form increasing
-//! [`TextInput::tab_index`]es, or they all sit at 0 and the order Tab visits them in is
-//! whatever the frame happened to build.
+//! [`TextInput::tab_index`]es, or they all sit at 0 alongside every button in the window
+//! and the order Tab visits them in is whatever the frame happened to build. Verified in
+//! the gallery: with the fields at 1..4, Tab walks them; with everything at 0 it leaves
+//! the field for some other control, which is still traversal but not a form.
+//!
+//! **A disabled field is still a tab stop.** `gpui_component`'s `Input` tracks focus
+//! whether or not it is disabled and `gpui` has no "not a tab stop" knob for an element
+//! that does, so — unlike [`crate::Button`], which drops out of the order when it is
+//! switched off — Tab still lands on a disabled field. Worth fixing upstream; noted here
+//! rather than papered over.
 //!
 //! # Submitting
 //!
