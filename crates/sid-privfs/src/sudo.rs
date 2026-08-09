@@ -44,9 +44,67 @@
 //! nothing else, and the content reaches the elevated helper through a private 0600
 //! staging file that root reads. Config-file content is not a secret; the password is,
 //! and it is the one thing that never touches disk.
+//!
+//! # No shell, anywhere
+//!
+//! **Nothing in this module elevates an interpreter.** Every invocation is an argv — a
+//! single `coreutils` program, its flags, `--`, then paths as their own elements. There
+//! is no `sh -c`, so there is no string a path could be interpolated into, no quoting
+//! rule to get right, and no second language inside the trust boundary. `ps` and the
+//! sudo audit log show `cp` and `mv` on named files rather than an opaque script, and a
+//! site that wants a narrow `sudoers` rule can write one for `head`/`cp`/`mv`/`rm` —
+//! whereas permitting `sh -c` is permitting everything.
+//!
+//! The cost is that the atomic, permission-preserving replace takes **three
+//! authentications instead of one**, because no single `coreutils` program does all
+//! three jobs:
+//!
+//! ```text
+//! A. fill    cp -T -- <staging> <tmp>
+//! B. stamp   cp --attributes-only --preserve=all --no-preserve=timestamps -T -- <dst> <tmp>
+//! C. commit  mv -f -T -- <tmp> <dst>
+//! (X. discard rm -f -- <tmp>, only if something after A went wrong)
+//! ```
+//!
+//! Each step earns its place, and together they buy exactly what the `sh -c` script this
+//! replaced bought:
+//!
+//! - **The temp is never world-readable.** `cp` creates it from the 0600 staging file, so
+//!   it is 0600 from the instant it exists — the same guarantee the old script got from
+//!   `umask 077`, obtained from the source's mode instead of the shell's umask, and not
+//!   dependent on what umask `sudo` hands the child.
+//! - **The temp is a sibling of the destination**, so it is on the destination's own
+//!   filesystem and step C is a `rename(2)`: atomic, never a copy a crash could truncate.
+//! - **A failure after A removes the temp** ([`discard`]), so a half-finished save leaves
+//!   no litter in `/etc`. This is the one guarantee a step sequence does not get for
+//!   free the way a shell `trap` did, so it is explicit — and tested.
+//! - **Mode and ownership are cloned off the destination itself**, never read and
+//!   re-applied by sid. `--preserve=all` carries ACLs, xattrs and (best-effort) the
+//!   SELinux context too, which `chmod --reference` + `chown --reference` did not.
+//!   `--no-preserve=timestamps` is deliberate: `--preserve=all` would stamp the *old*
+//!   file's mtime onto new content, and a file that lies about when it changed is a file
+//!   `rsync`, `etckeeper` and every staleness check will skip.
+//! - **`mv -T`** (`--no-target-directory`) is not decoration: without it a destination
+//!   that is a *directory* makes `mv` quietly move the temp *inside* it and exit 0 — a
+//!   save that reports success while writing nothing where the user asked. `-f` then
+//!   removes any question of `mv` wanting to ask about an unwritable destination.
+//!
+//! ## Content before attributes
+//!
+//! Step A fills the temp, step B stamps the attributes on. The other order reads better
+//! and is wrong: `/etc/sudoers` is `0440` and `/etc/resolv.conf` is often `0444`, so a
+//! temp that inherited the destination's mode first would have to be written through a
+//! file with no write bit. Real root gets away with that via `CAP_DAC_OVERRIDE`, which is
+//! precisely why the bug would survive review and then break every site whose `sudoers`
+//! elevates to a non-root user. Filling first works for every identity, and the mode is
+//! still in place before the rename, so the destination is never briefly wrong.
+//!
+//! GNU coreutils is assumed (CLAUDE.md: Wayland/Linux now). A symlinked destination is
+//! replaced by a regular file, matching what the unprivileged save path already does —
+//! one behaviour, not two.
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -62,48 +120,27 @@ use crate::classify::{classify_spawn_error, classify_stderr};
 /// that a wedged authenticator surfaces as an error instead of a hung modal.
 const ELEVATION_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The atomic, permission-preserving replace, run by the elevated shell.
-///
-/// This is a **constant**: no caller data is ever interpolated into it. The destination
-/// and the staging file arrive as positional parameters (`$1`, `$2`) — argv, not text —
-/// so a path containing spaces, quotes, `$`, or a leading `-` is inert. Every expansion
-/// is quoted, and every command that takes a path gets `--` first.
-///
-/// What the steps buy, in order:
-/// - `umask 077` — the staging copy is 0600 from the instant it exists, so a secret
-///   file's new content is never briefly world-readable under a temp name.
-/// - `tmp` beside the destination — same directory means same filesystem, so the final
-///   `mv` is a rename: atomic, never a copy a crash could truncate.
-/// - `trap` — a failure at any later step removes the temp instead of leaving litter in
-///   `/etc`.
-/// - `chmod`/`chown --reference` — the destination's own mode and ownership are copied
-///   onto the replacement, so a 0600 root:root file comes back 0600 root:root.
-/// - `mv -fT` — the rename that publishes the new content in one step. `-T`
-///   (`--no-target-directory`) is not decoration: without it, a destination that is a
-///   *directory* makes `mv` quietly move the temp file *inside* it and report success,
-///   so a save would appear to work while writing nothing. With `-T` that case fails and
-///   the trap cleans up.
-///
-/// GNU coreutils' `--reference` is assumed (CLAUDE.md: Wayland/Linux now). A symlinked
-/// destination is replaced by a regular file, matching what the unprivileged save path
-/// already does — one behaviour, not two.
-const REPLACE_SCRIPT: &str = "\
-set -eu
-umask 077
-dst=\"$1\"
-src=\"$2\"
-tmp=\"$dst.sid-privfs-tmp.$$\"
-trap 'rm -f -- \"$tmp\"' EXIT
-cat -- \"$src\" >\"$tmp\"
-chmod --reference=\"$dst\" -- \"$tmp\"
-chown --reference=\"$dst\" -- \"$tmp\"
-mv -fT -- \"$tmp\" \"$dst\"
-";
+/// How long the best-effort cleanup of a half-written save may take. Much shorter than
+/// [`ELEVATION_TIMEOUT`]: the failure the caller actually cares about has already
+/// happened, and a wedged authenticator must not make the *tidying up* hang the editor
+/// for a second full budget.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `$0` for the elevated shell — what shows up in `ps` and in sudo's audit log while the
-/// replace runs. Named for the operation so an administrator reading the log can tell
-/// what asked for root.
-const REPLACE_ARGV0: &str = "sid-privfs-replace";
+/// Step A — put the new content in a fresh temp. `-T` so a temp path that somehow named
+/// a directory is an error rather than a copy *into* it.
+const FILL_FLAGS: &[&str] = &["-T"];
+
+/// Step B — clone the destination's own attributes onto the temp, leaving its data
+/// alone. See the module doc for why timestamps are excluded and why this is not first.
+const STAMP_FLAGS: &[&str] = &[
+    "--attributes-only",
+    "--preserve=all",
+    "--no-preserve=timestamps",
+    "-T",
+];
+
+/// Step C — publish. See the module doc on why `-T` is load-bearing.
+const COMMIT_FLAGS: &[&str] = &["-f", "-T"];
 
 /// One fully-decided `sudo` call: the argument vector, and the bytes to feed its stdin.
 ///
@@ -137,35 +174,42 @@ fn stdin_payload(secret: &Passphrase) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(payload)
 }
 
-/// Read `path` as root: `sudo -S -k -p '' -- cat -- <path>`.
+/// `sudo -S -k -p '' -- <command> <flags...> -- <operands...>`, with the secret bound for
+/// stdin.
 ///
-/// `cat` gets its own `--` so a path is never mistaken for one of *its* options either.
-pub(crate) fn read_invocation(path: &Path, secret: &Passphrase) -> SudoInvocation {
+/// The only way this module builds an invocation, so the shape is guaranteed rather than
+/// remembered: every operand is its own argv element (never text a shell would re-split),
+/// and every operand list is fenced off by a `--` of the inner command's own — a second,
+/// independent defence beside the domain's absolute-path guard.
+pub(crate) fn invocation(
+    command: &str,
+    flags: &[&str],
+    operands: &[&Path],
+    secret: &Passphrase,
+) -> SudoInvocation {
     let mut args = sudo_flags();
-    args.push(OsString::from("cat"));
+    args.push(OsString::from(command));
+    args.extend(flags.iter().map(OsString::from));
     args.push(OsString::from("--"));
-    args.push(path.as_os_str().to_os_string());
+    args.extend(operands.iter().map(|p| p.as_os_str().to_os_string()));
     SudoInvocation {
         args,
         stdin: stdin_payload(secret),
     }
 }
 
-/// Replace `dst`'s content with `staging`'s, as root, atomically and preserving mode and
-/// ownership: `sudo -S -k -p '' -- sh -c <REPLACE_SCRIPT> sid-privfs-replace <dst>
-/// <staging>`.
-pub(crate) fn write_invocation(dst: &Path, staging: &Path, secret: &Passphrase) -> SudoInvocation {
-    let mut args = sudo_flags();
-    args.push(OsString::from("sh"));
-    args.push(OsString::from("-c"));
-    args.push(OsString::from(REPLACE_SCRIPT));
-    args.push(OsString::from(REPLACE_ARGV0));
-    args.push(dst.as_os_str().to_os_string());
-    args.push(staging.as_os_str().to_os_string());
-    SudoInvocation {
-        args,
-        stdin: stdin_payload(secret),
-    }
+/// Read `path` as root, bounded by the child itself:
+/// `sudo -S -k -p '' -- head -c <max_bytes + 1> -- <path>`.
+///
+/// `head -c` rather than `cat` is the read cap made real. A `cat` that is handed
+/// `/proc/kcore` — or any file whose `stat` size is a lie, which is every `/proc` file —
+/// streams until sid runs out of memory, and no check on the *result* can help because
+/// the result is what exhausted the machine. One byte over the cap is fetched
+/// deliberately: it is what lets the caller distinguish "exactly at the limit" from
+/// "truncated at the limit".
+pub(crate) fn read_invocation(path: &Path, ceiling: u64, secret: &Passphrase) -> SudoInvocation {
+    let ceiling = ceiling.to_string();
+    invocation("head", &["-c", &ceiling], &[path], secret)
 }
 
 /// Run an invocation to completion and return its stdout, or a classified error.
@@ -190,6 +234,12 @@ async fn run(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // sid never asks sudo to fetch the password from anywhere but the pipe below.
+        // `SUDO_ASKPASS` names a program sudo will *run* to obtain one, so an inherited
+        // value is a foreign binary with a claim on the user's password; removing it
+        // means sid's own prompt cannot be displaced by the environment it was launched
+        // from.
+        .env_remove("SUDO_ASKPASS")
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| classify_spawn_error(&e))?;
@@ -239,9 +289,14 @@ fn sudo_program() -> OsString {
     OsString::from("sudo")
 }
 
-/// Read `path` with elevated privileges. See [`read_invocation`].
-pub(crate) async fn read(path: &Path, secret: &Passphrase) -> Result<Vec<u8>, PrivError> {
-    read_with(&sudo_program(), path, secret, ELEVATION_TIMEOUT).await
+/// Read `path` with elevated privileges, refusing anything over `max_bytes`. See
+/// [`read_invocation`].
+pub(crate) async fn read(
+    path: &Path,
+    max_bytes: u64,
+    secret: &Passphrase,
+) -> Result<Vec<u8>, PrivError> {
+    read_with(&sudo_program(), path, max_bytes, secret, ELEVATION_TIMEOUT).await
 }
 
 /// [`read`] against a named authenticator — the seam the protocol tests drive with a
@@ -249,16 +304,49 @@ pub(crate) async fn read(path: &Path, secret: &Passphrase) -> Result<Vec<u8>, Pr
 async fn read_with(
     program: &OsStr,
     path: &Path,
+    max_bytes: u64,
     secret: &Passphrase,
     timeout: Duration,
 ) -> Result<Vec<u8>, PrivError> {
+    // Refuse an oversized file BEFORE spending an authentication on it. A file's *size*
+    // needs no privilege — only its contents are protected — so on the ordinary
+    // `Access::ReadOnly` path this costs one `stat` and saves the user a password prompt
+    // for a file that was never going to open. It is only an optimisation: a `stat` we
+    // are not allowed to take, or one that lies (every `/proc` file reports 0), falls
+    // through to the child's own `head -c` bound.
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > max_bytes
+    {
+        return Err(PrivError::TooLarge {
+            bytes: meta.len(),
+            max_bytes,
+        });
+    }
+
     let fallback = format!("reading {} as root", path.display());
-    run(program, read_invocation(path, secret), &fallback, timeout).await
+    let ceiling = max_bytes.saturating_add(1);
+    let bytes = run(
+        program,
+        read_invocation(path, ceiling, secret),
+        &fallback,
+        timeout,
+    )
+    .await?;
+
+    if bytes.len() as u64 > max_bytes {
+        // `head` stopped at the ceiling, so this is a floor on the real size, not the
+        // size. The caller only needs to know it is over.
+        return Err(PrivError::TooLarge {
+            bytes: bytes.len() as u64,
+            max_bytes,
+        });
+    }
+    Ok(bytes)
 }
 
 /// Replace `path`'s content with `bytes` with elevated privileges — atomic, mode and
-/// ownership preserved. See [`write_invocation`] and the module doc for why the content
-/// is staged in a file rather than piped.
+/// ownership preserved, no shell involved. See the module doc for the three steps and
+/// what each one buys.
 pub(crate) async fn write(path: &Path, bytes: &[u8], secret: &Passphrase) -> Result<(), PrivError> {
     write_with(&sudo_program(), path, bytes, secret, ELEVATION_TIMEOUT).await
 }
@@ -275,15 +363,104 @@ async fn write_with(
     // A private 0600 file in the user's own temp dir, removed when `staging` drops —
     // including on every error path below.
     let staging = stage_content(bytes)?;
+    let tmp = sibling_temp_path(path);
     let fallback = format!("writing {} as root", path.display());
-    run(
-        program,
-        write_invocation(path, staging.path(), secret),
-        &fallback,
-        timeout,
-    )
-    .await?;
+
+    let step = async |flags: &[&str], command: &str, operands: [&Path; 2]| {
+        run(
+            program,
+            invocation(command, flags, &operands, secret),
+            &fallback,
+            timeout,
+        )
+        .await
+        .map(|_stdout| ())
+    };
+
+    // A — the new content, into a temp this copy creates, so it is writable whatever mode
+    // the destination carries. A `cp` that fails partway still leaves the temp behind, so
+    // even this first step's failure has to be swept up.
+    if let Err(e) = step(FILL_FLAGS, "cp", [staging.path(), &tmp]).await {
+        discard(program, &tmp, secret, timeout, &e).await;
+        return Err(e);
+    }
+    // B — the destination's own attributes, onto the temp, data untouched.
+    if let Err(e) = step(STAMP_FLAGS, "cp", [path, &tmp]).await {
+        discard(program, &tmp, secret, timeout, &e).await;
+        return Err(e);
+    }
+    // C — publish, in one rename.
+    if let Err(e) = step(COMMIT_FLAGS, "mv", [&tmp, path]).await {
+        discard(program, &tmp, secret, timeout, &e).await;
+        return Err(e);
+    }
     Ok(())
+}
+
+/// Remove a temp a failed save may have left in a directory only root can write.
+///
+/// Best-effort by construction: the caller is already returning the failure that matters,
+/// and a cleanup error that displaced it would be a worse outcome than a stray file. It
+/// is skipped entirely when `cause` proves nothing ever ran as root — a wrong password
+/// costs a PAM failure delay and an audit-log line, and spending a second one tidying up
+/// after a command that was never executed is pure harm.
+async fn discard(
+    program: &OsStr,
+    tmp: &Path,
+    secret: &Passphrase,
+    timeout: Duration,
+    cause: &PrivError,
+) {
+    let ran_as_root = matches!(cause, PrivError::Io(_) | PrivError::Timeout);
+    if !ran_as_root {
+        return;
+    }
+    let fallback = format!("removing {} after a failed save", tmp.display());
+    let outcome = run(
+        program,
+        invocation("rm", &["-f"], &[tmp], secret),
+        &fallback,
+        timeout.min(CLEANUP_TIMEOUT),
+    )
+    .await;
+    if let Err(e) = outcome {
+        log::warn!(
+            "sid-privfs: could not remove {} after a failed save: {e}",
+            tmp.display()
+        );
+    }
+}
+
+/// Where the replacement is assembled: `.<name>.sid-privfs-tmp.<token>`, **beside** the
+/// destination.
+///
+/// Beside, not in `/tmp`, because the last step is a rename and a rename is only atomic
+/// within one filesystem — `/etc` and `/tmp` are routinely different ones. Hidden, so a
+/// crash that outruns [`discard`] leaves something that at least does not clutter a
+/// listing of `/etc`.
+///
+/// The token is unpredictable rather than the process id. The temp is created by an
+/// elevated `cp`, which follows symlinks, so anyone able to guess the name *and* write to
+/// the destination's directory could pre-plant a link and have root write through it. On
+/// a root-owned `/etc` that attacker is already root; for a config in a directory someone
+/// else can write, a name they cannot guess is what closes it.
+fn sibling_temp_path(dst: &Path) -> PathBuf {
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let dir = dst.parent().unwrap_or_else(|| Path::new("/"));
+    let name = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    // `RandomState` is seeded from the OS at first use; that is the unpredictability, and
+    // the pid and clock only keep two saves in one process from colliding.
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    dir.join(format!(".{name}.sid-privfs-tmp.{:016x}", hasher.finish()))
 }
 
 /// Stage `bytes` in a private temp file for the elevated helper to read. `tempfile`
@@ -317,34 +494,70 @@ mod tests {
             .collect()
     }
 
-    // ---- the secret's only channel ----------------------------------------------
+    /// The program `sudo` is being asked to run: the element just past the `--` that ends
+    /// sudo's own options.
+    ///
+    /// Asked this way rather than by scanning the whole argv for suspicious strings,
+    /// because a flag can legitimately look like one — `head -c` is a byte count, not
+    /// `sh -c`. The command word is the thing that is actually inside the trust boundary.
+    fn elevated_command(inv: &SudoInvocation) -> String {
+        let args = args_of(inv);
+        let end_of_flags = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("sudo's own options must be terminated");
+        args[end_of_flags + 1].clone()
+    }
 
-    #[test]
-    fn the_secret_is_one_newline_terminated_line() {
-        let inv = read_invocation(Path::new("/etc/fstab"), &secret());
-        assert_eq!(inv.stdin.as_slice(), b"hunter2\n");
+    /// Interpreters. Elevating any of these hands root an entire language, so the set of
+    /// things that could go wrong stops being enumerable.
+    const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "env", "eval", "python3"];
+
+    /// Every invocation this module can build, so "no shell anywhere" is a claim about
+    /// the whole module rather than about the two calls a test remembered to check.
+    fn every_invocation() -> Vec<SudoInvocation> {
+        let dst = Path::new("/etc/ssh/sshd_config");
+        let tmp = Path::new("/etc/.sshd_config.sid-privfs-tmp.dead");
+        let staging = Path::new("/tmp/sid-privfs-stage-abc");
+        vec![
+            read_invocation(dst, 1024, &secret()),
+            invocation("cp", FILL_FLAGS, &[staging, tmp], &secret()),
+            invocation("cp", STAMP_FLAGS, &[dst, tmp], &secret()),
+            invocation("mv", COMMIT_FLAGS, &[tmp, dst], &secret()),
+            invocation("rm", &["-f"], &[tmp], &secret()),
+        ]
     }
 
     #[test]
-    fn the_secret_never_appears_in_a_read_argument_vector() {
-        // argv is world-readable through /proc/<pid>/cmdline. This is the invariant.
-        let inv = read_invocation(Path::new("/etc/fstab"), &secret());
-        for arg in args_of(&inv) {
+    fn nothing_this_module_can_build_elevates_a_shell() {
+        for inv in every_invocation() {
+            let command = elevated_command(&inv);
             assert!(
-                !arg.contains(SECRET),
-                "the password leaked into argv: {arg:?}"
+                !SHELLS.contains(&command.as_str()),
+                "`{command}` was elevated: an interpreter inside the trust boundary is a \
+                 whole extra language root can be talked into"
             );
         }
     }
 
+    // ---- the secret's only channel ----------------------------------------------
+
     #[test]
-    fn the_secret_never_appears_in_a_write_argument_vector() {
-        let inv = write_invocation(Path::new("/etc/fstab"), Path::new("/tmp/stage"), &secret());
-        for arg in args_of(&inv) {
-            assert!(
-                !arg.contains(SECRET),
-                "the password leaked into argv: {arg:?}"
-            );
+    fn the_secret_is_one_newline_terminated_line() {
+        let inv = read_invocation(Path::new("/etc/fstab"), 1024, &secret());
+        assert_eq!(inv.stdin.as_slice(), b"hunter2\n");
+    }
+
+    #[test]
+    fn the_secret_never_appears_in_any_argument_vector() {
+        // argv is world-readable through /proc/<pid>/cmdline. This is the invariant.
+        for inv in every_invocation() {
+            for arg in args_of(&inv) {
+                assert!(
+                    !arg.contains(SECRET),
+                    "the password leaked into argv: {arg:?}"
+                );
+            }
         }
     }
 
@@ -352,52 +565,36 @@ mod tests {
     fn an_empty_secret_still_terminates_the_line() {
         // sudo must reach EOF after one line even when the user submitted nothing, or it
         // waits forever instead of reporting "no password was provided".
-        let inv = read_invocation(Path::new("/etc/fstab"), &Passphrase::new(String::new()));
+        let inv = read_invocation(
+            Path::new("/etc/fstab"),
+            1024,
+            &Passphrase::new(String::new()),
+        );
         assert_eq!(inv.stdin.as_slice(), b"\n");
+    }
+
+    #[test]
+    fn every_invocation_asks_sudo_for_stdin_auth_and_a_fresh_timestamp() {
+        // `-k` is the one that is a security property rather than a convenience: without
+        // it a timestamp left by an unrelated terminal makes *any* password succeed, so
+        // "unlock" would be verifying nothing.
+        for inv in every_invocation() {
+            let args = args_of(&inv);
+            assert_eq!(
+                &args[..5],
+                &["-S", "-k", "-p", "", "--"],
+                "sudo's own flags are not negotiable: {args:?}"
+            );
+        }
     }
 
     // ---- the read invocation ------------------------------------------------------
 
     #[test]
-    fn a_read_asks_sudo_for_stdin_auth_a_fresh_timestamp_and_a_silent_prompt() {
-        let inv = read_invocation(Path::new("/etc/fstab"), &secret());
-        let args = args_of(&inv);
-        assert_eq!(
-            args,
-            vec!["-S", "-k", "-p", "", "--", "cat", "--", "/etc/fstab"]
-        );
-    }
-
-    #[test]
-    fn a_read_puts_a_double_dash_before_the_path_for_both_programs() {
-        // Two independent guards: sudo's own `--`, and `cat`'s. Neither program can read
-        // the path as an option even if the domain guard were ever relaxed.
-        let args = args_of(&read_invocation(Path::new("/etc/fstab"), &secret()));
-        let cat = args.iter().position(|a| a == "cat").expect("cat in argv");
-        let path = args
-            .iter()
-            .position(|a| a == "/etc/fstab")
-            .expect("path in argv");
-        assert_eq!(args[cat - 1], "--", "sudo's options must be terminated");
-        assert_eq!(args[path - 1], "--", "cat's options must be terminated");
-    }
-
-    #[test]
-    fn a_read_passes_an_awkward_path_as_one_intact_argument() {
-        let inv = read_invocation(Path::new("/etc/my configs/a$b'c\"d"), &secret());
-        let args = args_of(&inv);
-        assert_eq!(args.last().unwrap(), "/etc/my configs/a$b'c\"d");
-    }
-
-    // ---- the write invocation -----------------------------------------------------
-
-    #[test]
-    fn a_write_runs_the_constant_replace_script_with_both_paths_as_parameters() {
-        let inv = write_invocation(
-            Path::new("/etc/ssh/sshd_config"),
-            Path::new("/tmp/sid-privfs-stage-abc"),
-            &secret(),
-        );
+    fn a_read_is_bounded_by_the_child_itself_not_by_a_check_on_the_answer() {
+        // `cat` would stream a lying /proc file until sid ran out of memory, and no check
+        // on the result can help when the result is what exhausted the machine.
+        let inv = read_invocation(Path::new("/etc/fstab"), 1_048_577, &secret());
         assert_eq!(
             args_of(&inv),
             vec![
@@ -406,72 +603,186 @@ mod tests {
                 "-p",
                 "",
                 "--",
-                "sh",
+                "head",
                 "-c",
-                REPLACE_SCRIPT,
-                REPLACE_ARGV0,
-                "/etc/ssh/sshd_config",
-                "/tmp/sid-privfs-stage-abc",
+                "1048577",
+                "--",
+                "/etc/fstab"
             ]
         );
     }
 
     #[test]
-    fn the_replace_script_never_contains_the_paths_it_operates_on() {
-        // The whole point of positional parameters: no interpolation, so no quoting bug
-        // and no injection surface. A path is data, never program text.
-        let dst = "/etc/'; rm -rf /; '";
-        let inv = write_invocation(Path::new(dst), Path::new("/tmp/stage"), &secret());
-        let script = args_of(&inv)
-            .into_iter()
-            .find(|a| a.contains("mv -f"))
-            .expect("the script is in argv");
-        assert!(
-            !script.contains("rm -rf /"),
-            "caller data reached the script text: {script}"
-        );
-        assert_eq!(script, REPLACE_SCRIPT, "the script must be the constant");
+    fn a_read_puts_a_double_dash_before_the_path_for_both_programs() {
+        // Two independent guards: sudo's own `--`, and `head`'s. Neither program can read
+        // the path as an option even if the domain guard were ever relaxed.
+        let args = args_of(&read_invocation(Path::new("/etc/fstab"), 1024, &secret()));
+        let head = args.iter().position(|a| a == "head").expect("head in argv");
+        let path = args
+            .iter()
+            .position(|a| a == "/etc/fstab")
+            .expect("path in argv");
+        assert_eq!(args[head - 1], "--", "sudo's options must be terminated");
+        assert_eq!(args[path - 1], "--", "head's options must be terminated");
     }
 
     #[test]
-    fn a_write_passes_an_awkward_destination_as_one_intact_argument() {
-        let dst = "/etc/my configs/a$b'c\"d";
-        let inv = write_invocation(Path::new(dst), Path::new("/tmp/stage"), &secret());
+    fn a_read_passes_an_awkward_path_as_one_intact_argument() {
+        let inv = read_invocation(Path::new("/etc/my configs/a$b'c\"d"), 1024, &secret());
         let args = args_of(&inv);
-        assert!(
-            args.contains(&dst.to_string()),
-            "destination mangled: {args:?}"
+        assert_eq!(args.last().unwrap(), "/etc/my configs/a$b'c\"d");
+    }
+
+    // ---- the write invocations -----------------------------------------------------
+
+    /// The argv of the three steps of one save, in order.
+    fn save_steps(dst: &Path, staging: &Path, tmp: &Path) -> Vec<Vec<String>> {
+        vec![
+            args_of(&invocation("cp", FILL_FLAGS, &[staging, tmp], &secret())),
+            args_of(&invocation("cp", STAMP_FLAGS, &[dst, tmp], &secret())),
+            args_of(&invocation("mv", COMMIT_FLAGS, &[tmp, dst], &secret())),
+        ]
+    }
+
+    #[test]
+    fn a_save_is_three_argv_and_not_one_program_text() {
+        let steps = save_steps(
+            Path::new("/etc/ssh/sshd_config"),
+            Path::new("/tmp/sid-privfs-stage-abc"),
+            Path::new("/etc/.sshd_config.sid-privfs-tmp.dead"),
+        );
+        assert_eq!(
+            steps[0],
+            vec![
+                "-S",
+                "-k",
+                "-p",
+                "",
+                "--",
+                "cp",
+                "-T",
+                "--",
+                "/tmp/sid-privfs-stage-abc",
+                "/etc/.sshd_config.sid-privfs-tmp.dead",
+            ]
+        );
+        assert_eq!(
+            steps[1],
+            vec![
+                "-S",
+                "-k",
+                "-p",
+                "",
+                "--",
+                "cp",
+                "--attributes-only",
+                "--preserve=all",
+                "--no-preserve=timestamps",
+                "-T",
+                "--",
+                "/etc/ssh/sshd_config",
+                "/etc/.sshd_config.sid-privfs-tmp.dead",
+            ]
+        );
+        assert_eq!(
+            steps[2],
+            vec![
+                "-S",
+                "-k",
+                "-p",
+                "",
+                "--",
+                "mv",
+                "-f",
+                "-T",
+                "--",
+                "/etc/.sshd_config.sid-privfs-tmp.dead",
+                "/etc/ssh/sshd_config",
+            ]
         );
     }
 
-    // ---- the replace script's load-bearing steps ---------------------------------
+    #[test]
+    fn the_content_is_filled_before_the_attributes_are_stamped() {
+        // The ordering bug, pinned in the argv as well as in behaviour (see
+        // `a_0440_file_saves_through_a_helper_that_holds_no_privilege_at_all`): a temp
+        // that inherited a 0440 destination's mode before it was filled could only be
+        // written by an identity holding CAP_DAC_OVERRIDE.
+        let steps = save_steps(
+            Path::new("/etc/sudoers"),
+            Path::new("/tmp/stage"),
+            Path::new("/etc/.sudoers.sid-privfs-tmp.dead"),
+        );
+        let fill = steps[0].iter().position(|a| a == "/tmp/stage");
+        assert!(fill.is_some(), "the first step must be the content fill");
+        assert!(
+            steps[1].contains(&"--attributes-only".to_string()),
+            "the second step must be the attribute stamp, got {:?}",
+            steps[1]
+        );
+    }
 
     #[test]
-    fn the_replace_script_keeps_every_guarantee_it_promises() {
-        // A regression pin, not a tautology: each of these lines is the whole reason the
-        // privileged save is as safe as the unprivileged one. Dropping any of them
-        // silently downgrades a save on /etc — losing a file's mode, leaving a
-        // world-readable temp behind, or turning an atomic rename into a truncation.
-        for required in [
-            "set -eu",                     // no step is skipped after a failure
-            "umask 077",                   // the staging copy is never world-readable
-            "$dst.sid-privfs-tmp.$$",      // the temp is beside the destination: rename, not copy
-            "trap 'rm -f -- \"$tmp\"'",    // a failure leaves no litter in /etc
-            "chmod --reference=\"$dst\"",  // the mode survives
-            "chown --reference=\"$dst\"",  // the owner survives
-            "mv -fT -- \"$tmp\" \"$dst\"", // publication is one atomic step, never into a directory
-        ] {
+    fn every_save_step_fences_its_paths_behind_a_double_dash() {
+        // Two independent guards on every operand: sudo's `--`, then the inner command's.
+        // Neither program can read a path as an option even if the domain's absolute-path
+        // guard were ever relaxed.
+        for step in save_steps(
+            Path::new("/etc/fstab"),
+            Path::new("/tmp/stage"),
+            Path::new("/etc/.fstab.sid-privfs-tmp.dead"),
+        ) {
+            let last_fence = step.iter().rposition(|a| a == "--").expect("a `--`");
+            let first_fence = step.iter().position(|a| a == "--").expect("a `--`");
             assert!(
-                REPLACE_SCRIPT.contains(required),
-                "the replace script lost `{required}`"
+                last_fence > first_fence,
+                "the inner command's options are not terminated: {step:?}"
             );
+            for operand in &step[last_fence + 1..] {
+                assert!(operand.starts_with('/'), "unfenced operand in {step:?}");
+            }
         }
     }
 
     #[test]
-    fn the_replace_script_takes_its_paths_only_from_positional_parameters() {
-        assert!(REPLACE_SCRIPT.contains("dst=\"$1\""));
-        assert!(REPLACE_SCRIPT.contains("src=\"$2\""));
+    fn a_save_passes_an_awkward_destination_as_one_intact_argument() {
+        let dst = "/etc/my configs/a$b'c\"d; rm -rf /";
+        for step in save_steps(Path::new(dst), Path::new("/tmp/stage"), Path::new("/etc/t")) {
+            // Present verbatim as its own element in the two steps that name it, and
+            // never spliced into a longer string anywhere.
+            for arg in &step {
+                assert!(
+                    arg == dst || !arg.contains("rm -rf /"),
+                    "caller data was interpolated into `{arg}`"
+                );
+            }
+        }
+    }
+
+    // ---- the sibling temp ---------------------------------------------------------
+
+    #[test]
+    fn the_temp_is_a_hidden_sibling_of_the_destination() {
+        // Cross-filesystem staging would silently turn the atomic commit into a copy.
+        let tmp = sibling_temp_path(Path::new("/etc/fstab"));
+        assert_eq!(tmp.parent(), Some(Path::new("/etc")));
+        let name = tmp.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(".fstab.sid-privfs-tmp."), "{name}");
+    }
+
+    #[test]
+    fn the_temp_name_is_not_guessable_from_the_destination_alone() {
+        // An elevated `cp` follows symlinks, so a predictable name in a directory someone
+        // else can write is a way to have root write through a pre-planted link.
+        let a = sibling_temp_path(Path::new("/etc/fstab"));
+        let b = sibling_temp_path(Path::new("/etc/fstab"));
+        assert_ne!(a, b, "two saves of one file must not reuse a temp name");
+        assert!(
+            !a.to_string_lossy()
+                .ends_with(&std::process::id().to_string()),
+            "the pid is public: {}",
+            a.display()
+        );
     }
 
     // ---- staging -------------------------------------------------------------------
@@ -516,6 +827,9 @@ mod tests {
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// The cap the config editor uses, for tests that are not about the cap.
+    const CAP: u64 = 1024 * 1024;
+
     fn mock_sudo() -> OsString {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/mock-sudo")
@@ -535,38 +849,106 @@ mod tests {
     /// thread B's unrelated child took to reach its own `exec`. One write per verdict,
     /// completed before the first spawn, removes the window instead of narrowing it.
     fn mock_sudo_with(verdict: &str) -> OsString {
-        /// Every verdict `mock-sudo` understands, so the eager write below is total.
-        const VERDICTS: [&str; 4] = ["notsudoer", "wrongpass", "hang", "innerfail"];
+        wrappers().join(format!("mock-sudo-{verdict}")).into()
+    }
 
+    /// Every verdict `mock-sudo` understands, so the eager write below is total.
+    const VERDICTS: [&str; 6] = [
+        "notsudoer",
+        "wrongpass",
+        "hang",
+        "innerfail",
+        "attrfail",
+        "partialfill",
+    ];
+
+    /// How many independent argv-logging wrappers exist — see [`argv_log`]. One per test
+    /// that needs one, because a shared log would interleave concurrent tests.
+    const ARGV_LOG_SLOTS: usize = 2;
+
+    /// The wrapper directory — see [`argv_log`] for the logging ones.
+    fn wrappers() -> &'static Path {
         static SCRIPTS: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let dir = SCRIPTS.get_or_init(|| {
-            let dir = tempfile::tempdir().expect("a temp dir for the mock-sudo wrappers");
-            let mock = mock_sudo();
-            for v in VERDICTS {
-                let path = dir.path().join(format!("mock-sudo-{v}"));
-                std::fs::write(
-                    &path,
-                    format!(
-                        "#!/bin/sh\nexport MOCK_SUDO_VERDICT={v}\nexec {} \"$@\"\n",
-                        Path::new(&mock).display()
-                    ),
-                )
-                .expect("write a mock-sudo wrapper");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                        .expect("make a mock-sudo wrapper executable");
+        SCRIPTS
+            .get_or_init(|| {
+                let dir = tempfile::tempdir().expect("a temp dir for the mock-sudo wrappers");
+                let mock = mock_sudo();
+                let write = |name: String, body: String| {
+                    let path = dir.path().join(name);
+                    std::fs::write(&path, body).expect("write a mock-sudo wrapper");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                            .expect("make a mock-sudo wrapper executable");
+                    }
+                };
+                for v in VERDICTS {
+                    write(
+                        format!("mock-sudo-{v}"),
+                        format!(
+                            "#!/bin/sh\nexport MOCK_SUDO_VERDICT={v}\nexec {} \"$@\"\n",
+                            Path::new(&mock).display()
+                        ),
+                    );
                 }
-            }
-            dir
-        });
-        let path = dir.path().join(format!("mock-sudo-{verdict}"));
+                // The argv-logging wrappers: ordinary (password-checking) mocks that also
+                // record what they were asked to run, one private log each.
+                for slot in 0..ARGV_LOG_SLOTS {
+                    write(
+                        format!("mock-sudo-logged-{slot}"),
+                        format!(
+                            "#!/bin/sh\nexport MOCK_SUDO_ARGV_LOG={}\nexec {} \"$@\"\n",
+                            dir.path().join(format!("argv-{slot}.log")).display(),
+                            Path::new(&mock).display()
+                        ),
+                    );
+                }
+                dir
+            })
+            .path()
+    }
+
+    /// An argv-logging mock, and the file it appends to.
+    ///
+    /// Each slot is a private wrapper with a private log, and a slot may be claimed once:
+    /// these tests run concurrently, so two tests sharing a log would interleave their
+    /// invocations into each other's assertions. The claim is enforced rather than
+    /// documented, because "only one test uses this" is not a property that survives
+    /// somebody adding a test.
+    fn argv_log(slot: usize) -> (OsString, PathBuf) {
+        static CLAIMED: [std::sync::atomic::AtomicBool; ARGV_LOG_SLOTS] =
+            [const { std::sync::atomic::AtomicBool::new(false) }; ARGV_LOG_SLOTS];
         assert!(
-            path.exists(),
-            "unknown mock-sudo verdict {verdict:?} — add it to VERDICTS"
+            !CLAIMED[slot].swap(true, std::sync::atomic::Ordering::SeqCst),
+            "argv log slot {slot} has a second user — claim a fresh slot"
         );
-        path.into()
+        let dir = wrappers();
+        (
+            dir.join(format!("mock-sudo-logged-{slot}")).into(),
+            dir.join(format!("argv-{slot}.log")),
+        )
+    }
+
+    /// The command word of every invocation recorded in an argv log, in order — see
+    /// `scripts/mock-sudo` for the record format.
+    fn elevated_commands(log: &Path) -> Vec<String> {
+        let logged = std::fs::read_to_string(log).expect("the mock recorded its argv");
+        logged
+            .split("=== invocation ===\n")
+            .filter(|record| !record.is_empty())
+            .map(|record| {
+                let args: Vec<&str> = record
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("arg:"))
+                    .collect();
+                let end_of_flags = args
+                    .iter()
+                    .position(|a| *a == "--")
+                    .unwrap_or_else(|| panic!("no `--` in a recorded argv: {args:?}"));
+                args[end_of_flags + 1].to_string()
+            })
+            .collect()
     }
 
     fn good_secret() -> Passphrase {
@@ -579,7 +961,7 @@ mod tests {
         let path = dir.path().join("fstab");
         std::fs::write(&path, "UUID=abc / ext4 defaults 0 1\n").unwrap();
 
-        let got = read_with(&mock_sudo(), &path, &good_secret(), TEST_TIMEOUT)
+        let got = read_with(&mock_sudo(), &path, CAP, &good_secret(), TEST_TIMEOUT)
             .await
             .unwrap();
 
@@ -595,6 +977,7 @@ mod tests {
         let err = read_with(
             &mock_sudo(),
             &path,
+            CAP,
             &Passphrase::new("wrong".into()),
             TEST_TIMEOUT,
         )
@@ -612,7 +995,7 @@ mod tests {
         std::fs::write(&path, "x\n").unwrap();
         let program = mock_sudo_with("notsudoer");
 
-        let err = read_with(&program, &path, &good_secret(), TEST_TIMEOUT)
+        let err = read_with(&program, &path, CAP, &good_secret(), TEST_TIMEOUT)
             .await
             .unwrap_err();
 
@@ -628,9 +1011,15 @@ mod tests {
         let program = mock_sudo_with("hang");
 
         let started = std::time::Instant::now();
-        let err = read_with(&program, &path, &good_secret(), Duration::from_millis(300))
-            .await
-            .unwrap_err();
+        let err = read_with(
+            &program,
+            &path,
+            CAP,
+            &good_secret(),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(err, PrivError::Timeout), "got {err:?}");
         assert!(
@@ -648,6 +1037,7 @@ mod tests {
         let err = read_with(
             &OsString::from(dir.path().join("no-such-sudo")),
             &path,
+            CAP,
             &good_secret(),
             TEST_TIMEOUT,
         )
@@ -664,6 +1054,7 @@ mod tests {
         let err = read_with(
             &mock_sudo(),
             &dir.path().join("nope"),
+            CAP,
             &good_secret(),
             TEST_TIMEOUT,
         )
@@ -760,7 +1151,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let got = read_with(&mock_sudo(), &path, &good_secret(), TEST_TIMEOUT)
+        let got = read_with(&mock_sudo(), &path, CAP, &good_secret(), TEST_TIMEOUT)
             .await
             .unwrap();
 
@@ -826,6 +1217,384 @@ mod tests {
             leftovers.is_empty(),
             "left temp files behind: {leftovers:?}"
         );
+    }
+
+    /// Every temp this crate could have left beside `path`.
+    fn leftovers_beside(path: &Path) -> Vec<String> {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("sid-privfs-tmp"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_elevated_command_set_is_exactly_the_coreutils_this_crate_documents() {
+        // The real "no shell" assertion, taken from the far side of the process boundary:
+        // not "the argv looks fine" but "these, and only these, are the programs sid ever
+        // asks root to run". A shell would show up here as `sh` and nothing else could
+        // hide it.
+        let (program, log) = argv_log(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fstab");
+        std::fs::write(&path, "UUID=abc / ext4 defaults 0 1\n").unwrap();
+
+        read_with(&program, &path, CAP, &good_secret(), TEST_TIMEOUT)
+            .await
+            .unwrap();
+        write_with(
+            &program,
+            &path,
+            b"UUID=def / ext4 defaults 0 1\n",
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            elevated_commands(&log),
+            vec!["head", "cp", "cp", "mv"],
+            "an unexpected program was elevated"
+        );
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            !logged.contains(SECRET) && !logged.contains("correct"),
+            "the password reached the helper's argv: {logged}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_0440_file_saves_through_a_helper_that_holds_no_privilege_at_all() {
+        // The attribute-ordering regression. `/etc/sudoers` is 0440: if the replacement's
+        // attributes were cloned from the target BEFORE its content was written, the temp
+        // would be 0440 too and the content write would then need CAP_DAC_OVERRIDE. Real
+        // root has it and the bug hides; the mock helper — which elevates nothing — does
+        // not, so this test fails loudly on the wrong order.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sudoers");
+        std::fs::write(&path, "root ALL=(ALL:ALL) ALL\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+
+        write_with(
+            &mock_sudo(),
+            &path,
+            b"root ALL=(ALL:ALL) ALL\nmurphy ALL=(ALL:ALL) NOPASSWD: ALL\n",
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .expect("a 0440 target must be saveable without CAP_DAC_OVERRIDE");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "root ALL=(ALL:ALL) ALL\nmurphy ALL=(ALL:ALL) NOPASSWD: ALL\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o440,
+            "the mode must survive"
+        );
+        assert!(leftovers_beside(&path).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_destination_that_is_a_directory_fails_instead_of_swallowing_the_save() {
+        // Without `-T`, `mv` moves the temp *into* a destination directory and exits 0 —
+        // a save that reports success while writing nothing where the user asked. The
+        // failure has to be visible, and the directory has to be left alone.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("fstab");
+        std::fs::create_dir(&target).unwrap();
+
+        let err = write_with(
+            &mock_sudo(),
+            &target,
+            b"new\n",
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, PrivError::Io(_)), "got {err:?}");
+        let swallowed: Vec<_> = std::fs::read_dir(&target)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            swallowed.is_empty(),
+            "the save was moved INSIDE the destination directory: {swallowed:?}"
+        );
+        assert!(leftovers_beside(&target).is_empty(), "left a temp behind");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_password_costs_exactly_one_authentication() {
+        // Cleanup is skipped when the failure proves nothing ever ran as root. It matters
+        // because a wrong password is not free: every attempt costs the user a PAM
+        // failure delay and the machine an audit-log line, and spending a second one
+        // tidying up after a command that was never executed is pure harm — twice the
+        // wait, and a log that suggests sid retried behind the user's back.
+        let (program, log) = argv_log(1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fstab");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let err = write_with(
+            &program,
+            &path,
+            b"vandalized\n",
+            &Passphrase::new("wrong".into()),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, PrivError::AuthFailed), "got {err:?}");
+        assert_eq!(
+            elevated_commands(&log),
+            vec!["cp"],
+            "a rejected password must not buy a second trip through PAM"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original\n");
+    }
+
+    #[tokio::test]
+    async fn the_commit_step_refuses_a_directory_rather_than_moving_the_temp_inside_it() {
+        // `-T` on the commit, in isolation. The full-pipeline test above never reaches
+        // `mv` — `cp` rejects a directory source at the attribute step first — so without
+        // this the flag could be dropped and every test would still pass, right up until
+        // a destination turned into a directory between the stamp and the rename.
+        // Without `-T`, `mv` moves the temp INSIDE the directory and exits 0: a save that
+        // reports success while writing nothing where the user asked.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("fstab");
+        std::fs::create_dir(&target).unwrap();
+        let tmp = dir.path().join(".fstab.sid-privfs-tmp.dead");
+        std::fs::write(&tmp, "REPLACEMENT\n").unwrap();
+
+        let outcome = run(
+            &mock_sudo(),
+            invocation("mv", COMMIT_FLAGS, &[&tmp, &target], &good_secret()),
+            "committing",
+            TEST_TIMEOUT,
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "the commit reported success against a directory destination"
+        );
+        let swallowed: Vec<_> = std::fs::read_dir(&target)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            swallowed.is_empty(),
+            "the save was moved INSIDE the destination directory: {swallowed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fill_that_dies_halfway_through_still_removes_its_own_temp() {
+        // The guarantee the shell `trap` used to give for free. `cp` that fails partway —
+        // a full disk, an I/O error — has already created the destination, so "the first
+        // step failed, there is nothing to clean up" is wrong, and being wrong here means
+        // an orphaned `.fstab.sid-privfs-tmp.*` in /etc after every failed save.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fstab");
+        std::fs::write(&path, "ORIGINAL\n").unwrap();
+        let program = mock_sudo_with("partialfill");
+
+        let err = write_with(
+            &program,
+            &path,
+            b"REPLACEMENT\n",
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, PrivError::Io(_)), "got {err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "ORIGINAL\n",
+            "a save that never reached the rename must not have touched the target"
+        );
+        assert!(
+            leftovers_beside(&path).is_empty(),
+            "left a temp behind: {:?}",
+            leftovers_beside(&path)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attribute_step_that_fails_leaves_the_original_intact_and_no_temp() {
+        // The mid-save failure: the temp exists and is full of the new content, and the
+        // step that would have made it wearable failed. Publishing it anyway would hand
+        // back /etc/sudoers with the wrong owner.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sudoers");
+        std::fs::write(&path, "ORIGINAL\n").unwrap();
+        let program = mock_sudo_with("attrfail");
+
+        let err = write_with(
+            &program,
+            &path,
+            b"REPLACEMENT\n",
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, PrivError::Io(_)), "got {err:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ORIGINAL\n");
+        assert!(
+            leftovers_beside(&path).is_empty(),
+            "left a temp behind: {:?}",
+            leftovers_beside(&path)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_save_does_not_backdate_the_file_it_just_changed() {
+        // `--preserve=all` on its own would stamp the destination's OLD mtime onto the
+        // new content. A file that claims it has not changed since 2020 is one `rsync`,
+        // `etckeeper` and every staleness check will skip — a silent way to lose a save
+        // that actually landed.
+        use std::time::{Duration as StdDuration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fstab");
+        std::fs::write(&path, "old\n").unwrap();
+        let long_ago = SystemTime::now() - StdDuration::from_secs(400 * 24 * 60 * 60);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        write_with(&mock_sudo(), &path, b"new\n", &good_secret(), TEST_TIMEOUT)
+            .await
+            .unwrap();
+
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(
+            modified.duration_since(long_ago).unwrap() > StdDuration::from_secs(60),
+            "the save kept the old mtime: the file lies about having changed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cp_derives_a_fresh_temps_mode_from_its_source_whatever_the_umask() {
+        // The `umask 077` guarantee, relocated. The old shell script set the umask itself;
+        // the temp is now created by `cp` from the 0600 staging file, so "never briefly
+        // world-readable" rests on coreutils deriving a new destination's mode from the
+        // source rather than from the process umask. That is the assumption, so it is the
+        // test — run directly, with no elevation involved.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let staging = stage_content(b"PermitRootLogin no\n").unwrap();
+        let tmp = dir.path().join(".sshd_config.sid-privfs-tmp.dead");
+
+        let status = tokio::process::Command::new("cp")
+            .arg("-T")
+            .arg("--")
+            .arg(staging.path())
+            .arg(&tmp)
+            .status()
+            .await
+            .unwrap();
+
+        assert!(status.success());
+        assert_eq!(
+            std::fs::metadata(&tmp).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the temp was world-readable for the life of the save"
+        );
+    }
+
+    // ---- the read cap ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn an_oversized_file_is_refused_before_the_user_is_asked_for_anything() {
+        // The helper cannot be spawned, so reaching it at all would surface as
+        // `Unavailable`. `TooLarge` proves the size check ran first — and a password
+        // prompt for a file the editor was never going to open is a prompt not shown.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.conf");
+        std::fs::write(&path, vec![b'a'; 4096]).unwrap();
+
+        let err = read_with(
+            &OsString::from(dir.path().join("no-such-sudo")),
+            &path,
+            1024,
+            &good_secret(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            PrivError::TooLarge {
+                bytes: 4096,
+                max_bytes: 1024
+            }
+        );
+        assert!(!err.is_retryable(), "no password makes a file smaller");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_file_whose_size_cannot_be_trusted_is_still_capped_by_the_child() {
+        // Every file under /proc reports 0 bytes from `stat` and then streams anyway, so
+        // the pre-flight size check waves it straight through. The only thing left
+        // between sid and an unbounded read is `head -c` in the child — which is why the
+        // cap is an argument to the helper and not a check on the answer. A real /proc
+        // file, because a fake one cannot reproduce the lie.
+        let path = Path::new("/proc/self/status");
+        assert_eq!(
+            std::fs::metadata(path).unwrap().len(),
+            0,
+            "this test needs a file whose metadata under-reports it"
+        );
+
+        let err = read_with(&mock_sudo(), path, 64, &good_secret(), TEST_TIMEOUT)
+            .await
+            .unwrap_err();
+
+        // 65 bytes came back — one over the cap — which is exactly how the caller knows
+        // it was truncated rather than exactly at the limit.
+        assert_eq!(
+            err,
+            PrivError::TooLarge {
+                bytes: 65,
+                max_bytes: 64
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_exactly_at_the_cap_is_read_whole() {
+        // The off-by-one that would otherwise refuse a 1 MiB file the editor can open.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.conf");
+        std::fs::write(&path, vec![b'x'; 64]).unwrap();
+
+        let got = read_with(&mock_sudo(), &path, 64, &good_secret(), TEST_TIMEOUT)
+            .await
+            .unwrap();
+
+        assert_eq!(got.len(), 64);
     }
 
     #[tokio::test]

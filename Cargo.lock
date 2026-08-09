@@ -7131,6 +7131,7 @@ name = "sid-privfs"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "log",
  "sid-core",
  "tempfile",
  "tokio",
