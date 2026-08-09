@@ -25,9 +25,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Corner, Entity, FocusHandle,
-    FontWeight, IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
-    size,
+    IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size,
 };
 use gpui_component::Root;
 use gpui_component::input::{Input, InputEvent, InputState, Position};
@@ -52,9 +51,6 @@ use sid_ui::{
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip,
     StatusDot, StyledExt as _, Theme, Toolbar, Typography as _, h_flex, sortable_th, theme, v_flex,
 };
-
-/// Monospace family for the DSN subtitle; matches `app.rs`'s host rows.
-const MONO: &str = "DejaVu Sans Mono";
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
 /// (SQLite, Postgres, and the redb browse engine all accept a bare `select 1;`), so it
@@ -324,16 +320,22 @@ impl ExportFormat {
 
 // ---- results grid: the column plan (pure `result-set shape -> ColumnWidth`) -------------
 
-/// How wide one character of the results grid's `text_xs` cells is, in logical pixels.
+/// How wide one character of the results grid's cells is, in logical pixels.
 ///
 /// Every other table in sid declares its columns by hand, once, because its schema is
 /// known at compile time. This one's is not: the shape arrives with the data, so the
 /// widths have to be *derived*, and deriving them needs a character advance. gpui only
 /// measures text inside a `Window`, and a plan that needed a window could not be a pure
-/// function — so this is a deliberately slightly-generous average for the bundled
-/// proportional face at 12px. Over-estimating costs a few pixels of slack inside a
-/// column; under-estimating truncates, which is the bug being fixed.
-const CELL_CHAR_PX: f32 = 6.8;
+/// function — so this is a constant, and it has to track the rung the cells actually
+/// render at. Over-estimating costs a few pixels of slack inside a column;
+/// under-estimating truncates, which is the bug the derived plan exists to fix.
+///
+/// The cells are [`TypeRole::Mono`] — 14px `DejaVu Sans Mono`, whose advance is a flat
+/// 1233/2048 em ≈ 0.602, so every character is exactly 8.43px and the estimate is no
+/// longer an average over a proportional face's letterforms. It was 6.8 (a guess at 12px
+/// proportional) until the type sweep put the grid on the scale;
+/// `the_cell_advance_tracks_the_rung_the_grid_renders_at` fails if the role moves again.
+const CELL_CHAR_PX: f32 = 8.6;
 
 /// Chrome inside one cell that is not available to its text: `render_td`'s `px_2` on
 /// both sides, plus room in the header for the sort chevron `render_th` leaves space for.
@@ -948,11 +950,18 @@ impl TableDelegate for ResultDelegate {
             .cursor_pointer()
             .hover(|s| s.bg(rgb(selection)))
             .child(
+                // One rung, one family, ink chosen by the caller — the same cell rule
+                // `network_tab` and `systems_tab` follow. `whitespace_normal` is
+                // load-bearing: the upstream table wraps every cell in a
+                // `whitespace_nowrap` container, and `Nowrap` pins `TextElement`'s
+                // `wrap_width` to `None`, which is why this cell used to be cut
+                // mid-glyph with no `…` despite asking to be truncated.
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_xs()
+                    .whitespace_normal()
+                    .clamp_one_line()
+                    .text_mono(t)
                     .text_color(rgb(fg))
                     .child(single_line(&text)),
             )
@@ -1157,8 +1166,8 @@ fn where_filter_scaffold(table: &str, column: &str) -> String {
 ///
 /// Not [`sid_ui::Card`]: a card's body is a fixed `v_flex`, and all three panels here need
 /// a `flex_1` scrolling list under the header. What the card *does* own — the label's
-/// wording and type — comes from `sid_ui::card::header_text` and `section_label`, so the
-/// three headers cannot drift apart.
+/// wording and type — comes from `sid_ui::card::header_text` and [`TypeRole::Label`], so
+/// the three headers cannot drift apart.
 fn panel_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
     h_flex()
         .justify_between()
@@ -1169,7 +1178,9 @@ fn panel_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
         .hairline_b(theme)
         .child(
             div()
-                .section_label(theme)
+                .min_w(px(0.))
+                .clamp_one_line()
+                .text_label(theme)
                 .child(sid_ui::card::header_text(title, count)),
         )
 }
@@ -1180,14 +1191,28 @@ fn panel_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
 /// spelling of four lines rather than an import — a candidate for `sid-ui` proper).
 /// Replaces this tab's three literal `✗` prefixes, each of which was drawn by whatever
 /// the text font had at whatever weight.
+/// The message **must** be allowed to shrink and to wrap. gpui measures a text element's
+/// min-content width as its entire string, so a flex child holding one carries an
+/// automatic minimum of the whole message: without `min_w(0)` this line does not shrink,
+/// does not wrap, and is not clipped — it simply paints past its parent. That is not
+/// theoretical here. The narrowest caller is the schema panel inside the 280px left
+/// column, with no `overflow_hidden` anywhere in its chain, so any driver error longer
+/// than about 35 characters — which is all of them — used to paint straight across the
+/// SQL editor beside it.
+///
+/// It wraps rather than clamping to one line, unlike most of the overflow fixes in this
+/// file: 280px of a `connection refused (os error 111)` is a message the reader has to
+/// act on, and one line of it would be `connection refused (os …`. A wrapped error stays
+/// inside its box, which is the invariant; a truncated one only *looks* like it does.
 fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
+        .items_start()
         .gap_1p5()
         .py_1()
-        .text_xs()
+        .text_meta(theme)
         .text_color(rgb(theme.danger))
-        .child(Icon::Error.small())
-        .child(message)
+        .child(div().flex_none().child(Icon::Error.small()))
+        .child(div().flex_1().min_w(px(0.)).child(message))
 }
 
 /// An advisory line: the same shape as [`error_line`] in `muted` rather than `danger`.
@@ -1198,12 +1223,12 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
 /// real errors that share this slot.
 fn caveat_line(theme: &Theme, message: &'static str) -> impl IntoElement + use<> {
     h_flex()
+        .items_start()
         .gap_1p5()
         .py_1()
-        .text_xs()
-        .text_color(rgb(theme.muted))
-        .child(Icon::Info.small())
-        .child(message)
+        .text_meta(theme)
+        .child(div().flex_none().child(Icon::Info.small()))
+        .child(div().flex_1().min_w(px(0.)).child(message))
 }
 
 impl DbTabState {
@@ -1317,7 +1342,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let t = theme::active(cx);
+        let t = theme::active(cx).clone();
         let (surface, border, fg) = (t.surface, t.border, t.fg);
         let cell = self.db.cell_view.clone()?;
         let viewport = window.viewport_size();
@@ -1354,8 +1379,13 @@ impl AppState {
                                         .border_b_1()
                                         .border_color(rgb(border))
                                         .child(
+                                            // A column name is an identifier, and this
+                                            // popover exists to show the cell under it in
+                                            // full — the two belong in the same family.
                                             div()
-                                                .text_sm()
+                                                .min_w(px(0.))
+                                                .clamp_one_line()
+                                                .text_mono(&t)
                                                 .text_color(rgb(fg))
                                                 .child(cell.column.clone()),
                                         )
@@ -1380,10 +1410,10 @@ impl AppState {
                                     div()
                                         .id("db-cell-view-body")
                                         .flex_1()
+                                        .min_w(px(0.))
                                         .overflow_y_scroll()
                                         .p_3()
-                                        .text_sm()
-                                        .font_family(MONO)
+                                        .text_mono(&t)
                                         .text_color(rgb(fg))
                                         .child(cell.text.clone()),
                                 ),
@@ -1587,11 +1617,11 @@ impl AppState {
                     .child(
                         h_flex()
                             .gap_1p5()
-                            .text_color(rgb(t.fg))
+                            .text_body(&t)
                             .child(Icon::Info.small())
                             .child("browsing sid's own configuration store — read-only"),
                     )
-                    .child(div().hint_text(&t).child(
+                    .child(div().text_meta(&t).child(
                         "redb is a key-value store, not a SQL engine: pick a table on the \
                          left to list its rows. Nothing here can write to the store.",
                     ))
@@ -1608,7 +1638,7 @@ impl AppState {
             })
         };
 
-        let notice = self.db.notice.clone().map(|n| div().hint_text(&t).child(n));
+        let notice = self.db.notice.clone().map(|n| div().text_meta(&t).child(n));
 
         let editor_and_results = v_flex()
             .flex_1()
@@ -1625,7 +1655,21 @@ impl AppState {
                     .filter(
                         h_flex()
                             .gap_3()
-                            .child(div().flex_none().hint_text(&t).child(active_label))
+                            // Meta, not mono, even though it often holds a connection
+                            // name: this slot is just as often the sentence "no
+                            // connection selected", and a sentence in the data face
+                            // reads as a value the user is supposed to act on.
+                            // Capped as well as `flex_none` — a long name would
+                            // otherwise walk the filter field and the count off the
+                            // toolbar rather than clipping.
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .max_w(px(260.))
+                                    .clamp_one_line()
+                                    .text_meta(&t)
+                                    .child(active_label),
+                            )
                             .child(
                                 // Capped, not filling: a 1200px-wide filter field is
                                 // as wrong as the ribbon table it sits above used to
@@ -1888,13 +1932,15 @@ impl AppState {
             .hairline_b(&t)
             .child(
                 div()
-                    .section_label(&t)
+                    .text_label(&t)
                     .child(sid_ui::card::header_text("QUERY PLAN", None)),
             )
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().hint_text(&t).child(plan.keyword.clone()))
+                    // The keyword is the SQL the engine was actually asked (`EXPLAIN` /
+                    // `EXPLAIN QUERY PLAN`), so it takes the family the plan body does.
+                    .child(div().text_mono_meta(&t).child(plan.keyword.clone()))
                     .child(
                         IconButton::new("db-plan-close", Icon::Close, "back to the results")
                             .small()
@@ -1908,7 +1954,7 @@ impl AppState {
         let body: AnyElement = if plan.lines.is_empty() {
             div()
                 .p_3()
-                .hint_text(&t)
+                .text_meta(&t)
                 .child("the engine returned an empty plan for this statement")
                 .into_any_element()
         } else {
@@ -2055,7 +2101,7 @@ impl AppState {
                             .children(ExportFormat::ALL.iter().enumerate().map(|(ix, fmt)| {
                                 let fmt = *fmt;
                                 UiRow::new(("db-export-item", ix))
-                                    .child(div().text_xs().child(fmt.label()))
+                                    .child(div().text_body(&t).child(fmt.label()))
                                     .on_click(cx.listener(
                                         move |this, _ev: &ClickEvent, _window, cx| {
                                             this.export(fmt, cx);
@@ -2122,7 +2168,7 @@ impl AppState {
         let body: AnyElement = if self.db.schema_loading && self.db.schema.is_none() {
             div()
                 .p_2()
-                .hint_text(&t)
+                .text_meta(&t)
                 .child("loading schema…")
                 .into_any_element()
         } else if let Some(err) = &self.db.schema_error {
@@ -2138,7 +2184,7 @@ impl AppState {
             if rows.is_empty() {
                 div()
                     .p_2()
-                    .hint_text(&t)
+                    .text_meta(&t)
                     .child("no schema loaded — select a connection")
                     .into_any_element()
             } else {
@@ -2289,10 +2335,15 @@ impl AppState {
                                 this.toggle_schema_table(&chevron_name, cx);
                             })),
                     )
+                    // A table name is an identifier the engine chose — mono, and clamped
+                    // rather than `truncate()`d: that spelling sets `Nowrap`, which is
+                    // exactly what stops the ellipsis from ever being drawn, so a long
+                    // table name used to run to the edge of a 280px panel and stop.
                     .child(
                         div()
-                            .truncate()
-                            .text_xs()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_mono(&t)
                             .text_color(rgb(t.fg))
                             .child(display_name),
                     )
@@ -2310,7 +2361,13 @@ impl AppState {
                 .py_0p5()
                 .pl_12()
                 .pr_2()
-                .child(div().truncate().hint_text(&t).child(name))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .clamp_one_line()
+                        .text_mono_meta(&t)
+                        .child(name),
+                )
                 .into_any_element(),
         }
     }
@@ -2325,7 +2382,7 @@ impl AppState {
         let body: AnyElement = if entries.is_empty() {
             div()
                 .p_2()
-                .hint_text(&t)
+                .text_meta(&t)
                 .child("no queries run yet")
                 .into_any_element()
         } else {
@@ -2342,10 +2399,15 @@ impl AppState {
                     UiRow::new(("db-history", ix))
                         .py_0p5()
                         .px_2()
+                        // SQL, so: mono. The 34-character head above is a *content*
+                        // decision (one line of a statement is enough to recognise it);
+                        // the clamp underneath is the layout one, for the entries that
+                        // are shorter than the cut but wider than the panel.
                         .child(
                             div()
-                                .truncate()
-                                .text_xs()
+                                .min_w(px(0.))
+                                .clamp_one_line()
+                                .text_mono(&t)
                                 .text_color(rgb(t.fg))
                                 .child(label),
                         )
@@ -2398,7 +2460,7 @@ impl AppState {
                 list.child(
                     div()
                         .p_2()
-                        .hint_text(&t)
+                        .text_meta(&t)
                         .child("no connections yet")
                         .into_any_element(),
                 )
@@ -2454,7 +2516,9 @@ impl AppState {
                             .gap_1p5()
                             .child(
                                 div()
-                                    .truncate()
+                                    .min_w(px(0.))
+                                    .clamp_one_line()
+                                    .text_body(&t)
                                     .text_color(rgb(t.fg))
                                     .child(STORE_BROWSE_LABEL),
                             )
@@ -2462,10 +2526,9 @@ impl AppState {
                     )
                     .child(
                         div()
-                            .truncate()
-                            .text_xs()
-                            .font_family(MONO)
-                            .hint_text(&t)
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_mono_meta(&t)
                             .child("redb · sid's own configuration store"),
                     ),
             )
@@ -2496,7 +2559,13 @@ impl AppState {
                     .py_1()
                     .px_2()
                     .leading(chevron.small().text_color(rgb(t.muted)))
-                    .child(div().truncate().hint_text(&t).child(name))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_meta(&t)
+                            .child(name),
+                    )
                     .meta(Badge::count(count))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                         this.toggle_conn_folder(&toggle_name, cx);
@@ -2665,11 +2734,14 @@ impl AppState {
             let name_id = conn.id.clone();
             let name_origin = origin.clone();
             let name_text = display_name.clone();
+            // Body, not the MEDIUM this used to be: the scale spends its one emphasis
+            // weight on headings, and a 280px panel of connections is a list, not a
+            // stack of headings. The active row is already `fg_strong` and filled.
             div()
                 .id(("db-conn-name", ix))
-                .truncate()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
+                .min_w(px(0.))
+                .clamp_one_line()
+                .text_body(&t)
                 .text_color(rgb(if is_active { t.fg_strong } else { t.fg }))
                 .child(display_name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
@@ -2710,10 +2782,13 @@ impl AppState {
                 .child(input)
                 .into_any_element()
         } else {
+            // The DSN, which is why it is mono and why it clamps: `postgres://user@host:
+            // 5432/db` is longer than 280px at any size, and `truncate()` cut it dead
+            // instead of ellipsising it.
             div()
-                .truncate()
-                .font_family(MONO)
-                .hint_text(&t)
+                .min_w(px(0.))
+                .clamp_one_line()
+                .text_mono_meta(&t)
                 .child(subtitle)
                 .into_any_element()
         };
@@ -4048,6 +4123,27 @@ mod result_column_plan_tests {
                 ]),
             ],
         )
+    }
+
+    #[test]
+    fn the_cell_advance_tracks_the_rung_the_grid_renders_at() {
+        // `plan_result_columns` is pure, so it cannot measure text — it multiplies a
+        // character count by `CELL_CHAR_PX`. That makes the constant a promise about
+        // what the cells are actually set in, and the promise is only checkable here:
+        // if the cells' role moves off `Mono` (or `Mono` moves off 14px), every column
+        // in the grid is planned at the wrong width — too narrow truncates real values,
+        // too wide wastes a fifth of the pane.
+        let size = f32::from(sid_ui::TypeRole::Mono.size());
+        // DejaVu Sans Mono has one advance for every glyph: 1233/2048 em ≈ 0.602.
+        let advance = size * 0.602;
+        assert!(
+            CELL_CHAR_PX >= advance,
+            "{CELL_CHAR_PX} < {advance}: the plan would under-measure every column"
+        );
+        assert!(
+            CELL_CHAR_PX <= advance * 1.1,
+            "{CELL_CHAR_PX} is more than 10% over {advance} — that is slack, not safety"
+        );
     }
 
     #[test]
