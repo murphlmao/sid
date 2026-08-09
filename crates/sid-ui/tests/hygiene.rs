@@ -277,10 +277,6 @@ const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
         "SSH session overhaul, in flight — also holds the PTY grid's own font, which is \
          terminal geometry rather than UI type and stays out of the scale",
     ),
-    (
-        "sid/src/ui/workspaces_tab.rs",
-        "Workspaces overhaul, in flight",
-    ),
     ("sid/src/ui/db_tab.rs", "Database overhaul, in flight"),
     // Not held by anyone; simply not reached in wave 1. No blocker beyond the diff size.
     ("sid/src/ui/command_palette.rs", "wave 2"),
