@@ -17,6 +17,20 @@
 #                         wrong       -> "1 incorrect password attempt"  (retryable)
 #                         notsudoer   -> "is not in the sudoers file"    (fatal)
 #                         hang        -> sleep forever, to exercise the timeout
+#                         attrfail    -> authenticate, then refuse the `cp
+#                                        --attributes-only` step of a save (the mid-write
+#                                        failure whose whole point is that the original
+#                                        survives and no temp is left behind)
+#                         partialfill -> authenticate, RUN the first `cp` of a save so the
+#                                        sibling temp really exists, then report failure —
+#                                        the "the copy died halfway through" case, which is
+#                                        the one that litters /etc if cleanup is skipped
+#   MOCK_SUDO_ARGV_LOG  append a record of every invocation's argv to this file. Lets a
+#                       test prove, from the far side of the process boundary, exactly
+#                       which programs were elevated — and that the password was not among
+#                       the arguments. Format: a `=== invocation ===` line, then one
+#                       `arg:<value>` line per argument. Framed rather than blank-line
+#                       separated because `-p ''` passes a legitimately EMPTY argument.
 #
 # Usage (matches sudo's own): mock-sudo -S -k -p '' -- <command> [args...]
 
@@ -24,10 +38,17 @@ set -u
 
 expected="${MOCK_SUDO_PASSWORD:-correct}"
 verdict="${MOCK_SUDO_VERDICT:-check}"
+argv_log="${MOCK_SUDO_ARGV_LOG:-}"
 
 # Read the password line exactly as sudo -S does. `read` returning non-zero means EOF
 # with nothing before it, i.e. no password was provided.
 if read -r password; then :; else password=""; fi
+
+# The argv as received, BEFORE any of it is consumed below — and deliberately not the
+# password, which arrived on stdin and must never turn up here.
+if [ -n "$argv_log" ]; then
+	{ printf '=== invocation ===\n'; printf 'arg:%s\n' "$@"; } >>"$argv_log"
+fi
 
 # Drop sudo's own options, up to and including the `--` that ends them.
 while [ $# -gt 0 ]; do
@@ -70,5 +91,25 @@ if [ "$password" != "$expected" ]; then
 fi
 
 [ $# -gt 0 ] || { printf 'usage: mock-sudo [options] -- command\n' >&2; exit 1; }
+
+# Verdicts that depend on WHICH step of a save this invocation is. They authenticate
+# normally — the point is a failure after the password was accepted.
+case "$verdict" in
+attrfail)
+	if [ "$1" = "cp" ] && [ "${2:-}" = "--attributes-only" ]; then
+		printf 'cp: failed to preserve ownership: Operation not permitted\n' >&2
+		exit 1
+	fi
+	;;
+partialfill)
+	# The fill step is the only `cp` that is not `--attributes-only`. Run it for real,
+	# so the sibling temp exists, and only then fail.
+	if [ "$1" = "cp" ] && [ "${2:-}" != "--attributes-only" ]; then
+		"$@" || exit 1
+		printf 'cp: error writing: No space left on device\n' >&2
+		exit 1
+	fi
+	;;
+esac
 
 exec "$@"

@@ -15,9 +15,11 @@
 //! # What is *not* here
 //!
 //! No caching of authentication (`sudo -k` deliberately defeats sudo's own timestamp),
-//! no retry loop (a wrong password is the caller's to re-prompt), and no privileged
-//! entry point in sid's own binary — the elevated side is coreutils and a constant
-//! shell script, so a bug in sid can never become a root bug in sid.
+//! no retry loop (a wrong password is the caller's to re-prompt), **no shell** (the
+//! elevated side is four `coreutils` programs run as argv — `head`, `cp`, `mv`, `rm` —
+//! and never an interpreter), and no privileged entry point in sid's own binary, so a bug
+//! in sid can never become a root bug in sid. See [`sudo`]'s module doc for the three-step
+//! atomic replace and what each step guarantees.
 
 mod classify;
 mod sudo;
@@ -64,8 +66,13 @@ impl PrivilegedFs for SudoPrivilegedFs {
             .unwrap_or(Access::Missing)
     }
 
-    async fn read(&self, path: &Path, secret: &Passphrase) -> Result<Vec<u8>, PrivError> {
-        sudo::read(guard_path(path)?, secret).await
+    async fn read_capped(
+        &self,
+        path: &Path,
+        max_bytes: u64,
+        secret: &Passphrase,
+    ) -> Result<Vec<u8>, PrivError> {
+        sudo::read(guard_path(path)?, max_bytes, secret).await
     }
 
     async fn write(&self, path: &Path, bytes: &[u8], secret: &Passphrase) -> Result<(), PrivError> {

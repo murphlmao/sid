@@ -22,6 +22,11 @@ tempfile.workspace = true
 # the secret; `Zeroizing` wipes that buffer when the invocation drops rather than leaving
 # it in freed heap memory.
 zeroize.workspace = true
+# A failed save's cleanup is best-effort and must never displace the error the caller is
+# already returning — so the one thing it can do about its own failure is say so. Same
+# `log` facade `sid-gpu`'s probe uses for exactly this shape of unswallowable-but-minor
+# problem.
+log = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["process", "io-util", "macros"] }
