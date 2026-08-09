@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    AnyElement, AnyWindowHandle, Bounds, ClickEvent, Context, FontWeight, IntoElement, MouseButton,
+    AnyElement, AnyWindowHandle, Bounds, ClickEvent, Context, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Render, SharedString,
     WeakEntity, Window, canvas, div, point, prelude::*, px, rgb, size,
 };
@@ -18,7 +18,7 @@ use sid_core::db::{SchemaGraph, SchemaInfo};
 
 use crate::app::AppState;
 use crate::ui::db_tab::table_display_name;
-use sid_ui::{Icon as SidIcon, IconButton, StyledExt as _, theme};
+use sid_ui::{Icon as SidIcon, IconButton, StyledExt as _, Theme, Typography as _, theme};
 
 // ---- layout geometry ------------------------------------------------------------------------
 
@@ -336,8 +336,8 @@ impl DiagramView {
     /// `refresh_schema` early-returns (no active connection, or a password prompt it
     /// raises over *that* window). The diagram simply repaints when the snapshot lands.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (border, muted) = (t.border, t.muted);
+        let t = theme::active(cx).clone();
+        let border = t.border;
         let summary = format!(
             "{} tables · {} relationships",
             self.tables.len(),
@@ -357,8 +357,8 @@ impl DiagramView {
             .py_2()
             .border_b_1()
             .border_color(rgb(border))
-            .child(div().text_sm().text_color(rgb(muted)).child(summary))
-            .children(hint.map(|h| div().text_xs().text_color(rgb(muted)).child(h)))
+            .child(div().text_meta(&t).child(summary))
+            .children(hint.map(|h| div().text_meta(&t).child(h)))
             .child(div().flex_1())
             .child(
                 IconButton::new("diagram-refresh", SidIcon::Refresh, "refresh schema")
@@ -449,7 +449,8 @@ impl DiagramView {
         table_bounds: &HashMap<String, Bounds<Pixels>>,
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
-        let accent = theme::active(cx).accent;
+        let t = theme::active(cx).clone();
+        let accent = t.accent;
         self.edges
             .iter()
             .filter(|e| !e.self_ref)
@@ -463,9 +464,10 @@ impl DiagramView {
                 };
                 let (from_anchor, to_anchor) = edge_anchors(from, to);
                 vec![
-                    edge_label(("diagram-edge-many", ix), from_anchor, "∞", accent)
+                    edge_label(("diagram-edge-many", ix), from_anchor, "∞", accent, &t)
                         .into_any_element(),
-                    edge_label(("diagram-edge-one", ix), to_anchor, "1", accent).into_any_element(),
+                    edge_label(("diagram-edge-one", ix), to_anchor, "1", accent, &t)
+                        .into_any_element(),
                 ]
             })
             .collect()
@@ -480,7 +482,7 @@ impl DiagramView {
         table: &DiagramTable,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
+        let t = theme::active(cx).clone();
         let (surface, selection_bg, border, fg, muted, accent, success) = (
             t.surface,
             t.selection,
@@ -515,19 +517,22 @@ impl DiagramView {
             // 220px box therefore escaped the box and painted over its neighbours on the
             // canvas — the one place on this screen where two elements genuinely collide.
             .child(
+                // `Label`, not the old `BOLD` + 14px: the box's own heading rung. It keeps
+                // the bright `fg` ink so it still outranks the muted column list under it
+                // — weight and ink carry the hierarchy, since a 220px box has no room to
+                // spend a size step on it.
                 div()
                     .flex_1()
                     .min_w(px(0.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_sm()
+                    .text_label(&t)
                     .text_color(rgb(fg))
                     .clamp_one_line()
                     .child(table.key.clone()),
             )
             .children((self_ref_count > 0).then(|| {
                 div()
-                    .text_xs()
-                    .text_color(rgb(muted))
+                    .flex_none()
+                    .text_meta(&t)
                     .child(format!("↺ {self_ref_count}"))
             }))
             .on_mouse_down(
@@ -557,7 +562,11 @@ impl DiagramView {
                     .id(("diagram-box-col", ix * 1000 + cix))
                     .px_2()
                     .cursor_pointer()
-                    .text_xs()
+                    // `MonoMeta`, not `Mono`: a column name is data, but the box is a
+                    // fixed `box_height(..)` of `ROW_HEIGHT` (20px) rows, and 14px body
+                    // text lays out at ~21px — the last column of a full table would be
+                    // clipped by the body's own `overflow_hidden`.
+                    .text_mono_meta(&t)
                     .text_color(rgb(if is_fk { success } else { muted }))
                     .hover(|s| s.bg(rgb(selection_bg)))
                     .child(label)
@@ -575,8 +584,7 @@ impl DiagramView {
             let more = table.columns.len() - MAX_VISIBLE_COLUMNS;
             div()
                 .px_2()
-                .text_xs()
-                .text_color(rgb(muted))
+                .text_meta(&t)
                 .child(format!("+{more} more"))
                 .into_any_element()
         });
@@ -924,13 +932,14 @@ fn edge_label(
     anchor: Point<Pixels>,
     glyph: &'static str,
     color: u32,
+    theme: &Theme,
 ) -> impl IntoElement + use<> {
     div()
         .id(id)
         .absolute()
         .left(px(f32::from(anchor.x) - 5.0))
         .top(px(f32::from(anchor.y) - 8.0))
-        .text_xs()
+        .text_meta(theme)
         .text_color(rgb(color))
         .child(glyph)
 }

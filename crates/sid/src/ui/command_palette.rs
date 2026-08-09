@@ -22,7 +22,7 @@ use gpui::{
 use crate::app::AppState;
 use crate::keymap::{self, Action};
 use crate::ui::TextInput;
-use sid_ui::{StyledExt as _, theme};
+use sid_ui::{Kbd, StyledExt as _, Typography as _, theme};
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list
@@ -207,8 +207,8 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let t = theme::active(cx);
-        let (surface, border, muted) = (t.surface, t.border, t.muted);
+        let t = theme::active(cx).clone();
+        let (surface, border) = (t.surface, t.border);
         let palette = self.palette.as_ref()?;
         let query_text = palette.query.read(cx).content().to_string();
         let entries = self.palette_entries(&query_text);
@@ -221,14 +221,9 @@ impl AppState {
             .enumerate()
             .map(|(ix, entry)| self.palette_row(ix, entry, ix == selection, cx))
             .collect();
-        let empty_notice = entries.is_empty().then(|| {
-            div()
-                .px_3()
-                .py_4()
-                .text_sm()
-                .text_color(rgb(muted))
-                .child("no matches")
-        });
+        let empty_notice = entries
+            .is_empty()
+            .then(|| div().px_3().py_4().text_meta(&t).child("no matches"));
 
         Some(
             deferred(
@@ -286,9 +281,12 @@ impl AppState {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
-        let (surface, muted, selection_bg, fg_strong, fg, accent) =
-            (t.surface, t.muted, t.selection, t.fg_strong, t.fg, t.accent);
+        let t = theme::active(cx).clone();
+        let (surface, selection_bg, fg_strong, fg) = (t.surface, t.selection, t.fg_strong, t.fg);
+        // The row's ink follows the selection, and a role is absolute — it re-states the
+        // colour it was given — so the label has to be handed the same ink rather than
+        // inheriting it from the row.
+        let ink = if selected { fg_strong } else { fg };
         div()
             .id(("palette-row", ix))
             .flex()
@@ -299,7 +297,7 @@ impl AppState {
             .py_1()
             .cursor_pointer()
             .bg(rgb(if selected { selection_bg } else { surface }))
-            .text_color(rgb(if selected { fg_strong } else { fg }))
+            .text_color(rgb(ink))
             // The label/subtitle column carries whatever a saved host or connection is
             // called, inside a panel pinned to 560px. `flex_1` alone does not make it
             // shrinkable — a flex item holding text measures the same under MinContent
@@ -314,20 +312,28 @@ impl AppState {
                     .flex_col()
                     .flex_1()
                     .min_w(px(0.))
-                    .child(div().text_sm().clamp_one_line().child(entry.label.clone()))
-                    .children(entry.subtitle.clone().map(|s| {
+                    .child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(muted))
+                            .text_body(&t)
+                            .text_color(rgb(ink))
                             .clamp_one_line()
-                            .child(s)
-                    })),
+                            .child(entry.label.clone()),
+                    )
+                    .children(
+                        entry
+                            .subtitle
+                            .clone()
+                            .map(|s| div().text_meta(&t).clamp_one_line().child(s)),
+                    ),
             )
+            // The same `Kbd` chips the Settings → Keymap rows render, from the same
+            // `keymap::primary_shortcut` source: one spelling of a binding across the app,
+            // instead of an accent-coloured string here and a chip row there.
             .children(
                 entry
                     .shortcut
                     .clone()
-                    .map(|s| div().flex_none().text_xs().text_color(rgb(accent)).child(s)),
+                    .map(|s| div().flex_none().child(Kbd::new(s))),
             )
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 if let Some(palette) = &mut this.palette {
