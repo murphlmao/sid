@@ -410,9 +410,14 @@ impl PortsDelegate {
                     Column::new("addr", "Addr").sortable(),
                     ColumnWidth::grow().weight(1.0).min_width(240.),
                 ),
+                // 100, not 80: the cells are monospace at the body rung now (see
+                // `data_cell`), and a fixed-advance 14px digit is wider than the 12px
+                // proportional one this column was measured against — 80px showed
+                // `1212…` for a seven-digit pid. 7 × 8.43px of glyph plus the cell's own
+                // padding and the table's is 100.
                 (
                     Column::new("pid", "PID").sortable(),
-                    ColumnWidth::Fixed(80.),
+                    ColumnWidth::Fixed(100.),
                 ),
                 (
                     Column::new("process", "Process").sortable(),
