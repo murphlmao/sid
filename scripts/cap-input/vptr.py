@@ -130,6 +130,19 @@ def do_button(state, button=BTN_LEFT):
     ptr.frame()
 
 
+# Wheel geometry. A "notch" is one physical detent; the discrete count travels
+# alongside the continuous value because clients may honour either.
+AXIS_VERTICAL = 0
+AXIS_SOURCE_WHEEL = 0
+NOTCH = 15.0
+
+
+def do_notch(sign):
+    ptr.axis_source(AXIS_SOURCE_WHEEL)
+    ptr.axis_discrete(now_ms(), AXIS_VERTICAL, NOTCH * sign, 1 * sign)
+    ptr.frame()
+
+
 def do_click(button=BTN_LEFT):
     """One press/release pair, each in its own flushed frame."""
     do_button(1, button)
@@ -202,6 +215,34 @@ for line in sys.stdin:
         x1, y1, x2, y2, w, h = parts[1:7]
         steps = parts[7] if len(parts) > 7 else DRAG_STEPS
         do_drag(x1, y1, x2, y2, w, h, steps)
+    elif cmd in ("scroll", "scrollup"):
+        # scroll N [GAP_MS] — N wheel notches, down for `scroll`, up for
+        # `scrollup`. Each notch is its own flushed frame, because a burst
+        # coalesced into one frame measures nothing useful.
+        n = int(parts[1])
+        gap = float(parts[2]) / 1000.0 if len(parts) > 2 else 0.025
+        sign = 1 if cmd == "scroll" else -1
+        for _ in range(n):
+            do_notch(sign)
+            display.flush()
+            display.dispatch(block=False)
+            time.sleep(gap)
+    elif cmd == "hover":
+        # hover X Y0 Y1 N MS W H — ping-pong the pointer down and up a column
+        # of rows. Every row crossing flips the table's hover state and costs
+        # one full frame, so this is a frame generator that needs neither
+        # scrollable content nor a wheel.
+        x, y0, y1, n, ms, w, h = (int(v) for v in parts[1:8])
+        step = max(1, abs(y1 - y0) // 12)
+        y, dy = y0, step
+        for _ in range(n):
+            y += dy
+            if y >= y1 or y <= y0:
+                dy = -dy
+            do_move(x, y, w, h)
+            display.flush()
+            display.dispatch(block=False)
+            time.sleep(ms / 1000.0)
     elif cmd == "quit":
         break
     display.flush()
