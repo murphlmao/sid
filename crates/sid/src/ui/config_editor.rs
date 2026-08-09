@@ -64,7 +64,7 @@ use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
 use crate::ui::{TextInput, is_field_submit};
 use sid_ui::theme;
-use sid_ui::{Button, EmptyState, Icon, Typography as _, h_flex, v_flex};
+use sid_ui::{Button, EmptyState, Icon, StyledExt as _, Typography as _, h_flex, v_flex};
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
@@ -640,25 +640,48 @@ impl AppState {
                                         .py_2()
                                         .border_b_1()
                                         .border_color(rgb(theme.border))
+                                        // The title column is the part that gives. A config
+                                        // path is arbitrarily long (`/etc/systemd/system/
+                                        // some-unit.service.d/10-override.conf` is 130
+                                        // characters at Murphy's depth) and gpui measures a
+                                        // text element's min-content width as its *full*
+                                        // string, so without `min_w(0)` this column refuses
+                                        // to shrink and shoves `save`/`close` out through
+                                        // the modal's right border. `flex_1 + min_w(0)` +
+                                        // a clamp on each line makes the path the thing
+                                        // that ellipsises; `flex_none` keeps the buttons
+                                        // out of the negotiation entirely.
                                         .child(
                                             div()
                                                 .flex()
                                                 .flex_col()
+                                                .flex_1()
+                                                .min_w(px(0.))
                                                 .child(
                                                     h_flex()
                                                         .gap_1p5()
                                                         .text_title(&theme)
-                                                        .child(file_name)
+                                                        .child(
+                                                            div()
+                                                                .min_w(px(0.))
+                                                                .clamp_one_line()
+                                                                .child(file_name),
+                                                        )
                                                         .children(dirty_marker),
                                                 )
                                                 .child(
-                                                    div().text_mono_meta(&theme).child(full_path),
+                                                    div()
+                                                        .min_w(px(0.))
+                                                        .text_mono_meta(&theme)
+                                                        .clamp_one_line()
+                                                        .child(full_path),
                                                 ),
                                         )
                                         .child(
                                             div()
                                                 .flex()
                                                 .flex_row()
+                                                .flex_none()
                                                 .items_center()
                                                 .gap_2()
                                                 .when(can_save, |el| {
