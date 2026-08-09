@@ -1,73 +1,89 @@
-# Resume point — 2026-07-27 (paused mid-wave-4)
+# Resume point — 2026-07-27
 
-**`main` is at `a0935da`, pushed, gate-green** (47 suites, clippy `-D warnings`, fmt all clean).
-Nothing is half-merged; the working tree is clean. Everything below is additive work that
-was in flight when the session paused.
+**`main` is gate-green** (51 suites, clippy `-D warnings`, fmt, all clean) and pushed.
+Nothing is half-merged. Work still in flight lives on its own branch in its own worktree;
+merge one at a time, re-gate on the merged tree, then push. Expect mechanical union
+conflicts in `crates/sid-ui/src/lib.rs` (module + re-export lists), `crates/sid-ui/tests/hygiene.rs`
+(the sweep allowlist) and `crates/sid/src/app.rs`.
 
-## How to resume in one paragraph
+## In flight
 
-Five agents were paused mid-task; each wrote a handoff doc (paths below) and committed or
-WIP-committed onto its own branch in its own worktree. To pick any one up: read its handoff,
-`cd` to its worktree, continue, gate, then `git merge --no-edit <branch>` into `main`,
-re-gate on the merged tree, and push. Merge one at a time — several touch adjacent lines in
-`crates/sid-ui/src/lib.rs` (module + re-export lists) and `crates/sid/src/app.rs`; those
-conflicts are mechanical unions.
+| Topic | Owns |
+|:--|:--|
+| `sid-ui` `TextInput`/`SearchInput` + polish list + **GitHub #3** (ctrl+backspace, ctrl+shift+arrows, Tab) | `crates/sid-ui/**` except `src/table/**` |
+| Typography wave 2 + overflow — data tabs | `network_tab.rs`, `workspaces_tab.rs`, `db_tab.rs` |
+| Typography wave 2 + overflow — chrome, session, forms (incl. the ~620px top-bar overflow) | `app.rs`, `session.rs`, `ssh_home.rs`, `command_palette.rs`, the three form files, `db_diagram.rs`, `config_editor.rs` |
+| Table frame cost — the ~26% of cell builds gpui discards | `crates/sid-ui/src/table/**` |
 
-## Paused work
+## Queued
 
-| Topic | Branch / worktree | Handoff doc |
-|:--|:--|:--|
-| Scroll-lag perf (Network/System, release build) + FillTable self-scheduling | see handoff | `scratchpad/handoff-scroll-perf.md` |
-| Sudo-elevated config file read/write (`PrivilegedFs` port + adapter) | see handoff | `scratchpad/handoff-sudo-privfs.md` |
-| Modals + Toast onto sid-ui (host form, DB conn form, password prompt) | see handoff | `scratchpad/handoff-modals.md` |
-| Settings → Keymap rebinding UI (+ persistence) | see handoff | `scratchpad/handoff-keymap.md` |
-| DB increment-3 (sortable/filterable grid, EXPLAIN, redb browse) + Export/Run button sizing | see handoff | `scratchpad/handoff-db-inc3.md` |
+1. **GitHub #2** — quick-connect "add this host". DECIDED: an inline `add user@host…` row opens
+   the add-connection form prefilled; pressing Enter on a host that does not exist must **say so
+   and open that same prefilled form** rather than dialling ad-hoc (so every connection becomes a
+   saved one); saving then connects. Key handling: scan `~/.ssh`, default `id_ed25519` → `id_rsa`,
+   allow choosing or browsing; when agent auth is selected but `SSH_AUTH_SOCK` is unset, say that
+   plainly and offer key auth instead of the raw error.
+2. **GitHub #4** — ctrl `+`/`-` zoom. DECIDED: one scale factor for the whole UI *including* the
+   SSH terminal (it reflows to fewer/more cells), persisted, clamped ~50–200%, ctrl+0 resets.
+   Both #2 and #4 were blocked only by file ownership above.
+3. **Delete `crates/sid/src/ui/text_input.rs`** (946 lines duplicating `gpui_component::input::Input`)
+   once the sid-ui replacement lands, and migrate its ~15 call sites. The replacement must declare
+   its own width rather than inherit one by percentage — that bug made the old widget render as a
+   ~20px stub that silently ate clicks.
+4. **Overflow sweep remainder** — whatever the two sweeps report as out of scope.
+5. **Final gate** — six tabs × four themes captures, then refresh `docs/HANDOFF.md` (badly stale).
 
-Scratchpad root: `/tmp/claude-1000/-home-murphy-vcs-sid/f354a0cd-6c84-4e2f-a63f-dfdaec88f10c/scratchpad/`
-(also holds every capture PNG referenced in the handoffs). Copy anything worth keeping into
-`docs/` before `/tmp` is cleared.
+## Shipped (all on `origin/main`)
 
-## Shipped today (all on `origin/main`)
+GPU preflight, and then **GitHub #1**: the diagnosis had no vendor awareness, so "Intel GPU +
+only `radeon_icd.json`" fell through to "unrecognized reason — file a bug"; it now names both
+sides and the exact package, conservatively (an unrecognized GPU vendor or unmapped manifest
+silences the claim), and every diagnosis lists the hardware it saw · `sid-ui` component crate
+(theme bridge, Button/IconButton/Badge/Kbd/Card/Toolbar/EmptyState/SegmentedControl/Meter/
+StatCluster/ActionCell/List/Row/ScopeChip/StatusDot/CardGrid/Modal/Toast, dev gallery) ·
+fill-width table model (`Fixed|Min|Grow`) + full-header sort · **all six tabs migrated** ·
+SSH home card-grid dashboard · responsive drag-resizable SFTP sidebar · semantic type scale
+(3 sizes / 2 weights / 1 mono) with a hygiene ratchet · keymap rebinding + persistence ·
+sudo-elevated config editing, now with **no shell in the elevated path** (`head`/`cp`/`cp`/`mv`,
+pinned by an argv-log test) · DB increment-3 · all 8 bug-hunt findings · System-tab tick perf
+(6 frames → 1; release CPU 10.5% → 4.7%) · text-overflow class fix · navbar-shift fix ·
+capture-harness fixes (below).
 
-GPU preflight (`3c9243b`) · `sid-ui` crate: theme bridge, Button/IconButton/Badge/Kbd/Card/
-Toolbar/EmptyState/SegmentedControl/Meter/StatCluster/ActionCell/List/Row/ScopeChip/StatusDot/
-CardGrid, dev gallery · fill-width table model (`Fixed|Min|Grow`) + full-header sort ·
-**all six tabs migrated**: System (segmented sub-views, working two-step kill), SSH home
-(card-grid dashboard), Database, Network, Workspaces, Settings/chrome · responsive
-drag-resizable SFTP sidebar (280–480px, terminal floor wins) · semantic type scale
-(3 sizes / 2 weights / 1 mono) enforced by a hygiene test · all 8 bug-hunt findings ·
-System-tab tick perf (6 frames → 1; release CPU 10.5% → 4.7%) · text-overflow class fix ·
-navbar-shift fix.
+## Capture harness (`scripts/sid-cap.sh`) — corrected facts
 
-## Open queue (see the task board)
+- `--dclick X,Y` exists now. Two `--click`s never worked as a double-click: gpui's window is
+  400ms and the script's inter-click gap defeated it.
+- **`--key` was never broken.** The headless compositor has no input devices, so gpui binds
+  `wl_keyboard` only once `wtype` attaches one — after the focus handoff — and never gets the
+  `wl_keyboard::enter` it gates keystrokes on. A pointer **button** (motion is not enough) makes
+  the compositor redo the handoff. The harness now clicks one inert pixel before the first
+  `--key`/`--type` unless a pointer action already ran (`SID_CAP_FOCUS_CLICK` to move or disable).
+  Any older "unverified keyboard flow" note should be re-checked.
+- `--drag X1,Y1,X2,Y2[,STEPS]` exists (press → interpolated motions → release), pacing measured,
+  not guessed. **Put `--drag` last**: the synthetic mouse-up does not clear
+  `SshSession::on_sidebar_drag_up`, so a later pointer action in the same run re-drags the divider.
+- The harness now builds `sid` by default and refuses to capture if the build fails; `--no-build`
+  keeps the old behaviour behind a stale-binary banner. `cargo clippy` is check-only, so several
+  agents had captured a stale binary.
+- Pointer commands block on the driver's ack instead of a guessed sleep — this was silently
+  dropping characters from `--type`.
+- The DB relationships diagram opens as a second OS window that sway keeps behind the fullscreen
+  main window, so `grim` never sees it. Verifying diagram drag needs an app or harness change.
+- `sid-cap.sh` and `sid-shot.sh` duplicate ~60 lines (repo-root discovery, hermetic XDG, launch
+  and poll, cleanup trap). A shared `scripts/lib/sid-app.sh` is the shape of the fix.
 
-1. **Overflow sweep wave 2** — ~12 mapped sites in `app.rs`, `db_tab.rs`, `config_editor.rs`,
-   and `sid-ui` (`gallery`, `toolbar`, `segmented`, `badge`, `empty_state`, `card`,
-   `table/state`). Also: ban `.truncate(` in `sid-ui/tests/hygiene.rs` — it is currently on
-   the *allowed* list, which is how 17 sites of this bug survived.
-2. **`sid-ui` polish** — FillTable quiescent-table fix (then delete the Workspaces 120ms
-   workaround); `SID_PERF` should time the paint phase, not just element build; `ConfirmArm<K>`
-   needs `Clone + PartialEq` (not `Copy`) for String-keyed rows; icon-registry gaps;
-   `Button` trailing-icon slot; `Card::panel()` scrolling body; `error_line` into sid-ui.
-3. **Delete `crates/sid/src/ui/text_input.rs`** (946 lines duplicating
-   `gpui_component::input::Input`) — deliberately deferred because it touches every agent's
-   files. The replacement must declare its own width rather than inherit one by percentage.
-4. **Typography wave 2** — sweep the freshly-migrated tabs; the hygiene allowlist ratchet
-   fails on dead entries, so each sweep must delete its own exemption.
-5. **Harness** — `sid-cap.sh` has no `--dclick` (gpui's double-click window is 400ms, the
-   script's gap is 400ms, so double-clicks never register; a working variant exists in the
-   overflow agent's handoff) and `--key` chord injection no-ops entirely.
-6. Narrow-window top bar (~620px) pushes scope chips and badges off the right edge.
-7. `docs/HANDOFF.md` is badly stale — refresh it at the next gate.
+## Landmines
 
-## Landmines re-confirmed today
-
-- gpui reports a text element's **min-content width as its full string width**, so `flex_1`
-  alone never shrinks text — it overflows, and a centred parent spills it out *both* edges.
-  Fix trio: `min_w(0)` + `clamp_one_line()` + `flex_none()` on the sibling that must not grow.
-- gpui's `truncate()` is broken (its `Nowrap` pins the measured-layout cache's `wrap_width`
-  to `None`, so the ellipsis pass never runs). Use `sid_ui::StyledExt::clamp_one_line()`.
-- `h_flex()` centres on the cross axis: a `flex_1` table beside a sized sibling resolves to
-  **zero height** (header paints, no rows). Use `div().flex().flex_row().min_h(0)`.
+- gpui reports a text element's **min-content width as its full string width**, so `flex_1` alone
+  never shrinks text — it overflows, and a centred parent spills it out *both* edges. Fix trio:
+  `min_w(0)` + `clamp_one_line()` + `flex_none()` on the sibling that must not grow.
+- gpui's `truncate()` is broken (`Nowrap` pins the measured-layout cache's `wrap_width` to `None`,
+  so the ellipsis pass never runs). Use `sid_ui::StyledExt::clamp_one_line()`.
+- `h_flex()` centres on the cross axis: a `flex_1` table beside a sized sibling resolves to **zero
+  height** (header paints, no rows). Use `div().flex().flex_row().min_h(0)`.
+- `FillTable` measures in prepaint and its widths land on the *next* layout pass; it now schedules
+  that frame itself (`Window::on_next_frame`), because `Window::refresh` is a no-op mid-draw.
+- Writing an executable and exec'ing it from concurrent tests hits `ETXTBSY` — a `fork` in another
+  thread momentarily inherits the write descriptor. Write test scripts once, before any spawn.
 - `cargo build | tail` hides the exit code — check `$pipestatus`.
-- postcard is positional: `#[serde(default)]` only, no `skip_serializing_if`.
+- postcard is positional: `#[serde(default)]` only, never `skip_serializing_if`.
