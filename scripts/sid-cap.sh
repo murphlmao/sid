@@ -24,6 +24,8 @@
 #   scripts/sid-cap.sh --tab database --click 300,200 --out after-click.png
 #   scripts/sid-cap.sh --tab ssh --dclick 300,300 --out connected.png
 #   scripts/sid-cap.sh --tab network --type "postgres" --out filtered.png
+#   scripts/sid-cap.sh --tab ssh --drag 483,600,300,600 --out narrower-sidebar.png
+#   scripts/sid-cap.sh --key ctrl+2 --out database.png       # chords work first, now
 #   scripts/sid-cap.sh --tab ssh --wait 8 --out slow.png     # extra settle time
 #   scripts/sid-cap.sh --tree                                # dump the window tree (debug)
 #
