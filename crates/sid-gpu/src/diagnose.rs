@@ -42,7 +42,18 @@ pub(crate) fn diagnose(
     evidence: &LadderEvidence<'_>,
 ) -> Diagnosis {
     let rung0_stderr = evidence.rung0_stderr;
-    let detail = build_detail(icds, modules, rung0_stderr, evidence.rung0_no_capture);
+    // Gathered once, up front: every diagnosis carries the hardware inventory in
+    // its evidence, and arm 8 compares it against the driver inventory. Reading
+    // /sys is a handful of tiny files — no subprocess, no thread, no ordering
+    // constraint against the arms below.
+    let gpus = gpus_present(&pf.sys_root);
+    let detail = build_detail(
+        icds,
+        modules,
+        &gpus,
+        rung0_stderr,
+        evidence.rung0_no_capture,
+    );
 
     // Arm 1: the Vulkan loader itself never loaded — blade reports it before any
     // driver is consulted ("Missing Vulkan entry points" / a Loading(...) error).
@@ -181,6 +192,65 @@ pub(crate) fn diagnose(
         };
     }
 
+    // Arm 8: a driver is installed, but for hardware this machine does not have.
+    // The loader loads it, it enumerates zero devices, and instance creation dies
+    // with ERROR_INITIALIZATION_FAILED (issue #1: an Intel Iris Xe laptop whose
+    // only manifest was `radeon_icd.json` from vulkan-radeon; the loader's own
+    // debug output said "Failed to detect any valid GPUs in the current config").
+    //
+    // Ordered HERE, second to last, for two reasons. It must come after every arm
+    // above because each of those reads a *more specific* signal — a named stderr
+    // signature, an oracle's verdict, an absent render node — and any of them
+    // being true makes the vendor comparison beside the point: with no /dev/dri at
+    // all (arm 7) the drivers' vendors are not what is stopping this session. And
+    // it must come before the fallthrough because it is the residual shape the
+    // fallthrough was swallowing: hardware present, drivers present, and no
+    // correspondence between them, which carries no stderr signature at all (the
+    // reported panic is blade info lines and then a bare initialization failure).
+    //
+    // Software rasterizers are excluded from the comparison by construction: they
+    // serve every vendor, and had one been installed the ladder would already have
+    // won on it rather than reaching the classifier.
+    let hardware_icds: Vec<&IcdManifest> = icds.iter().filter(|i| !i.software).collect();
+    if !gpus.is_empty() && !hardware_icds.is_empty() {
+        // Deliberately conservative on BOTH sides: the message names an exact
+        // package, so it is only earned when every GPU and every hardware driver
+        // is one we recognize. An unmapped manifest could be the very driver that
+        // serves this GPU, and an unmapped vendor id (virtio-gpu in a VM) has no
+        // package to recommend — in either case a confident "install X" is worse
+        // than the generic message, so the arm stays silent and falls through.
+        let gpu_vendor_ids = unique(gpus.iter().map(|g| g.vendor_id));
+        let served: Option<Vec<u16>> = hardware_icds
+            .iter()
+            .map(|icd| icd_vendor_id(&icd.path))
+            .collect();
+        let all_gpus_known = gpu_vendor_ids.iter().all(|id| vendor_name(*id).is_some());
+        if let (true, Some(served)) = (all_gpus_known, served) {
+            let served = unique(served.into_iter());
+            let serves_something_present = served.iter().any(|id| gpu_vendor_ids.contains(id));
+            if !serves_something_present {
+                let names = |ids: &[u16]| {
+                    joined_names(
+                        &ids.iter()
+                            .filter_map(|id| vendor_name(*id))
+                            .collect::<Vec<_>>(),
+                    )
+                };
+                return Diagnosis {
+                    cause: FailureCause::NoDriverInstalled,
+                    summary: format!(
+                        "a Vulkan driver is installed, but only for {} GPUs — this machine has \
+                         {} graphics",
+                        names(&served),
+                        names(&gpu_vendor_ids)
+                    ),
+                    remedy: wrong_vendor_remedy(&pf.sys_root, &gpu_vendor_ids),
+                    detail,
+                };
+            }
+        }
+    }
+
     // Fallthrough: real evidence, unrecognized shape — hand the human the tools.
     Diagnosis {
         cause: FailureCause::Unknown,
@@ -200,6 +270,7 @@ pub(crate) fn diagnose(
 fn build_detail(
     icds: &[IcdManifest],
     modules: &[(String, String)],
+    gpus: &[GpuEntry],
     rung0_stderr: &str,
     no_capture: bool,
 ) -> String {
@@ -217,6 +288,13 @@ fn build_detail(
     }
     for (name, version) in modules {
         d.push_str(&format!("  {name} {version}\n"));
+    }
+    d.push_str("GPUs present (/sys/class/drm):\n");
+    if gpus.is_empty() {
+        d.push_str("  (none detected)\n");
+    }
+    for gpu in gpus {
+        d.push_str(&format!("  {}\n", gpu.describe()));
     }
     d.push_str("probe stderr (tail):\n");
     let lines: Vec<&str> = rung0_stderr.lines().collect();
@@ -237,8 +315,247 @@ fn build_detail(
     d
 }
 
-/// Distro-aware install hint from `/etc/os-release` (`ID` + `ID_LIKE` tokens).
-fn distro_hint(sys_root: &Path) -> String {
+/// One display device as the kernel exposes it under `/sys/class/drm`.
+///
+/// `device_id` is optional and `vendor_id` is not: a card whose vendor cannot be
+/// read tells us nothing and is dropped, but a readable vendor with an
+/// unreadable device id is still a GPU whose vendor we must weigh in arm 8 —
+/// requiring both would let one missing file silence the diagnosis.
+struct GpuEntry {
+    /// The `cardN` directory name, e.g. `card1`.
+    card: String,
+    vendor_id: u16,
+    device_id: Option<u16>,
+}
+
+impl GpuEntry {
+    /// One evidence line: `card1: vendor 0x8086 (Intel), device 0x46a6`.
+    fn describe(&self) -> String {
+        let vendor = vendor_name(self.vendor_id).unwrap_or("unrecognized vendor");
+        let device = match self.device_id {
+            Some(id) => format!("0x{id:04x}"),
+            None => "unknown".to_string(),
+        };
+        format!(
+            "{}: vendor 0x{:04x} ({vendor}), device {device}",
+            self.card, self.vendor_id
+        )
+    }
+}
+
+/// PCI vendor ids of the GPU makers sid can both recognize and name a driver
+/// package for. Anything else is left unattributed on purpose — see arm 8.
+const PCI_VENDOR_AMD: u16 = 0x1002;
+const PCI_VENDOR_INTEL: u16 = 0x8086;
+const PCI_VENDOR_NVIDIA: u16 = 0x10de;
+
+/// Human name for a PCI vendor id, or `None` for anything outside the three
+/// vendors above (virtio-gpu, VMware, QXL, an ARM SoC block, ...). `None` is a
+/// load-bearing answer: it disables the vendor-mismatch claim rather than
+/// letting it guess.
+fn vendor_name(id: u16) -> Option<&'static str> {
+    match id {
+        PCI_VENDOR_AMD => Some("AMD"),
+        PCI_VENDOR_INTEL => Some("Intel"),
+        PCI_VENDOR_NVIDIA => Some("NVIDIA"),
+        _ => None,
+    }
+}
+
+/// The GPUs this machine actually has, read through `sys_root` so the classifier
+/// is testable against a fake tree (`lspci` would be a subprocess and a
+/// dependency for data the kernel already publishes as files).
+///
+/// `/sys/class/drm` holds three kinds of entry and only the first is a GPU:
+/// `cardN` (the device), `cardN-eDP-1` (a connector *on* that device), and
+/// `renderD128` (that same device's render node). Counting the latter two would
+/// report one laptop iGPU as three GPUs, so the filter is "starts with `card`
+/// and contains no `-`". Sorted by card name for a report that reads the same
+/// way twice — `read_dir` order is arbitrary.
+fn gpus_present(sys_root: &Path) -> Vec<GpuEntry> {
+    let Ok(entries) = std::fs::read_dir(sys_root.join("sys/class/drm")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<GpuEntry> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let card = entry.file_name().to_string_lossy().into_owned();
+            if !card.starts_with("card") || card.contains('-') {
+                return None;
+            }
+            let device_dir = entry.path().join("device");
+            Some(GpuEntry {
+                card,
+                vendor_id: read_sysfs_hex(&device_dir.join("vendor"))?,
+                device_id: read_sysfs_hex(&device_dir.join("device")),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.card.cmp(&b.card));
+    out
+}
+
+/// A sysfs `0x`-prefixed hex id (`vendor`, `device`). Anything unreadable or
+/// unparseable is `None` — never a default, which would invent hardware.
+fn read_sysfs_hex(path: &Path) -> Option<u16> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    u16::from_str_radix(text.strip_prefix("0x").unwrap_or(text), 16).ok()
+}
+
+/// Which vendor's silicon a driver manifest serves, by needle. Both halves of
+/// the reported failure hang off this table, so each entry names a driver that
+/// actually ships: RADV (`radeon_icd.json` → `libvulkan_radeon.so`) and AMDVLK
+/// (`amd_icd64.json` → `libamdvlk64.so`) for AMD; ANV and the older HasVK
+/// (`intel_icd.json`, `intel_hasvk_icd.json`) for Intel; the proprietary driver
+/// (`nvidia_icd.json` → `libGLX_nvidia.so`) and Mesa's NVK
+/// (`nouveau_icd.json` → `libvulkan_nouveau.so`) for NVIDIA — NVK omitted would
+/// tell an NVK-only machine it has no NVIDIA driver at all.
+const ICD_VENDOR_NEEDLES: &[(&str, u16)] = &[
+    ("radeon", PCI_VENDOR_AMD),
+    ("amdvlk", PCI_VENDOR_AMD),
+    ("amd_icd", PCI_VENDOR_AMD),
+    ("amdgpu", PCI_VENDOR_AMD),
+    ("intel", PCI_VENDOR_INTEL),
+    ("nvidia", PCI_VENDOR_NVIDIA),
+    ("nouveau", PCI_VENDOR_NVIDIA),
+];
+/// The vendor a manifest's driver serves, or `None` when it is not in the table.
+///
+/// Two signals, in precedence order: the file name (the packager's own label)
+/// and then the manifest body, whose `library_path` names the driver library —
+/// the same authority `icd::is_software` uses, and the same plain-substring scan
+/// of a tiny JSON rather than a parser dependency. `None` disables arm 8
+/// entirely: an unrecognized driver could be exactly the one serving this GPU.
+fn icd_vendor_id(manifest: &Path) -> Option<u16> {
+    let name = manifest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if let Some((_, id)) = ICD_VENDOR_NEEDLES.iter().find(|(n, _)| name.contains(n)) {
+        return Some(*id);
+    }
+    let body = std::fs::read_to_string(manifest)
+        .unwrap_or_default()
+        .to_lowercase();
+    ICD_VENDOR_NEEDLES
+        .iter()
+        .find(|(n, _)| body.contains(n))
+        .map(|(_, id)| *id)
+}
+
+/// Values in first-seen order, deduplicated — the summary must say "Intel", not
+/// "Intel and Intel", on a machine that lists one GPU twice.
+fn unique(ids: impl Iterator<Item = u16>) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for id in ids {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// `["Intel"]` → "Intel"; `["Intel", "AMD"]` → "Intel and AMD"; three or more
+/// take commas. Feeds a `Diagnosis::summary`, which is a single line by contract.
+fn joined_names(names: &[&str]) -> String {
+    let mut unique: Vec<&str> = Vec::new();
+    for name in names {
+        if !unique.contains(name) {
+            unique.push(name);
+        }
+    }
+    match unique.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The remedy for arm 8: the package that serves the GPUs actually present, for
+/// the detected distro, plus the software rasterizer as the optional lower rung.
+///
+/// Only reached with every id in `gpu_vendor_ids` recognized (arm 8's
+/// conservatism), so the per-vendor lookup is total.
+fn wrong_vendor_remedy(sys_root: &Path, gpu_vendor_ids: &[u16]) -> String {
+    let tokens = distro_tokens(sys_root);
+    let has = |t: &str| tokens.iter().any(|x| x == t);
+    // (installer command, package per vendor, software-rasterizer package)
+    let (installer, package, software): (Option<&str>, fn(u16) -> &'static str, &str) =
+        if has("arch") {
+            (
+                Some("sudo pacman -S"),
+                |id| match id {
+                    PCI_VENDOR_AMD => "vulkan-radeon",
+                    PCI_VENDOR_NVIDIA => "nvidia-utils",
+                    _ => "vulkan-intel",
+                },
+                "vulkan-swrast",
+            )
+        } else if has("debian") || has("ubuntu") {
+            (
+                Some("sudo apt install"),
+                |id| match id {
+                    PCI_VENDOR_NVIDIA => "nvidia-driver",
+                    _ => "mesa-vulkan-drivers",
+                },
+                "mesa-vulkan-drivers",
+            )
+        } else if has("fedora") || has("rhel") || has("centos") {
+            (
+                Some("sudo dnf install"),
+                |id| match id {
+                    PCI_VENDOR_NVIDIA => "akmod-nvidia",
+                    _ => "mesa-vulkan-drivers",
+                },
+                "mesa-vulkan-drivers",
+            )
+        } else {
+            (
+                None,
+                |id| match id {
+                    PCI_VENDOR_NVIDIA => "the NVIDIA driver package",
+                    _ => "mesa-vulkan-drivers",
+                },
+                "mesa-vulkan-drivers",
+            )
+        };
+
+    let packages: Vec<&str> = {
+        let mut out: Vec<&str> = Vec::new();
+        for id in gpu_vendor_ids {
+            let p = package(*id);
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        out
+    };
+    let install = match installer {
+        Some(cmd) => format!("{cmd} {}", packages.join(" ")),
+        None => format!("install {}", packages.join(" and ")),
+    };
+    // On Mesa-packaged distros the driver and the rasterizer are the same
+    // package, and telling someone to install it "instead" is nonsense.
+    if packages.contains(&software) {
+        format!(
+            "Install the Vulkan driver for the GPU you actually have: {install}. (That package \
+             also ships the lavapipe software rasterizer, which sid falls back to on its own if \
+             the hardware driver still cannot start.)"
+        )
+    } else {
+        format!(
+            "Install the Vulkan driver for the GPU you actually have: {install}. If you would \
+             rather run without a GPU driver, install the software rasterizer {software} instead \
+             — sid falls back to it automatically."
+        )
+    }
+}
+
+/// `ID` + `ID_LIKE` tokens from `/etc/os-release`, lowercased. Shared by both
+/// remedy builders so a distro is recognized identically wherever it matters.
+fn distro_tokens(sys_root: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(sys_root.join("etc/os-release")).unwrap_or_default();
     let mut tokens: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -249,6 +566,12 @@ fn distro_hint(sys_root: &Path) -> String {
             }
         }
     }
+    tokens
+}
+
+/// Distro-aware install hint from `/etc/os-release` (`ID` + `ID_LIKE` tokens).
+fn distro_hint(sys_root: &Path) -> String {
+    let tokens = distro_tokens(sys_root);
     let has = |t: &str| tokens.iter().any(|x| x == t);
     if has("arch") {
         "sudo pacman -S vulkan-radeon  # or vulkan-intel / nvidia-utils for your GPU; \
@@ -548,6 +871,279 @@ mod tests {
         let d = diagnose(&pf(root.path(), state.path()), &[], &[], &ev("x"));
         assert_eq!(d.cause, FailureCause::NoDriverInstalled);
         assert!(d.remedy.contains("Vulkan driver package"));
+    }
+
+    /// Write a GPU into a fake root the way the kernel exposes one: a `cardN`
+    /// entry under `/sys/class/drm` whose `device/` holds the PCI ids. Connector
+    /// entries (`card1-eDP-1`) and the render node live in the same directory on
+    /// a real machine, so the fixture writes them too — they must not be counted
+    /// as extra GPUs.
+    fn add_gpu(root: &Path, card: &str, vendor_id: &str, device_id: &str) {
+        let dev = root.join("sys/class/drm").join(card).join("device");
+        std::fs::create_dir_all(&dev).unwrap();
+        std::fs::write(dev.join("vendor"), format!("{vendor_id}\n")).unwrap();
+        std::fs::write(dev.join("device"), format!("{device_id}\n")).unwrap();
+        // The noise a real /sys/class/drm carries alongside each card.
+        let drm = root.join("sys/class/drm");
+        std::fs::create_dir_all(drm.join(format!("{card}-eDP-1"))).unwrap();
+        std::fs::create_dir_all(drm.join("renderD128").join("device")).unwrap();
+    }
+
+    /// Driver manifests with the content shape the real files have, so the
+    /// `library_path` half of the vendor classification is exercised rather than
+    /// only the file name.
+    fn write_icds(dir: &Path, manifests: &[(&str, &str)]) -> Vec<IcdManifest> {
+        for (name, library) in manifests {
+            std::fs::write(
+                dir.join(name),
+                format!(
+                    "{{\n    \"ICD\": {{\n        \"api_version\": \"1.4.348\",\n        \
+                     \"library_path\": \"{library}\"\n    }},\n    \
+                     \"file_format_version\": \"1.0.1\"\n}}\n"
+                ),
+            )
+            .unwrap();
+        }
+        icd::scan(Path::new("/nonexistent"), Some(&[dir.to_path_buf()]))
+    }
+
+    /// A root with a render node and an Arch os-release: arms 1-7 all pass, so
+    /// only the hardware/driver correspondence can decide.
+    fn arch_root_with_render_node() -> tempfile::TempDir {
+        let root = fake_root();
+        std::fs::create_dir_all(root.path().join("dev/dri")).unwrap();
+        std::fs::write(root.path().join("dev/dri/renderD128"), "").unwrap();
+        std::fs::create_dir_all(root.path().join("etc")).unwrap();
+        std::fs::write(root.path().join("etc/os-release"), "ID=arch\n").unwrap();
+        root
+    }
+
+    /// What this machine's stderr actually looks like: blade's info chatter and
+    /// then a bare initialization failure — no signature any other arm can read.
+    const REPORTED_STDERR: &str = "[INFO blade_graphics::hal::init] Adapter inspection\n\
+         thread 'main' panicked at gpui/src/platform/linux/wayland/client.rs:451:14:\n\
+         Unable to init GPU context: Platform(Init(ERROR_INITIALIZATION_FAILED))";
+
+    /// Issue #1, exactly as reported: an Intel Iris Xe laptop whose only Vulkan
+    /// driver is `vulkan-radeon` (RADV, AMD-only). The loader loads RADV, RADV
+    /// enumerates zero AMD devices, and instance creation dies — a shape with no
+    /// stderr signature at all, so before this arm the user was told to file a
+    /// bug for what is one `pacman -S` away.
+    #[test]
+    fn a_driver_for_the_wrong_vendor_names_both_sides() {
+        let root = arch_root_with_render_node();
+        add_gpu(root.path(), "card1", "0x8086", "0x46a6");
+        let icd_dir = fake_root();
+        let icds = write_icds(
+            icd_dir.path(),
+            &[("radeon_icd.x86_64.json", "libvulkan_radeon.so")],
+        );
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::NoDriverInstalled);
+        assert!(
+            d.summary.contains("AMD") && d.summary.contains("Intel"),
+            "the summary must name the driver's vendor AND the machine's: {}",
+            d.summary
+        );
+        assert!(
+            d.remedy.contains("vulkan-intel"),
+            "the remedy must name the package that actually fixes it: {}",
+            d.remedy
+        );
+        assert!(
+            d.remedy.contains("vulkan-swrast"),
+            "the software-fallback rung must be offered too: {}",
+            d.remedy
+        );
+        assert!(
+            d.detail.contains("0x8086") && d.detail.contains("Intel"),
+            "the evidence must show the hardware that was seen: {}",
+            d.detail
+        );
+    }
+
+    /// A working PRIME laptop: AMD iGPU + NVIDIA dGPU with only RADV installed
+    /// renders fine on the AMD side. One match is enough — claiming a mismatch
+    /// here would be a confident lie about a healthy configuration.
+    #[test]
+    fn a_driver_matching_any_present_gpu_never_fires() {
+        let root = arch_root_with_render_node();
+        add_gpu(root.path(), "card0", "0x1002", "0x164e");
+        add_gpu(root.path(), "card1", "0x10de", "0x25a2");
+        let icd_dir = fake_root();
+        let icds = write_icds(
+            icd_dir.path(),
+            &[("radeon_icd.x86_64.json", "libvulkan_radeon.so")],
+        );
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+        assert!(!d.summary.contains("only for"), "{}", d.summary);
+    }
+
+    /// Conservative by construction: the claim names a specific package, so it
+    /// is only made when BOTH sides are recognized. An unmapped GPU vendor
+    /// (virtio-gpu in a VM) or an unmapped manifest silences it — the generic
+    /// message costs far less than a confident "install X" that is wrong.
+    #[test]
+    fn unknown_vendors_on_either_side_stay_unknown() {
+        let state = fake_root();
+
+        // Unknown hardware, known driver.
+        let vm = arch_root_with_render_node();
+        add_gpu(vm.path(), "card0", "0x1af4", "0x1050");
+        let vm_icds_dir = fake_root();
+        let vm_icds = write_icds(
+            vm_icds_dir.path(),
+            &[("radeon_icd.x86_64.json", "libvulkan_radeon.so")],
+        );
+        let d = diagnose(
+            &pf(vm.path(), state.path()),
+            &vm_icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+
+        // Known hardware, unmapped driver.
+        let box_ = arch_root_with_render_node();
+        add_gpu(box_.path(), "card1", "0x8086", "0x46a6");
+        let odd_dir = fake_root();
+        let odd_icds = write_icds(odd_dir.path(), &[("powervr_icd.json", "libPVRVK.so")]);
+        let d = diagnose(
+            &pf(box_.path(), state.path()),
+            &odd_icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+    }
+
+    /// No GPU visible at all is not evidence of a vendor mismatch — and the
+    /// evidence must say so rather than leaving the section blank.
+    #[test]
+    fn no_detectable_gpu_never_claims_a_vendor_mismatch() {
+        let root = arch_root_with_render_node();
+        let icd_dir = fake_root();
+        let icds = write_icds(
+            icd_dir.path(),
+            &[("radeon_icd.x86_64.json", "libvulkan_radeon.so")],
+        );
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+        assert!(d.detail.contains("(none detected)"), "{}", d.detail);
+    }
+
+    /// A lavapipe-only machine has no hardware driver to be wrong about — the
+    /// arm needs a hardware manifest on the other side of the comparison, so
+    /// this shape keeps whatever diagnosis it had before.
+    #[test]
+    fn a_software_only_driver_set_is_not_a_vendor_mismatch() {
+        let root = arch_root_with_render_node();
+        add_gpu(root.path(), "card1", "0x8086", "0x46a6");
+        let icd_dir = fake_root();
+        let icds = write_icds(
+            icd_dir.path(),
+            &[("lvp_icd.x86_64.json", "libvulkan_lvp.so")],
+        );
+        assert!(icds[0].software, "fixture must be a software rasterizer");
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+        assert!(!d.summary.contains("only for"), "{}", d.summary);
+    }
+
+    /// A lavapipe manifest sitting beside the wrong-vendor hardware driver is a
+    /// common Mesa install, and it must not cost the user the diagnosis: a
+    /// software rasterizer is not attributable to any vendor, so counting it as
+    /// a hardware driver would trip the "unrecognized manifest" conservatism and
+    /// silence an arm that has everything it needs to fire.
+    #[test]
+    fn a_software_rasterizer_alongside_it_does_not_suppress_the_diagnosis() {
+        let root = arch_root_with_render_node();
+        add_gpu(root.path(), "card1", "0x8086", "0x46a6");
+        let icd_dir = fake_root();
+        let icds = write_icds(
+            icd_dir.path(),
+            &[
+                ("radeon_icd.x86_64.json", "libvulkan_radeon.so"),
+                ("lvp_icd.x86_64.json", "libvulkan_lvp.so"),
+            ],
+        );
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::NoDriverInstalled, "{}", d.summary);
+        assert!(
+            d.summary.contains("only for AMD") && d.summary.contains("Intel graphics"),
+            "{}",
+            d.summary
+        );
+    }
+
+    /// The single line that would have made issue #1 self-diagnosing: what GPU
+    /// is in the machine. It rides on EVERY diagnosis, not just the new arm —
+    /// on Intel the "kernel GPU modules" section is empty (i915 exposes no
+    /// `/sys/module/i915/version`), so without this the report named no hardware
+    /// whatsoever.
+    #[test]
+    fn the_detail_lists_the_gpus_present() {
+        let root = arch_root_with_render_node();
+        add_gpu(root.path(), "card1", "0x8086", "0x46a6");
+        let icd_dir = fake_root();
+        // A matching driver, so the diagnosis is the generic one.
+        let icds = write_icds(
+            icd_dir.path(),
+            &[("intel_icd.x86_64.json", "libvulkan_intel.so")],
+        );
+        let state = fake_root();
+        let d = diagnose(
+            &pf(root.path(), state.path()),
+            &icds,
+            &[],
+            &ev(REPORTED_STDERR),
+        );
+        assert_eq!(d.cause, FailureCause::Unknown, "{}", d.summary);
+        assert!(
+            d.detail
+                .contains("card1: vendor 0x8086 (Intel), device 0x46a6"),
+            "the evidence must identify the hardware: {}",
+            d.detail
+        );
+        // Connector entries and the render node share the directory with the
+        // card and must not be mistaken for further GPUs.
+        assert_eq!(
+            d.detail.matches("vendor 0x").count(),
+            1,
+            "one GPU, one line: {}",
+            d.detail
+        );
     }
 
     /// Observed live: a compositor socket that accepts but never answers hangs
