@@ -104,6 +104,8 @@ use gpui::{
 };
 use gpui_component::table::{Table, TableDelegate, TableState};
 
+use crate::scale::UiScale;
+
 /// A [`TableDelegate`] that sizes its columns with [`FillColumns`] and can therefore be
 /// rendered by [`FillTable`].
 ///
@@ -188,8 +190,13 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
                 canvas(
                     move |bounds, window, cx| {
                         let width = f32::from(bounds.size.width);
+                        // App zoom, read straight off the window that is being measured —
+                        // the same lever every rem-based length in the app resolves
+                        // against, so a table can never disagree with the chrome around
+                        // it about what 150% means.
+                        let scale = UiScale::from_rem_size(window.rem_size());
                         let moved = measured.update(cx, |table, cx| {
-                            let moved = table.delegate_mut().fill_columns().sync(width);
+                            let moved = table.delegate_mut().fill_columns().sync(width, scale);
                             if moved {
                                 table.refresh(cx);
                             }

@@ -85,6 +85,15 @@ use crate::typography::Typography as _;
 /// a small but usable field.
 pub const FIELD_MIN_W: Pixels = px(160.);
 
+/// An authored field width as a zoomable length.
+///
+/// A field's *content* is text on the type scale, which rides `rem_size`; an absolute
+/// `min_width` beside it would stop being a floor and start being a clamp the moment the
+/// user zoomed in.
+fn zoomable(width: Pixels) -> gpui::Rems {
+    crate::scale::scaled(f32::from(width))
+}
+
 /// How a field claims horizontal space.
 ///
 /// Every variant is *definite* — see [`FieldWidth::floor`]. There is deliberately no
@@ -128,9 +137,9 @@ impl FieldWidth {
     /// [`Grow`]: FieldWidth::Grow
     pub fn declare<S: Styled>(self, element: S) -> S {
         match self {
-            FieldWidth::Fill => element.w_full().min_w(FIELD_MIN_W),
-            FieldWidth::Grow => element.flex_1().min_w(FIELD_MIN_W),
-            FieldWidth::Fixed(width) => element.w(width).flex_none(),
+            FieldWidth::Fill => element.w_full().min_w(zoomable(FIELD_MIN_W)),
+            FieldWidth::Grow => element.flex_1().min_w(zoomable(FIELD_MIN_W)),
+            FieldWidth::Fixed(width) => element.w(zoomable(width)).flex_none(),
         }
     }
 }
@@ -449,10 +458,17 @@ mod tests {
     /// The pixel value of a length that is *definite*, or `None` for `auto`, a
     /// percentage, or nothing at all. A percentage is deliberately not a number here:
     /// the whole bug was treating one as if it were.
+    /// A declared width in logical pixels **at 100% zoom**.
+    ///
+    /// Field widths are emitted as rems so they ride app zoom (see [`zoomable`]), which
+    /// is still a *definite* length — the regression these tests guard is a field that
+    /// resolves to "whatever the parent says", and a rem is never that. Resolving at the
+    /// base rem size is what makes the assertions readable as the authored numbers.
     fn definite_px(length: Option<Length>) -> Option<f32> {
+        let base = crate::scale::UiScale::DEFAULT.rem_size();
         match length {
-            Some(Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(p)))) => {
-                Some(f32::from(p))
+            Some(Length::Definite(DefiniteLength::Absolute(abs))) => {
+                Some(f32::from(abs.to_pixels(base)))
             }
             _ => None,
         }

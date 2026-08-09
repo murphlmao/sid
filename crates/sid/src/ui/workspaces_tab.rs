@@ -2301,7 +2301,7 @@ mod tests {
             .clone()
             .unwrap_or_default();
         assert_eq!(path.font_size, age.font_size, "one rung");
-        assert_eq!(path.font_size, Some(TypeRole::Body.size().into()));
+        assert_eq!(path.font_size, Some(TypeRole::Body.length().into()));
         assert_eq!(
             path.font_family.as_deref().map(|f| &**f),
             Some(sid_ui::UI_MONO),
@@ -2583,7 +2583,7 @@ mod tests {
         // keep their declared widths at every viewport; `Path` absorbs the difference.
         let mut cols = FleetDelegate::empty().columns;
         for viewport in [1000., 1400., 1700., 2600.] {
-            cols.sync(viewport);
+            cols.sync(viewport, sid_ui::UiScale::DEFAULT);
             let widths = fleet_widths(&cols);
             assert_eq!(&widths[2..5], &[90., 150., 120.], "{viewport}px: numerics");
             assert!(widths[5] >= 240., "{viewport}px: path floor");
@@ -2600,7 +2600,7 @@ mod tests {
         // Degenerate but real: too narrow to honour the declaration, so every column
         // stays legible and the table scrolls, rather than squeezing `Path` to nothing.
         let mut cols = FleetDelegate::empty().columns;
-        cols.sync(600.);
+        cols.sync(600., sid_ui::UiScale::DEFAULT);
         assert_eq!(fleet_widths(&cols), vec![150., 190., 90., 150., 120., 240.]);
     }
 

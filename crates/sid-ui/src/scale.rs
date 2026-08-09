@@ -168,6 +168,16 @@ impl UiScale {
         px(BASE_REM_PX * self.factor())
     }
 
+    /// Recover the zoom level in force for a window, from its rem size.
+    ///
+    /// The inverse of [`UiScale::rem_size`], and the reason code that has to do its own
+    /// pixel arithmetic (table column layout, the terminal's cell grid) needs no second
+    /// channel: the window already carries the factor, so there is exactly one place the
+    /// current zoom can be read from and nothing to keep in sync.
+    pub fn from_rem_size(rem_size: Pixels) -> Self {
+        Self::from_percent((f32::from(rem_size) / BASE_REM_PX * 100.0).round() as u16)
+    }
+
     /// Scale a length that must be resolved *in Rust* rather than by `gpui`'s layout —
     /// table column arithmetic, terminal cell geometry, anything measured before paint.
     ///
@@ -343,6 +353,22 @@ mod tests {
     fn the_rem_size_carries_the_factor() {
         assert_eq!(UiScale::from_percent(150).rem_size(), px(24.));
         assert_eq!(UiScale::from_percent(50).rem_size(), px(8.));
+    }
+
+    #[test]
+    fn a_windows_rem_size_reports_the_rung_that_set_it() {
+        // The round-trip that lets table and terminal geometry read the zoom off the
+        // window instead of carrying a duplicate of it.
+        for &rung in LADDER {
+            let s = UiScale::from_percent(rung);
+            assert_eq!(UiScale::from_rem_size(s.rem_size()), s, "rung {rung}");
+        }
+    }
+
+    #[test]
+    fn gpuis_untouched_rem_size_reads_as_unzoomed() {
+        // A window nobody has called `set_rem_size` on must not look like 0% zoom.
+        assert_eq!(UiScale::from_rem_size(px(BASE_REM_PX)), UiScale::DEFAULT);
     }
 
     #[test]

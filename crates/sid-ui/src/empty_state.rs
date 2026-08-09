@@ -79,7 +79,7 @@ impl RenderOnce for EmptyState {
             .when_some(self.icon, |this, icon| {
                 this.child(
                     icon.el()
-                        .size(gpui::px(28.))
+                        .size(crate::scale::scaled(28.))
                         .text_color(rgb(theme.faint))
                         .into_any_element(),
                 )

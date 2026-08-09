@@ -17,10 +17,11 @@
 
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px, rgb,
+    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, rgb,
 };
 use gpui_component::tooltip::Tooltip;
 
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex};
 use crate::theme::{self, Theme};
 
@@ -139,10 +140,10 @@ impl RenderOnce for StatusDot {
             .flex_none()
             .gap_1p5()
             .child(
-                div().w(px(SLOT)).flex().justify_center().child(
+                div().w(scaled(SLOT)).flex().justify_center().child(
                     div()
-                        .w(px(DOT))
-                        .h(px(DOT))
+                        .w(scaled(DOT))
+                        .h(scaled(DOT))
                         .rounded_full()
                         .border_1()
                         .border_color(colour)

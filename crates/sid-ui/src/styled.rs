@@ -225,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             s.text.clone().unwrap_or_default().font_size,
-            Some(crate::typography::TypeRole::Label.size().into()),
+            Some(crate::typography::TypeRole::Label.length().into()),
         );
         let h = style_of(div().hint_text(&t));
         assert_eq!(
