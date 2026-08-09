@@ -277,7 +277,6 @@ const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
         "SSH session overhaul, in flight — also holds the PTY grid's own font, which is \
          terminal geometry rather than UI type and stays out of the scale",
     ),
-    ("sid/src/ui/network_tab.rs", "Network overhaul, in flight"),
     (
         "sid/src/ui/workspaces_tab.rs",
         "Workspaces overhaul, in flight",
