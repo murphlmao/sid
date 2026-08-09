@@ -5,7 +5,7 @@
 //! 17 files. Each of those is a place where a call site could have typed something else,
 //! and several did. These helpers give the spec exactly one spelling.
 
-use gpui::{Div, InteractiveElement, Styled, div, rgb};
+use gpui::{AlignItems, Div, InteractiveElement, Styled, div, rgb};
 
 use crate::elevation::Elevation;
 use crate::theme::Theme;
@@ -28,6 +28,23 @@ pub trait StyledExt: Styled + Sized {
     /// The design system's row box: `px_3 py_2`, `rounded_md`.
     fn row_padding(self) -> Self {
         self.px_3().py_2().rounded_md()
+    }
+
+    /// Do not stretch on the parent's cross axis — take only the size the content needs.
+    ///
+    /// `align-self: flex-start`, and the fix for a defect `flex_none` looks like it
+    /// should cover and does not. `flex_none` is `flex: 0 0 auto`: it governs the
+    /// *main* axis, so in a `v_flex` parent it stops an element growing taller and says
+    /// nothing about its width. The cross axis is governed by `align-items`, whose
+    /// default is `stretch` — so a `flex_none` segmented control in a column stretched
+    /// to the full width of the column and rendered as a track with five chips huddled
+    /// at its left end, on System and on Network both.
+    ///
+    /// gpui exposes `items_*` for a *parent* to set `align-items`, but no helper for a
+    /// child to opt out, which is why this is written against the refinement directly.
+    fn self_start(mut self) -> Self {
+        self.style().align_self = Some(AlignItems::Start);
+        self
     }
 
     /// A hairline border on all four edges.
@@ -174,6 +191,20 @@ mod tests {
             text.white_space, None,
             "nowrap defeats the truncation it comes with"
         );
+    }
+
+    #[test]
+    fn self_start_opts_out_of_the_parents_stretch() {
+        // The defect this exists for: `flex_none` governs the main axis only, so in a
+        // `v_flex` parent it does nothing about width and `align-items: stretch` pulls
+        // the element to the column's full width. Both calls have to be present, and
+        // they have to land in different fields.
+        let s = style_of(div().flex_none().self_start());
+        assert_eq!(s.align_self, Some(AlignItems::Start), "the cross axis");
+        assert_eq!(s.flex_grow, Some(0.), "and the main axis is still pinned");
+        // `flex_none` alone is exactly the bug — assert it does *not* set align_self, so
+        // nobody "simplifies" the pair back down to one call.
+        assert_eq!(style_of(div().flex_none()).align_self, None);
     }
 
     #[test]

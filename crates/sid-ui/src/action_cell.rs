@@ -68,12 +68,24 @@ pub enum Confirm {
 ///
 /// `K` is whatever identifies a row *independently of its position*: a pid, a connection
 /// id, a path. See the module docs for why that matters.
+///
+/// # Why the bound is `Clone`, not `Copy`
+///
+/// The first three users all keyed on a `Pid`, so `Copy` cost nothing and the type took
+/// it. The next three do not: Network's services are keyed by unit name, and the DB and
+/// SSH rows by alias — `String`, every one of them. A `Copy` bound turned those three
+/// screens away and each hand-rolled its own `Option<String>` arm instead, which is how
+/// the 6-second self-expiry (the property that keeps a forgotten arm from turning a
+/// later stray click into a `kill`) ended up existing in one place and being absent in
+/// three. `Clone + PartialEq` is the weakest bound that still lets the arm *hold* a key
+/// and *compare* one, so a `String`-keyed row gets the tested behaviour instead of a
+/// fourth re-implementation of it.
 #[derive(Clone, Debug)]
 pub struct ConfirmArm<K> {
     armed: Option<(K, Instant)>,
 }
 
-impl<K: Copy + PartialEq> ConfirmArm<K> {
+impl<K: Clone + PartialEq> ConfirmArm<K> {
     /// A disarmed control.
     pub fn new() -> Self {
         Self { armed: None }
@@ -86,7 +98,7 @@ impl<K: Copy + PartialEq> ConfirmArm<K> {
     /// different row while one is already armed, which silently moves the arm rather
     /// than firing on either.
     pub fn press(&mut self, key: K, now: Instant) -> Confirm {
-        if self.is_armed(key, now) {
+        if self.armed_key_ref(now) == Some(&key) {
             self.armed = None;
             return Confirm::Fire;
         }
@@ -95,13 +107,23 @@ impl<K: Copy + PartialEq> ConfirmArm<K> {
     }
 
     /// Whether `key` is the armed row and its window is still open.
+    ///
+    /// Takes `key` by value so a `Copy`-keyed call site reads as it always did; nothing
+    /// is cloned on the way in, because the comparison happens against a borrow.
     pub fn is_armed(&self, key: K, now: Instant) -> bool {
-        self.armed_key(now) == Some(key)
+        self.armed_key_ref(now) == Some(&key)
     }
 
     /// The armed key, if one is armed and unexpired.
     pub fn armed_key(&self, now: Instant) -> Option<K> {
+        self.armed_key_ref(now).cloned()
+    }
+
+    /// The armed key by reference — the allocation-free form of [`ConfirmArm::armed_key`],
+    /// for a render pass that only needs to compare it against the row it is drawing.
+    pub fn armed_key_ref(&self, now: Instant) -> Option<&K> {
         self.armed
+            .as_ref()
             .filter(|(_, at)| now.saturating_duration_since(*at) < CONFIRM_WINDOW)
             .map(|(key, _)| key)
     }
@@ -119,15 +141,15 @@ impl<K: Copy + PartialEq> ConfirmArm<K> {
     /// contains the armed row must leave the arm alone, or the confirm becomes a race
     /// against the refresh timer and the timer wins.
     pub fn retain(&mut self, keep: impl Fn(K) -> bool) {
-        if let Some((key, _)) = self.armed
-            && !keep(key)
+        if let Some((key, _)) = &self.armed
+            && !keep(key.clone())
         {
             self.armed = None;
         }
     }
 }
 
-impl<K: Copy + PartialEq> Default for ConfirmArm<K> {
+impl<K: Clone + PartialEq> Default for ConfirmArm<K> {
     fn default() -> Self {
         Self::new()
     }
@@ -416,6 +438,62 @@ mod tests {
         let arm: ConfirmArm<u32> = ConfirmArm::new();
         assert_eq!(arm.armed_key(t0()), None);
         assert!(!arm.is_armed(7, t0()));
+    }
+
+    #[test]
+    fn a_string_keyed_row_gets_the_same_two_step() {
+        // The bound this type used to carry was `Copy`, which excluded every row keyed
+        // by a name: Network's services (unit name), the DB and SSH lists (alias). All
+        // three hand-rolled an `Option<String>` arm instead and none of them expired.
+        let start = t0();
+        let mut arm: ConfirmArm<String> = ConfirmArm::new();
+        assert_eq!(arm.press("nginx.service".into(), start), Confirm::Armed);
+        assert!(arm.is_armed("nginx.service".into(), start));
+        assert_eq!(
+            arm.press("nginx.service".into(), after(start, 1)),
+            Confirm::Fire
+        );
+    }
+
+    #[test]
+    fn a_string_keyed_arm_expires_and_stays_bound_to_its_own_row() {
+        let start = t0();
+        let mut arm: ConfirmArm<String> = ConfirmArm::new();
+        arm.press("prod-eu-west-1".into(), start);
+        // Another row re-arms rather than firing — the safety property, unchanged.
+        assert_eq!(arm.press("staging".into(), after(start, 1)), Confirm::Armed);
+        assert!(!arm.is_armed("prod-eu-west-1".into(), after(start, 1)));
+        // ...and the self-expiry the hand-rolled copies were missing, measured from the
+        // press that armed *this* row rather than from the first one.
+        assert!(arm.is_armed("staging".into(), after(start, 2)));
+        assert!(!arm.is_armed("staging".into(), after(start, 1) + CONFIRM_WINDOW));
+    }
+
+    #[test]
+    fn a_string_keyed_arm_survives_a_refresh_that_keeps_its_row() {
+        let start = t0();
+        let mut arm: ConfirmArm<String> = ConfirmArm::new();
+        arm.press("sshd.service".into(), start);
+        let units = ["cron.service", "sshd.service"];
+        arm.retain(|unit| units.contains(&unit.as_str()));
+        assert!(arm.is_armed("sshd.service".into(), after(start, 2)));
+        arm.retain(|unit| unit != "sshd.service");
+        assert!(!arm.is_armed("sshd.service".into(), after(start, 2)));
+    }
+
+    #[test]
+    fn the_armed_key_can_be_read_without_cloning_it() {
+        // What a render pass wants: compare the arm against the row being drawn without
+        // allocating a String per row per frame.
+        let start = t0();
+        let mut arm: ConfirmArm<String> = ConfirmArm::new();
+        arm.press("nginx.service".into(), start);
+        assert_eq!(
+            arm.armed_key_ref(start).map(String::as_str),
+            Some("nginx.service")
+        );
+        assert_eq!(arm.armed_key(start).as_deref(), Some("nginx.service"));
+        assert_eq!(arm.armed_key_ref(start + CONFIRM_WINDOW), None);
     }
 
     #[test]

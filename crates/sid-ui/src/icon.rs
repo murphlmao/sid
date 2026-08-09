@@ -13,6 +13,20 @@
 //!
 //! **No emoji, ever** — enforced for the whole workspace by `tests/hygiene.rs`. Lucide
 //! is monochrome line art, which is the house rule already.
+//!
+//! # What the bundle does not have
+//!
+//! `gpui-component-assets` 0.5.1 ships **84** SVGs, not all of Lucide, and six glyphs
+//! sid's screens actually want are simply not among them. They are listed in
+//! [`UNBUNDLED`] with the control that wants each one, and pinned by a test that fails
+//! the day a bundle bump ships one — because the alternative to naming a gap is
+//! shipping a picture that means something else, which is how the destroy affordance
+//! spent a migration drawn as a **backspace key** (see [`Icon::Trash`]).
+//!
+//! The rule this file follows: a substitution is allowed only when the stand-in reads
+//! as the *same act* at 14px (`redo` for [`Icon::Refresh`] — a curved arrow is a re-run).
+//! Where nothing in the bundle does, there is no registry entry, and the call site uses
+//! a word instead of a glyph.
 
 use gpui::{App, IntoElement, RenderOnce, SharedString, Window};
 use gpui_component::{IconName, IconNamed as _, Sizable as _, Size};
@@ -49,8 +63,15 @@ pub enum Icon {
     Trash,
     /// Copy to clipboard.
     Copy,
-    /// Rename in place. The bundle ships no pencil; Lucide's `case-sensitive` (an "Aa"
-    /// glyph) is the closest monochrome stand-in and reads as "edit this text".
+    /// Rename in place.
+    ///
+    /// **A known substitution**, and the second one this name has had. The bundle ships
+    /// no pencil, so this was `case-sensitive` — which is not an edit glyph at all: it
+    /// is the *find toolbar's* case-sensitivity toggle, drawn as "Aa". Next to a host
+    /// alias it read as a typography control, and at 14px mostly as noise. Lucide's
+    /// `replace` (a rounded square with an arrow curving into a second one) is the
+    /// least-wrong bundled stand-in: it says "put a different one of these here", which
+    /// is what a rename is. It is still not a pencil; see [`UNBUNDLED`].
     Rename,
     /// Confirmed / selected.
     Check,
@@ -72,6 +93,13 @@ pub enum Icon {
     ChevronUp,
     /// A sortable-but-unsorted column, or a dropdown affordance.
     ChevronsUpDown,
+    /// Move this item **up** an ordered list — promote a route, a column, a rule.
+    ///
+    /// A full arrow rather than a chevron on purpose: the chevrons are disclosure and
+    /// sort marks, and a reorder control that borrowed one would read as "expand".
+    ArrowUp,
+    /// Move this item **down** an ordered list — demote.
+    ArrowDown,
     /// Sorted ascending.
     SortAscending,
     /// Sorted descending.
@@ -125,6 +153,41 @@ pub enum Icon {
     Calendar,
 }
 
+/// Glyphs sid's screens want that the bundle does not contain, and what asked for each.
+///
+/// Each entry is a Lucide icon name (`play` -> `icons/play.svg`) that is **absent** from
+/// `gpui-component-assets` 0.5.1. `the_named_gaps_are_still_gaps` asserts the absence, so
+/// a bundle bump that ships one fails the build and prompts a registry entry — the list
+/// only shrinks, the same ratchet `tests/hygiene.rs` uses for the type scale.
+///
+/// This is deliberately a *list of gaps* rather than a list of approximations. Every one
+/// of these had a plausible-looking stand-in in the bundle and every stand-in meant
+/// something else:
+///
+/// - `play` -> `chevron-right` is a disclosure triangle, not a transport control;
+///   `arrow-right` is navigation. A Run button says "Run".
+/// - `download` -> `arrow-down` is already [`Icon::ArrowDown`] (demote) and would make
+///   "export" and "move this row down" the same picture in one toolbar.
+/// - `trash` -> the bundle's `delete` is the **backspace key** (see [`Icon::Trash`]).
+/// - `container` / `boxes` / `network` -> nothing in the bundle draws a container, a
+///   cluster or a NIC. `building-2`, `frame`, `map` and `gallery-vertical-end` are the
+///   nearest shapes and none of them is about a machine.
+pub const UNBUNDLED: &[(&str, &str)] = &[
+    ("play", "run / execute — the Database tab's Run button"),
+    ("download", "export — the Database tab's Export menu"),
+    ("trash", "destroy — Icon::Trash draws circle-x instead"),
+    ("pencil", "rename — Icon::Rename draws `replace` instead"),
+    (
+        "container",
+        "a container runtime — Network's Docker sub-view",
+    ),
+    ("boxes", "a cluster — Network's Kubernetes sub-view"),
+    (
+        "network",
+        "a network adapter — Network's Interfaces sub-view",
+    ),
+];
+
 impl Icon {
     /// Every registered icon — the test sweep, and a future gallery's source list.
     pub const ALL: &'static [Icon] = &[
@@ -146,6 +209,8 @@ impl Icon {
         Icon::ChevronLeft,
         Icon::ChevronUp,
         Icon::ChevronsUpDown,
+        Icon::ArrowUp,
+        Icon::ArrowDown,
         Icon::SortAscending,
         Icon::SortDescending,
         Icon::Folder,
@@ -184,7 +249,7 @@ impl Icon {
             Icon::Close => IconName::Close,
             Icon::Trash => IconName::CircleX,
             Icon::Copy => IconName::Copy,
-            Icon::Rename => IconName::CaseSensitive,
+            Icon::Rename => IconName::Replace,
             Icon::Check => IconName::Check,
             Icon::Warning => IconName::TriangleAlert,
             Icon::Info => IconName::Info,
@@ -195,6 +260,8 @@ impl Icon {
             Icon::ChevronLeft => IconName::ChevronLeft,
             Icon::ChevronUp => IconName::ChevronUp,
             Icon::ChevronsUpDown => IconName::ChevronsUpDown,
+            Icon::ArrowUp => IconName::ArrowUp,
+            Icon::ArrowDown => IconName::ArrowDown,
             Icon::SortAscending => IconName::SortAscending,
             Icon::SortDescending => IconName::SortDescending,
             Icon::Folder => IconName::Folder,
@@ -289,6 +356,61 @@ mod tests {
             Icon::ALL.len(),
             "duplicate entry in Icon::ALL"
         );
+    }
+
+    #[test]
+    fn the_named_gaps_are_still_gaps() {
+        // The ratchet. `UNBUNDLED` is a promise that these seven glyphs do not exist to
+        // be used — if a bundle bump ships one, the honest answer changes from "the
+        // Run button says Run" to "the Run button gets a play triangle", and this test
+        // is what forces that conversation instead of letting the list rot.
+        let bundled: Vec<String> = gpui_component_assets::Assets
+            .list("icons/")
+            .expect("the bundle lists its icons")
+            .into_iter()
+            .map(|p| p.to_string())
+            .collect();
+        assert!(
+            bundled.len() > 50,
+            "the bundle listing came back nearly empty ({}) — this test would pass \
+             vacuously",
+            bundled.len()
+        );
+        for (name, wanted_by) in UNBUNDLED {
+            let path = format!("icons/{name}.svg");
+            assert!(
+                !bundled.contains(&path),
+                "the bundle now ships {path} ({wanted_by}) — give it an Icon entry and \
+                 delete its UNBUNDLED line"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_is_no_longer_the_case_sensitivity_toggle() {
+        // `case-sensitive` is the find toolbar's "Aa" button. Beside a host alias it
+        // read as a typography control; pinned so a future edit cannot drift back.
+        assert_ne!(Icon::Rename.path(), IconName::CaseSensitive.path());
+        assert_eq!(Icon::Rename.path(), IconName::Replace.path());
+    }
+
+    #[test]
+    fn reorder_uses_arrows_and_never_a_chevron() {
+        // Promote/demote must not borrow the disclosure or sort marks: three different
+        // meanings sharing one picture in a table header is how a control stops being
+        // readable at 14px.
+        assert_eq!(Icon::ArrowUp.path(), IconName::ArrowUp.path());
+        assert_eq!(Icon::ArrowDown.path(), IconName::ArrowDown.path());
+        for chevron in [
+            Icon::ChevronUp,
+            Icon::ChevronDown,
+            Icon::ChevronsUpDown,
+            Icon::SortAscending,
+            Icon::SortDescending,
+        ] {
+            assert_ne!(Icon::ArrowUp.path(), chevron.path());
+            assert_ne!(Icon::ArrowDown.path(), chevron.path());
+        }
     }
 
     #[test]

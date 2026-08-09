@@ -14,6 +14,9 @@
 //!    `text_size(..)` / `font_weight(..)` / `font_family(..)` outside
 //!    `sid_ui::typography`, which defines them. Call sites name a *role*
 //!    (`.text_body(&t)`, `.text_meta(&t)`, `.text_mono(&t)`), never a measurement.
+//! 4. **Calls that do not do what they say.** A short list of `gpui` methods that are
+//!    broken rather than merely unfashionable, each with the spelling that works. See
+//!    [`BANNED_CALLS`].
 //!
 //! All three scanners skip each file's `#[cfg(test)]` region: test code legitimately
 //! uses literal colours as fixtures, an emoji as a grapheme-segmentation subject, and
@@ -392,12 +395,13 @@ fn the_type_scanner_flags_measurements_and_not_roles() {
     ] {
         assert!(raw_type_calls(ok).is_empty(), "{ok} is a role, not a size");
     }
-    // Neighbours that merely start the same way.
+    // Neighbours that merely start the same way. `.truncate()` used to be on this list,
+    // which reads as an endorsement and was taken as one — it is banned outright by
+    // `no_banned_calls` and lives in that test's controls now.
     for ok in [
         ".text_color(rgb(t.fg))",
         ".text_center()",
         ".text_ellipsis()",
-        ".truncate()",
         "let text_size = 12;",
     ] {
         assert!(raw_type_calls(ok).is_empty(), "{ok}");
@@ -427,6 +431,157 @@ fn every_sweep_pending_entry_points_at_a_real_file() {
             "{suffix}: no such source file"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------
+// Calls that do not do what they say
+// ---------------------------------------------------------------------------------
+
+/// `gpui` calls that are broken rather than merely unfashionable, and what to type
+/// instead. One entry so far, and it earned the whole scanner.
+///
+/// `truncate()` is the case that proves a scanner is needed: it *reads* correct, it
+/// compiles, and it silently does nothing. It sets `white_space: Nowrap` alongside the
+/// ellipsis, and `TextElement`'s measured-layout cache keys on `wrap_width`, which is
+/// always `None` under `Nowrap` — so the intrinsic-sizing pass (available width
+/// `MaxContent`, nothing to truncate *to*) caches the full-width layout and the second
+/// pass, the one that finally knows how wide the element is, hits that cache and returns
+/// before the ellipsis is applied. The text is then hard-clipped mid-glyph by
+/// `overflow_hidden`: an SSH card read `prod-eu-west-1-application-serv` jammed against
+/// its origin chip.
+///
+/// Seventeen call sites of that bug survived a whole overflow sweep because `.truncate()`
+/// was sitting in this file's *allowed* list — as a control asserting the type-size
+/// scanner did not flag it, which read as a blessing. Now it fails the build.
+const BANNED_CALLS: &[(&str, &str)] = &[(
+    ".truncate(",
+    "never renders an ellipsis (its Nowrap pins the layout cache) — use \
+     sid_ui::StyledExt::clamp_one_line()",
+)];
+
+/// Files that still contain a banned call, with who owns the sweep.
+///
+/// Same ratchet as the type scale: `the_banned_call_allowlist_has_no_dead_entries` fails
+/// on an entry whose file is already clean, so a landing sweep deletes its own exemption.
+/// These two are held by concurrent agents; editing them here would be a guaranteed
+/// merge conflict, so their sites are inventoried instead of fixed.
+const BANNED_CALL_SWEEP_PENDING: &[(&str, &str)] = &[
+    (
+        "sid/src/ui/db_tab.rs",
+        "9 sites — DB tab overhaul, in flight",
+    ),
+    (
+        "sid/src/ui/command_palette.rs",
+        "1 site — not held by anyone; wave 2",
+    ),
+];
+
+/// Whether `file` is excused from the banned-call scan, and why.
+fn banned_sweep_pending(file: &Path) -> Option<&'static str> {
+    let path = file.to_string_lossy().replace('\\', "/");
+    BANNED_CALL_SWEEP_PENDING
+        .iter()
+        .find(|(suffix, _)| path.ends_with(suffix))
+        .map(|(_, why)| *why)
+}
+
+#[test]
+fn no_banned_calls() {
+    let mut offences = Vec::new();
+    for root in scanned_roots() {
+        for file in rust_files(&root) {
+            if banned_sweep_pending(&file).is_some() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).expect("utf-8 source");
+            for (n, line) in shipping_lines(&text) {
+                for (call, why) in banned_calls(line) {
+                    offences.push(format!("{}:{n}: {call} {why}", file.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "these calls do not do what they say:\n{}",
+        offences.join("\n")
+    );
+}
+
+#[test]
+fn the_banned_call_allowlist_has_no_dead_entries() {
+    let mut clean = Vec::new();
+    for root in scanned_roots() {
+        for file in rust_files(&root) {
+            let Some(why) = banned_sweep_pending(&file) else {
+                continue;
+            };
+            let text = std::fs::read_to_string(&file).expect("utf-8 source");
+            let still_dirty = shipping_lines(&text)
+                .iter()
+                .any(|(_, line)| !banned_calls(line).is_empty());
+            if !still_dirty {
+                clean.push(format!("{} ({why})", file.display()));
+            }
+        }
+    }
+    assert!(
+        clean.is_empty(),
+        "these files are swept — delete their BANNED_CALL_SWEEP_PENDING entries:\n{}",
+        clean.join("\n")
+    );
+}
+
+#[test]
+fn every_banned_sweep_entry_points_at_a_real_file() {
+    let files: Vec<String> = scanned_roots()
+        .iter()
+        .flat_map(|root| rust_files(root))
+        .map(|f| f.to_string_lossy().replace('\\', "/"))
+        .collect();
+    for (suffix, _) in BANNED_CALL_SWEEP_PENDING {
+        assert!(
+            files.iter().any(|f| f.ends_with(suffix)),
+            "{suffix}: no such source file"
+        );
+    }
+}
+
+/// The banned calls on `line`, ignoring anything in a trailing comment — the doc comment
+/// on `clamp_one_line` legitimately *names* the call it replaces, at length.
+fn banned_calls(line: &str) -> Vec<(&'static str, &'static str)> {
+    let code = match line.find("//") {
+        Some(at) => &line[..at],
+        None => line,
+    };
+    BANNED_CALLS
+        .iter()
+        .filter(|(call, _)| code.contains(*call))
+        .copied()
+        .collect()
+}
+
+#[test]
+fn the_banned_call_scanner_flags_the_call_and_not_its_neighbours() {
+    assert_eq!(banned_calls("div().truncate()").len(), 1);
+    assert_eq!(banned_calls("    .truncate()").len(), 1);
+    // The method it is *not*: `String::truncate` takes an argument and is fine, but it
+    // shares the spelling, so the scanner cannot tell them apart — which is why the two
+    // sid crates it covers are UI code, where `String::truncate` has no business.
+    assert_eq!(banned_calls("s.truncate(8);").len(), 1);
+    // Neighbours, and the replacement.
+    for ok in [
+        ".clamp_one_line()",
+        ".text_ellipsis()",
+        ".line_clamp(1)",
+        "let truncated = true;",
+    ] {
+        assert!(banned_calls(ok).is_empty(), "{ok}");
+    }
+    // Prose about the broken call is prose — `clamp_one_line`'s own doc comment is four
+    // paragraphs of exactly that.
+    assert!(banned_calls("/// Use this, not gpui's `.truncate()`.").is_empty());
+    assert!(banned_calls("    .clamp_one_line() // was .truncate()").is_empty());
 }
 
 #[test]

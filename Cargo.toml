@@ -112,6 +112,11 @@ zeroize = "1"
 gpui = "0.2"
 gpui-component = { version = "0.5.1", features = ["tree-sitter-languages"] }
 gpui-component-assets = "0.5.1"
+# Grapheme and word segmentation (UAX#29). Single-sourced for the same reason as the
+# renderer: `sid-ui`'s word-boundary rule has to be the *same* rule `gpui-component`'s
+# `InputState` applies to ctrl-backspace, and a second major version in the lock would
+# quietly make them two rules.
+unicode-segmentation = "1"
 
 # Test
 tempfile = "3"

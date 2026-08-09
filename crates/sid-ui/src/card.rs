@@ -6,16 +6,31 @@
 //! it inline — four copies of a three-line rule, drifting. This is that function, made
 //! importable, plus the frame the System tab's unframed meter cluster is missing.
 //!
-//! Two shapes, one type:
+//! Three shapes, one type:
 //!
 //! - [`Card::new`] — a `surface` fill with a hairline. Data clusters, forms, grouped
 //!   controls: anything that should read as *raised off* the canvas.
 //! - [`Card::section`] — header and content, no chrome. A titled block inside a reading
 //!   column, where a second border would only add noise.
+//! - [`Card::panel`] — a card sized by its container rather than by its contents, whose
+//!   body a scrolling list can actually fill. See below.
 //!
-//! Both take optional header actions, which is what keeps a section's controls anchored
-//! to the section instead of drifting to the far edge of an invisible 880px column (the
-//! System tab's orphaned `COMMON` list).
+//! All three take optional header actions, which is what keeps a section's controls
+//! anchored to the section instead of drifting to the far edge of an invisible 880px
+//! column (the System tab's orphaned `COMMON` list).
+//!
+//! # Why `panel` is a third shape and not a flag
+//!
+//! The first two wrap their children in a `v_flex().gap_2()` with padding, which is
+//! right for a stack of rows and wrong for exactly one thing: a child that wants to
+//! *scroll*. An `overflow_y_scroll` child needs a definite height to scroll **within**,
+//! and it gets one only if every ancestor between it and the sized container passes the
+//! height down — `flex_1` plus `min_h_0`, all the way. A gap-2 content wrapper with no
+//! flex sizing is a hard stop: the list inside it resolves to its content height, grows
+//! past the card, and nothing scrolls. `db_tab.rs` worked around this with a local
+//! `panel_header()` and a hand-built body; [`Card::panel`] is that arrangement, once.
+
+use gpui::px;
 
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, Refineable as _, RenderOnce, SharedString,
@@ -39,13 +54,54 @@ pub fn header_text(title: &str, count: Option<usize>) -> String {
     }
 }
 
-/// Whether a card draws chrome of its own.
+/// Whether a card draws chrome of its own, and how its body is sized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CardChrome {
-    /// `surface` fill + hairline: raised off the canvas.
+    /// `surface` fill + hairline: raised off the canvas. Body sized by its contents.
     Raised,
     /// Header and content only: a titled block on whatever it sits on.
     Flat,
+    /// `surface` fill + hairline, a ruled header, and a body sized by the *container*
+    /// — see the module docs.
+    Panel,
+}
+
+impl CardChrome {
+    /// Whether this shape paints a fill and a hairline.
+    const fn is_raised(self) -> bool {
+        matches!(self, CardChrome::Raised | CardChrome::Panel)
+    }
+
+    /// Whether this shape's body takes its height from the container instead of from
+    /// its own contents. Only a body that does can hold something that scrolls.
+    const fn body_fills_container(self) -> bool {
+        matches!(self, CardChrome::Panel)
+    }
+}
+
+/// A panel's body: the wrapper a scrolling child needs above it.
+///
+/// `flex_1` so it takes the height the panel has left after the header, and `min_h_0`
+/// so it is allowed to be *shorter* than its contents — without that second call a flex
+/// item's minimum is its content height, the body grows to fit the whole list, and the
+/// `overflow_y_scroll` inside it never has a smaller box to scroll within. No gap and
+/// no padding: a scrolling list draws its own rows to the panel's edges, and a gap here
+/// would show through under the last visible row.
+fn panel_body() -> gpui::Div {
+    v_flex().flex_1().min_h_0()
+}
+
+/// A panel's header: the ruled strip the body scrolls under.
+///
+/// `flex_none` is the other half of [`panel_body`]'s `flex_1` — a header that could
+/// shrink would give the body a height that changes as the list does.
+fn panel_header() -> gpui::Div {
+    h_flex()
+        .flex_none()
+        .justify_between()
+        .gap_3()
+        .px_3()
+        .py(px(6.))
 }
 
 /// A titled container. See the module docs for the two shapes.
@@ -77,6 +133,24 @@ impl Card {
     pub fn section(title: impl Into<SharedString>) -> Self {
         Self {
             chrome: CardChrome::Flat,
+            title: Some(title.into()),
+            count: None,
+            actions: Vec::new(),
+            children: Vec::new(),
+            style: StyleRefinement::default(),
+        }
+    }
+
+    /// A panel: a raised card whose body is sized by its container, so a `flex_1` +
+    /// `overflow_y_scroll` child inside it has a height to scroll within.
+    ///
+    /// The panel itself still has to be *given* a height by its own parent — `flex_1`
+    /// in a column, or an explicit one. What this shape guarantees is that the height
+    /// reaches the body instead of stopping at a content wrapper. Note the shape also
+    /// drops the body padding: a scrolling list paints its own rows to the edge.
+    pub fn panel(title: impl Into<SharedString>) -> Self {
+        Self {
+            chrome: CardChrome::Panel,
             title: Some(title.into()),
             count: None,
             actions: Vec::new(),
@@ -132,28 +206,45 @@ impl ParentElement for Card {
 impl RenderOnce for Card {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme::active(cx).clone();
-        let raised = self.chrome == CardChrome::Raised;
+        let chrome = self.chrome;
+        let panel = chrome.body_fills_container();
         let header = self.title.map(|title| {
-            h_flex()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .section_label(&theme)
-                        .child(header_text(&title, self.count)),
-                )
-                .when(!self.actions.is_empty(), |this| {
-                    this.child(h_flex().gap_1().children(self.actions))
-                })
+            let bar = if panel {
+                panel_header().hairline_b(&theme)
+            } else {
+                h_flex().justify_between().gap_3()
+            };
+            bar.child(
+                // `flex_1` + `min_w_0` + a clamp: a header is one line, and gpui reports
+                // a text element's min-content width as its *whole string*, so without
+                // the pair a long title pushes the header's actions off the card's right
+                // edge instead of eliding.
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .clamp_one_line()
+                    .section_label(&theme)
+                    .child(header_text(&title, self.count)),
+            )
+            .when(!self.actions.is_empty(), |this| {
+                this.child(h_flex().flex_none().gap_1().children(self.actions))
+            })
         });
 
         let mut card = v_flex()
-            .when(raised, |this| {
-                this.elevation(Elevation::Surface, &theme).p_3()
+            .when(chrome.is_raised(), |this| {
+                this.elevation(Elevation::Surface, &theme)
             })
-            .gap_2()
+            // A panel does its padding per region (the header's own, the body's none),
+            // because a scrolling body has to reach the card's edges.
+            .when(!panel, |this| this.p_3().gap_2())
+            .when(panel, |this| this.min_h_0())
             .children(header)
-            .child(v_flex().gap_2().children(self.children))
+            .child(if panel {
+                panel_body().children(self.children)
+            } else {
+                v_flex().gap_2().children(self.children)
+            })
             // A card's own type, so its body does not inherit whatever size and colour
             // the surrounding chrome happened to be painted in. It used to set only the
             // colour, which left the same card rendering at 12px inside a `text_xs`
@@ -201,10 +292,51 @@ mod tests {
     }
 
     #[test]
-    fn the_two_shapes_differ_only_in_chrome() {
+    fn the_three_shapes_differ_only_in_chrome() {
         assert_eq!(Card::new().chrome, CardChrome::Raised);
         assert_eq!(Card::section("x").chrome, CardChrome::Flat);
+        assert_eq!(Card::panel("x").chrome, CardChrome::Panel);
         assert_eq!(Card::section("x").title.expect("titled").as_ref(), "x");
+        assert_eq!(Card::panel("x").title.expect("titled").as_ref(), "x");
         assert!(Card::new().title.is_none());
+    }
+
+    #[test]
+    fn only_a_panel_hands_its_height_to_its_body() {
+        // The distinction the third shape exists for. A card sizes its body by the
+        // body's contents; a panel sizes it by the container, which is the only way a
+        // scrolling child gets a box smaller than its content to scroll within.
+        assert!(CardChrome::Panel.body_fills_container());
+        assert!(!CardChrome::Raised.body_fills_container());
+        assert!(!CardChrome::Flat.body_fills_container());
+        // ...and a panel is still a raised card, chrome-wise.
+        assert!(CardChrome::Panel.is_raised());
+        assert!(CardChrome::Raised.is_raised());
+        assert!(!CardChrome::Flat.is_raised());
+    }
+
+    #[test]
+    fn a_panels_body_can_be_shorter_than_its_contents() {
+        // Both halves are load-bearing and only one of them is obvious. `flex_1` gives
+        // the body the panel's leftover height; `min_h_0` is what *allows* it to be
+        // shorter than the list inside — a flex item's default minimum is its content
+        // size, so without it the body grows to fit the whole list and the
+        // `overflow_y_scroll` inside never has a smaller box to scroll within.
+        let style = style_of(panel_body());
+        assert_eq!(style.flex_grow, Some(1.), "the body takes the leftover");
+        assert_eq!(
+            style.min_size.height,
+            Some(gpui::px(0.).into()),
+            "without min_h_0 nothing inside a panel can scroll"
+        );
+        // The header is the other half of the arithmetic: it may not shrink, or the
+        // body's height changes as the list does.
+        assert_eq!(style_of(panel_header()).flex_grow, Some(0.));
+        assert_eq!(style_of(panel_header()).flex_shrink, Some(0.));
+    }
+
+    /// Read back a `Div`'s refined style — the trick `styled.rs`'s tests use.
+    fn style_of(mut d: gpui::Div) -> StyleRefinement {
+        d.style().clone()
     }
 }

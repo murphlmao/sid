@@ -84,7 +84,18 @@ impl RenderOnce for EmptyState {
                         .into_any_element(),
                 )
             })
-            .child(div().text_body(&theme).child(self.headline))
+            // `max_w_96` + centred, the same box the guidance gets: a headline is a
+            // caller's sentence ("no connections for workspace acme-api-gateway yet"),
+            // and an unbounded one centred in a 2000px pane spills out of *both* edges
+            // rather than wrapping. Wrapping — not clamping — is right here: this is the
+            // one line on an empty screen, and half of it is worse than two lines of it.
+            .child(
+                div()
+                    .max_w_96()
+                    .text_center()
+                    .text_body(&theme)
+                    .child(self.headline),
+            )
             .when_some(self.guidance, |this, guidance| {
                 this.child(
                     div()

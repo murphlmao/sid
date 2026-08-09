@@ -131,7 +131,19 @@ impl RenderOnce for Toolbar {
             .when(!has_filter, |this| this.child(div().flex_1()))
             .children(self.children)
             .when_some(self.count, |this, count| {
-                this.child(div().flex_none().hint_text(&theme).child(count))
+                // NOT `flex_none`. Six call sites feed this slot `format!("error: {e}")`
+                // rather than a count, and an error from an OS call is arbitrary length.
+                // Pinned at its content width, one of those pushed the toolbar's actions
+                // off the right edge of the window; allowed to shrink and clamp, it
+                // elides and the refresh button stays reachable.
+                this.child(
+                    div()
+                        .flex_shrink()
+                        .min_w_0()
+                        .clamp_one_line()
+                        .hint_text(&theme)
+                        .child(count),
+                )
             })
             .when(!self.actions.is_empty(), |this| {
                 this.child(h_flex().flex_none().gap_1().children(self.actions))
