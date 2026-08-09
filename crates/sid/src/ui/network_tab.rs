@@ -81,8 +81,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, SharedString,
-    Subscription, Window, div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, SharedString, Subscription,
+    Window, div, prelude::*, px, rgb,
 };
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_containers::{DockerCliProvider, KubectlCliProvider};
@@ -101,7 +101,7 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, Segment, SegmentSelect,
-    SegmentedControl, StyledExt as _, Toolbar, h_flex, sortable_th, v_flex,
+    SegmentedControl, StyledExt as _, Toolbar, Typography as _, h_flex, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -410,9 +410,14 @@ impl PortsDelegate {
                     Column::new("addr", "Addr").sortable(),
                     ColumnWidth::grow().weight(1.0).min_width(240.),
                 ),
+                // 100, not 80: the cells are monospace at the body rung now (see
+                // `data_cell`), and a fixed-advance 14px digit is wider than the 12px
+                // proportional one this column was measured against — 80px showed
+                // `1212…` for a seven-digit pid. 7 × 8.43px of glyph plus the cell's own
+                // padding and the table's is 100.
                 (
                     Column::new("pid", "PID").sortable(),
-                    ColumnWidth::Fixed(80.),
+                    ColumnWidth::Fixed(100.),
                 ),
                 (
                     Column::new("process", "Process").sortable(),
@@ -567,20 +572,16 @@ impl TableDelegate for PortsDelegate {
                     Protocol::Tcp => "tcp",
                     Protocol::Udp => "udp",
                 };
-                div().px_2().text_xs().text_color(rgb(fg)).child(label)
+                data_cell(t, fg, label)
             }
-            1 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(fg))
-                .child(port.port.to_string()),
+            1 => data_cell(t, fg, port.port.to_string()),
             2 => {
                 let label: SharedString = if port.local_addr.is_empty() {
                     "—".into()
                 } else {
                     port.local_addr.clone().into()
                 };
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                data_cell(t, muted, label)
             }
             3 => {
                 let label: SharedString = port
@@ -588,7 +589,7 @@ impl TableDelegate for PortsDelegate {
                     .map(|p| p.as_u32().to_string())
                     .unwrap_or_else(|| "—".to_string())
                     .into();
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                data_cell(t, muted, label)
             }
             4 => {
                 let label: SharedString = if port.command.is_empty() {
@@ -596,16 +597,16 @@ impl TableDelegate for PortsDelegate {
                 } else {
                     port.command.clone().into()
                 };
-                div().px_2().text_xs().text_color(rgb(fg)).child(label)
+                data_cell(t, fg, label)
             }
             _ => {
                 let Some(pid) = port.pid else {
                     // Right-anchored like the buttons it stands in for: a socket with no
                     // attributable pid is most of this table, and a left-aligned dash in
                     // the action column would make the few real buttons look misaligned.
-                    return div().size_full().child(
-                        ActionCell::new().child(div().text_xs().text_color(rgb(muted)).child("—")),
-                    );
+                    return div()
+                        .size_full()
+                        .child(ActionCell::new().child(div().text_meta(t).child("—")));
                 };
                 let armed = self.kill_arm.is_armed(pid, now);
                 // Keyed by pid, not by row index: the rows under the pointer reorder on
@@ -840,11 +841,7 @@ impl TableDelegate for ServicesDelegate {
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
         match col_ix {
-            0 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(fg))
-                .child(svc.name.clone()),
+            0 => data_cell(t, fg, svc.name.clone()),
             1 => {
                 let (label, tone) = svc_state_badge(svc.active);
                 h_flex()
@@ -858,7 +855,7 @@ impl TableDelegate for ServicesDelegate {
                 } else {
                     svc.sub_state.clone().into()
                 };
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                data_cell(t, muted, label)
             }
             3 => {
                 let label: SharedString = if svc.description.is_empty() {
@@ -866,7 +863,18 @@ impl TableDelegate for ServicesDelegate {
                 } else {
                     svc.description.clone().into()
                 };
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                // The one column on this tab that is prose rather than data — a unit
+                // description is a sentence — so it takes the proportional twin of the
+                // same rung: `Body`, dimmed. Setting it in mono would make the widest
+                // column on the screen the hardest one to read a sentence in.
+                div()
+                    .px_2()
+                    .w_full()
+                    .min_w(px(0.))
+                    .clamp_one_line()
+                    .text_body(t)
+                    .text_color(rgb(muted))
+                    .child(label)
             }
             _ => {
                 let actions = [
@@ -1036,16 +1044,8 @@ impl TableDelegate for DockerDelegate {
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
         match col_ix {
-            0 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(fg))
-                .child(container.name.clone()),
-            1 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(container.image.clone()),
+            0 => data_cell(t, fg, container.name.clone()),
+            1 => data_cell(t, muted, container.image.clone()),
             2 => {
                 let (label, tone) = docker_state_badge(&container.state);
                 h_flex()
@@ -1053,18 +1053,14 @@ impl TableDelegate for DockerDelegate {
                     .px_2()
                     .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
             }
-            3 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(container.status.clone()),
+            3 => data_cell(t, muted, container.status.clone()),
             _ => {
                 let label: SharedString = if container.ports.is_empty() {
                     "—".into()
                 } else {
                     container.ports.join(", ").into()
                 };
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                data_cell(t, muted, label)
             }
         }
     }
@@ -1198,21 +1194,9 @@ impl TableDelegate for KubePodsDelegate {
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
         match col_ix {
-            0 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(pod.namespace.clone()),
-            1 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(fg))
-                .child(pod.name.clone()),
-            2 => div()
-                .px_2()
-                .text_xs()
-                .text_color(rgb(muted))
-                .child(pod.ready.clone()),
+            0 => data_cell(t, muted, pod.namespace.clone()),
+            1 => data_cell(t, fg, pod.name.clone()),
+            2 => data_cell(t, muted, pod.ready.clone()),
             3 => {
                 let (label, tone) = kube_phase_badge(&pod.phase);
                 h_flex()
@@ -1221,12 +1205,10 @@ impl TableDelegate for KubePodsDelegate {
                     .child(Badge::new(label.to_string()).tone(badge_tone(tone)))
             }
             4 => {
+                // Ink, not size, carries the alarm — the one column on this tab whose
+                // meaning changes with its value.
                 let color = if pod.restarts > 0 { danger } else { muted };
-                div()
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(color))
-                    .child(pod.restarts.to_string())
+                data_cell(t, color, pod.restarts.to_string())
             }
             _ => {
                 let label: SharedString = if pod.node.is_empty() {
@@ -1234,7 +1216,7 @@ impl TableDelegate for KubePodsDelegate {
                 } else {
                     pod.node.clone().into()
                 };
-                div().px_2().text_xs().text_color(rgb(muted)).child(label)
+                data_cell(t, muted, label)
             }
         }
     }
@@ -2222,10 +2204,50 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
         .gap_1p5()
         .py_1()
-        .text_xs()
+        .text_meta(theme)
         .text_color(rgb(theme.danger))
         .child(Icon::Error.small())
-        .child(div().flex_1().min_w(px(0.)).child(message))
+        .child(div().flex_1().min_w(px(0.)).clamp_one_line().child(message))
+}
+
+/// One cell of a data table: monospace, on one rung, cut with an ellipsis.
+///
+/// Every text column of all four tables on this tab is one of these, and three decisions
+/// are baked in rather than re-argued per column:
+///
+/// 1. **Monospace.** This tab's payload is ports, IPv4/IPv6 addresses, pids, image
+///    references, `n/m` ready counts and restart counts — columns of digits that only line
+///    up in a fixed-advance family. Before the type scale this file had no `const MONO` at
+///    all, so `fd7a:115c:a1e0::1a0` was rendered in the proportional UI face.
+/// 2. **One rung.** A data table's columns differ by *ink*, never by size — see
+///    `sid_ui::typography`. `TypeRole::Mono` is the body rung, so `ink` is the only thing a
+///    caller chooses: `theme.fg` for the columns that identify the row, `theme.muted` for
+///    the ones that qualify it, `theme.danger` for a restart count that is not zero. Mixing
+///    in `MonoMeta` (12px) would make the qualifying columns *shorter* as well as dimmer,
+///    and the row's baselines would stop agreeing.
+/// 3. **Clipped with a suffix, not hard-cut.** `min_w(0)` lets the cell shrink below its
+///    string's width at all (gpui reports a text element's min-content width as its full
+///    string width), and `clamp_one_line` is what puts the `…` there — never gpui's
+///    `truncate()`, whose `Nowrap` kills the ellipsis pass. Without both, a long image
+///    reference is sliced mid-glyph at the column edge.
+///
+/// `whitespace_normal()` is part of that third decision and is **not** removable: the
+/// upstream table wraps every cell in a container that sets `whitespace_nowrap`
+/// (`gpui_component::table::state::render_cell`), and `Nowrap` pins `TextElement`'s
+/// `wrap_width` to `None` — the same defect `StyledExt::clamp_one_line` documents in
+/// gpui's `truncate()`, arriving by inheritance instead. Restoring `Normal` on the cell
+/// itself is what lets the second layout pass carry a real width and truncate; without
+/// it, `clean`/`…` never appears and every over-long cell in this tab is cut mid-glyph.
+fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
+    div()
+        .px_2()
+        .w_full()
+        .min_w(px(0.))
+        .whitespace_normal()
+        .clamp_one_line()
+        .text_mono(theme)
+        .text_color(rgb(ink))
+        .child(label.into())
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
@@ -2664,12 +2686,15 @@ fn render_iface_row(
             // (`br-ad668dcc2335`) is 15 characters and wrapping one made its row twice
             // as tall as its neighbours, which is the only thing the eye notices in a
             // list of 17.
+            // Mono, not the proportional MEDIUM this used to be: `enp5s0` / `br-ad668dcc`
+            // is a device identifier, and the type scale spends `MEDIUM` on headings only
+            // — a row label in the emphasis weight made every one of 17 rows a heading.
+            // `fg_strong` still separates the name from the muted data beside it.
             div()
                 .w(px(184.))
                 .flex_none()
                 .clamp_one_line()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
+                .text_mono(theme)
                 .text_color(rgb(theme.fg_strong))
                 .child(iface.name.clone()),
         )
@@ -2684,11 +2709,13 @@ fn render_iface_row(
             )
         })
         .child(
+            // The row's payload, so it rides the same rung as the name and separates from
+            // it by ink alone — and in mono, because these are addresses.
             div()
                 .flex_1()
                 .min_w_0()
                 .clamp_one_line()
-                .text_xs()
+                .text_mono(theme)
                 .text_color(rgb(theme.muted))
                 .child(addrs),
         )
@@ -2703,12 +2730,15 @@ fn render_iface_row(
                 .child(Badge::new(status_label).tone(status_tone)),
         )
         .child(
+            // Counters, not identity: the row's one genuinely secondary field, so it drops
+            // a rung rather than merely dimming — and stays monospace so the digits of a
+            // right-aligned column line up down the list.
             div()
                 .w(px(180.))
                 .flex_none()
                 .text_right()
-                .text_xs()
-                .text_color(rgb(theme.muted))
+                .clamp_one_line()
+                .text_mono_meta(theme)
                 .child(throughput),
         )
 }
@@ -2745,6 +2775,63 @@ fn sort_interfaces_default_first(interfaces: &mut [NetInterface], default_name: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read back a cell's refined style — enough to assert what [`data_cell`] decided,
+    /// without a renderer. Same trick `sid_ui::styled`'s own tests use.
+    fn style_of(mut d: Div) -> gpui::StyleRefinement {
+        d.style().clone()
+    }
+
+    #[test]
+    fn a_data_cell_is_mono_on_the_body_rung_and_inked_by_its_caller() {
+        // The three decisions in one assertion block, because they are one decision: a
+        // column differs from its neighbour by *ink*, and by nothing else. If a future
+        // "just make this one smaller" lands, this test is the conversation.
+        let t = sid_ui::theme::cosmos();
+        let text = style_of(data_cell(&t, t.muted, "0.0.0.0:22"))
+            .text
+            .clone()
+            .unwrap_or_default();
+        assert_eq!(
+            text.font_size,
+            Some(sid_ui::TypeRole::Mono.size().into()),
+            "every column sits on the body rung"
+        );
+        assert_eq!(
+            text.font_family.as_deref().map(|f| &**f),
+            Some(sid_ui::UI_MONO),
+            "an address is monospace — this tab had no mono family at all before"
+        );
+        assert_eq!(text.color, Some(gpui::Hsla::from(rgb(t.muted))));
+
+        // ...and the ink is the only thing that moves between columns.
+        let strong = style_of(data_cell(&t, t.fg, "sshd")).text.clone().unwrap();
+        assert_eq!(strong.font_size, text.font_size);
+        assert_eq!(strong.font_family, text.font_family);
+        assert_eq!(strong.color, Some(gpui::Hsla::from(rgb(t.fg))));
+    }
+
+    #[test]
+    fn a_data_cell_can_shrink_and_cuts_with_an_ellipsis() {
+        // The overflow trio, minus the sibling's `flex_none` (the table owns that): gpui
+        // reports a text element's min-content width as its *whole string*, so without
+        // `min_w(0)` a long image reference pushes its column open instead of clipping,
+        // and without the clamp it is sliced mid-glyph with no `…`.
+        let t = sid_ui::theme::cosmos();
+        let style = style_of(data_cell(&t, t.fg, "ghcr.io/acme/a-very-long-image:latest"));
+        assert_eq!(style.min_size.width, Some(px(0.).into()), "may shrink");
+        let text = style.text.clone().unwrap_or_default();
+        assert_eq!(text.line_clamp, Some(1));
+        assert!(text.text_overflow.is_some(), "cut with a suffix");
+        // Stated, not inherited: the upstream table's cell container sets
+        // `whitespace_nowrap`, and `Nowrap` is what pins `wrap_width` to `None` and makes
+        // the ellipsis pass never run. This assertion is the fix.
+        assert_eq!(
+            text.white_space,
+            Some(gpui::WhiteSpace::Normal),
+            "the table's inherited nowrap has to be undone here or nothing truncates"
+        );
+    }
 
     fn iface(name: &str) -> NetInterface {
         NetInterface {

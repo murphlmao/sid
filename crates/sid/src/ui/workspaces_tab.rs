@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, FontWeight, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
@@ -48,15 +48,13 @@ use crate::app::{AppState, Tab};
 use crate::git_registry;
 use crate::ui::TextInput;
 use crate::ui::session::ssh_runtime;
-use sid_ui::theme;
+use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row, Segment,
-    SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, h_flex, sortable_th,
+    SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, TypeRole, Typography as _, h_flex,
+    sortable_th,
 };
-
-/// Monospace family for root/path subtitles; matches every other tab's `MONO`.
-const MONO: &str = "DejaVu Sans Mono";
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
 const LOG_LIMIT: usize = 50;
@@ -402,12 +400,46 @@ fn sort_fleet_rows(rows: &mut [FleetRow], col_ix: usize, dir: SortDir) {
     rows.sort_by(|a, b| dir.apply(cmp(a, b)));
 }
 
-fn text_cell(color: u32, s: impl Into<SharedString>) -> AnyElement {
+/// A line of body text in an ink the caller picks — a loading line, a git error, a
+/// summary count. Deliberately **not** clamped: these run full-width in the detail pane,
+/// and a `DirtyWorkingTree` refusal that wraps onto a second line is readable, where the
+/// same refusal cut at `…` is a bug report nobody can file.
+fn text_cell(theme: &Theme, ink: u32, s: impl Into<SharedString>) -> AnyElement {
     div()
-        .text_sm()
-        .text_color(rgb(color))
+        .text_body(theme)
+        .text_color(rgb(ink))
         .child(s.into())
         .into_any_element()
+}
+
+/// One cell of the fleet table: `role` on the body rung, inked by the caller, one line,
+/// cut with an ellipsis.
+///
+/// The columns differ by *role and ink*, never by size — `Mono` for the three columns
+/// that are identifiers a machine chose (repo, branch, path), `Body` for the two that are
+/// English (`3 days ago`, `no upstream`), all of them 14px so a row has one baseline. See
+/// `sid_ui::typography`.
+///
+/// The clamp is not decoration: gpui reports a text element's min-content width as its
+/// whole string, so without `min_w(0)` a `/home/murphy/vcs/…/some-long-repo` pushes its
+/// column open instead of shrinking, and without `clamp_one_line` it is cut mid-glyph with
+/// no `…` (never gpui's `truncate()` — see `StyledExt::clamp_one_line`).
+///
+/// `whitespace_normal()` is the third of those and the least obvious: the upstream table
+/// wraps every cell in a `whitespace_nowrap` container
+/// (`gpui_component::table::state::render_cell`), and `Nowrap` pins `TextElement`'s
+/// `wrap_width` to `None` — the exact defect `clamp_one_line` documents in gpui's
+/// `truncate()`, arriving by inheritance. It is why `reach_export_c` and
+/// `feature/offline-fir` used to end flush against their column edge with no `…`.
+fn fleet_cell(theme: &Theme, role: TypeRole, ink: u32, s: impl Into<SharedString>) -> Div {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .whitespace_normal()
+        .clamp_one_line()
+        .text_role(role, theme)
+        .text_color(rgb(ink))
+        .child(s.into())
 }
 
 /// The dirty-count chip — `clean`, or an amber count of what is outstanding.
@@ -431,9 +463,9 @@ fn dirty_badge(dirty: usize) -> AnyElement {
 /// fleet's column picks out the repos that owe a push or a pull without reading a number.
 /// No upstream at all is metadata rather than a state: muted text, and now that the
 /// column is sized to its header rather than to 80px, it can say so in words.
-fn ahead_behind_cell(ahead: Option<usize>, behind: Option<usize>, muted: u32) -> AnyElement {
+fn ahead_behind_cell(theme: &Theme, ahead: Option<usize>, behind: Option<usize>) -> AnyElement {
     if ahead.is_none() && behind.is_none() {
-        return text_cell(muted, "no upstream");
+        return text_cell(theme, theme.muted, "no upstream");
     }
     let (a, b) = (ahead.unwrap_or(0), behind.unwrap_or(0));
     let chip = |label: String, n: usize| {
@@ -587,54 +619,68 @@ impl TableDelegate for FleetDelegate {
         // single index, same trick `network_tab` uses.
         let cell_id = ("ws-fleet-cell", row_ix * 8 + col_ix);
 
+        // Identifiers a machine chose are monospace; the two columns that read as English
+        // stay proportional. Both are the same 14px rung — see `fleet_cell`.
+        let ident =
+            |ink: u32, s: SharedString| fleet_cell(t, TypeRole::Mono, ink, s).into_any_element();
+        let words =
+            |ink: u32, s: SharedString| fleet_cell(t, TypeRole::Body, ink, s).into_any_element();
+
         let content: AnyElement = match self.rows.get(row_ix) {
             None => div().into_any_element(),
             Some(row) => match col_ix {
-                0 => text_cell(fg, row.name.clone()),
+                0 => ident(fg, row.name.clone().into()),
                 1 => match &row.fetch {
-                    Fetch::Loading => text_cell(muted, "…"),
-                    Fetch::Done(Ok(s)) => {
-                        text_cell(fg, s.branch.clone().unwrap_or_else(|| "(detached)".into()))
-                    }
+                    Fetch::Loading => words(muted, "…".into()),
+                    Fetch::Done(Ok(s)) => ident(
+                        fg,
+                        s.branch
+                            .clone()
+                            .unwrap_or_else(|| "(detached)".into())
+                            .into(),
+                    ),
                     // Per-row errors render as muted text, never a panic.
-                    Fetch::Done(Err(_)) => text_cell(muted, "—"),
+                    Fetch::Done(Err(_)) => words(muted, "—".into()),
                 },
                 2 => match &row.fetch {
-                    Fetch::Loading => text_cell(muted, "…"),
+                    Fetch::Loading => words(muted, "…".into()),
                     // The chip a fleet of forty repos is scanned by: green means nothing
                     // to do, amber means work is pending. Never accent — accent is
                     // "engage", and a status chip is not an invitation to click.
                     Fetch::Done(Ok(s)) => dirty_badge(s.staged + s.unstaged + s.untracked),
-                    Fetch::Done(Err(e)) => text_cell(muted, e.to_string()),
+                    Fetch::Done(Err(e)) => words(muted, e.to_string().into()),
                 },
                 3 => match &row.fetch {
-                    Fetch::Loading => text_cell(muted, "…"),
-                    Fetch::Done(Ok(s)) => ahead_behind_cell(s.ahead, s.behind, muted),
-                    Fetch::Done(Err(_)) => text_cell(muted, "—"),
+                    Fetch::Loading => words(muted, "…".into()),
+                    Fetch::Done(Ok(s)) => ahead_behind_cell(t, s.ahead, s.behind),
+                    Fetch::Done(Err(_)) => words(muted, "—".into()),
                 },
                 4 => match &row.fetch {
-                    Fetch::Loading => text_cell(muted, "…"),
+                    Fetch::Loading => words(muted, "…".into()),
                     Fetch::Done(Ok(s)) => {
                         let label = s
                             .last_commit
                             .as_ref()
                             .map(|c| commit_age(now_secs(), c.timestamp_secs))
                             .unwrap_or_else(|| "—".into());
-                        text_cell(fg, label)
+                        words(fg, label.into())
                     }
-                    Fetch::Done(Err(_)) => text_cell(muted, "—"),
+                    Fetch::Done(Err(_)) => words(muted, "—".into()),
                 },
-                5 => div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .font_family(MONO)
-                    .child(row.path.display().to_string())
-                    .into_any_element(),
+                5 => ident(muted, row.path.display().to_string().into()),
                 _ => div().into_any_element(),
             },
         };
 
-        div().id(cell_id).px_2().child(content)
+        // `min_w(0)` on the wrapper as well as on the cell: the clamp inside can only cut
+        // to the width its parent concedes, and a flex child's automatic minimum is its
+        // content — which, for text, gpui measures as the whole string.
+        div()
+            .id(cell_id)
+            .px_2()
+            .w_full()
+            .min_w(px(0.))
+            .child(content)
     }
 }
 
@@ -1316,7 +1362,7 @@ impl AppState {
         // two controls take the right edge. `⟳` and the `+ add` pill were the last two
         // hand-styled `div`s on this screen.
         let header = Toolbar::new()
-            .filter(div().section_label(&t).child("WORKSPACES"))
+            .filter(div().text_label(&t).child("WORKSPACES"))
             .count(count, "workspace")
             .action(
                 IconButton::new("ws-refresh", Icon::Refresh, "refresh")
@@ -1399,7 +1445,7 @@ impl AppState {
 
     fn add_workspace_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (border, danger, muted) = (t.border, t.danger, t.muted);
+        let (border, danger) = (t.border, t.danger);
         let input = self.workspaces.add_input.clone();
         let error = self.workspaces.add_error.clone();
 
@@ -1441,11 +1487,10 @@ impl AppState {
                             })),
                     ),
             )
-            .children(error.map(|e| div().text_xs().text_color(rgb(danger)).child(e)))
+            .children(error.map(|e| div().text_meta(t).text_color(rgb(danger)).child(e)))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(muted))
+                    .text_meta(t)
                     .child("~/ ok · a directory of repos becomes a fleet"),
             )
     }
@@ -1525,13 +1570,15 @@ impl AppState {
         } else {
             let name_id = meta.id.clone();
             let current_name = meta.name.clone();
+            // Body, not the MEDIUM this used to be: the scale spends its one emphasis
+            // weight on headings, and every row in a list is not a heading. Selection is
+            // already carried by the row's fill and by `fg_strong`.
             div()
                 .id(("ws-name", ix))
                 .flex_1()
                 .min_w(px(0.))
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
                 .clamp_one_line()
+                .text_body(t)
                 .text_color(rgb(if is_selected { fg_strong } else { fg }))
                 .child(meta.name.clone())
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
@@ -1597,12 +1644,13 @@ impl AppState {
                         el.child(Badge::new("focused").tone(BadgeTone::Accent))
                     }),
             )
+            // The row's tail: a dim path and a dim status line, both a rung below the
+            // name — `MonoMeta` for the path because it is one, `Meta` for the rest.
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .font_family(MONO)
+                    .min_w(px(0.))
                     .clamp_one_line()
+                    .text_mono_meta(t)
                     .child(meta.root.display().to_string()),
             )
             .child(
@@ -1613,16 +1661,17 @@ impl AppState {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .text_xs()
                             .clamp_one_line()
+                            .text_meta(t)
                             .text_color(rgb(git_color))
                             .child(git_label),
                     )
+                    // `flex_none` on the sibling that must not grow, or the counts push
+                    // the branch name out of a 300px sidebar rather than shrinking it.
                     .child(
                         div()
                             .flex_none()
-                            .text_xs()
-                            .text_color(rgb(muted))
+                            .text_meta(t)
                             .child(format!("{hosts_n}h · {conns_n}c")),
                     ),
             )
@@ -1758,7 +1807,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (muted, fg) = (t.muted, t.fg);
+        let fg = t.fg;
         let count = hosts.len() + connections.len();
 
         let host_rows: Vec<AnyElement> = hosts
@@ -1767,7 +1816,14 @@ impl AppState {
             .map(|(ix, h)| {
                 let id = id.clone();
                 Row::new(("ws-scope-host", ix))
-                    .child(div().text_sm().text_color(rgb(fg)).child(h.alias.clone()))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_body(t)
+                            .text_color(rgb(fg))
+                            .child(h.alias.clone()),
+                    )
                     // Where the row goes, as orientation rather than as accent-coloured
                     // prose (`→ SSH`) pretending to be a link.
                     .meta(Badge::new("SSH"))
@@ -1789,7 +1845,14 @@ impl AppState {
                     c.name.clone()
                 };
                 Row::new(("ws-scope-conn", ix))
-                    .child(div().text_sm().text_color(rgb(fg)).child(label))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_body(t)
+                            .text_color(rgb(fg))
+                            .child(label),
+                    )
                     .meta(Badge::new("Database"))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.jump_to_scope_tab(id.clone(), Tab::Database, window, cx);
@@ -1800,8 +1863,7 @@ impl AppState {
 
         let empty = (count == 0).then(|| {
             div()
-                .text_xs()
-                .text_color(rgb(muted))
+                .text_meta(t)
                 .child("no hosts or connections in this workspace's own layer")
         });
 
@@ -1815,7 +1877,6 @@ impl AppState {
 
     fn plain_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (muted, fg_strong) = (t.muted, t.fg_strong);
         let id = meta.id.clone();
         let hosts = self.workspaces.overview_hosts.clone();
         let connections = self.workspaces.overview_connections.clone();
@@ -1825,18 +1886,20 @@ impl AppState {
             .flex_col()
             .gap_3()
             .p_4()
+            // A pane heading is the one place the scale goes above body text — 16px
+            // Medium, where this used to be 14px BOLD (bold at 14 on a dark panel blooms
+            // into a colour change rather than reading as a rank).
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(fg_strong))
+                    .clamp_one_line()
+                    .text_title(t)
                     .child(meta.name.clone()),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(muted))
-                    .font_family(MONO)
+                    .min_w(px(0.))
+                    .clamp_one_line()
+                    .text_mono_meta(t)
                     .child(meta.root.display().to_string()),
             )
             .child(h_flex().child(Badge::new("not a git repo")))
@@ -1846,7 +1909,7 @@ impl AppState {
 
     fn repo_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (border, fg_strong) = (t.border, t.fg_strong);
+        let border = t.border;
         let header = div()
             .flex()
             .flex_row()
@@ -1858,9 +1921,9 @@ impl AppState {
             .border_color(rgb(border))
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(fg_strong))
+                    .min_w(px(0.))
+                    .clamp_one_line()
+                    .text_title(t)
                     .child(meta.name.clone()),
             )
             .child(self.repo_sub_tab_chips(cx));
@@ -1918,8 +1981,8 @@ impl AppState {
         let (muted, warning, danger) = (t.muted, t.warning, t.danger);
 
         let summary_view: AnyElement = match self.workspaces.summaries.get(&meta.id) {
-            None | Some(Fetch::Loading) => text_cell(muted, "loading git status…"),
-            Some(Fetch::Done(Err(e))) => text_cell(danger, e.to_string()),
+            None | Some(Fetch::Loading) => text_cell(t, muted, "loading git status…"),
+            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
             Some(Fetch::Done(Ok(s))) => {
                 let branch = s.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
                 let last_commit = s
@@ -1945,16 +2008,17 @@ impl AppState {
                             .flex_wrap()
                             .child(Badge::new(branch))
                             .child(dirty_badge(s.staged + s.unstaged + s.untracked))
-                            .child(ahead_behind_cell(s.ahead, s.behind, muted)),
+                            .child(ahead_behind_cell(t, s.ahead, s.behind)),
                     )
                     .child(text_cell(
+                        t,
                         if s.is_clean() { muted } else { warning },
                         format!(
                             "{} staged · {} unstaged · {} untracked",
                             s.staged, s.unstaged, s.untracked
                         ),
                     ))
-                    .child(text_cell(muted, last_commit))
+                    .child(text_cell(t, muted, last_commit))
                     .into_any_element()
             }
         };
@@ -1978,11 +2042,11 @@ impl AppState {
             .workspaces
             .checkout_error
             .clone()
-            .map(|e| text_cell(danger, format!("checkout failed: {e}")));
+            .map(|e| text_cell(t, danger, format!("checkout failed: {e}")));
 
         let body: AnyElement = match self.workspaces.branches.clone() {
-            None | Some(Fetch::Loading) => text_cell(muted, "loading branches…"),
-            Some(Fetch::Done(Err(e))) => text_cell(danger, e.to_string()),
+            None | Some(Fetch::Loading) => text_cell(t, muted, "loading branches…"),
+            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
             Some(Fetch::Done(Ok(branches))) => {
                 let pending = self.workspaces.checkout_pending.clone();
                 let rows: Vec<AnyElement> = branches
@@ -1999,21 +2063,23 @@ impl AppState {
                         // `●` prefix nudging the name two spaces right.
                         Row::new(("ws-branch", ix))
                             .selected(is_current)
-                            .child(text_cell(
-                                if is_current { fg_strong } else { fg },
-                                name.clone(),
-                            ))
+                            // A branch name is an identifier, so it is monospace on the
+                            // body rung; its upstream is the same fact one step removed,
+                            // so it is the same family a rung down.
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .clamp_one_line()
+                                    .text_mono(t)
+                                    .text_color(rgb(if is_current { fg_strong } else { fg }))
+                                    .child(name.clone()),
+                            )
                             .when(is_current, |row| row.meta(Badge::new("current").solid()))
                             .when_some(b.upstream.clone(), |row, u| {
-                                row.meta(div().text_xs().text_color(rgb(muted)).child(u))
+                                row.meta(div().text_mono_meta(t).child(u))
                             })
                             .when(is_pending, |row| {
-                                row.meta(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(muted))
-                                        .child("checking out…"),
-                                )
+                                row.meta(div().text_meta(t).child("checking out…"))
                             })
                             .when(!is_current, |row| {
                                 row.on_click(cx.listener(
@@ -2043,11 +2109,11 @@ impl AppState {
         let (fg, muted, danger, success, warning) = (t.fg, t.muted, t.danger, t.success, t.warning);
 
         match self.workspaces.status.clone() {
-            None | Some(Fetch::Loading) => text_cell(muted, "loading status…"),
-            Some(Fetch::Done(Err(e))) => text_cell(danger, e.to_string()),
+            None | Some(Fetch::Loading) => text_cell(t, muted, "loading status…"),
+            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
             Some(Fetch::Done(Ok(status))) => {
                 if status.is_clean {
-                    return text_cell(success, "clean — no changes");
+                    return text_cell(t, success, "clean — no changes");
                 }
                 let staged: Vec<&StatusEntry> =
                     status.entries.iter().filter(|e| e.staged).collect();
@@ -2063,14 +2129,17 @@ impl AppState {
                     .collect();
 
                 let group = |label: &'static str, color: u32, entries: Vec<&StatusEntry>| {
+                    // The changed paths are this view's whole payload, so they sit on the
+                    // body rung in mono rather than shrinking to metadata.
                     let rows: Vec<AnyElement> = entries
                         .iter()
                         .enumerate()
                         .map(|(ix, e)| {
                             div()
                                 .id((label, ix))
-                                .text_xs()
-                                .font_family(MONO)
+                                .min_w(px(0.))
+                                .clamp_one_line()
+                                .text_mono(t)
                                 .text_color(rgb(fg))
                                 .child(e.path.clone())
                                 .into_any_element()
@@ -2081,7 +2150,13 @@ impl AppState {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(text_cell(color, format!("{} · {}", label, rows.len())))
+                            // `STAGED · 4` is exactly what `Label` is for: an UPPERCASE
+                            // section header, here inked by what the group means.
+                            .child(div().text_label(t).text_color(rgb(color)).child(format!(
+                                "{} · {}",
+                                label,
+                                rows.len()
+                            )))
                             .children(rows)
                     })
                 };
@@ -2103,11 +2178,11 @@ impl AppState {
         let (fg, muted, danger) = (t.fg, t.muted, t.danger);
 
         match self.workspaces.log.clone() {
-            None | Some(Fetch::Loading) => text_cell(muted, "loading log…"),
-            Some(Fetch::Done(Err(e))) => text_cell(danger, e.to_string()),
+            None | Some(Fetch::Loading) => text_cell(t, muted, "loading log…"),
+            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
             Some(Fetch::Done(Ok(commits))) => {
                 if commits.is_empty() {
-                    return text_cell(muted, "no commits yet");
+                    return text_cell(t, muted, "no commits yet");
                 }
                 let now = now_secs();
                 let rows: Vec<AnyElement> = commits
@@ -2120,23 +2195,14 @@ impl AppState {
                         Row::new(("ws-log", ix))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .min_w(px(0.))
                                     .clamp_one_line()
+                                    .text_body(t)
                                     .text_color(rgb(fg))
                                     .child(c.summary.clone()),
                             )
-                            .meta(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(muted))
-                                    .child(c.author_name.clone()),
-                            )
-                            .meta(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(muted))
-                                    .child(commit_age(now, c.timestamp_secs)),
-                            )
+                            .meta(div().text_meta(t).child(c.author_name.clone()))
+                            .meta(div().text_meta(t).child(commit_age(now, c.timestamp_secs)))
                             .into_any_element()
                     })
                     .collect();
@@ -2147,7 +2213,7 @@ impl AppState {
 
     fn umbrella_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx);
-        let (border, fg_strong, muted) = (t.border, t.fg_strong, t.muted);
+        let border = t.border;
         let header = div()
             .flex()
             .flex_row()
@@ -2159,15 +2225,15 @@ impl AppState {
             .border_color(rgb(border))
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(fg_strong))
+                    .min_w(px(0.))
+                    .clamp_one_line()
+                    .text_title(t)
                     .child(format!("{} — fleet", meta.name)),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(muted))
+                    .flex_none()
+                    .text_meta(t)
                     .child("sorted, live git status per repo"),
             );
 
@@ -2206,6 +2272,69 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    /// Read back a cell's refined style — enough to assert what a helper decided, without
+    /// a renderer. Same trick `sid_ui::styled`'s own tests use.
+    fn style_of(mut d: gpui::Div) -> gpui::StyleRefinement {
+        d.style().clone()
+    }
+
+    #[test]
+    fn every_fleet_column_lands_on_the_same_rung() {
+        // The rule the fleet table is built on: a column differs from its neighbour by
+        // family and ink, never by size. `Repo`/`Branch`/`Path` are monospace because
+        // they are identifiers a machine chose; `Last commit` is English. All 14px, so a
+        // row has one baseline whichever columns have loaded.
+        let t = theme::cosmos();
+        let path = style_of(fleet_cell(
+            &t,
+            TypeRole::Mono,
+            t.muted,
+            "/home/murphy/vcs/sid",
+        ))
+        .text
+        .clone()
+        .unwrap_or_default();
+        let age = style_of(fleet_cell(&t, TypeRole::Body, t.fg, "3 days ago"))
+            .text
+            .clone()
+            .unwrap_or_default();
+        assert_eq!(path.font_size, age.font_size, "one rung");
+        assert_eq!(path.font_size, Some(TypeRole::Body.size().into()));
+        assert_eq!(
+            path.font_family.as_deref().map(|f| &**f),
+            Some(sid_ui::UI_MONO),
+            "a path is monospace"
+        );
+        assert_eq!(age.font_family, None, "an age is not");
+        assert_eq!(path.color, Some(gpui::Hsla::from(rgb(t.muted))));
+        assert_eq!(age.color, Some(gpui::Hsla::from(rgb(t.fg))));
+    }
+
+    #[test]
+    fn a_fleet_cell_may_shrink_and_cuts_with_an_ellipsis() {
+        // gpui reports a text element's min-content width as its whole string, so a repo
+        // path without `min_w(0)` widens its column instead of clipping — and without the
+        // clamp it is cut mid-glyph with no `…`. Both, or neither works.
+        let t = theme::cosmos();
+        let style = style_of(fleet_cell(
+            &t,
+            TypeRole::Mono,
+            t.muted,
+            "/home/murphy/vcs/some-repo-with-a-long-name",
+        ));
+        assert_eq!(style.min_size.width, Some(px(0.).into()), "may shrink");
+        let text = style.text.clone().unwrap_or_default();
+        assert_eq!(text.line_clamp, Some(1));
+        assert!(text.text_overflow.is_some(), "cut with a suffix");
+        // Stated, not inherited — the upstream table's cell container sets
+        // `whitespace_nowrap`, which is what kills the ellipsis pass.
+        assert_eq!(
+            text.white_space,
+            Some(gpui::WhiteSpace::Normal),
+            "the table's inherited nowrap has to be undone here or nothing truncates"
+        );
     }
 
     #[test]
