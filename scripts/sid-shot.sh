@@ -18,6 +18,16 @@
 # For lock-proof / fully-detached captures use scripts/sid-cap.sh (a private
 # headless sway compositor; needs `sway` installed).
 #
+# OVERLAP WITH sid-cap.sh (noted 2026-08-09, deliberately NOT refactored): the two
+# scripts independently implement the same six things — repo-root discovery, the
+# hermetic XDG_{DATA,STATE,CONFIG}_HOME temp dir with a `--real` opt-out, `SID_START_TAB`
+# from `--tab`, launch-then-poll-for-the-window, the `--wait` settle, and the
+# cleanup trap with `--keep` — plus both print the PNG path as the last stdout line.
+# Only the compositor half genuinely differs (hyprctl headless output vs a private
+# sway), and sid-cap.sh additionally owns all input injection. A shared
+# `scripts/lib/sid-app.sh` would collapse roughly 60 duplicated lines; it is worth doing
+# the next time either script needs a real change, and is not worth doing blind.
+#
 # Requires a live Wayland session: hyprctl (Hyprland), grim, jq.
 #
 # Prints the screenshot path as the last line of stdout; everything else (build
