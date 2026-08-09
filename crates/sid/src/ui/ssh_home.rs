@@ -39,10 +39,8 @@ use crate::app::{AppState, can_demote, can_promote};
 use crate::ui::{SessionStatus, TextInput};
 use sid_ui::{
     Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, StatusDot,
-    StatusLegend, StyledExt as _, card::header_text, h_flex, theme, v_flex,
+    StatusLegend, StyledExt as _, Typography as _, card::header_text, h_flex, theme, v_flex,
 };
-
-const MONO: &str = "DejaVu Sans Mono";
 
 actions!(
     ssh_home,
@@ -803,7 +801,12 @@ impl AppState {
         // controls. Every one of those interactions still works; none of them is
         // documentation-only any more.
         if let Some(err) = &self.ssh_home.quick_error {
-            col = col.child(div().text_xs().text_color(rgb(danger)).child(err.clone()));
+            col = col.child(
+                div()
+                    .text_meta(&t)
+                    .text_color(rgb(danger))
+                    .child(err.clone()),
+            );
         }
         col
     }
@@ -1101,7 +1104,7 @@ impl AppState {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .text_sm()
+                            .text_body(&t)
                             .text_color(rgb(t.fg_strong))
                             .clamp_one_line()
                             .child(alias),
@@ -1130,9 +1133,7 @@ impl AppState {
             .child(
                 div()
                     .w_full()
-                    .font_family(MONO)
-                    .text_xs()
-                    .text_color(rgb(t.muted))
+                    .text_mono_meta(&t)
                     .clamp_one_line()
                     .child(addr),
             )
@@ -1183,7 +1184,7 @@ impl AppState {
                     // a long in-progress rename/folder value must not bleed out of the
                     // card it belongs to.
                     .child(div().w_full().min_w(px(0.)).overflow_hidden().child(input))
-                    .child(div().text_xs().text_color(rgb(t.accent)).child(flag)),
+                    .child(div().text_meta(&t).text_color(rgb(t.accent)).child(flag)),
             )
             .into_any_element()
     }

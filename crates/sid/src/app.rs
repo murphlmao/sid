@@ -1286,6 +1286,10 @@ impl AppState {
                     .px_3()
                     .h_full()
                     .flex()
+                    // A tab keeps its whole label or it is not a tab: the strip that holds
+                    // them scrolls (see below) rather than squeezing `Workspaces` down to
+                    // `Wor…`.
+                    .flex_none()
                     .items_center()
                     .text_body(t)
                     .cursor_pointer()
@@ -1320,6 +1324,13 @@ impl AppState {
                     .px_2()
                     .py(px(3.))
                     .rounded_md()
+                    // A chip carries a *workspace name*, which the chrome has no say in:
+                    // `platform-infrastructure-monorepo` is a 260px chip. Bounded and
+                    // clamped, so a long name costs an ellipsis instead of the status
+                    // badges to its right (the bar has no clip of its own).
+                    .flex_none()
+                    .max_w(px(160.))
+                    .clamp_one_line()
                     .text_meta(t)
                     .cursor_pointer()
                     .bg(rgb(if is_active { selection } else { surface }))
@@ -1357,14 +1368,58 @@ impl AppState {
                 // 16px default by accident and shouted with BOLD to make up for having
                 // no rung of its own.
                 div()
+                    .flex_none()
                     .pr_2()
                     .text_title(t)
                     .text_color(rgb(accent))
                     .child("✦ sid"),
             )
-            .children(tabs)
-            .child(div().flex_1()) // spacer — scope chips + badge live at the right edge
-            .children(scope_chips)
+            // The tab list is the bar's elastic member, and it is the only one that may
+            // be cut short. Six labels measure ~540px; a 620px window has ~590px of bar
+            // after the padding, so the tabs used to eat the row whole and push the scope
+            // chips and the status badges clean off the right edge — with no clip, the
+            // pills simply painted outside the window. (`flex_1` alone would not have
+            // saved them: gpui reports a text element's min-content width as its full
+            // string, so a row of text tabs refuses to shrink.)
+            //
+            // `flex_1 + min_w(0)` makes this strip the thing that gives, `overflow_x_scroll`
+            // keeps every tab *reachable* while it gives, and each tab's `flex_none` keeps
+            // labels whole inside it. It also replaces the old spacer div: the strip is
+            // what absorbs the free space on a wide window, so the chips still sit at the
+            // right edge and the 2000px layout is unchanged.
+            .child(
+                div()
+                    .id("primary-tab-strip")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .gap_1()
+                    .flex_1()
+                    .min_w(px(0.))
+                    // No trailing padding here: a scroll container clips at its padding
+                    // box, so `pr_2` buys nothing visible (measured — the 620px capture is
+                    // identical with and without it). The 4px the cut edge gets from the
+                    // bar's own `gap_1` is the whole separation, same as a browser's tab
+                    // strip against its toolbar.
+                    .overflow_x_scroll()
+                    .children(tabs),
+            )
+            // Chips and badges hold the right edge. The chip row may shrink (its chips are
+            // clamped and it scrolls) but the badges never do — a degraded-secrets or
+            // software-rendering warning that scrolls out of the window is a warning that
+            // was not delivered.
+            .child(
+                div()
+                    .id("scope-switcher")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_w(px(0.))
+                    .overflow_x_scroll()
+                    .children(scope_chips),
+            )
             .children(self.secret_status_badge(cx))
             .children(self.gpu_status_badge(cx))
     }
@@ -1439,6 +1494,8 @@ impl AppState {
                 .flex()
                 .flex_row()
                 .items_center()
+                // Never shrinks: see `tab_strip`'s right-edge comment.
+                .flex_none()
                 .child(badge)
                 .children(popover),
         )
@@ -1506,6 +1563,8 @@ impl AppState {
                 .flex()
                 .flex_row()
                 .items_center()
+                // Never shrinks: see `tab_strip`'s right-edge comment.
+                .flex_none()
                 .child(badge)
                 .children(popover),
         )

@@ -41,11 +41,16 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, StyledExt as _, theme, v_flex};
+use sid_ui::{Row, StyledExt as _, Typography as _, theme, v_flex};
 
-/// Monospace family — kitty parity (Murphy's terminal font, confirmed installed via
-/// `fc-list`); gpui falls back to a proportional font if the family is missing locally. This
-/// is also what fixes nerd-font ASCII-art rendering in the terminal pane.
+/// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
+/// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
+/// locally. This is also what fixes nerd-font ASCII-art rendering in the terminal pane.
+///
+/// Deliberately not `sid_ui::UI_MONO`: the PTY is an instrument painted at kitty cell geometry
+/// (see [`TERM_FONT_SIZE`] and `render_grid`), not UI text, so it sits outside the type scale.
+/// Every *chrome* string in this file — breadcrumb, file rows, preview — names a mono role and
+/// therefore renders in the UI mono family like the rest of the app.
 const MONO: &str = "CaskaydiaCove Nerd Font Mono";
 const TERM_FONT_SIZE: Pixels = px(14.);
 
@@ -1854,7 +1859,7 @@ impl SshSession {
     /// persists the flip to `Settings.file_browser_side` and fans it out to every open
     /// session tab (see [`Self::set_dock_side`]).
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
+        let t = theme::active(cx).clone();
         let (border, muted, selection) = (t.border, t.muted, t.selection);
         let label = match self.dock_side {
             PanelSide::Left => "⇄ dock right",
@@ -1869,20 +1874,14 @@ impl SshSession {
             .py_1()
             .border_b_1()
             .border_color(rgb(border))
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(muted))
-                    .child("FILES"),
-            )
+            .child(div().text_label(&t).child("FILES"))
             .child(
                 div()
                     .id("session-dock-toggle")
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .text_xs()
+                    .text_meta(&t)
                     .cursor_pointer()
                     .text_color(rgb(muted))
                     .hover(|s| s.bg(rgb(selection)))
@@ -1905,7 +1904,7 @@ impl SshSession {
     /// - Row 3: `↑ up` / `⟳ refresh` / the hidden-files toggle on the left, the entry count
     ///   right-aligned.
     fn toolbar(&self, crumb_budget: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
+        let t = theme::active(cx).clone();
         let (border, muted, selection, accent, fg_strong) =
             (t.border, t.muted, t.selection, t.accent, t.fg_strong);
         let icon_button = |id: (&'static str, usize), label: String| {
@@ -1914,7 +1913,7 @@ impl SshSession {
                 .px_2()
                 .py_1()
                 .rounded_md()
-                .text_xs()
+                .text_meta(&t)
                 .cursor_pointer()
                 .text_color(rgb(muted))
                 .hover(|s| s.bg(rgb(selection)))
@@ -1938,7 +1937,7 @@ impl SshSession {
             .px_2()
             .py_1()
             .rounded_md()
-            .text_xs()
+            .text_body(&t)
             .cursor_pointer()
             .bg(rgb(accent))
             .text_color(rgb(fg_strong))
@@ -2038,12 +2037,7 @@ impl SshSession {
                             .child(refresh)
                             .child(hidden_toggle),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(muted))
-                            .child(format!("{count} entries")),
-                    ),
+                    .child(div().text_meta(&t).child(format!("{count} entries"))),
             )
     }
 
@@ -2062,6 +2056,7 @@ impl SshSession {
             .enumerate()
             .map(|(ix, crumb)| self.breadcrumb_segment(ix, crumb, cx))
             .collect();
+        let t = theme::active(cx);
         div()
             .flex()
             .flex_row()
@@ -2069,8 +2064,9 @@ impl SshSession {
             .min_w(px(0.))
             .overflow_hidden()
             .gap_1()
-            .text_xs()
-            .font_family(MONO)
+            // A path is data, and a dim one: `MonoMeta`. Each segment re-states its own ink
+            // (current vs ancestor vs the inert `…`) over the role's muted default.
+            .text_mono_meta(t)
             .children(children)
     }
 
@@ -2133,7 +2129,7 @@ impl SshSession {
         plan: EntryRowPlan,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let t = theme::active(cx);
+        let t = theme::active(cx).clone();
         let (fg, muted, selection, accent) = (t.fg, t.muted, t.selection, t.accent);
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
@@ -2161,7 +2157,7 @@ impl SshSession {
                 .flex()
                 .justify_center()
                 .rounded_md()
-                .text_xs()
+                .text_meta(&t)
                 .cursor_pointer()
                 .text_color(rgb(accent))
                 .hover(|s| s.bg(rgb(selection)))
@@ -2207,15 +2203,15 @@ impl SshSession {
             div()
                 .w(width)
                 .clamp_one_line()
-                .font_family(MONO)
-                .text_xs()
-                .text_color(rgb(muted))
+                // Size and modified time are data in a row's tail: `MonoMeta` — which is
+                // also what makes them column-align, since it is a monospace role.
+                .text_mono_meta(&t)
                 .child(text)
         };
 
         let enter_name = name.clone();
         Row::new(("session-entry", ix))
-            .text_sm()
+            .text_body(&t)
             .leading(
                 div()
                     .w(row_metrics::GLYPH)
@@ -2422,9 +2418,8 @@ impl SshSession {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let t = theme::active(cx);
-        let (fg, muted, surface, border, selection) =
-            (t.fg, t.muted, t.surface, t.border, t.selection);
+        let t = theme::active(cx).clone();
+        let (muted, surface, border, selection) = (t.muted, t.surface, t.border, t.selection);
         let preview = self.preview.clone()?;
         let viewport = window.viewport_size();
 
@@ -2434,15 +2429,15 @@ impl SshSession {
                 .flex_1()
                 .overflow_y_scroll()
                 .p_3()
-                .text_sm()
-                .font_family(MONO)
-                .text_color(rgb(fg))
+                // A remote file's contents: monospace body text, like every other data
+                // surface in the app (the terminal beside it keeps its own font).
+                .text_mono(&t)
                 .child(text)
                 .into_any_element(),
             PreviewContent::Notice(msg) => div()
                 .flex_1()
                 .p_3()
-                .text_sm()
+                .text_body(&t)
                 .text_color(rgb(muted))
                 .child(msg)
                 .into_any_element(),
@@ -2491,8 +2486,7 @@ impl SshSession {
                                             div()
                                                 .flex_1()
                                                 .min_w(px(0.))
-                                                .text_sm()
-                                                .text_color(rgb(fg))
+                                                .text_title(&t)
                                                 .clamp_one_line()
                                                 .child(preview.name.clone()),
                                         )
@@ -2611,8 +2605,11 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
         // The backstop: whatever the text does, it stops at the pane's edge.
         .overflow_hidden()
         .bg(rgb(t.bg))
+        // Monospace, because this pane stands where the terminal would be — but muted,
+        // because it is a status, not output. Ink is the one part of a role a call site
+        // may re-decide.
+        .text_mono(t)
         .text_color(rgb(t.muted))
-        .font_family(MONO)
         .child(
             // gpui reports a text element's MIN-content width as its FULL single-line
             // width (`elements/text.rs` only derives a wrap width from an
@@ -2632,13 +2629,8 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
 }
 
 fn status_line(text: &str, cx: &App) -> impl IntoElement {
-    let muted = theme::active(cx).muted;
-    div()
-        .px_3()
-        .py_1()
-        .text_xs()
-        .text_color(rgb(muted))
-        .child(text.to_string())
+    let t = theme::active(cx);
+    div().px_3().py_1().text_meta(t).child(text.to_string())
 }
 
 /// Shape one terminal row into a single `ShapedLine`. Contiguous cells sharing the same

@@ -271,18 +271,9 @@ fn defines_the_type_scale(file: &Path) -> bool {
 /// (`feat(sid-ui): semantic type scale`) swept `sid-ui`, `app.rs`, `systems_tab.rs`,
 /// `settings_tab.rs` and `config_editor.rs`; everything below is wave 2.
 const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
-    // Held by concurrent UI-overhaul agents during wave 1 — editing them would have
-    // been a guaranteed merge conflict, so their violations were inventoried instead
-    // (see the wave-1 commit message for the per-file table).
-    ("sid/src/ui/ssh_home.rs", "SSH home overhaul, in flight"),
-    (
-        "sid/src/ui/session.rs",
-        "SSH session overhaul, in flight — also holds the PTY grid's own font, which is \
-         terminal geometry rather than UI type and stays out of the scale",
-    ),
-    // Not held by anyone; simply not reached in wave 1. No blocker beyond the diff size.
-    ("sid/src/ui/command_palette.rs", "wave 2"),
-    ("sid/src/ui/db_diagram.rs", "wave 2 — moves with the DB tab"),
+    // Every tab and chrome file held during the wave-1/wave-2 sweeps is now clean and
+    // has deleted its own entry, as the ratchet below requires. One file remains, and
+    // it is not blocked by anyone — only by its own nature:
     (
         "sid/src/ui/text_input.rs",
         "wave 2 — a custom Element that measures its own line height from the style, so \
