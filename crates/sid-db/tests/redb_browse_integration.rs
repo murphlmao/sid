@@ -406,8 +406,8 @@ async fn settings_table_shows_default_row_when_never_set() {
 async fn settings_after_explicit_set_reflects_new_value() {
     // Round-D fix: `settings` used to expose only `default_scope` (1 column) --
     // now every `Settings` field (default_scope, file_browser_side,
-    // secret_keyring_enabled, secret_file_enabled, theme) round-trips through the
-    // browse engine.
+    // secret_keyring_enabled, secret_file_enabled, theme, ui_scale_percent)
+    // round-trips through the browse engine.
     let (_dir, store) = open_tmp();
     store
         .set_settings(&Settings {
@@ -416,19 +416,20 @@ async fn settings_after_explicit_set_reflects_new_value() {
             secret_keyring_enabled: false,
             secret_file_enabled: true,
             theme: "cosmos".into(),
+            ui_scale_percent: 150,
         })
         .unwrap();
     let client = RedbBrowseClient::wrap(store);
     let page = client.query_paged("settings", None, 10).await.unwrap();
-    assert_eq!(page.columns.len(), 5, "declared column count for settings");
+    assert_eq!(page.columns.len(), 6, "declared column count for settings");
     assert_eq!(
         page.rows[0].values.len(),
-        5,
+        6,
         "settings row value count should match declared column count"
     );
     assert_eq!(
         page.rows[0].values,
-        vec!["Global", "Right", "false", "true", "cosmos"]
+        vec!["Global", "Right", "false", "true", "cosmos", "150"]
     );
 }
 
