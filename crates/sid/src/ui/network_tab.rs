@@ -2225,11 +2225,20 @@ fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
 ///    string width), and `clamp_one_line` is what puts the `…` there — never gpui's
 ///    `truncate()`, whose `Nowrap` kills the ellipsis pass. Without both, a long image
 ///    reference is sliced mid-glyph at the column edge.
+///
+/// `whitespace_normal()` is part of that third decision and is **not** removable: the
+/// upstream table wraps every cell in a container that sets `whitespace_nowrap`
+/// (`gpui_component::table::state::render_cell`), and `Nowrap` pins `TextElement`'s
+/// `wrap_width` to `None` — the same defect `StyledExt::clamp_one_line` documents in
+/// gpui's `truncate()`, arriving by inheritance instead. Restoring `Normal` on the cell
+/// itself is what lets the second layout pass carry a real width and truncate; without
+/// it, `clean`/`…` never appears and every over-long cell in this tab is cut mid-glyph.
 fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
     div()
         .px_2()
         .w_full()
         .min_w(px(0.))
+        .whitespace_normal()
         .clamp_one_line()
         .text_mono(theme)
         .text_color(rgb(ink))
@@ -2809,9 +2818,13 @@ mod tests {
         let text = style.text.clone().unwrap_or_default();
         assert_eq!(text.line_clamp, Some(1));
         assert!(text.text_overflow.is_some(), "cut with a suffix");
+        // Stated, not inherited: the upstream table's cell container sets
+        // `whitespace_nowrap`, and `Nowrap` is what pins `wrap_width` to `None` and makes
+        // the ellipsis pass never run. This assertion is the fix.
         assert_eq!(
-            text.white_space, None,
-            "nowrap would defeat the ellipsis — see StyledExt::clamp_one_line"
+            text.white_space,
+            Some(gpui::WhiteSpace::Normal),
+            "the table's inherited nowrap has to be undone here or nothing truncates"
         );
     }
 
