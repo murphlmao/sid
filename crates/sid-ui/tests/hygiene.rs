@@ -459,16 +459,10 @@ const BANNED_CALLS: &[(&str, &str)] = &[(
 /// on an entry whose file is already clean, so a landing sweep deletes its own exemption.
 /// These two are held by concurrent agents; editing them here would be a guaranteed
 /// merge conflict, so their sites are inventoried instead of fixed.
-const BANNED_CALL_SWEEP_PENDING: &[(&str, &str)] = &[
-    (
-        "sid/src/ui/db_tab.rs",
-        "9 sites — DB tab overhaul, in flight",
-    ),
-    (
-        "sid/src/ui/command_palette.rs",
-        "1 site — not held by anyone; wave 2",
-    ),
-];
+const BANNED_CALL_SWEEP_PENDING: &[(&str, &str)] = &[(
+    "sid/src/ui/command_palette.rs",
+    "1 site — not held by anyone; wave 2",
+)];
 
 /// Whether `file` is excused from the banned-call scan, and why.
 fn banned_sweep_pending(file: &Path) -> Option<&'static str> {
