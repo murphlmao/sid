@@ -181,7 +181,7 @@ impl fmt::Debug for Passphrase {
 /// assert!(PrivError::AuthFailed.is_retryable());
 /// assert!(!PrivError::NotPermitted("not a sudoer".into()).is_retryable());
 /// ```
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PrivError {
     /// The secret was rejected. The user mistyped — ask again.
     #[error("authentication failed — wrong password")]
@@ -201,6 +201,12 @@ pub enum PrivError {
     /// precondition failure, never the result of an attempt.
     #[error("unsafe path: {0}")]
     UnsafePath(String),
+    /// The file is larger than the caller was willing to hold in memory. Carried as
+    /// numbers rather than prose so the caller can phrase it in its own words, and
+    /// distinct from [`PrivError::Io`] because it is a *refusal*, not a failure: nothing
+    /// went wrong, the answer was simply too big to accept.
+    #[error("{bytes} bytes exceeds the {max_bytes}-byte limit")]
+    TooLarge { bytes: u64, max_bytes: u64 },
     /// The privileged operation authenticated and ran, then failed on its own terms (no
     /// such file, read-only filesystem, ...).
     #[error("privileged file operation failed: {0}")]
@@ -243,6 +249,16 @@ impl PrivError {
 /// assert!(guard_path(Path::new("--reference=/etc/shadow")).is_err());
 /// ```
 pub fn guard_path(path: &Path) -> Result<&Path, PrivError> {
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        // A NUL cannot survive `exec`, so the spawn would fail anyway — but it would fail
+        // as "elevation unavailable", which tells the user their machine cannot elevate
+        // when in fact their path was malformed. A precondition failure is classified
+        // here, where it is one.
+        return Err(PrivError::UnsafePath(format!(
+            "{} contains a NUL byte",
+            path.display()
+        )));
+    }
     if path.is_absolute() {
         Ok(path)
     } else {
@@ -252,6 +268,20 @@ pub fn guard_path(path: &Path) -> Result<&Path, PrivError> {
         )))
     }
 }
+
+/// The most an elevated read will pull into memory when the caller expresses no opinion
+/// — see [`PrivilegedFs::read`].
+///
+/// 1 MiB, which is the config editor's own load gate: a port default larger than the one
+/// consumer's limit would only buy a bigger allocation before the same refusal.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::privfs::DEFAULT_READ_LIMIT;
+/// assert_eq!(DEFAULT_READ_LIMIT, 1024 * 1024);
+/// ```
+pub const DEFAULT_READ_LIMIT: u64 = 1024 * 1024;
 
 /// Elevated file access needed by the config-file editor. Implementations live in
 /// `sid-privfs`.
@@ -270,11 +300,29 @@ pub trait PrivilegedFs: Send + Sync {
     /// deciding whether a prompt is warranted.
     async fn probe(&self, path: &Path) -> Access;
 
-    /// Read `path` with elevated privileges, authenticating with `secret`.
+    /// Read `path` with elevated privileges, authenticating with `secret`, refusing
+    /// anything over `max_bytes` with [`PrivError::TooLarge`].
     ///
-    /// Returns raw bytes: the size/encoding policy is the caller's (the editor gates at
-    /// 1 MiB of valid UTF-8), not this port's.
-    async fn read(&self, path: &Path, secret: &Passphrase) -> Result<Vec<u8>, PrivError>;
+    /// The cap is a *port* concern rather than the caller's own post-hoc check because
+    /// an elevated read reaches places an unprivileged one cannot: a multi-gigabyte
+    /// root-owned log, a character device, a `/proc` file whose `stat` reports 0 bytes
+    /// and then streams forever. By the time a caller could measure such an answer it
+    /// would already be in memory. An implementation must therefore bound what it
+    /// *fetches*, not merely what it returns.
+    ///
+    /// Encoding policy stays the caller's (the editor also requires valid UTF-8).
+    async fn read_capped(
+        &self,
+        path: &Path,
+        max_bytes: u64,
+        secret: &Passphrase,
+    ) -> Result<Vec<u8>, PrivError>;
+
+    /// [`read_capped`](Self::read_capped) at the port's own [`DEFAULT_READ_LIMIT`] — the
+    /// shape a caller with no opinion about size should use.
+    async fn read(&self, path: &Path, secret: &Passphrase) -> Result<Vec<u8>, PrivError> {
+        self.read_capped(path, DEFAULT_READ_LIMIT, secret).await
+    }
 
     /// Replace `path`'s contents with `bytes` with elevated privileges, authenticating
     /// with `secret`.
@@ -420,6 +468,20 @@ mod tests {
         assert!(guard_path(Path::new("")).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn guard_path_rejects_an_interior_nul_before_it_reaches_exec() {
+        // A NUL cannot survive being handed to `exec`, so without this the failure
+        // surfaces from the spawn as "elevation unavailable" — which reads as "this
+        // machine cannot elevate" and is a lie about a bad path. It is a precondition
+        // failure and must be classified as one.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let hostile = Path::new(OsStr::from_bytes(b"/etc/fs\0tab"));
+        let err = guard_path(hostile).unwrap_err();
+        assert!(matches!(err, PrivError::UnsafePath(_)), "got {err:?}");
+    }
+
     #[test]
     fn guard_paths_error_names_the_offending_path() {
         let err = guard_path(Path::new("relative/thing")).unwrap_err();
@@ -438,6 +500,9 @@ mod tests {
         access: Access,
         content: std::sync::Mutex<Vec<u8>>,
         accepted_secret: &'static str,
+        /// The `max_bytes` of the last `read_capped`, so a test can prove which cap the
+        /// defaulted [`PrivilegedFs::read`] passed down.
+        last_cap: std::sync::Mutex<Option<u64>>,
     }
 
     impl FakePrivilegedFs {
@@ -446,6 +511,7 @@ mod tests {
                 access,
                 content: std::sync::Mutex::new(content.as_bytes().to_vec()),
                 accepted_secret: "correct",
+                last_cap: std::sync::Mutex::new(None),
             }
         }
 
@@ -464,10 +530,23 @@ mod tests {
             self.access
         }
 
-        async fn read(&self, path: &Path, secret: &Passphrase) -> Result<Vec<u8>, PrivError> {
+        async fn read_capped(
+            &self,
+            path: &Path,
+            max_bytes: u64,
+            secret: &Passphrase,
+        ) -> Result<Vec<u8>, PrivError> {
+            *self.last_cap.lock().unwrap() = Some(max_bytes);
             guard_path(path)?;
             self.authenticate(secret)?;
-            Ok(self.content.lock().unwrap().clone())
+            let content = self.content.lock().unwrap().clone();
+            if content.len() as u64 > max_bytes {
+                return Err(PrivError::TooLarge {
+                    bytes: content.len() as u64,
+                    max_bytes,
+                });
+            }
+            Ok(content)
         }
 
         async fn write(
@@ -552,6 +631,46 @@ mod tests {
             block_on(fs.write(relative, b"y", &secret)).unwrap_err(),
             PrivError::UnsafePath(_)
         ));
+    }
+
+    #[test]
+    fn the_defaulted_read_passes_the_ports_own_cap_down() {
+        // The seam that keeps `config_editor.rs` compiling unchanged: the old two-argument
+        // `read` still exists, and it is not uncapped — it is `read_capped` at
+        // DEFAULT_READ_LIMIT.
+        let fs = FakePrivilegedFs::new(Access::Denied, "x");
+        block_on(fs.read(Path::new("/etc/fstab"), &Passphrase::new("correct".into()))).unwrap();
+        assert_eq!(*fs.last_cap.lock().unwrap(), Some(DEFAULT_READ_LIMIT));
+    }
+
+    #[test]
+    fn a_caller_with_an_opinion_gets_the_cap_it_asked_for() {
+        let fs = FakePrivilegedFs::new(Access::Denied, "0123456789");
+        let secret = Passphrase::new("correct".into());
+        let err = block_on(fs.read_capped(Path::new("/etc/fstab"), 4, &secret)).unwrap_err();
+        assert_eq!(
+            err,
+            PrivError::TooLarge {
+                bytes: 10,
+                max_bytes: 4
+            }
+        );
+        // And the same file under a cap that fits is an ordinary read.
+        assert_eq!(
+            block_on(fs.read_capped(Path::new("/etc/fstab"), 10, &secret)).unwrap(),
+            b"0123456789"
+        );
+    }
+
+    #[test]
+    fn an_oversized_file_is_never_a_reason_to_re_prompt() {
+        assert!(
+            !PrivError::TooLarge {
+                bytes: 2,
+                max_bytes: 1
+            }
+            .is_retryable()
+        );
     }
 
     #[test]
