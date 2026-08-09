@@ -20,6 +20,7 @@ use gpui::{
 use gpui_component::{Sizable as _, tag::Tag};
 
 use crate::bridge::{contrast_ink, mix};
+use crate::styled::StyledExt as _;
 use crate::theme::{self, Theme};
 use crate::typography::Typography;
 
@@ -224,6 +225,12 @@ impl RenderOnce for Badge {
             // The ink is the tone's, not the role's — that is the whole point of a tone.
             .child(
                 div()
+                    // A badge's word is usually short and occasionally a workspace name
+                    // or a state string from a remote. `min_w_0` + a clamp keeps the
+                    // long case from setting the whole row's minimum width — a chip is
+                    // furniture and must never be the thing that widens a table.
+                    .min_w_0()
+                    .clamp_one_line()
                     .text_meta(&theme)
                     .text_color(rgb(paint.ink))
                     .child(self.label),

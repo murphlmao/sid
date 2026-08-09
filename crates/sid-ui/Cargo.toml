@@ -14,6 +14,11 @@ repository.workspace = true
 # `sid-core`/`sid-store`/any domain crate — it knows colors and pixels, nothing else.
 gpui.workspace = true
 gpui-component.workspace = true
+# `input::words` — sid's word-boundary rule (ctrl-backspace / ctrl-shift-arrow), stated
+# over UAX#29 segments rather than over `char`s, so a run of CJK, an accented cluster or
+# a ZWJ emoji sequence is one unit instead of several. Same crate the library's own
+# `InputState` uses, so the two cannot disagree about where a word ends.
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 # The icon registry's "every named icon really exists in the bundle" test loads the

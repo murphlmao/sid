@@ -45,10 +45,13 @@ pub mod empty_state;
 pub mod gallery;
 pub mod grid;
 pub mod icon;
+pub mod input;
 pub mod kbd;
 pub mod list;
 pub mod meter;
 pub mod modal;
+pub mod notice;
+pub mod radio;
 pub mod scope_chip;
 pub mod segmented;
 pub mod status_dot;
@@ -67,15 +70,24 @@ pub use elevation::Elevation;
 pub use empty_state::EmptyState;
 pub use grid::{CardGrid, CardPaint, GridCard};
 pub use icon::Icon;
+pub use input::{FIELD_MIN_W, FieldWidth, SearchInput, TextInput, is_field_submit, on_submit};
 pub use kbd::Kbd;
 pub use list::{List, Row, RowPaint};
 pub use meter::{Meter, MeterTone, StatCluster};
 pub use modal::{Modal, PanelGeometry};
+pub use notice::{InlineNotice, NoticeTone, caveat_line, error_line};
+pub use radio::{Radio, RadioPaint, radio_paint};
 pub use scope_chip::{ScopeChip, ScopeOrigin};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use status_dot::{ConnectionState, StatusDot, StatusLegend};
 pub use styled::{StyledExt, h_flex, v_flex};
-pub use table::{ColumnWidth, FillColumns, FillTable, FillTableDelegate, sortable_th};
+// `TABLE_CHROME` is re-exported at the root alongside the rest of the table surface:
+// every call site that needs it is doing column arithmetic and already imports
+// `ColumnWidth` from here, and having exactly one of the pair live a module deeper was
+// a papercut with no rule behind it.
+pub use table::{
+    ColumnWidth, FillColumns, FillTable, FillTableDelegate, TABLE_CHROME, sortable_th,
+};
 pub use theme::Theme;
 pub use toast::{Toast, ToastPaint, ToastTone};
 pub use toolbar::Toolbar;

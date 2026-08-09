@@ -461,10 +461,7 @@ mod tests {
         let mut arm: ConfirmArm<String> = ConfirmArm::new();
         arm.press("prod-eu-west-1".into(), start);
         // Another row re-arms rather than firing — the safety property, unchanged.
-        assert_eq!(
-            arm.press("staging".into(), after(start, 1)),
-            Confirm::Armed
-        );
+        assert_eq!(arm.press("staging".into(), after(start, 1)), Confirm::Armed);
         assert!(!arm.is_armed("prod-eu-west-1".into(), after(start, 1)));
         // ...and the self-expiry the hand-rolled copies were missing, measured from the
         // press that armed *this* row rather than from the first one.
@@ -491,7 +488,10 @@ mod tests {
         let start = t0();
         let mut arm: ConfirmArm<String> = ConfirmArm::new();
         arm.press("nginx.service".into(), start);
-        assert_eq!(arm.armed_key_ref(start).map(String::as_str), Some("nginx.service"));
+        assert_eq!(
+            arm.armed_key_ref(start).map(String::as_str),
+            Some("nginx.service")
+        );
         assert_eq!(arm.armed_key(start).as_deref(), Some("nginx.service"));
         assert_eq!(arm.armed_key_ref(start + CONFIRM_WINDOW), None);
     }

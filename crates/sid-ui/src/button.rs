@@ -101,8 +101,9 @@ pub enum ButtonSize {
 
 impl ButtonSize {
     /// The `gpui-component` size that carries this size's box (height, padding,
-    /// corner radius).
-    fn component(self) -> Size {
+    /// corner radius). `pub(crate)` because [`crate::input`] sizes a field off the same
+    /// two rungs — a filter and the refresh button beside it have to line up.
+    pub(crate) fn component(self) -> Size {
         match self {
             ButtonSize::Sm => Size::Small,
             ButtonSize::Md => Size::Medium,
@@ -299,6 +300,7 @@ pub struct Button {
     variant: ButtonVariant,
     size: ButtonSize,
     icon: Option<Icon>,
+    trailing: Option<Icon>,
     tooltip: Option<SharedString>,
     disabled: bool,
     loading: bool,
@@ -316,6 +318,7 @@ impl Button {
             variant: ButtonVariant::default(),
             size: ButtonSize::default(),
             icon: None,
+            trailing: None,
             tooltip: None,
             disabled: false,
             loading: false,
@@ -360,6 +363,23 @@ impl Button {
     /// A leading icon, from the registry. Replaced by a spinner while loading.
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// A **trailing** icon, after the label — the slot a leading icon cannot fill.
+    ///
+    /// A leading glyph says what the button *is*; a trailing one says what pressing it
+    /// *does next*. The case that asked for it: the Database tab's export control is a
+    /// menu trigger, and it lost the `▾` caret when it moved onto this type, so a
+    /// control that opens a list of formats became indistinguishable from one that
+    /// exports immediately. Spell that as
+    /// `.trailing_icon(Icon::ChevronDown)`.
+    ///
+    /// Unlike the leading icon this is **not** replaced by the spinner: the caret is a
+    /// statement about the control's shape, not about its current work, and swapping it
+    /// out mid-press makes the button change width under the pointer.
+    pub fn trailing_icon(mut self, icon: Icon) -> Self {
+        self.trailing = Some(icon);
         self
     }
 
@@ -444,7 +464,10 @@ impl RenderOnce for Button {
                             .text_role(size.role(), &theme)
                             .text_color(rgb(paint.ink))
                             .child(self.label),
-                    ),
+                    )
+                    .when_some(self.trailing, |this, icon| {
+                        this.child(icon.el().with_size(size.icon()).text_color(rgb(paint.ink)))
+                    }),
             )
             .when_some(self.tooltip, |this, tip| this.tooltip(tip))
             .when_some(self.on_click.filter(|_| interactive), |this, on_click| {
@@ -873,6 +896,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_two_icon_slots_are_independent() {
+        // A split button is a leading glyph, a label and a caret — three things, and
+        // the caret is the one that says "this opens a menu". Setting one slot must not
+        // touch the other, or the DB export control goes back to being a button that
+        // looks like it exports immediately.
+        let both = Button::new("x", "Export")
+            .icon(Icon::File)
+            .trailing_icon(Icon::ChevronDown);
+        assert_eq!(both.icon, Some(Icon::File));
+        assert_eq!(both.trailing, Some(Icon::ChevronDown));
+
+        let caret_only = Button::new("x", "Export").trailing_icon(Icon::ChevronDown);
+        assert_eq!(caret_only.icon, None, "a caret is not a leading icon");
+        assert_eq!(caret_only.trailing, Some(Icon::ChevronDown));
+
+        assert_eq!(Button::new("x", "Export").trailing, None, "off by default");
+    }
+
+    #[test]
+    fn loading_takes_the_leading_slot_and_leaves_the_caret_alone() {
+        // The spinner stands in for the *leading* icon, which is about what the button
+        // is doing. The caret is about the control's shape; swapping it for a spinner
+        // would change the button's width under the pointer mid-press.
+        let busy = Button::new("x", "Export")
+            .icon(Icon::File)
+            .trailing_icon(Icon::ChevronDown)
+            .loading(true);
+        assert!(busy.state().shows_spinner());
+        assert_eq!(
+            busy.trailing,
+            Some(Icon::ChevronDown),
+            "the caret survives the spinner"
+        );
     }
 
     #[test]

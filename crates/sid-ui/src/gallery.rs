@@ -20,8 +20,10 @@
 //! ```
 
 use gpui::{
-    Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb, rgba,
+    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, px, rgb, rgba,
 };
+use gpui_component::input::InputState;
 
 use crate::badge::{ALL_BADGE_FILLS, ALL_BADGE_TONES, Badge, BadgeFill, BadgeTone};
 use crate::bridge::SCRIM;
@@ -31,10 +33,14 @@ use crate::elevation::Elevation;
 use crate::empty_state::EmptyState;
 use crate::grid::{CardGrid, GridCard};
 use crate::icon::Icon;
+use crate::input::{self, FieldWidth, SearchInput, TextInput};
 use crate::kbd::Kbd;
 use crate::list::{List, Row};
 use crate::modal::Modal;
+use crate::notice::{caveat_line, error_line};
+use crate::radio::Radio;
 use crate::scope_chip::ScopeChip;
+use crate::segmented::SegmentedControl;
 use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
@@ -56,13 +62,41 @@ const GRID_CARDS: [(&str, &str, ConnectionState); 5] = [
     ("bastion", "ops@bastion.acme:2222", ConnectionState::Offline),
 ];
 
-/// The gallery screen. Holds no state: everything on it is a fresh element per frame.
-pub struct Gallery;
+/// The four live fields the gallery draws.
+///
+/// A field's text is an entity, not an element, so unlike everything else on this screen
+/// it has to persist between frames. Building one needs a `&mut Window`, which
+/// `Gallery::new` does not have (`main.rs` mounts the gallery with `cx.new(|_| ..)`), so
+/// they are built on the first render instead — see [`Gallery::fields`].
+struct Fields {
+    filter: Entity<InputState>,
+    alias: Entity<InputState>,
+    port: Entity<InputState>,
+    unhelpful: Entity<InputState>,
+    off: Entity<InputState>,
+}
+
+/// The gallery screen. Holds the field states and nothing else: every other element on
+/// it is fresh per frame.
+pub struct Gallery {
+    fields: Option<Fields>,
+}
 
 impl Gallery {
     /// Mount with `cx.new(|_| Gallery::new())`.
     pub fn new() -> Self {
-        Self
+        Self { fields: None }
+    }
+
+    /// The field states, built on first use.
+    fn fields(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &Fields {
+        self.fields.get_or_insert_with(|| Fields {
+            filter: input::field(window, cx, "filter processes"),
+            alias: input::field(window, cx, "prod-eu-west-1"),
+            port: input::field(window, cx, "22"),
+            unhelpful: input::field(window, cx, "/path/to/go"),
+            off: input::field(window, cx, "read-only"),
+        })
     }
 }
 
@@ -78,8 +112,11 @@ pub fn requested() -> bool {
 }
 
 impl Render for Gallery {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::active(cx).clone();
+        let fields = self.fields(window, cx);
+        let filter = fields.filter.clone();
+        let field_band = fields_band(&theme, fields);
         v_flex()
             .size_full()
             .bg(rgb(theme.bg))
@@ -88,6 +125,10 @@ impl Render for Gallery {
             // The specimen is a full-width band rather than a fifth column: the samples
             // are sentences, and a fifth of 1920px is not a line of text.
             .child(type_specimen(&theme))
+            // Fields get a band of their own for the same reason plus one more: the
+            // width proof needs a parent that offers no width, and a gallery column is
+            // the opposite of that.
+            .child(field_band)
             // The overlays are a band for the same reason, plus one of their own: a
             // modal panel is 460px wide at its real size, and a fifth column that wide
             // squeezed the other four until the host rows wrapped mid-word.
@@ -106,7 +147,7 @@ impl Render for Gallery {
                     // right edge.
                     .child(column().children(buttons(&theme)))
                     .child(column().children(chips(&theme)))
-                    .child(column().children(structure(&theme)))
+                    .child(column().children(structure(&theme, &filter)))
                     .child(column().children(rows(&theme))),
             )
     }
@@ -201,6 +242,26 @@ fn buttons(theme: &Theme) -> Vec<gpui::AnyElement> {
                     .primary()
                     .icon(Icon::Terminal)
                     .full_width(),
+            ))
+            .child(row(
+                theme,
+                "trailing icon — a menu trigger says so",
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("gallery-btn-split", "Export").trailing_icon(Icon::ChevronDown),
+                    )
+                    .child(
+                        Button::new("gallery-btn-split-sm", "Export")
+                            .small()
+                            .trailing_icon(Icon::ChevronDown),
+                    )
+                    .child(
+                        Button::new("gallery-btn-split-both", "Run")
+                            .primary()
+                            .icon(Icon::Terminal)
+                            .trailing_icon(Icon::ChevronDown),
+                    ),
             ))
             .into_any_element(),
         Card::new()
@@ -321,13 +382,13 @@ fn chips(theme: &Theme) -> Vec<gpui::AnyElement> {
 }
 
 /// Column 3 — the containers.
-fn structure(theme: &Theme) -> Vec<gpui::AnyElement> {
+fn structure(theme: &Theme, filter: &Entity<InputState>) -> Vec<gpui::AnyElement> {
     vec![
         Card::new()
             .title("toolbar")
             .child(
                 Toolbar::new()
-                    .filter(fake_filter(theme, "filter processes"))
+                    .filter(SearchInput::new(filter).small())
                     .count(132, "process")
                     .action(
                         Button::new("gallery-tb-refresh", "refresh")
@@ -339,6 +400,86 @@ fn structure(theme: &Theme) -> Vec<gpui::AnyElement> {
                 Toolbar::new()
                     .count_label("no filter — count and actions hold the right edge")
                     .action(IconButton::new("gallery-tb-add", Icon::Add, "add host").small()),
+            )
+            .child(
+                // The slot's real worst case: six call sites feed it an OS error rather
+                // than a count. It has to elide instead of pushing the action off-screen.
+                Toolbar::new()
+                    .count_label(
+                        "error: ssh: handshake failed: no supported authentication \
+                         methods remain after the agent refused every identity",
+                    )
+                    .action(IconButton::new("gallery-tb-retry", Icon::Refresh, "retry").small()),
+            )
+            .into_any_element(),
+        Card::new()
+            .title("inline notice")
+            .child(div().hint_text(theme).child(
+                "a property of the thing above it, not an event floating over the \
+                 screen — it stays until that thing changes",
+            ))
+            .child(error_line("kill: operation not permitted (pid 1)"))
+            .child(caveat_line("sorted within this page only"))
+            .child(error_line(
+                "connect: ssh: handshake failed: no supported authentication methods \
+                 remain after the agent refused every identity offered for this host",
+            ))
+            .into_any_element(),
+        Card::new()
+            .title("card · panel")
+            .child(div().hint_text(theme).child(
+                "a panel's body takes its height from the container, so a list inside \
+                 it can scroll instead of growing past the card",
+            ))
+            .child(
+                Card::panel("saved connections")
+                    .count(9)
+                    .h(px(150.))
+                    .action(
+                        IconButton::new("gallery-panel-add", Icon::Add, "add connection").small(),
+                    )
+                    .child(
+                        v_flex()
+                            .id("gallery-panel-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p_1()
+                            .gap_1()
+                            .children((0..9).map(|ix| {
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .gap_2()
+                                    .row_padding()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .clamp_one_line()
+                                            .text_body(theme)
+                                            .child(format!("connection-{ix:02}")),
+                                    )
+                                    .child(Badge::new(if ix % 3 == 0 { "global" } else { "ws" }))
+                            })),
+                    ),
+            )
+            .into_any_element(),
+        Card::new()
+            .title("segmented control")
+            .child(div().hint_text(theme).child(
+                "in a column, so the track has to refuse the parent's stretch — and a \
+                 long context name has to elide rather than widen the strip",
+            ))
+            .child(
+                SegmentedControl::new("gallery-seg")
+                    .segments(["Ports", "Services", "Interfaces"])
+                    .selected(1),
+            )
+            .child(
+                SegmentedControl::new("gallery-seg-long")
+                    .segments(["gke_acme-prod_europe-west1_cluster-alpha", "minikube"])
+                    .selected(0),
             )
             .into_any_element(),
         Card::new()
@@ -392,12 +533,12 @@ fn structure(theme: &Theme) -> Vec<gpui::AnyElement> {
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
-                                                    .truncate()
+                                                    .clamp_one_line()
                                                     .text_color(rgb(theme.fg_strong))
                                                     .child(*name),
                                             ),
                                     )
-                                    .child(div().hint_text(theme).truncate().child(*addr))
+                                    .child(div().hint_text(theme).clamp_one_line().child(*addr))
                                     .child(
                                         h_flex().w_full().gap_1().pt_1().child(
                                             Button::new(("gallery-grid-connect", ix), "connect")
@@ -473,6 +614,50 @@ fn rows(theme: &Theme) -> Vec<gpui::AnyElement> {
                         StatusDot::new(SharedString::from(format!("gallery-dot-{}", s.label())), s)
                     })),
             ))
+            .into_any_element(),
+        Card::new()
+            .title("radio")
+            .child(div().hint_text(theme).child(
+                "the mark only — the label, the click target and the selected fill \
+                 belong to the Row it leads, because a save-to option is a whole row",
+            ))
+            .child(
+                List::stack()
+                    .child(
+                        Row::new("gallery-radio-1")
+                            .selected(true)
+                            .leading(Radio::new(true))
+                            .on_click(|_, _, _| {})
+                            .child(div().text_body(theme).child("workspace"))
+                            .child(
+                                div()
+                                    .hint_text(theme)
+                                    .child("committed to .sid/config.toml"),
+                            ),
+                    )
+                    .child(
+                        Row::new("gallery-radio-2")
+                            .leading(Radio::new(false))
+                            .on_click(|_, _, _| {})
+                            .child(div().text_body(theme).child("global"))
+                            .child(
+                                div()
+                                    .hint_text(theme)
+                                    .child("this machine, every workspace"),
+                            ),
+                    )
+                    .child(
+                        Row::new("gallery-radio-3")
+                            .leading(Radio::new(false).enabled(false))
+                            .child(
+                                div()
+                                    .text_body(theme)
+                                    .text_color(rgb(theme.faint))
+                                    .child("workspace"),
+                            )
+                            .child(div().hint_text(theme).child("no workspace is focused")),
+                    ),
+            )
             .into_any_element(),
         Card::new()
             .title("scope chip")
@@ -692,7 +877,7 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
+                    .clamp_one_line()
                     .text_role(role, theme)
                     .child("Sphinx of black quartz, judge my vow — 0123456789"),
             )
@@ -740,16 +925,128 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
         )
 }
 
-/// A stand-in for the search field. `TextInput`/`SearchInput` land in a later commit;
-/// until then the toolbar needs *something* filter-shaped to hold its left edge.
-fn fake_filter(theme: &Theme, placeholder: &'static str) -> impl IntoElement + use<> {
+/// The fields band — every field shape, and the proof that a field sizes itself.
+///
+/// The right-hand card is the important one and it is deliberately unflattering: the
+/// same field is drawn twice inside a parent that offers **no width at all**, once as
+/// [`TextInput`] and once in the shape the widget it replaces had. The replacement holds
+/// its 160px floor; the old shape collapses to padding and border, which is the ~20px
+/// stub that swallowed clicks on the SFTP go-to-path field for a whole release.
+fn fields_band(theme: &Theme, fields: &Fields) -> impl IntoElement + use<> {
     h_flex()
         .w_full()
-        .gap_2()
+        .items_start()
+        .gap_4()
+        .px_4()
+        .pb_4()
+        .child(
+            Card::new()
+                .title("text input")
+                .flex_1()
+                .min_w_0()
+                .child(div().hint_text(theme).child(
+                    "over gpui-component's Input: ctrl-backspace deletes a word, \
+                     ctrl-shift-arrow extends the selection by one, and Tab leaves the \
+                     field instead of being swallowed",
+                ))
+                .child(labelled_field(
+                    theme,
+                    "Fill — a form field",
+                    TextInput::new(&fields.alias),
+                ))
+                .child(labelled_field(
+                    theme,
+                    "Fixed(90px) — a port",
+                    TextInput::new(&fields.port).fixed(px(90.)),
+                ))
+                .child(labelled_field(
+                    theme,
+                    "disabled",
+                    TextInput::new(&fields.off).disabled(true),
+                )),
+        )
+        .child(
+            Card::new()
+                .title("search input")
+                .flex_1()
+                .min_w_0()
+                .child(div().hint_text(theme).child(
+                    "Grow width, the registry's search glyph, and a clear affordance \
+                     that appears once there is something to clear",
+                ))
+                .child(
+                    Toolbar::new()
+                        .filter(SearchInput::new(&fields.filter).small())
+                        .count(132, "process")
+                        .action(
+                            Button::new("gallery-field-refresh", "refresh")
+                                .small()
+                                .icon(Icon::Refresh),
+                        ),
+                )
+                .child(labelled_field(
+                    theme,
+                    "at Md, filling its line",
+                    SearchInput::new(&fields.filter).width(FieldWidth::Fill),
+                )),
+        )
+        .child(
+            Card::new()
+                .title("a field declares its own width")
+                .flex_1()
+                .min_w_0()
+                .child(div().hint_text(theme).child(
+                    "both of these sit in a parent that offers no width. the left one \
+                     declares a 160px floor; the right one is the shape the old widget \
+                     had — percentages all the way down, so it collapses to padding and \
+                     border and eats the clicks aimed at it",
+                ))
+                .child(
+                    // A content-sized row: `flex_none` so it does not take the card's
+                    // width, `items_start` so it does not stretch its children. This is
+                    // the unhelpful parent.
+                    h_flex()
+                        .flex_none()
+                        .items_start()
+                        .gap_4()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().hint_text(theme).child("TextInput"))
+                                .child(div().child(TextInput::new(&fields.unhelpful))),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().hint_text(theme).child("the old shape"))
+                                .child(div().child(no_floor_field(theme))),
+                        ),
+                ),
+        )
+}
+
+/// A field under its own caption — the shape a form row has.
+fn labelled_field<F: IntoElement>(
+    theme: &Theme,
+    label: &'static str,
+    field: F,
+) -> impl IntoElement + use<F> {
+    v_flex()
+        .gap_1()
+        .child(div().hint_text(theme).child(label))
+        .child(field)
+}
+
+/// The widget this crate replaces, reduced to the one property that broke it: a box with
+/// padding, a border and **no width of its own**. Rendered beside the real thing so the
+/// capture carries its own before/after.
+fn no_floor_field(theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .flex()
+        .items_center()
         .px_2()
         .py_1()
         .rounded_md()
         .elevation(Elevation::Well, theme)
-        .child(Icon::Search.el().text_color(rgb(theme.faint)))
-        .child(div().text_meta(theme).child(placeholder))
+        .child(div().text_meta(theme).child(""))
 }

@@ -182,7 +182,10 @@ pub const UNBUNDLED: &[(&str, &str)] = &[
         "a container runtime — Network's Docker sub-view",
     ),
     ("boxes", "a cluster — Network's Kubernetes sub-view"),
-    ("network", "a network adapter — Network's Interfaces sub-view"),
+    (
+        "network",
+        "a network adapter — Network's Interfaces sub-view",
+    ),
 ];
 
 impl Icon {

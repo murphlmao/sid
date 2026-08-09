@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use gpui::{
     App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
-    RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window,
+    RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
     prelude::FluentBuilder as _, rgb, transparent_black,
 };
 
@@ -197,6 +197,15 @@ impl RenderOnce for SegmentedControl {
 
         h_flex()
             .flex_none()
+            // ...and `self_start`, which is the half `flex_none` does not cover: it
+            // governs the main axis, and in a `v_flex` parent the control's *width* is
+            // the cross axis, where `align-items: stretch` was pulling the track out to
+            // the full width of the column. On System and Network that rendered as a
+            // full-bleed rail with five chips huddled at its left end.
+            .self_start()
+            // The track may not grow past its parent either: a Kubernetes context name
+            // is arbitrary and long, and an unclamped strip pushed it off the screen.
+            .max_w_full()
             .gap_1()
             .p_1()
             .rounded_md()
@@ -207,6 +216,12 @@ impl RenderOnce for SegmentedControl {
                 let id: ElementId = SharedString::from(format!("{base}-{ix}")).into();
                 h_flex()
                     .id(id)
+                    // A segment carries a caller's string — a sub-view name, or a kube
+                    // context, which is `gke_project_europe-west1_cluster-name`. Without
+                    // `min_w_0` the chip's minimum is that whole string (gpui reports a
+                    // text element's min-content width as its full width), so one long
+                    // segment widened the strip past the window instead of eliding.
+                    .min_w_0()
                     .gap_1p5()
                     .px_3()
                     .py_1()
@@ -227,9 +242,15 @@ impl RenderOnce for SegmentedControl {
                     })
                     .text_color(rgb(paint.ink))
                     .when_some(segment.icon, |this, icon| {
-                        this.child(icon.small().text_color(rgb(paint.ink)))
+                        // `flex_none` on the glyph: when the label elides, the icon must
+                        // not be the thing that shrinks.
+                        this.child(
+                            div()
+                                .flex_none()
+                                .child(icon.small().text_color(rgb(paint.ink))),
+                        )
                     })
-                    .child(segment.label)
+                    .child(div().min_w_0().clamp_one_line().child(segment.label))
                     .when_some(on_select, |this, on_select| {
                         this.on_click(move |_ev: &ClickEvent, window, cx| {
                             on_select(&SegmentSelect { index: ix }, window, cx);
