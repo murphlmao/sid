@@ -157,6 +157,13 @@ pub struct AppState {
     /// this side; the file panel's `⇄ dock` control (any open session) flips + persists
     /// it and fans the update out to every live session — see `on_session_event`.
     pub(crate) file_browser_side: PanelSide,
+    /// App zoom, cached from `Settings.ui_scale_percent` at startup (GitHub #4).
+    ///
+    /// One factor for the whole UI. `render` pushes it to `Window::set_rem_size`, which
+    /// is what every rem-authored length in gpui and `sid-ui` resolves against; the two
+    /// subsystems that do their own pixel arithmetic (table columns, the terminal's cell
+    /// grid) read the same number back off the window rather than caching a copy.
+    pub(crate) ui_scale: UiScale,
     /// The SSH tab's Home-state view-local UI state (tree collapse/search/inline
     /// rename+folder-edit) — lives in its own module (`ui::ssh_home`), same shape as
     /// `db`/`network` below.
@@ -290,6 +297,12 @@ impl AppState {
             .settings()
             .map(|s| s.file_browser_side)
             .unwrap_or_default();
+        // Same read, same fallback. `from_percent` snaps and clamps, so a store row from
+        // a hand-edit or a future build cannot put the window at 0% or 4000%.
+        let ui_scale = store
+            .settings()
+            .map(|s| UiScale::from_percent(s.ui_scale_percent))
+            .unwrap_or_default();
         // Also reads (and caches) `Settings` — see `SettingsTabState`'s doc comment for
         // why the Settings screen keeps its own snapshot rather than re-reading
         // `store.settings()` from `render`.
@@ -313,6 +326,7 @@ impl AppState {
             ssh_sessions: Vec::new(),
             active_session: None,
             file_browser_side,
+            ui_scale,
             ssh_home: HomeTabState::new(cx),
             db,
             network,
@@ -719,6 +733,36 @@ impl AppState {
         cx.notify();
     }
 
+    /// Set the app zoom, persist it, and make every surface agree about it.
+    ///
+    /// Modelled on `toggle_dock_side` above: one global preference, written through to
+    /// `Settings`, then fanned out to the live SSH sessions — which need telling because
+    /// the PTY grid is not laid out by gpui and cannot pick the new rem size up on its
+    /// own.
+    ///
+    /// A no-op at the ends of the ladder: `zoom_in` at 200% returns 200%, and re-running
+    /// the whole fan-out (plus a store write) for a keystroke that changed nothing would
+    /// be a redb commit on every key repeat.
+    pub(crate) fn set_ui_scale(&mut self, scale: UiScale, cx: &mut Context<Self>) {
+        if scale == self.ui_scale {
+            return;
+        }
+        self.ui_scale = scale;
+        if let Ok(mut settings) = self.store.settings() {
+            settings.ui_scale_percent = scale.percent();
+            let _ = self.store.set_settings(&settings);
+        }
+        for tab in &self.ssh_sessions {
+            tab.session
+                .update(cx, |session, cx| session.set_ui_scale(scale, cx));
+        }
+        // `refresh_windows`, not just `notify`: the rem size is a *window* property, so
+        // every view in the tree has to lay out again — the same hammer the theme switch
+        // uses for the same reason.
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
         form.read(cx).focus_first(window, cx);
         // `subscribe_in` (not `subscribe`) so `on_form_event` gets a `&mut Window` —
@@ -1116,6 +1160,9 @@ impl AppState {
                 self.close_palette(cx);
                 cx.notify();
             }
+            Action::ZoomIn => self.set_ui_scale(self.ui_scale.zoom_in(), cx),
+            Action::ZoomOut => self.set_ui_scale(self.ui_scale.zoom_out(), cx),
+            Action::ZoomReset => self.set_ui_scale(self.ui_scale.reset(), cx),
             Action::FocusFilter => {
                 // Tabs with a filter input claim this; the rest have nothing to focus
                 // yet and it stays a no-op there. SSH Home's quick-connect box doubles
@@ -1899,6 +1946,13 @@ impl Render for AppState {
         // `handle_root_key_down`'s doc comment for why that ordering is load-bearing.
         let palette_overlay = self.palette_overlay(window, cx);
         let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
+
+        // THE lever. Everything authored in rems — gpui's own `.p_2()`/`.gap_1()`/
+        // `.h_8()`/`.rounded_md()` shorthands, `sid-ui`'s type scale, every `scaled(..)`
+        // length — resolves against this, so one assignment per frame scales the entire
+        // UI. Set in `render` rather than once at startup so it survives a window
+        // recreation and cannot drift from `self.ui_scale`.
+        window.set_rem_size(self.ui_scale.rem_size());
 
         let t = theme::active(cx);
         let (bg, fg) = (t.bg, t.fg);
