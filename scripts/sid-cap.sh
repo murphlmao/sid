@@ -310,7 +310,11 @@ ensure_vptr() {
     # The scanner's output uses package-relative imports (`from ..wayland import`),
     # so it must be generated INTO pywayland.protocol inside the venv.
     local proto_dir
-    proto_dir="$("$venv/bin/python" -c 'import pywayland.protocol, os; print(os.path.dirname(pywayland.protocol.__file__))')"
+    # `__path__[0]`, not `dirname(__file__)`: `pywayland.protocol` is a NAMESPACE
+    # package (no `__init__.py`), so `__file__` is `None` and the old expression handed
+    # the scanner `-o ''` — "pywayland protocol generation failed", on a machine where
+    # nothing was actually wrong.
+    proto_dir="$("$venv/bin/python" -c 'import pywayland.protocol as p; print(p.__path__[0])')"
     if [[ ! -d "$proto_dir/wlr_virtual_pointer_unstable_v1" ]]; then
         "$venv/bin/python" -m pywayland.scanner -i \
             /usr/share/wayland/wayland.xml \
