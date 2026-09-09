@@ -115,7 +115,7 @@ Every item is gated by before/after captures in all four themes and a
 | # | Title | State | Decision already made |
 |:--|:--|:--|:--|
 | 1 | init error (GPU preflight panic) | **fixed** in July, still open on GitHub | close it |
-| 2 | quick connect: add connection from the field | not started | inline `add user@host…` row opens the prefilled add form; Enter on an unknown host opens that form instead of dialling; scan `~/.ssh` for keys, prefer `id_ed25519` then `id_rsa`; when agent auth is chosen and `SSH_AUTH_SOCK` is unset, say so and offer key auth |
+| 2 | quick connect: add connection from the field | **merged** (`p2-quick-connect`, 2026-09-09) | inline `add user@host…` row opens the prefilled add form; Enter on an unknown host opens that form instead of dialling; scan `~/.ssh` for keys, prefer `id_ed25519` then `id_rsa`; when agent auth is chosen and `SSH_AUTH_SOCK` is unset, say so and offer key auth |
 | 3 | std ctrl operations in fields (ctrl+backspace, ctrl+shift+arrows, Tab) | `sid-ui` `TextInput` shipped with these; **old `ui/text_input.rs` still used by `host_form`, `db_conn_form`, `app.rs`** | finish the migration, then verify in every form |
 | 4 | ctrl `+` / `-` zoom | not started | one scale factor for the whole UI including the terminal grid (reflows cells), persisted in `Settings`, clamped 50–200%, ctrl+0 resets |
 
@@ -123,7 +123,7 @@ Every item is gated by before/after captures in all four themes and a
       authenticate this session and `gh` is not installed).
 - [ ] #3: migrate the remaining call sites to `sid_ui` inputs, then **delete
       `crates/sid/src/ui/text_input.rs`** (959 lines duplicating `gpui_component::input`).
-- [ ] #2 as decided above.
+- [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
 - [ ] #4 as decided above.
 
 ## 4. Backlog carried from the July resume doc
@@ -156,7 +156,7 @@ there evicts RAM).
 | `worktree-agent-aafbb83305bc45d0b` | `p4-zoom` at `~/vcs/sid-wt/p4-zoom` | 4 commits, 0 behind main, **does not compile** (`UiScale` not imported at 2 sites, `SshSession::set_ui_scale` missing); has the ladder math, Settings v5 persistence, rem-based type scale, table/modal scaling | finish, gate, merge |
 | `worktree-agent-a0dc992fc7f17e063` | none | 3 commits, 55 behind; a `sid-privileged` crate that main superseded with `sid-privfs` (c33d329, 8099059, 3c46099) | nothing to merge; delete the remote branch |
 
-- [ ] `p2-quick-connect`: gate + review + merge to main.
+- [x] `p2-quick-connect`: gate + review + merge to main (fda1893, fast-forward, 2026-09-09).
 - [ ] `p4-zoom`: finish (see the four commit messages for the design), gate, merge to main.
 - [ ] Delete `origin/worktree-agent-a0dc992fc7f17e063` (superseded), and the two merged
       `worktree-agent-*` branches once their local branches land.
@@ -197,3 +197,4 @@ commits; do not invent one).
 
 - 2026-09-09: checklist written; `p2-quick-connect` and `p4-zoom` worktrees recreated from
   origin; agents dispatched to gate/finish them.
+- 2026-09-09: `p2-quick-connect` merged (ff). Gate on the branch: fmt/clippy/tests green; review a–f all pass; zero new deps. Root cause of sid windows landing on Murphy's screen: `hyprctl keyword` is rejected by this Hyprland's Lua config parser ("keyword can't work with non-legacy parsers. Use eval."), so `sid-shot.sh`'s silent windowrule and headless-monitor keywords were failing behind `|| true`.
