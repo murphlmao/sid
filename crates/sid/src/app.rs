@@ -33,7 +33,7 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, modal, theme};
+use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, UiScale, modal, theme};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -92,6 +92,21 @@ fn tab_from_env() -> Option<Tab> {
     std::env::var("SID_START_TAB")
         .ok()
         .and_then(|v| tab_from_str(&v))
+}
+
+/// The zoom the app opens at (GitHub #4): the persisted `Settings.ui_scale_percent`,
+/// unless `SID_UI_SCALE` overrides it *for this run only* — the capture harness's hook
+/// for shooting the UI at 150% against a hermetic store, same convention as
+/// `SID_START_TAB` and `SID_THEME` (read at startup, never written back).
+///
+/// Total on both inputs: an unparseable override is ignored rather than fatal, and
+/// `UiScale::from_percent` snaps and clamps whatever survives, so neither a hand-edited
+/// store row nor `SID_UI_SCALE=nonsense` can open the window at 0%.
+fn startup_scale(persisted: u16, env: Option<&str>) -> UiScale {
+    let percent = env
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(persisted);
+    UiScale::from_percent(percent)
 }
 
 /// One entry in the scope switcher.
@@ -297,12 +312,14 @@ impl AppState {
             .settings()
             .map(|s| s.file_browser_side)
             .unwrap_or_default();
-        // Same read, same fallback. `from_percent` snaps and clamps, so a store row from
-        // a hand-edit or a future build cannot put the window at 0% or 4000%.
-        let ui_scale = store
-            .settings()
-            .map(|s| UiScale::from_percent(s.ui_scale_percent))
-            .unwrap_or_default();
+        // Same read, same fallback — plus the `SID_UI_SCALE` per-run override. See
+        // `startup_scale`; `render` is what actually puts the number on the window.
+        let ui_scale = startup_scale(
+            store
+                .settings()
+                .map_or(UiScale::default().percent(), |s| s.ui_scale_percent),
+            std::env::var("SID_UI_SCALE").ok().as_deref(),
+        );
         // Also reads (and caches) `Settings` — see `SettingsTabState`'s doc comment for
         // why the Settings screen keeps its own snapshot rather than re-reading
         // `store.settings()` from `render`.
@@ -736,13 +753,18 @@ impl AppState {
     /// Set the app zoom, persist it, and make every surface agree about it.
     ///
     /// Modelled on `toggle_dock_side` above: one global preference, written through to
-    /// `Settings`, then fanned out to the live SSH sessions — which need telling because
-    /// the PTY grid is not laid out by gpui and cannot pick the new rem size up on its
-    /// own.
+    /// `Settings`, then repainted.
     ///
-    /// A no-op at the ends of the ladder: `zoom_in` at 200% returns 200%, and re-running
-    /// the whole fan-out (plus a store write) for a keystroke that changed nothing would
-    /// be a redb commit on every key repeat.
+    /// There is no fan-out to the live sessions, and that is deliberate. `render` below
+    /// pushes the new rem size onto the window; gpui rebuilds the whole element tree
+    /// every frame, so each session's `render_grid` reads the new zoom straight off
+    /// `window.rem_size()` on the very next one, reshapes its grid at the scaled cell
+    /// size, and its existing viewport reconciliation resizes the remote PTY — the same
+    /// path a window resize takes. A pushed copy would be a second channel saying the
+    /// same thing, with the failure mode of disagreeing with the window.
+    ///
+    /// A no-op at the ends of the ladder: `zoom_in` at 200% returns 200%, and a store
+    /// write for a keystroke that changed nothing would be a redb commit per key repeat.
     pub(crate) fn set_ui_scale(&mut self, scale: UiScale, cx: &mut Context<Self>) {
         if scale == self.ui_scale {
             return;
@@ -751,10 +773,6 @@ impl AppState {
         if let Ok(mut settings) = self.store.settings() {
             settings.ui_scale_percent = scale.percent();
             let _ = self.store.set_settings(&settings);
-        }
-        for tab in &self.ssh_sessions {
-            tab.session
-                .update(cx, |session, cx| session.set_ui_scale(scale, cx));
         }
         // `refresh_windows`, not just `notify`: the rem size is a *window* property, so
         // every view in the tree has to lay out again — the same hammer the theme switch
@@ -1948,7 +1966,7 @@ impl Render for AppState {
         let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
 
         // THE lever. Everything authored in rems — gpui's own `.p_2()`/`.gap_1()`/
-        // `.h_8()`/`.rounded_md()` shorthands, `sid-ui`'s type scale, every `scaled(..)`
+        // `.h_8()`/`.rounded_md()` shorthands, `sid-ui`'s type scale, every `px(..)`
         // length — resolves against this, so one assignment per frame scales the entire
         // UI. Set in `render` rather than once at startup so it survives a window
         // recreation and cannot drift from `self.ui_scale`.
@@ -2341,6 +2359,29 @@ mod tests {
 
     fn ws(id: &str) -> Scope {
         Scope::Workspace(WorkspaceId(id.to_string()))
+    }
+
+    // ---- startup zoom (GitHub #4) ------------------------------------------------
+
+    #[test]
+    fn the_app_opens_at_the_persisted_zoom() {
+        assert_eq!(startup_scale(150, None).percent(), 150);
+        assert_eq!(startup_scale(100, None), UiScale::DEFAULT);
+        // A store row nobody's build wrote still opens a usable window.
+        assert_eq!(startup_scale(0, None).percent(), 50);
+        assert_eq!(startup_scale(140, None).percent(), 150);
+    }
+
+    #[test]
+    fn sid_ui_scale_overrides_the_persisted_zoom_for_one_run() {
+        assert_eq!(startup_scale(100, Some("150")).percent(), 150);
+        assert_eq!(startup_scale(150, Some("100")), UiScale::DEFAULT);
+        assert_eq!(startup_scale(100, Some(" 200 ")).percent(), 200);
+        // Junk (or an empty var) is ignored, not fatal — the persisted value stands.
+        assert_eq!(startup_scale(125, Some("huge")).percent(), 125);
+        assert_eq!(startup_scale(125, Some("")).percent(), 125);
+        // …and an override past the ladder clamps like any other percent.
+        assert_eq!(startup_scale(100, Some("9000")).percent(), 200);
     }
 
     #[test]

@@ -1288,9 +1288,21 @@ mod tests {
         // and `key_to_bytes` would write a literal `-` into the shell instead.
         let b = default_bindings();
         for focus in [FocusContext::Normal, FocusContext::Terminal] {
-            assert_eq!(resolve(&ctrl("-"), focus, &b), Some(Action::ZoomOut), "{focus:?}");
-            assert_eq!(resolve(&ctrl("="), focus, &b), Some(Action::ZoomIn), "{focus:?}");
-            assert_eq!(resolve(&ctrl("0"), focus, &b), Some(Action::ZoomReset), "{focus:?}");
+            assert_eq!(
+                resolve(&ctrl("-"), focus, &b),
+                Some(Action::ZoomOut),
+                "{focus:?}"
+            );
+            assert_eq!(
+                resolve(&ctrl("="), focus, &b),
+                Some(Action::ZoomIn),
+                "{focus:?}"
+            );
+            assert_eq!(
+                resolve(&ctrl("0"), focus, &b),
+                Some(Action::ZoomReset),
+                "{focus:?}"
+            );
         }
     }
 
