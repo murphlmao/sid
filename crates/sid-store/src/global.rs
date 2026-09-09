@@ -742,8 +742,10 @@ mod tests {
     fn a_zoom_level_round_trips_through_the_store() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
-        let mut settings = Settings::default();
-        settings.ui_scale_percent = 150;
+        let mut settings = Settings {
+            ui_scale_percent: 150,
+            ..Default::default()
+        };
         store.set_settings(&settings).unwrap();
         assert_eq!(store.get_settings().unwrap().ui_scale_percent, 150);
         // ...and a value off the frontend's ladder is stored as given, not rejected.

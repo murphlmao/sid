@@ -447,7 +447,7 @@ fn wrapper(width: FieldWidth, style: StyleRefinement) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AbsoluteLength, DefiniteLength, Length};
+    use gpui::{DefiniteLength, Length};
 
     /// Read back a `Div`'s refined style — the same trick `styled.rs` uses to assert on
     /// a helper without standing up a renderer.
