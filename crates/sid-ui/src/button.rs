@@ -633,10 +633,23 @@ fn shell(
                 // Design law: depth is borders + surface shifts, never shadows.
                 .shadow(false),
         )
-        // gpui-component 0.6 derives a custom variant's border from its *fill*, so
-        // sid's separate border token is reapplied here — `Button::render` refines the
-        // instance style after painting the variant's border colour, so this wins.
-        .when_some(paint.border, |this, border| this.border_color(rgb(border)))
+        // Two things gpui-component 0.6 does to a `Custom` variant that sid does not
+        // want, both undone here through the instance style — `Button::render` calls
+        // `refine_style(&instance_style)` last, so this wins for the rest state:
+        //
+        // 1. **The rest fill is drawn at 20% alpha.** 0.6's `bg_color` returns
+        //    `colors.color.mix_oklab(theme.transparent, 0.2)`, and `mix_oklab`'s factor
+        //    weights *self*, so the result carries `color.a * 0.2`. 0.5.1 returned
+        //    `colors.color` untouched. Hover and pressed are unaffected (they read
+        //    `colors.hover`/`colors.active` straight), so only the rest state is
+        //    restored here.
+        // 2. **A custom variant no longer gets a border box.** 0.6 gates the four
+        //    `border_*_1()` calls behind `variant.is_default() || outline`; 0.5.1 drew
+        //    them for every variant. Without the width, sid's border token has nothing
+        //    to colour, and every button also loses 2px on each axis.
+        .border_1()
+        .border_color(colour(paint.border))
+        .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
         .with_size(size.component())
         .tab_stop(interactive)
         .when(interactive, |this| this.cursor_pointer())
