@@ -105,7 +105,7 @@ zeroize = "1"
 
 # Rendering surface. Single-sourced here (rather than in each frontend crate) so the
 # `sid` binary and the `sid-ui` component crate can never drift apart on the pin, and
-# so the eventual git-`gpui` / gpui-component 0.5.2 migration is one line. Only
+# so the gpui-pre 0.3 / gpui-component 0.6 migration was in fact one block. Only
 # frontend crates (`sid`, `sid-ui`) may depend on these — see CLAUDE.md rule 1.
 # The pre-release line (`gpui-pre` 0.3.x, a crates.io snapshot of zed's `main`) split
 # the windowing/rendering backends out of `gpui` into `gpui_platform`, and replaced the

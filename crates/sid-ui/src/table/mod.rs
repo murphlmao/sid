@@ -3,7 +3,7 @@
 //! # The problem this solves
 //!
 //! Every one of sid's 30 `Column::new` sites hard-codes a pixel width, because upstream
-//! gives it no choice: `gpui-component-0.5.1`'s `Column.width` is a plain `Pixels` with
+//! gives it no choice: `gpui-component`'s `Column.width` is a plain `Pixels` with
 //! no `Length`/flex/grow option and no fill logic anywhere in `table/mod.rs`
 //! (`docs/design/2026-07-26-ui-overhaul-plan.md` §2.4). The consequence, measured: the
 //! System tab declares **652px of columns in a 2000px window** — 67% of the widest
@@ -155,7 +155,7 @@ impl<D: FillTableDelegate> FillTable<D> {
 /// The measure happens in **prepaint**, which is after taffy has already laid the columns
 /// out at their previous widths; `TableState::refresh` re-reads them, but nothing repaints
 /// unless something asks. Inside a draw, nothing will: `Window::refresh` is a no-op while
-/// the invalidator is drawing (`gpui-0.2.2/src/window.rs:1367`, `if not_drawing()`), which
+/// the invalidator is drawing (`gpui-pre-0.3.4/src/window.rs:2179`, `if not_drawing()`), which
 /// is the same rule that makes a `cx.notify()` from `render` disappear. A table on a poll
 /// timer never noticed — the next tick brought a frame along. A **quiescent** one did: the
 /// Workspaces fleet table settled its data before its first paint, so nothing followed the

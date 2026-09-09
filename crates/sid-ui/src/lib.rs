@@ -22,7 +22,7 @@
 //!   colours, spacing and elements, and nothing about hosts, queries or sockets.
 //!
 //! The `sid` binary's tab modules import from here and, over the migration, stop naming
-//! `gpui_component` at all — which leaves the eventual gpui-component 0.5.2 / git-`gpui`
+//! `gpui_component` at all — which left the gpui-component 0.6 / `gpui-pre` 0.3
 //! move with exactly one blast radius.
 //!
 //! # House rules this crate enforces
