@@ -30,7 +30,7 @@ use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store};
 use crate::app::AppState;
 use crate::keymap::{self, Action, Chord, RebindOutcome};
 use sid_ui::Typography as _;
-use sid_ui::{Kbd, theme};
+use sid_ui::{Kbd, scaled, theme};
 
 /// Settings tab state: a cached snapshot of the persisted [`Settings`] (loaded
 /// once in `AppState::new`, refreshed after every successful write — never
@@ -318,7 +318,7 @@ impl AppState {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(880.))
+                    .max_w(scaled(880.))
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -367,8 +367,8 @@ impl AppState {
         let active = name == applied;
         let swatch = |color: u32| {
             div()
-                .w(px(16.))
-                .h(px(16.))
+                .w(scaled(16.))
+                .h(scaled(16.))
                 .rounded_md()
                 .bg(rgb(color))
                 .border_1()
@@ -394,7 +394,7 @@ impl AppState {
             .border_color(rgb(if active { chrome.accent } else { chrome.border }))
             .child(
                 div()
-                    .w(px(14.))
+                    .w(scaled(14.))
                     .text_color(rgb(if active { chrome.accent } else { chrome.faint }))
                     .child(if active { "●" } else { "○" }),
             )

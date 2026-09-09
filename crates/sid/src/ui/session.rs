@@ -41,7 +41,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, StyledExt as _, Typography as _, UiScale, theme, v_flex};
+use sid_ui::{Row, StyledExt as _, Typography as _, UiScale, scaled, theme, v_flex};
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
 /// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
@@ -1847,7 +1847,7 @@ impl SshSession {
         if self.sidebar_collapsed {
             return div()
                 .id("session-sidebar-expand")
-                .w(px(20.))
+                .w(scaled(20.))
                 .h_full()
                 .flex()
                 .pt_1()
@@ -2520,8 +2520,8 @@ impl SshSession {
                         .bg(rgba(0x000000a8))
                         .child(
                             div()
-                                .w(px(640.))
-                                .h(px(480.))
+                                .w(scaled(640.))
+                                .h(scaled(480.))
                                 .flex()
                                 .flex_col()
                                 .bg(rgb(surface))
@@ -2686,7 +2686,7 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
             // the text a definite width — and therefore a wrap width — to lay out inside.
             div()
                 .min_w(px(0.))
-                .max_w(px(720.))
+                .max_w(scaled(720.))
                 .text_center()
                 .child(text.to_string()),
         )

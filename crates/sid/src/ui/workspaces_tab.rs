@@ -53,7 +53,7 @@ use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row, Segment,
     SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, TypeRole, Typography as _, h_flex,
-    sortable_th,
+    scaled, sortable_th,
 };
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
@@ -1412,7 +1412,7 @@ impl AppState {
         });
 
         div()
-            .w(px(300.))
+            .w(scaled(300.))
             .h_full()
             .flex()
             .flex_col()
@@ -1438,7 +1438,9 @@ impl AppState {
                     // The empty state owns the pane's height; the tail spacer is only
                     // there to give a short list somewhere to right-click.
                     .when_some(empty, |this, empty| this.child(empty))
-                    .when(count > 0, |this| this.child(div().flex_1().min_h(px(24.))))
+                    .when(count > 0, |this| {
+                        this.child(div().flex_1().min_h(scaled(24.)))
+                    })
                     .context_menu(self.workspaces_context_menu(cx)),
             )
     }

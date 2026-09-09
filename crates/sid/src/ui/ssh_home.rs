@@ -39,7 +39,8 @@ use crate::app::{AppState, can_demote, can_promote};
 use crate::ui::{SessionStatus, TextInput};
 use sid_ui::{
     Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, StatusDot,
-    StatusLegend, StyledExt as _, Typography as _, card::header_text, h_flex, theme, v_flex,
+    StatusLegend, StyledExt as _, Typography as _, card::header_text, h_flex, scaled, theme,
+    v_flex,
 };
 
 actions!(
@@ -503,7 +504,7 @@ impl AppState {
                     // Skipped when an empty state is up, since that already claims the
                     // free height.
                     .when(empty.is_none(), |this| {
-                        this.child(div().flex_1().min_h(px(48.)))
+                        this.child(div().flex_1().min_h(scaled(48.)))
                     })
                     // ONE context menu for the whole grid — see `right_click_target`'s
                     // doc comment on why this can't be attached per-card.
@@ -558,7 +559,7 @@ impl AppState {
         // have something to centre itself in. `flex_1` claims the body's free height —
         // on a 1200px window that centres the panel in the canvas, where a fixed 280px
         // box would leave it hanging under the toolbar with 700px of nothing below it.
-        div().w_full().flex_1().min_h(px(320.)).child(state)
+        div().w_full().flex_1().min_h(scaled(320.)).child(state)
     }
 
     /// Builds the grid's single [`ContextMenuExt::context_menu`]: "+ Add connection"
@@ -790,7 +791,7 @@ impl AppState {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .max_w(px(640.))
+                            .max_w(scaled(640.))
                             .overflow_hidden()
                             .child(search),
                     )
@@ -877,10 +878,10 @@ impl AppState {
             .child(match folder {
                 Some(_) => caret
                     .el()
-                    .size(px(14.))
+                    .size(scaled(14.))
                     .text_color(rgb(t.muted))
                     .into_any_element(),
-                None => div().w(px(14.)).flex_none().into_any_element(),
+                None => div().w(scaled(14.)).flex_none().into_any_element(),
             })
             .child(
                 div()
@@ -1124,7 +1125,7 @@ impl AppState {
                     .child(
                         div()
                             .flex_none()
-                            .max_w(px(120.))
+                            .max_w(scaled(120.))
                             .overflow_hidden()
                             .clamp_one_line()
                             .child(self.scope_chip(a)),

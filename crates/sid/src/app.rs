@@ -33,7 +33,9 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, UiScale, modal, theme};
+use sid_ui::{
+    ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, UiScale, modal, scaled, theme,
+};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -1278,7 +1280,7 @@ impl AppState {
                         .bg(rgba(0x000000a8))
                         .child(
                             div()
-                                .w(px(420.))
+                                .w(scaled(420.))
                                 .flex()
                                 .flex_col()
                                 .bg(rgb(surface))
@@ -1387,14 +1389,14 @@ impl AppState {
                 div()
                     .id(("scope", ix))
                     .px_2()
-                    .py(px(3.))
+                    .py(scaled(3.))
                     .rounded_md()
                     // A chip carries a *workspace name*, which the chrome has no say in:
                     // `platform-infrastructure-monorepo` is a 260px chip. Bounded and
                     // clamped, so a long name costs an ellipsis instead of the status
                     // badges to its right (the bar has no clip of its own).
                     .flex_none()
-                    .max_w(px(160.))
+                    .max_w(scaled(160.))
                     .clamp_one_line()
                     .text_meta(t)
                     .cursor_pointer()
@@ -1414,7 +1416,7 @@ impl AppState {
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(42.))
+            .h(scaled(42.))
             // The chrome's height is not negotiable. Without this the strip is an
             // ordinary shrinkable flex item in the window's column, so any tab whose
             // content reports a taller intrinsic height than the window has left
@@ -1506,7 +1508,7 @@ impl AppState {
         let badge = div()
             .id("secret-status-badge")
             .px_2()
-            .py(px(2.))
+            .py(scaled(2.))
             .rounded_full()
             .text_meta(t)
             .cursor_pointer()
@@ -1540,7 +1542,7 @@ impl AppState {
                             .id("secret-status-popover")
                             .occlude()
                             .mt_1()
-                            .max_w(px(360.))
+                            .max_w(scaled(360.))
                             .p_3()
                             .rounded_md()
                             .border_1()
@@ -1578,7 +1580,7 @@ impl AppState {
         let badge = div()
             .id("gpu-status-badge")
             .px_2()
-            .py(px(2.))
+            .py(scaled(2.))
             .rounded_full()
             .text_meta(t)
             .cursor_pointer()
@@ -1609,7 +1611,7 @@ impl AppState {
                             .id("gpu-status-popover")
                             .occlude()
                             .mt_1()
-                            .max_w(px(360.))
+                            .max_w(scaled(360.))
                             .p_3()
                             .rounded_md()
                             .border_1()
@@ -1714,7 +1716,7 @@ impl AppState {
         let home = div()
             .id("ssh-tab-home")
             .px_2()
-            .h(px(30.))
+            .h(scaled(30.))
             .text_mono_meta(t)
             .flex()
             .items_center()
@@ -1747,7 +1749,7 @@ impl AppState {
                     .items_center()
                     .gap_2()
                     .px_2()
-                    .h(px(30.))
+                    .h(scaled(30.))
                     .rounded_t_md()
                     .bg(rgb(if selected { bg } else { surface }))
                     .text_color(rgb(if selected { fg_strong } else { muted }))
@@ -1775,7 +1777,7 @@ impl AppState {
                             .child(
                                 div()
                                     .min_w(px(0.))
-                                    .max_w(px(240.))
+                                    .max_w(scaled(240.))
                                     .clamp_one_line()
                                     .child(tab.label.clone()),
                             )
@@ -1801,8 +1803,8 @@ impl AppState {
 
         let add = div()
             .id("ssh-tab-add")
-            .w(px(30.))
-            .h(px(30.))
+            .w(scaled(30.))
+            .h(scaled(30.))
             .flex()
             .items_center()
             .justify_center()
