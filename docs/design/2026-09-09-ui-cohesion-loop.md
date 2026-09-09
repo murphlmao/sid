@@ -191,10 +191,19 @@ commits; do not invent one).
 
 ## Blocked
 
-(none yet)
+- Closing GitHub #1 (fixed in July) and #2 (merged 3afd482) needs Murphy: `gh` is not
+  installed and the GitHub MCP connector fails to authenticate. `gh issue close 1 2` or two clicks.
+- Murphy's Hyprland rule for sid → workspace 4 is written to
+  `~/dotfiles/config/hypr/hyprland.lua` (applied live via `hyprctl eval`) but is uncommitted
+  in the dotfiles repo.
 
 ## Log
 
 - 2026-09-09: checklist written; `p2-quick-connect` and `p4-zoom` worktrees recreated from
   origin; agents dispatched to gate/finish them.
-- 2026-09-09: `p2-quick-connect` merged (ff). Gate on the branch: fmt/clippy/tests green; review a–f all pass; zero new deps. Root cause of sid windows landing on Murphy's screen: `hyprctl keyword` is rejected by this Hyprland's Lua config parser ("keyword can't work with non-legacy parsers. Use eval."), so `sid-shot.sh`'s silent windowrule and headless-monitor keywords were failing behind `|| true`.
+- 2026-09-09: `p2-quick-connect` merged (merge commit 3afd482). Gate on the branch: fmt/clippy/tests green; review a–f all pass; zero new deps. Root cause of sid windows landing on Murphy's screen: `hyprctl keyword` is rejected by this Hyprland's Lua config parser ("keyword can't work with non-legacy parsers. Use eval."), so `sid-shot.sh`'s silent windowrule and headless-monitor keywords were failing behind `|| true`.
+- 2026-09-09: sid windows now open on Murphy's workspace 4 silently (persistent
+  `murphy_sid_capture` rule; probed: a hermetic launch landed on workspace 4 and the active
+  workspace was untouched). `p2-quick-connect` merge pushed and its origin branch deleted.
+  Harness agent re-briefed to drop `hyprctl keyword` and never fall back to on-screen
+  capture; zoom agent re-briefed onto `sid-cap.sh`.
