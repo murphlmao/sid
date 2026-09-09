@@ -438,8 +438,8 @@ impl TableDelegate for ProcessesDelegate {
         self.processes.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(

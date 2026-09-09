@@ -147,8 +147,8 @@ impl HomeTabState {
     /// Move keyboard focus into the quick-connect/filter box — `Action::FocusFilter`'s
     /// (`Ctrl+F` / `Ctrl+/`) handler for the SSH tab, which used to be a no-op here
     /// because Network was the only tab with a filter wired up.
-    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &gpui::App) {
-        self.search.read(cx).focus(window);
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut gpui::App) {
+        TextInput::focus(&self.search, window, cx);
     }
 
     pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
@@ -1203,7 +1203,7 @@ impl AppState {
             ti.set_content(seed, cx);
             ti
         });
-        input.read(cx).focus(window);
+        TextInput::focus(&input, window, cx);
         self.ssh_home.edit = Some(InlineEdit::Rename {
             alias,
             origin,
@@ -1228,7 +1228,7 @@ impl AppState {
             }
             ti
         });
-        input.read(cx).focus(window);
+        TextInput::focus(&input, window, cx);
         self.ssh_home.edit = Some(InlineEdit::Folder {
             alias,
             origin,

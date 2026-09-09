@@ -12,6 +12,10 @@ repository.workspace = true
 # breaking changes between 0.2.x and later. Linux default features pull in
 # font-kit + wayland + x11 automatically.
 gpui.workspace = true
+# The renderer's platform half (windowing + blade backends), split out of `gpui` in the
+# 0.3 pre-release line. Only the binary needs it: it owns the `application()` entry point
+# and the GPU pre-flight probe.
+gpui_platform.workspace = true
 # The component crate (2026-07-26 UI overhaul): semantic tokens, the cosmos ->
 # `gpui_component::ThemeColor` bridge, and every shared widget. A frontend crate, so it
 # may name gpui/gpui-component; it depends on no domain crate.
@@ -78,7 +82,7 @@ tokio.workspace = true
 gpui-component.workspace = true
 # Bundled icon/font assets `gpui-component`'s widgets reference (sort-chevron icons on
 # `Table` columns, etc.) — wired in via `Application::new().with_assets(..)`.
-gpui-component-assets.workspace = true
+gpui-kit-assets.workspace = true
 
 [dev-dependencies]
 # `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`

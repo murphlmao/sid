@@ -2386,7 +2386,14 @@ impl SshSession {
                             // impossible rather than merely unlikely.
                             let row_top = quad_edge(bounds.top(), line_height, row_ix, 0.0);
                             let origin = point(bounds.left(), row_top);
-                            let _ = line.paint_background(origin, line_height, window, cx);
+                            let _ = line.paint_background(
+                                origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
                             for q in row_quads.get(row_ix).into_iter().flatten() {
                                 for &(x0, y0, x1, y1) in q.rects {
                                     let quad_bounds = Bounds::from_corners(
@@ -2402,7 +2409,14 @@ impl SshSession {
                                     window.paint_quad(fill(quad_bounds, q.color));
                                 }
                             }
-                            let _ = line.paint(origin, line_height, window, cx);
+                            let _ = line.paint(
+                                origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
                         }
                     },
                 )
@@ -2521,7 +2535,7 @@ impl Render for SshSession {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.needs_focus {
             self.needs_focus = false;
-            window.focus(&self.focus_handle);
+            window.focus(&self.focus_handle, cx);
         }
         let content = match &self.status {
             SessionStatus::Connecting => message_pane("Connecting…", cx).into_any_element(),

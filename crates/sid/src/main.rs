@@ -20,7 +20,7 @@ mod keymap;
 mod ssh_connect;
 mod ui;
 
-use gpui::{AnyView, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{AnyView, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
 use sid_core::gpu::{GpuPreflight as _, RenderPath};
 
 fn main() {
@@ -84,10 +84,10 @@ fn main() {
     // driver-fingerprint change still self-heals on the following launch.
     preflight.mark_launch_attempt();
 
-    Application::new()
+    gpui_platform::application()
         // Bundled icon/font assets `gpui-component`'s widgets reference (e.g. `Table`
         // column sort chevrons) — required by W5's SQL editor + results table.
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(gpui_kit_assets::Assets)
         .run(move |cx| {
             ui::init(cx);
             gpui_component::init(cx);
@@ -196,7 +196,7 @@ fn run_gpu_probe() -> ! {
     env_logger::Builder::new()
         .parse_filters("warn,blade_graphics=info")
         .init();
-    let _app = Application::new();
+    let _app = gpui_platform::application();
     std::process::exit(0);
 }
 

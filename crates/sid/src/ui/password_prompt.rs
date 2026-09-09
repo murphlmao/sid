@@ -66,8 +66,8 @@ impl PasswordPromptModal {
 
     /// Move keyboard focus into the password field. Called once, right after the modal
     /// entity is created (see `AppState::open_password_prompt`).
-    pub fn focus_first(&self, window: &mut Window, cx: &App) {
-        self.password.read(cx).focus(window);
+    pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
+        TextInput::focus(&self.password, window, cx);
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {

@@ -24,12 +24,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Corner, Entity, FocusHandle,
+    Anchor, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
     IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size,
 };
 use gpui_component::Root;
-use gpui_component::input::{Input, InputEvent, InputState, Position};
+use gpui_component::input::{Editor, EditorState, InputEvent, Position};
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
@@ -144,7 +144,7 @@ pub struct DbTabState {
     // ---- W5: SQL editor + results ------------------------------------------------
     /// The SQL editor. Lazily built by `ensure_query_widgets` (needs `window`, which
     /// `DbTabState::new` doesn't have) the first time the Database tab paints.
-    sql: Option<Entity<InputState>>,
+    sql: Option<Entity<EditorState>>,
     /// Keeps the SQL editor's `PressEnter{secondary: true}` (Ctrl/Cmd-Enter) subscription
     /// alive for as long as the editor exists — i.e. for the tab's whole lifetime.
     _sql_subscription: Option<Subscription>,
@@ -836,8 +836,8 @@ impl TableDelegate for ResultDelegate {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     /// Sort on a click anywhere in the header cell, not only on the chevron
@@ -1436,10 +1436,9 @@ impl AppState {
             return;
         }
         let sql = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor("sql")
+            EditorState::new(window, cx)
+                .language("sql")
                 .line_number(true)
-                .rows(8)
                 .default_value(DEMO_SQL)
         });
         // `subscribe_in` (not `subscribe`) so `on_sql_event` gets a `&mut Window` — it
@@ -1499,12 +1498,15 @@ impl AppState {
     /// acted on here.
     fn on_sql_event(
         &mut self,
-        _sql: &Entity<InputState>,
+        _sql: &Entity<EditorState>,
         event: &InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let InputEvent::PressEnter { secondary: true } = event {
+        if let InputEvent::PressEnter {
+            secondary: true, ..
+        } = event
+        {
             self.run_query(window, cx);
         }
     }
@@ -1633,7 +1635,7 @@ impl AppState {
                     .h(px(140.))
                     .rounded_md()
                     .elevation(Elevation::Well, &t)
-                    .child(Input::new(&sql))
+                    .child(Editor::new(&sql))
                     .into_any_element()
             })
         };
@@ -1776,7 +1778,7 @@ impl AppState {
         self.db.schema_error = None;
         self.ensure_query_widgets(window, cx);
         if let Some(fh) = self.db.conn_focus.clone() {
-            window.focus(&fh);
+            window.focus(&fh, cx);
         }
         cx.notify();
     }
@@ -2071,7 +2073,7 @@ impl AppState {
     /// `anchored`/`deferred` primitives [`Self::cell_view_overlay`] is built from (see
     /// that method's doc comment) so the menu paints above the editor/results below it
     /// in the tab's child order, rather than being clipped by them — but anchors at the
-    /// button's own flow position (`Corner::TopRight`, no explicit `.position()`) instead
+    /// button's own flow position (`Anchor::TopRight`, no explicit `.position()`) instead
     /// of a window-pinned point, since this is a small trigger-attached menu, not a
     /// full-viewport modal.
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -2087,7 +2089,7 @@ impl AppState {
         let menu = self.db.export_menu_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Corner::TopRight)
+                    .anchor(Anchor::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         v_flex()
@@ -2815,7 +2817,7 @@ impl AppState {
                     || this.db.folder_editing.is_some()
                     || this.db.form.is_some();
                 if !opening_editor && let Some(fh) = this.db.conn_focus.clone() {
-                    window.focus(&fh);
+                    window.focus(&fh, cx);
                 }
                 this.refresh_schema(window, cx);
                 cx.notify();
@@ -2920,7 +2922,7 @@ impl AppState {
             t.set_content(seed, cx);
             t
         });
-        input.read(cx).focus(window);
+        TextInput::focus(&input, window, cx);
         self.db.renaming = Some(RenameState {
             id: id.to_string(),
             origin: origin.clone(),
@@ -2975,7 +2977,7 @@ impl AppState {
             }
             t
         });
-        input.read(cx).focus(window);
+        TextInput::focus(&input, window, cx);
         self.db.folder_editing = Some(FolderEditState {
             id: id.to_string(),
             origin: origin.clone(),
@@ -3049,7 +3051,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        form.read(cx).focus_first(window, cx);
+        form.update(cx, |it, cx| it.focus_first(window, cx));
         // `subscribe_in` (not `subscribe`) so the handler gets a `&mut Window` and can
         // refocus `root_focus` on close — otherwise closing the form (Escape/Cancel)
         // leaves keyboard focus on a now-unrendered element and silently kills all key
@@ -3062,7 +3064,7 @@ impl AppState {
     pub(crate) fn close_db_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.db.form = None;
         self.db._form_subscription = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 

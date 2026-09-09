@@ -628,12 +628,15 @@ fn shell(
             ButtonCustomVariant::new(cx)
                 .color(colour(paint.fill))
                 .foreground(rgb(paint.ink).into())
-                .border(colour(paint.border))
                 .hover(colour(paint.hover_fill))
                 .active(colour(paint.pressed_fill))
                 // Design law: depth is borders + surface shifts, never shadows.
                 .shadow(false),
         )
+        // gpui-component 0.6 derives a custom variant's border from its *fill*, so
+        // sid's separate border token is reapplied here — `Button::render` refines the
+        // instance style after painting the variant's border colour, so this wins.
+        .when_some(paint.border, |this, border| this.border_color(rgb(border)))
         .with_size(size.component())
         .tab_stop(interactive)
         .when(interactive, |this| this.cursor_pointer())

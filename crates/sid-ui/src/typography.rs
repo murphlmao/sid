@@ -396,20 +396,17 @@ mod tests {
     fn applying_a_role_sets_size_weight_family_and_ink() {
         let t = cosmos();
         let s = style_of(div().text_mono_meta(&t));
-        let text = s.text.clone().unwrap_or_default();
+        let text = s.text.clone();
         assert_eq!(text.font_size, Some(px(12.).into()));
         assert_eq!(text.font_weight, Some(FontWeight::NORMAL));
-        assert_eq!(text.font_family.as_deref().map(|f| &**f), Some(UI_MONO));
+        assert_eq!(text.font_family.as_deref(), Some(UI_MONO));
         assert_eq!(text.color, Some(Hsla::from(rgb(t.muted))));
     }
 
     #[test]
     fn a_proportional_role_leaves_the_family_alone() {
         let t = cosmos();
-        let text = style_of(div().text_title(&t))
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(div().text_title(&t)).text.clone();
         assert_eq!(text.font_family, None, "only the mono roles set a family");
         assert_eq!(text.font_size, Some(px(16.).into()));
         assert_eq!(text.font_weight, Some(FontWeight::MEDIUM));
@@ -421,10 +418,7 @@ mod tests {
         // The cascade bug this fixes: `text_xs()` set a size and nothing else, so a hint
         // inside a bold header inherited the bold. A role is absolute.
         let t = cosmos();
-        let text = style_of(div().text_meta(&t))
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(div().text_meta(&t)).text.clone();
         assert_eq!(
             text.font_weight,
             Some(FontWeight::NORMAL),
@@ -451,7 +445,7 @@ mod tests {
                 .iter()
                 .find(|r| r.name() == name)
                 .expect("named role");
-            let text = style.text.clone().unwrap_or_default();
+            let text = style.text.clone();
             assert_eq!(text.font_size, Some(role.size().into()), "{name} size");
             assert_eq!(text.font_weight, Some(role.weight()), "{name} weight");
             assert_eq!(

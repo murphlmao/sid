@@ -329,7 +329,7 @@ mod tests {
     fn every_named_icon_exists_in_the_bundle() {
         // Loads the real embedded bytes: this is what catches a path typo or an icon
         // dropped by an upstream bump, at build time instead of at render time.
-        let assets = gpui_component_assets::Assets;
+        let assets = gpui_kit_assets::Assets;
         for &icon in Icon::ALL {
             let path = icon.path();
             let bytes = assets
@@ -364,7 +364,7 @@ mod tests {
         // be used — if a bundle bump ships one, the honest answer changes from "the
         // Run button says Run" to "the Run button gets a play triangle", and this test
         // is what forces that conversation instead of letting the list rot.
-        let bundled: Vec<String> = gpui_component_assets::Assets
+        let bundled: Vec<String> = gpui_kit_assets::Assets
             .list("icons/")
             .expect("the bundle lists its icons")
             .into_iter()

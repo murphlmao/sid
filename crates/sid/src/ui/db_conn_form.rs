@@ -273,8 +273,8 @@ impl DbConnForm {
     }
 
     /// Focus the name field — the first editable field in both modes.
-    pub fn focus_first(&self, window: &mut Window, cx: &App) {
-        self.name.read(cx).focus(window);
+    pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
+        TextInput::focus(&self.name, window, cx);
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.
@@ -326,7 +326,7 @@ impl DbConnForm {
             None if backwards => fields.len() - 1,
             None => 0,
         };
-        fields[target].read(cx).focus(window);
+        TextInput::focus(&fields[target], window, cx);
     }
 
     /// Intercept Tab/Shift+Tab before it can reach the focused field's IME/text-

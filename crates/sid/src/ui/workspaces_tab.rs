@@ -574,8 +574,8 @@ impl TableDelegate for FleetDelegate {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -1199,7 +1199,7 @@ impl AppState {
         self.workspaces.add_open = true;
         self.workspaces.add_error = None;
         if let Some(input) = self.workspaces.add_input.clone() {
-            input.read(cx).focus(window);
+            TextInput::focus(&input, window, cx);
         }
         cx.notify();
     }
@@ -1257,7 +1257,7 @@ impl AppState {
             t.set_content(current_name, cx);
             t
         });
-        input.read(cx).focus(window);
+        TextInput::focus(&input, window, cx);
         self.workspaces.renaming = Some(RenameState { id, input });
         cx.notify();
     }
@@ -2294,16 +2294,14 @@ mod tests {
             "/home/murphy/vcs/sid",
         ))
         .text
-        .clone()
-        .unwrap_or_default();
+        .clone();
         let age = style_of(fleet_cell(&t, TypeRole::Body, t.fg, "3 days ago"))
             .text
-            .clone()
-            .unwrap_or_default();
+            .clone();
         assert_eq!(path.font_size, age.font_size, "one rung");
         assert_eq!(path.font_size, Some(TypeRole::Body.size().into()));
         assert_eq!(
-            path.font_family.as_deref().map(|f| &**f),
+            path.font_family.as_deref(),
             Some(sid_ui::UI_MONO),
             "a path is monospace"
         );
@@ -2325,7 +2323,7 @@ mod tests {
             "/home/murphy/vcs/some-repo-with-a-long-name",
         ));
         assert_eq!(style.min_size.width, Some(px(0.).into()), "may shrink");
-        let text = style.text.clone().unwrap_or_default();
+        let text = style.text.clone();
         assert_eq!(text.line_clamp, Some(1));
         assert!(text.text_overflow.is_some(), "cut with a suffix");
         // Stated, not inherited — the upstream table's cell container sets

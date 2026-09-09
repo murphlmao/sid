@@ -232,12 +232,12 @@ impl HostForm {
 
     /// Focus the first editable field: alias when adding, user when editing (the alias
     /// is locked in edit mode).
-    pub fn focus_first(&self, window: &mut Window, cx: &App) {
+    pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
         let target = match &self.mode {
             FormMode::Add => &self.alias,
             FormMode::Edit { .. } => &self.user,
         };
-        target.read(cx).focus(window);
+        TextInput::focus(&target, window, cx);
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.
@@ -305,7 +305,7 @@ impl HostForm {
             None if backwards => fields.len() - 1,
             None => 0,
         };
-        fields[target].read(cx).focus(window);
+        TextInput::focus(&fields[target], window, cx);
     }
 
     /// Intercept Tab/Shift+Tab on the bubble phase before it can reach the focused

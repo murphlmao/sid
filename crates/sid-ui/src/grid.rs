@@ -331,7 +331,7 @@ impl RenderOnce for CardGrid {
                     // A flex container, so the card inside stretches to the line height.
                     .flex()
                     .flex_basis(min_col)
-                    .flex_grow()
+                    .flex_grow_1()
                     // Nothing below `min_w(0)`: a window narrower than one column gets a
                     // squeezed card, never a horizontal scrollbar.
                     .min_w_0()

@@ -309,9 +309,9 @@ impl NetworkTabState {
     /// yet, e.g. `Ctrl+F` pressed while another primary tab is active — `dispatch_action`
     /// already gates the call on `active_tab == Tab::Network`, but the tab could in
     /// principle be active without ever having rendered).
-    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &App) {
+    pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) {
         if let Some(filter) = &self.filter {
-            filter.read(cx).focus(window);
+            TextInput::focus(&filter, window, cx);
         }
     }
 }
@@ -516,8 +516,8 @@ impl TableDelegate for PortsDelegate {
         self.ports.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -799,8 +799,8 @@ impl TableDelegate for ServicesDelegate {
         self.services.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -1004,8 +1004,8 @@ impl TableDelegate for DockerDelegate {
         self.containers.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -1154,8 +1154,8 @@ impl TableDelegate for KubePodsDelegate {
         self.pods.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -2788,24 +2788,21 @@ mod tests {
         // column differs from its neighbour by *ink*, and by nothing else. If a future
         // "just make this one smaller" lands, this test is the conversation.
         let t = sid_ui::theme::cosmos();
-        let text = style_of(data_cell(&t, t.muted, "0.0.0.0:22"))
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(data_cell(&t, t.muted, "0.0.0.0:22")).text.clone();
         assert_eq!(
             text.font_size,
             Some(sid_ui::TypeRole::Mono.size().into()),
             "every column sits on the body rung"
         );
         assert_eq!(
-            text.font_family.as_deref().map(|f| &**f),
+            text.font_family.as_deref(),
             Some(sid_ui::UI_MONO),
             "an address is monospace — this tab had no mono family at all before"
         );
         assert_eq!(text.color, Some(gpui::Hsla::from(rgb(t.muted))));
 
         // ...and the ink is the only thing that moves between columns.
-        let strong = style_of(data_cell(&t, t.fg, "sshd")).text.clone().unwrap();
+        let strong = style_of(data_cell(&t, t.fg, "sshd")).text.clone();
         assert_eq!(strong.font_size, text.font_size);
         assert_eq!(strong.font_family, text.font_family);
         assert_eq!(strong.color, Some(gpui::Hsla::from(rgb(t.fg))));
@@ -2820,7 +2817,7 @@ mod tests {
         let t = sid_ui::theme::cosmos();
         let style = style_of(data_cell(&t, t.fg, "ghcr.io/acme/a-very-long-image:latest"));
         assert_eq!(style.min_size.width, Some(px(0.).into()), "may shrink");
-        let text = style.text.clone().unwrap_or_default();
+        let text = style.text.clone();
         assert_eq!(text.line_clamp, Some(1));
         assert!(text.text_overflow.is_some(), "cut with a suffix");
         // Stated, not inherited: the upstream table's cell container sets

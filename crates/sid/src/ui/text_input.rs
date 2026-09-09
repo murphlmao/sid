@@ -106,8 +106,13 @@ impl TextInput {
     }
 
     /// Move keyboard focus to this input.
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus_handle);
+    ///
+    /// An associated function over the entity rather than a `&self` method: gpui 0.3's
+    /// `Window::focus` needs `&mut App`, and the obvious `TextInput::focus(&input, window, cx)`
+    /// call shape cannot supply one — the `read` borrow of `cx` is still live.
+    pub fn focus(input: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let handle = input.read(cx).focus_handle.clone();
+        window.focus(&handle, cx);
     }
 
     /// Clear all state (content, selection, IME marks, cached layout).
@@ -757,8 +762,15 @@ impl Element for TextElement {
             if let Some(selection) = prepaint.selection.take() {
                 window.paint_quad(selection)
             }
-            line.paint(bounds.origin, window.line_height(), window, cx)
-                .unwrap();
+            line.paint(
+                bounds.origin,
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .unwrap();
 
             if focus_handle.is_focused(window)
                 && let Some(cursor) = prepaint.cursor.take()

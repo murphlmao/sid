@@ -161,7 +161,13 @@ pub fn field(
 /// the DB tab spends on "run this query"; a field that treated it as a submit would take
 /// it away.
 pub fn is_field_submit(event: &InputEvent) -> bool {
-    matches!(event, InputEvent::PressEnter { secondary: false })
+    matches!(
+        event,
+        InputEvent::PressEnter {
+            secondary: false,
+            ..
+        }
+    )
 }
 
 /// Run `handler` when `field` is submitted with a plain Enter.
@@ -427,8 +433,8 @@ fn wrapper(width: FieldWidth, style: StyleRefinement) -> Div {
         // handlers for them only in multi-line mode, so in a single-line field the
         // keystroke is matched, dispatched, handled by nobody and swallowed. Taking them
         // here turns Tab back into what it means in a form.
-        .on_action(|_: &IndentInline, window: &mut Window, _cx: &mut App| window.focus_next())
-        .on_action(|_: &OutdentInline, window: &mut Window, _cx: &mut App| window.focus_prev());
+        .on_action(|_: &IndentInline, window: &mut Window, _cx: &mut App| window.focus_next(_cx))
+        .on_action(|_: &OutdentInline, window: &mut Window, _cx: &mut App| window.focus_prev(_cx));
     // Applied last, so a `.mt_2()` typed at the call site wins over the wrapper's box —
     // the same contract `Button` and `Card` offer.
     wrapper.style().refine(&style);
@@ -551,10 +557,12 @@ mod tests {
         // Enter chord would quietly take ctrl-Enter away from the screen around it —
         // which is what the DB tab runs a query with.
         assert!(is_field_submit(&InputEvent::PressEnter {
-            secondary: false
+            secondary: false,
+            shift: false
         }));
         assert!(!is_field_submit(&InputEvent::PressEnter {
-            secondary: true
+            secondary: true,
+            shift: false
         }));
     }
 

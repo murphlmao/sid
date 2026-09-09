@@ -138,7 +138,7 @@ impl RenderOnce for Toolbar {
                 // elides and the refresh button stays reachable.
                 this.child(
                     div()
-                        .flex_shrink()
+                        .flex_shrink_1()
                         .min_w_0()
                         .clamp_one_line()
                         .hint_text(&theme)

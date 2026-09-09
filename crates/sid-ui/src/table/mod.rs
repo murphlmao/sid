@@ -102,7 +102,7 @@ pub use header::{next_sort, sortable_th};
 use gpui::{
     App, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas, div,
 };
-use gpui_component::table::{Table, TableDelegate, TableState};
+use gpui_component::table::{DataTable, TableDelegate, TableState};
 
 /// A [`TableDelegate`] that sizes its columns with [`FillColumns`] and can therefore be
 /// rendered by [`FillTable`].
@@ -178,7 +178,7 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
             .relative()
             .size_full()
             .child(
-                Table::new(&self.state)
+                DataTable::new(&self.state)
                     .stripe(self.stripe)
                     .bordered(self.bordered),
             )

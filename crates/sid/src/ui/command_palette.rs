@@ -76,7 +76,7 @@ impl AppState {
             self.close_palette(cx);
         } else if !self.blocking_modal_open() {
             let query = cx.new(|cx| TextInput::new(cx, "Type a command, connection, or tab…"));
-            query.read(cx).focus(window);
+            TextInput::focus(&query, window, cx);
             self.palette = Some(PaletteState {
                 query,
                 selection: 0,

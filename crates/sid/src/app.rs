@@ -11,7 +11,7 @@
 //! are placeholders for later slices.
 
 use gpui::{
-    ClickEvent, Context, Corner, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
+    Anchor, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
     Window, anchored, canvas, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
@@ -626,7 +626,7 @@ impl AppState {
     /// the session being left has nothing to hand focus off to.
     pub(crate) fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active_session = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -645,7 +645,8 @@ impl AppState {
     ) {
         if let Some(tab) = self.ssh_sessions.get(ix) {
             self.active_session = Some(ix);
-            window.focus(&tab.session.read(cx).terminal_focus_handle());
+            let handle = tab.session.read(cx).terminal_focus_handle();
+            window.focus(&handle, cx);
             cx.notify();
         }
     }
@@ -673,14 +674,15 @@ impl AppState {
     /// live session, else `root_focus` — see that field's doc comment for why this
     /// matters (a stale focus target silently kills all further keyboard dispatch).
     /// Called by every path that mutates either field.
-    fn refocus_stable_target(&self, window: &mut Window, cx: &Context<Self>) {
+    fn refocus_stable_target(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == Tab::Ssh
             && let Some(ix) = self.active_session
             && let Some(tab) = self.ssh_sessions.get(ix)
         {
-            window.focus(&tab.session.read(cx).terminal_focus_handle());
+            let handle = tab.session.read(cx).terminal_focus_handle();
+            window.focus(&handle, cx);
         } else {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
     }
 
@@ -720,7 +722,7 @@ impl AppState {
     }
 
     fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
-        form.read(cx).focus_first(window, cx);
+        form.update(cx, |it, cx| it.focus_first(window, cx));
         // `subscribe_in` (not `subscribe`) so `on_form_event` gets a `&mut Window` —
         // needed to refocus `root_focus` on close (see that field's doc comment: a
         // form dismissed via Escape leaves its now-dropped field's `FocusHandle` as
@@ -734,7 +736,7 @@ impl AppState {
     fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
         self._form_subscription = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -780,7 +782,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let modal = cx.new(|cx| PasswordPromptModal::new(cx, label));
-        modal.read(cx).focus_first(window, cx);
+        modal.update(cx, |it, cx| it.focus_first(window, cx));
         self._password_prompt_subscription =
             Some(cx.subscribe_in(&modal, window, Self::on_password_prompt_event));
         self.password_prompt = Some(modal);
@@ -792,7 +794,7 @@ impl AppState {
         self.password_prompt = None;
         self._password_prompt_subscription = None;
         self.pending_secret_prompt = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -1429,7 +1431,7 @@ impl AppState {
     /// healthy keyring renders nothing at all, here or anywhere else). Replaces the old
     /// persistent "secrets: …" status line: nothing takes up permanent screen space
     /// unless something is actually degraded. Click toggles a small popover — anchored
-    /// at the badge's own flow position (`Corner::TopRight`, same trigger-attached
+    /// at the badge's own flow position (`Anchor::TopRight`, same trigger-attached
     /// pattern as `db_tab`'s export menu), not a full-viewport modal — showing the full
     /// `secret_status_message` text (backend, warning, recommendation).
     fn secret_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
@@ -1455,7 +1457,7 @@ impl AppState {
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.secret_badge_open = !this.secret_badge_open;
                 // Mutually exclusive with the GPU popover: both `anchored()` to
-                // `Corner::TopRight` with the same window snap-margin and the same
+                // `Anchor::TopRight` with the same window snap-margin and the same
                 // `with_priority(2)`, so open together they occupy the identical spot
                 // and the later-drawn GPU one wins. `secrets_degraded` and
                 // `render_soft_reason` are independent — a VM with no keyring daemon
@@ -1468,7 +1470,7 @@ impl AppState {
         let popover = self.secret_badge_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Corner::TopRight)
+                    .anchor(Anchor::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()
@@ -1537,7 +1539,7 @@ impl AppState {
         let popover = self.gpu_badge_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Corner::TopRight)
+                    .anchor(Anchor::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()

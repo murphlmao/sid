@@ -5,7 +5,7 @@
 //! 17 files. Each of those is a place where a call site could have typed something else,
 //! and several did. These helpers give the spec exactly one spelling.
 
-use gpui::{AlignItems, Div, InteractiveElement, Styled, div, rgb};
+use gpui::{Div, InteractiveElement, Styled, div, rgb};
 
 use crate::elevation::Elevation;
 use crate::theme::Theme;
@@ -28,23 +28,6 @@ pub trait StyledExt: Styled + Sized {
     /// The design system's row box: `px_3 py_2`, `rounded_md`.
     fn row_padding(self) -> Self {
         self.px_3().py_2().rounded_md()
-    }
-
-    /// Do not stretch on the parent's cross axis — take only the size the content needs.
-    ///
-    /// `align-self: flex-start`, and the fix for a defect `flex_none` looks like it
-    /// should cover and does not. `flex_none` is `flex: 0 0 auto`: it governs the
-    /// *main* axis, so in a `v_flex` parent it stops an element growing taller and says
-    /// nothing about its width. The cross axis is governed by `align-items`, whose
-    /// default is `stretch` — so a `flex_none` segmented control in a column stretched
-    /// to the full width of the column and rendered as a track with five chips huddled
-    /// at its left end, on System and on Network both.
-    ///
-    /// gpui exposes `items_*` for a *parent* to set `align-items`, but no helper for a
-    /// child to opt out, which is why this is written against the refinement directly.
-    fn self_start(mut self) -> Self {
-        self.style().align_self = Some(AlignItems::Start);
-        self
     }
 
     /// A hairline border on all four edges.
@@ -127,7 +110,7 @@ impl<T: Styled + Sized> StyledExt for T {}
 mod tests {
     use super::*;
     use crate::theme::cosmos;
-    use gpui::{Hsla, StyleRefinement};
+    use gpui::{AlignSelf, Hsla, StyleRefinement};
 
     /// Read back a `Div`'s refined style — enough to assert that a helper set the
     /// fields it claims to, without a renderer.
@@ -181,10 +164,7 @@ mod tests {
         // on the first (MaxContent, nothing-to-truncate-to) pass and return before the
         // ellipsis is ever applied. Anyone "simplifying" this back to `.truncate()`
         // reintroduces text hard-clipped mid-glyph across every card in the app.
-        let text = style_of(div().clamp_one_line())
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(div().clamp_one_line()).text.clone();
         assert_eq!(text.line_clamp, Some(1), "clamped to one line");
         assert!(text.text_overflow.is_some(), "and cut with a suffix");
         assert_eq!(
@@ -200,7 +180,7 @@ mod tests {
         // the element to the column's full width. Both calls have to be present, and
         // they have to land in different fields.
         let s = style_of(div().flex_none().self_start());
-        assert_eq!(s.align_self, Some(AlignItems::Start), "the cross axis");
+        assert_eq!(s.align_self, Some(AlignSelf::Start), "the cross axis");
         assert_eq!(s.flex_grow, Some(0.), "and the main axis is still pinned");
         // `flex_none` alone is exactly the bug — assert it does *not* set align_self, so
         // nobody "simplifies" the pair back down to one call.
@@ -219,18 +199,12 @@ mod tests {
     fn label_helpers_use_the_muted_token() {
         let t = cosmos();
         let s = style_of(div().section_label(&t));
+        assert_eq!(s.text.clone().color, Some(Hsla::from(rgb(t.muted))));
         assert_eq!(
-            s.text.clone().unwrap_or_default().color,
-            Some(Hsla::from(rgb(t.muted)))
-        );
-        assert_eq!(
-            s.text.clone().unwrap_or_default().font_size,
+            s.text.clone().font_size,
             Some(crate::typography::TypeRole::Label.size().into()),
         );
         let h = style_of(div().hint_text(&t));
-        assert_eq!(
-            h.text.clone().unwrap_or_default().color,
-            Some(Hsla::from(rgb(t.muted)))
-        );
+        assert_eq!(h.text.clone().color, Some(Hsla::from(rgb(t.muted))));
     }
 }
