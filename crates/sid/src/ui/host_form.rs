@@ -237,7 +237,7 @@ impl HostForm {
             FormMode::Add => &self.alias,
             FormMode::Edit { .. } => &self.user,
         };
-        TextInput::focus(&target, window, cx);
+        TextInput::focus(target, window, cx);
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.

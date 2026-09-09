@@ -311,7 +311,7 @@ impl NetworkTabState {
     /// principle be active without ever having rendered).
     pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) {
         if let Some(filter) = &self.filter {
-            TextInput::focus(&filter, window, cx);
+            TextInput::focus(filter, window, cx);
         }
     }
 }
