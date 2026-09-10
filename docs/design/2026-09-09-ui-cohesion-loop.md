@@ -103,11 +103,11 @@ Every item is gated by before/after captures in all four themes and a
 - [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
       responsive grid, and the home surface gets a second region (recent sessions or
       per-host last-connected) so the screen does not read as empty when it has data.
-- [ ] **Kbd chips lost their chrome under gpui-component 0.6.1** (regression the upgrade A/B
-      missed: Settings was not captured). `gpui_component::Kbd` draws no box in 0.6; the
-      keymap values in Settings → Keyboard render as bare `Ctrl+K` text. `sid-ui/src/kbd.rs`
-      must draw its own chip (surface fill, hairline, Meta role), and the gallery's KBD band
-      is the gate.
+- [x] **Kbd chips lost their chrome under gpui-component 0.6.1**: fixed 2026-09-09.
+      `gpui_component::Kbd` painted through the library's own unconfigured theme tokens;
+      `sid-ui/src/kbd.rs` now draws its own chip (surface, hairline, `rounded_sm`, Meta ink) and
+      keeps the library only as a key-name formatter. Verified in Settings → Keyboard, the
+      command palette, the gallery (capture at 2000x2400 to reach the band) and cosmos-light.
 - [ ] **`InlineNotice` clamps to one line**, so the ~140-char degraded-keyring message in
       Settings truncates. Let a notice wrap to two lines (or split title/detail like `Toast`).
 - [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
