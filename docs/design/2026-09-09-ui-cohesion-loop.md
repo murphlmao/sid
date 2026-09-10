@@ -65,10 +65,13 @@ A registry-only upgrade path now exists:
 - [ ] Follow-up: retire `clamp_one_line()` (~40 call sites) in favour of gpui's fixed
       `truncate()`, after a targeted render check on the longest strings (workspace paths,
       IPv6 addresses, DB connection paths) in all four themes.
-- [ ] Follow-up: `gpui-kit-assets` 0.6.1 ships all 1830 Lucide icons (0.5.1 had 86). Give
-      `Icon::Trash` a bin (not `circle-x`), `Icon::Rename` a pencil (not `replace`), and real
-      glyphs to Database Run/Export and Network's Docker/Kubernetes/Interfaces sub-views. Each
-      is a decision about a live screen; do them in the cohesion pass for that tab.
+- [x] Follow-up icons, done 2026-09-09: `Icon::Trash` → `trash`, `Icon::Rename` → `pencil`,
+      new `Run`/`Export`/`Docker`/`Kubernetes`/`Interfaces` on Database buttons and the Network
+      segmented control. Two wiring fixes were needed for any of it to render: the registry now
+      resolves through `gpui_kit_assets::IconName` (the 1830-name catalog, not
+      `gpui_component::IconName`'s 86-entry subset) and `main.rs` embeds
+      `gpui_kit_assets::AllAssets`. Left for the SSH pass: the connection card's right-click
+      menu (`PopupMenuItem`) still shows rename/delete without icons.
 
 Recommended order: spike **first**. Doing the visual passes on 0.2.2 and migrating afterwards
 means verifying every screen twice.
