@@ -51,8 +51,8 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List, Row,
-    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Toolbar, TypeRole,
-    Typography as _, h_flex, scaled, sortable_th,
+    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, TypeRole, Typography as _,
+    h_flex, scaled, sortable_th,
 };
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
@@ -819,11 +819,17 @@ impl AppState {
             }
         }
 
+        // Deliberately not `h_flex`: that centres its children on the cross axis, and
+        // both panels here must *stretch* to the row's height. Same padding and gap
+        // rhythm as the other two data tabs, so a panel edge lands in the same place
+        // whichever tab is showing.
         div()
             .flex()
             .flex_row()
             .flex_1()
             .min_h(px(0.))
+            .gap_2()
+            .p_3()
             .child(self.workspaces_list_panel(cx))
             .child(self.workspaces_detail_panel(cx))
             .into_any_element()
@@ -1354,36 +1360,7 @@ impl AppState {
     // ---- rendering: list panel --------------------------------------------------------
 
     fn workspaces_list_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx).clone();
-        let border = t.border;
         let count = self.workspaces.list.len();
-
-        // The Toolbar's wide left slot carries the panel's own label; the count and the
-        // two controls take the right edge. `⟳` and the `+ add` pill were the last two
-        // hand-styled `div`s on this screen.
-        let header = Toolbar::new()
-            .filter(div().text_label(&t).child("WORKSPACES"))
-            .count(count, "workspace")
-            .action(
-                IconButton::new("ws-refresh", Icon::Refresh, "refresh")
-                    .small()
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                        this.refresh_workspaces(cx);
-                    })),
-            )
-            .action(
-                // Secondary, not primary: the screen's one accent belongs to the empty
-                // state's `add workspace` (when there is nothing) or to the focused
-                // scope's chip (when there is), never to a permanent toolbar pill.
-                Button::new("ws-add", "add")
-                    .small()
-                    .icon(Icon::Add)
-                    .tooltip("register a repo, or a directory of repos")
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_workspace(window, cx);
-                    })),
-            );
-
         let add_row = self.workspaces.add_open.then(|| self.add_workspace_row(cx));
 
         let rows: Vec<AnyElement> = self
@@ -1411,14 +1388,34 @@ impl AppState {
                 )
         });
 
-        div()
+        // The panel's header is the toolbar contract — `[WORKSPACES · n]` on the left,
+        // then refresh and `+ add` on the right. `⟳` and the `+ add` pill were the last
+        // two hand-styled `div`s on this screen; the hairline frame around them is the
+        // same one every other region on every other tab now draws.
+        Card::panel("workspaces")
+            .count(count)
             .w(scaled(300.))
+            .flex_none()
             .h_full()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(rgb(border))
-            .child(header)
+            .action(
+                IconButton::new("ws-refresh", Icon::Refresh, "refresh")
+                    .small()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.refresh_workspaces(cx);
+                    })),
+            )
+            .action(
+                // Secondary, not primary: the screen's one accent belongs to the empty
+                // state's `add workspace` (when there is nothing) or to the focused
+                // scope's chip (when there is), never to a permanent header pill.
+                Button::new("ws-add", "add")
+                    .small()
+                    .icon(Icon::Add)
+                    .tooltip("register a repo, or a directory of repos")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_add_workspace(window, cx);
+                    })),
+            )
             .children(add_row)
             .child(
                 List::scrolling("ws-list")
@@ -1454,6 +1451,9 @@ impl AppState {
         div()
             .flex()
             .flex_col()
+            // The panel body hands its height to the scrolling list below this row, so
+            // the row states that it is not the flexible one.
+            .flex_none()
             .gap_1()
             .px_2()
             .py_2()
@@ -1610,24 +1610,38 @@ impl AppState {
                 }))
         };
         // Icon at rest, word when armed. The trash glyph plus its tooltip is the whole
-        // label in a 300px sidebar; armed, `ConfirmButton` drops the icon and says
-        // `confirm` in filled danger — the click that does something is the one that gets
-        // the word. Arming is `ConfirmArm`'s, keyed on the workspace, not on `ix`.
-        let unregister_btn = {
+        // label in a 300px sidebar; armed, the control says `confirm` in filled danger —
+        // the click that does something is the one that gets the word. Arming is
+        // `ConfirmArm`'s, keyed on the workspace, not on `ix`, and it all lives in
+        // `unregister_workspace`: both spellings below call it on every press, so the
+        // two-step behaviour is identical either way.
+        //
+        // Two spellings and not a `ConfirmButton` with an empty label, because that
+        // renders a *labelled* button with nothing in the label slot — a 36px box beside
+        // rename's 24px square, which is exactly the icon-only inconsistency this pass
+        // exists to remove. Same element id across the transition, so gpui keeps the
+        // control's identity when it arms.
+        let unregister_btn: AnyElement = if armed {
             let id = meta.id.clone();
-            ConfirmButton::new(("ws-row-unregister", ix), "")
-                .icon(Icon::Trash)
-                .armed(armed)
+            ConfirmButton::new(("ws-row-unregister", ix), "unregister")
+                .armed(true)
                 .armed_label("confirm")
                 .size(ButtonSize::Sm)
-                .tooltip(if armed {
-                    "click again to unregister — sid forgets this workspace, no files are touched"
-                } else {
-                    "unregister"
-                })
+                .tooltip(
+                    "click again to unregister — sid forgets this workspace, no files are touched",
+                )
                 .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     this.unregister_workspace(id.clone(), cx);
                 }))
+                .into_any_element()
+        } else {
+            let id = meta.id.clone();
+            IconButton::new(("ws-row-unregister", ix), Icon::Trash, "unregister")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.unregister_workspace(id.clone(), cx);
+                }))
+                .into_any_element()
         };
 
         let row_id = meta.id.clone();
@@ -1877,26 +1891,60 @@ impl AppState {
         )
     }
 
-    fn plain_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
+    /// The detail pane's own top row: the workspace's name, and whatever switches or
+    /// labels the shape carries. The same strip on all three shapes, so the panel below
+    /// always starts at the same y.
+    fn detail_header(
+        &self,
+        title: impl Into<SharedString>,
+        trailing: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let t = theme::active(cx);
-        let id = meta.id.clone();
-        let hosts = self.workspaces.overview_hosts.clone();
-        let connections = self.workspaces.overview_connections.clone();
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
+        h_flex()
+            .flex_none()
+            // One band height for all three shapes, and the same band the sibling
+            // sidebar's panel header occupies — a heading whose height is set by whatever
+            // its trailing control happens to be (a `Badge` here, a `SegmentedControl`
+            // there) puts the detail pane's first panel at a different y per workspace.
+            .h(scaled(32.))
+            .justify_between()
             .gap_3()
-            .p_4()
             // A pane heading is the one place the scale goes above body text — 16px
             // Medium, where this used to be 14px BOLD (bold at 14 on a dark panel blooms
             // into a colour change rather than reading as a rank).
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.))
                     .clamp_one_line()
                     .text_title(t)
-                    .child(meta.name.clone()),
+                    .child(title.into()),
             )
+            .child(div().flex_none().child(trailing))
+    }
+
+    /// The scrolling body of one detail panel — the wrapper between `Card::panel`'s
+    /// unpadded body and content that is a stack of sections rather than a list.
+    fn detail_body(id: &'static str, body: AnyElement) -> impl IntoElement + use<> {
+        div()
+            .id(id)
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .p_3()
+            .child(body)
+    }
+
+    fn plain_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx);
+        let id = meta.id.clone();
+        let hosts = self.workspaces.overview_hosts.clone();
+        let connections = self.workspaces.overview_connections.clone();
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap_3()
             .child(
                 div()
                     .min_w(px(0.))
@@ -1904,54 +1952,73 @@ impl AppState {
                     .text_mono_meta(t)
                     .child(meta.root.display().to_string()),
             )
-            .child(h_flex().child(Badge::new("not a git repo")))
             .child(self.scope_items_section(&id, &hosts, &connections, cx))
-            .into_any_element()
-    }
-
-    fn repo_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let border = t.border;
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .min_w(px(0.))
-                    .clamp_one_line()
-                    .text_title(t)
-                    .child(meta.name.clone()),
-            )
-            .child(self.repo_sub_tab_chips(cx));
-
-        let body = match self.workspaces.sub_tab {
-            DetailSubTab::Overview => self.repo_overview(meta, cx),
-            DetailSubTab::Branches => self.repo_branches(cx),
-            DetailSubTab::Status => self.repo_status(cx),
-            DetailSubTab::Log => self.repo_log(cx),
-        };
+            .into_any_element();
 
         div()
             .flex_1()
             .flex()
             .flex_col()
-            .child(header)
+            .min_w(px(0.))
+            .gap_2()
+            .child(self.detail_header(meta.name.clone(), Badge::new("not a git repo"), cx))
             .child(
-                div()
-                    .id("ws-repo-body")
+                Card::panel("overview")
                     .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .p_4()
-                    .child(body),
+                    .min_h_0()
+                    .child(Self::detail_body("ws-plain-body", body)),
             )
             .into_any_element()
+    }
+
+    fn repo_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
+        let sub_tab = self.workspaces.sub_tab;
+        let body = match sub_tab {
+            DetailSubTab::Overview => self.repo_overview(meta, cx),
+            DetailSubTab::Branches => self.repo_branches(cx),
+            DetailSubTab::Status => self.repo_status(cx),
+            DetailSubTab::Log => self.repo_log(cx),
+        };
+        // The sub-view's own count, where it has one — the `· n` half of the panel
+        // header, exactly as the Network tab's sub-views spell it.
+        let count = self.detail_count(sub_tab);
+
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_w(px(0.))
+            .gap_2()
+            .child(self.detail_header(meta.name.clone(), self.repo_sub_tab_chips(cx), cx))
+            .child(
+                Card::panel(sub_tab.label())
+                    .when_some(count, Card::count)
+                    .flex_1()
+                    .min_h_0()
+                    .child(Self::detail_body("ws-repo-body", body)),
+            )
+            .into_any_element()
+    }
+
+    /// How many rows the given sub-view is showing, when it is showing a countable list
+    /// and has finished loading it. `None` — not `Some(0)` — while a fetch is in flight
+    /// or has failed: `BRANCHES · 0` over a "loading branches…" line is a lie.
+    fn detail_count(&self, sub_tab: DetailSubTab) -> Option<usize> {
+        match sub_tab {
+            DetailSubTab::Overview => None,
+            DetailSubTab::Branches => match self.workspaces.branches.as_ref()? {
+                Fetch::Done(Ok(branches)) => Some(branches.len()),
+                _ => None,
+            },
+            DetailSubTab::Status => match self.workspaces.status.as_ref()? {
+                Fetch::Done(Ok(status)) => Some(status.entries.len()),
+                _ => None,
+            },
+            DetailSubTab::Log => match self.workspaces.log.as_ref()? {
+                Fetch::Done(Ok(commits)) => Some(commits.len()),
+                _ => None,
+            },
+        }
     }
 
     /// The Overview/Branches/Status/Log switch.
@@ -2214,37 +2281,15 @@ impl AppState {
     }
 
     fn umbrella_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let border = t.border;
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(
-                div()
-                    .min_w(px(0.))
-                    .clamp_one_line()
-                    .text_title(t)
-                    .child(format!("{} — fleet", meta.name)),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .text_meta(t)
-                    .child("sorted, live git status per repo"),
-            );
-
         // `FillTable`, not `Table`: the columns are resized to the width this pane
         // actually got, so `Path` stops truncating `/home/murphy/vcs/…` inside 280px
         // while the rest of a 2000px window sits empty. See `sid_ui::table`.
-        let fleet_table = self.workspaces.fleet.clone().map(|table| {
+        let fleet = self.workspaces.fleet.clone();
+        let count = fleet.as_ref().map(|t| t.read(cx).delegate().rows.len());
+        let fleet_table = fleet.map(|table| {
             div()
                 .flex_1()
+                .min_h(px(0.))
                 .w_full()
                 .child(FillTable::new(&table).stripe(true))
         });
@@ -2253,13 +2298,14 @@ impl AppState {
             .flex_1()
             .flex()
             .flex_col()
-            .child(header)
+            .min_w(px(0.))
+            .gap_2()
+            .child(self.detail_header(meta.name.clone(), Badge::new("fleet"), cx))
             .child(
-                div()
+                Card::panel("repos")
+                    .when_some(count, Card::count)
                     .flex_1()
-                    .min_h(px(0.))
-                    .p_2()
-                    .flex()
+                    .min_h_0()
                     .children(fleet_table),
             )
             .into_any_element()

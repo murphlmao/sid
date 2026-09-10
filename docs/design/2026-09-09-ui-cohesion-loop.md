@@ -87,22 +87,35 @@ Every item is gated by before/after captures in all four themes and a
       percent when ≠100% (click resets), last-frame ms under `SID_PERF`. Terminal pane
       reflows by test (`a_shorter_pane_reflows_to_fewer_rows_and_the_same_columns`).
       `sid-cap.sh` gained `--scroll`.
-- [ ] **One panel vocabulary.** Today Database uses bordered, rounded, headed panels; SSH
-      home floats cards on the bare background; Workspaces uses a hairline sidebar; System
-      has an unframed meter strip. Pick the Database treatment (surface fill, hairline
-      border, uppercase label header with count and actions) and apply it to every region on
-      every tab.
-- [ ] **One toolbar contract.** Every tab's top row becomes `[label · count] [filter]
-      [secondary actions] [primary action]` at one height. Today SSH has a legend strip and
-      an add button, Database has a status string plus filter plus three buttons, Workspaces
-      has count plus refresh plus add. Same order, same height, same gaps everywhere.
+- [x] **One panel vocabulary.** Done 2026-09-09 across all six tabs: every region is a
+      `Card::panel` (`surface`, hairline, uppercase Label header `NAME · count`, header
+      actions). SSH home (connections), Database (connections/schema/history + `QUERY ·
+      <connection>` + `RESULTS · n rows · ms` + `QUERY PLAN`), Network (one `sub_view_panel`
+      for the five sub-views), Workspaces (`WORKSPACES · n` sidebar, OVERVIEW/BRANCHES/STATUS/
+      LOG/REPOS detail panels), System (`SYSTEM` cluster), Settings (rail + panels).
+- [x] **One toolbar contract.** Done 2026-09-09: the panel header IS the toolbar row,
+      `[label · count] [filter] [secondary] [primary]` at one height; loose status strings
+      ("no connection selected") left the toolbars. Two real bugs surfaced and fixed on the
+      way: Network's fetch error had no render at all; Workspaces' unregister was a labelled
+      button with an empty label (36px box beside a 24px square).
+- [ ] **Panel/toolbar follow-ups** (from the data-tabs pass): `sid_ui::Toolbar` is now unused
+      on the tabs because `Card::panel`'s header does its job with a different box (`py_2` vs
+      `py(6.)`); unify the two or delete `Toolbar`. `db_tab.rs` and `network_tab.rs` keep
+      file-private `error_line`/`caveat_line` copies of `sid_ui::notice`'s; swap after a wrap
+      check. The Database `diagram` button wants an icon (`git-fork`/`workflow` in Lucide). A
+      panel header's title is the only shrinkable slot, so at 700px the results filter sits at
+      its 160px floor and `RESULTS` would truncate below that; decide whether filters may
+      shrink further or move to a second row.
 - [x] **Wide-window layouts: Settings.** Done 2026-09-09: 220px section rail (Appearance ·
       Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
       to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
       `SegmentedControl`s, the keyring status an `InlineNotice`. `system.md` amended.
-- [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
-      responsive grid, and the home surface gets a second region (recent sessions or
-      per-host last-connected) so the screen does not read as empty when it has data.
+- [x] **Wide-window layouts: SSH home.** Done 2026-09-09: the connections surface is one
+      `Card` panel (`CONNECTIONS · n`, header = the toolbar row `[label·count] [quick-connect
+      filter] [add] [connect]`, legend in the footer). The void is now bounded by the panel and
+      empty on purpose; `CardGrid` keeps its 300/340px column caps because stretching two cards
+      across 2560px recreates the per-line-stretch defect `grid.rs` documents. No fabricated
+      second region: the store has no per-host last-connected fact.
 - [x] **Kbd chips lost their chrome under gpui-component 0.6.1**: fixed 2026-09-09.
       `gpui_component::Kbd` painted through the library's own unconfigured theme tokens;
       `sid-ui/src/kbd.rs` now draws its own chip (surface, hairline, `rounded_sm`, Meta ink) and
@@ -112,22 +125,23 @@ Every item is gated by before/after captures in all four themes and a
       (`line_clamp(2)`), optional `.detail(..)` second line in Meta/muted; Settings splits the
       keyring message into sentence + recommendation. Verified at 1920 and 700px and in the
       gallery.
-- [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
-      compress to icons below a breakpoint or the scope chips collapse to one; ties into the
-      scope-switcher item.
-- [ ] **SSH session strip.** The `home  +` strip under the top bar is a row of tiny chips
-      that looks unfinished. Make it a proper tab bar with the same height and active
-      treatment as the top tabs, or fold it into the panel header.
-- [ ] **Scope switcher.** `Global` and `acme-api (demo)` in the top-right read as two
-      unrelated chips. Render them as one segmented scope control with the active scope
-      filled.
+- [x] **Top bar clips at 700px**: fixed 2026-09-09. Below ~900 design px (same currency as the
+      Settings rail breakpoint) the tabs collapse to icon-only with tooltips; verified on SSH
+      and Database at 700x900 and at 150% zoom.
+- [x] **SSH session strip.** Done 2026-09-09: same `chrome_tab` box as the top bar (height,
+      accent underline, hover fill); each session tab shows StatusDot + saved alias + a
+      hover-revealed close; `+` is a tooltipped IconButton. Still clamps when many.
+- [x] **Scope switcher.** Done 2026-09-09: one `SegmentedControl` (recessed track, active
+      scope filled); `ScopeChip` stays the per-item origin badge. All six top tabs gained
+      icons.
 - [x] **System tab.** Done 2026-09-09: meters were already on a framed `StatCluster`/`Card`
       (verified by capture); the Command column now falls back to the process name in
       `muted` ink (`ProcessInfo::cmd_is_fallback`, decided in `sid-sysinfo`).
-- [ ] **Icon-only buttons.** File and gear on SSH cards, diagram and delete on Database
-      connections, git and close on Workspaces rows: same size, same hit area, tooltip
-      present on every one (the July plan made tooltips type-required; verify no call site
-      bypasses it).
+- [x] **Icon-only buttons.** Done 2026-09-09 for SSH (cards + right-click menu icons),
+      Database, Network, Workspaces: every `IconButton` is `.small()` (one 24px square) with a
+      tooltip (type-required by the 3-arg constructor); `Tipped::tip` covers non-button
+      elements. System's pin/kill controls were not re-audited in this pass; check them in the
+      cosmos-light sweep.
 - [ ] **Interaction states.** Hover, pressed, focused, disabled on every control, and a
       visible focus ring for keyboard navigation (this is a keyboard-first app with no
       visible focus indication in any capture). The gallery has a `BUTTON STATES` section;
@@ -390,3 +404,28 @@ commits; do not invent one).
   51 suites / 1577 tests green. `gpui-base` 0.6.1 is now a named workspace dep (already in
   the lock as gpui-component's own) for `active_focus_trap`, which the styled crate does
   not re-export.
+- 2026-09-09: panel-vocabulary + toolbar-contract pass over Database, Network and Workspaces
+  on `data-tabs` (not merged). Every region on the three tabs is a `sid_ui::Card::panel` —
+  `surface` fill, hairline, ruled Label header `NAME · count`, actions right-aligned in the
+  header row at one height and one gap rhythm (`p_3`/`gap_2` on all three tabs). Database's
+  local `panel_header()` helper is deleted; its three left panels move `well` → `surface`, and
+  the editor and results become peers of them (`QUERY · <connection>` with Explain/Run,
+  `RESULTS · 340 rows · 12 ms` with the filter, next page and Export, `QUERY PLAN · n` as a
+  sibling panel rather than a frame nested inside the results one). Network keeps the sub-view
+  segmented strip and puts the table in `PORTS · 13` / `SYSTEM SERVICES · 146` /
+  `INTERFACES · 7`, built by one `sub_view_panel()`; Interfaces lost its inner `Card` (two
+  frames for one list). Workspaces' sidebar is `WORKSPACES · n` with refresh and `+ add` in
+  its header, and the detail pane is `OVERVIEW` / `BRANCHES · n` / `STATUS · n` / `LOG · n` /
+  `REPOS · n` under a fixed-height heading strip so the panel starts at the same y for every
+  workspace shape. The loose status strings are gone from every toolbar: `no connection
+  selected` is the results empty state, `error: …` is an `error_line` in the panel body (which
+  is how `network.error` became visible at all — it had no other render), `refreshing…` is the
+  refresh button's spinner, `docker/kubectl not installed` is already the body's empty state.
+  Workspaces' unregister was a `ConfirmButton` with an empty label — a 36px labelled box beside
+  rename's 24px square — and is now an `IconButton` at rest and the `ConfirmButton` word when
+  armed, same id, same two-step. Note for the narrow-window item: a panel header's actions are
+  `flex_none`, so every pixel a filter takes comes out of the title beside it; Database's
+  results filter is at `FieldWidth`'s 160px floor for that reason and `RESULTS` still reads
+  whole at 700px. Gate: fmt, clippy, 51 suites, `hygiene.rs` green. Captures: three tabs ×
+  {1920, cosmos-light, 700x900}, both selected states, all five Network sub-views, the query
+  run and EXPLAIN panels, and a real git repo registered live to reach Branches/Status/Log.

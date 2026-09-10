@@ -100,7 +100,7 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, Segment,
-    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Toolbar, Typography as _, h_flex,
+    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _, h_flex,
     sortable_th, v_flex,
 };
 
@@ -1263,20 +1263,48 @@ impl AppState {
             NetSubTab::Ports => self.ports_view(&theme, cx),
             NetSubTab::Services => self.services_view(&theme, cx),
             NetSubTab::Interfaces => self.interfaces_view(&theme, cx),
-            NetSubTab::Docker => self.docker_view(cx),
-            NetSubTab::Kubernetes => self.kube_view(cx),
+            NetSubTab::Docker => self.docker_view(&theme, cx),
+            NetSubTab::Kubernetes => self.kube_view(&theme, cx),
         };
 
         v_flex()
             .flex_1()
-            .p_4()
-            .gap_3()
+            .p_3()
+            .gap_2()
             .child(self.network_sub_view_strip(sub_tab, cx))
             // The one flexible child, so whichever sub-view is showing gets the whole
-            // remaining canvas. `min_h(0)` keeps its own natural height from starving the
-            // basis-0 `flex_1` down to a header row — same rule `systems_tab.rs` documents.
-            .child(div().flex_1().min_h(px(0.)).w_full().child(body))
+            // remaining canvas. Each sub-view is a `Card::panel` that declares `flex_1` +
+            // `min_h_0` on itself — the second half is what keeps its natural height from
+            // starving the basis-0 `flex_1` down to a header row (the rule
+            // `systems_tab.rs` documents).
+            .child(body)
             .into_any_element()
+    }
+
+    /// One sub-view's panel: the toolbar contract as a panel header — `[LABEL · n]` on
+    /// the left, then `[filter] [secondary] [refresh]` right-aligned, at the one height
+    /// every other panel header on every other tab uses.
+    ///
+    /// The `error: …` / `refreshing…` strings this row used to carry *instead of* a count
+    /// are gone: a failure is an [`error_line`] in the panel body, where it has room to
+    /// be as long as the OS made it, and "refreshing" is the refresh button's own
+    /// spinner. A slot that sometimes holds a count and sometimes holds a sentence is
+    /// not a count.
+    fn sub_view_panel(
+        &self,
+        sub_tab: NetSubTab,
+        count: usize,
+        refreshing: bool,
+        secondary: Option<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> Card {
+        Card::panel(sub_tab.label())
+            .count(count)
+            .flex_1()
+            .min_h_0()
+            .action(self.network_filter_field())
+            .when_some(secondary, Card::action)
+            .action(self.network_refresh_button(sub_tab, refreshing, cx))
     }
 
     /// The `[Ports] [Services] [Interfaces] [Docker] [Kubernetes]` strip.
@@ -1315,12 +1343,21 @@ impl AppState {
             }))
     }
 
-    /// The shared filter field, capped rather than filling the toolbar row: a 1900px-wide
-    /// filter box is as wrong as the 648px table it used to sit above.
+    /// The shared filter field, sized rather than filling the header row: a 1900px-wide
+    /// filter box is as wrong as the 648px table it used to sit above. `Sm`, so it lands
+    /// on the same rung as the refresh button beside it and the header stays one height.
+    ///
+    /// `Fixed` and not `Fill`/`Grow`, because a panel header's actions are `flex_none`:
+    /// a field that asked to grow would take the row's whole width and leave the panel's
+    /// own `PORTS · 13` title with nothing. The width it is fixed at is what the title
+    /// beside it has to live within at a narrow window.
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div()
-            .max_w(px(320.))
-            .children(self.network.filter.clone().map(|f| TextInput::new(&f)))
+        div().children(
+            self.network
+                .filter
+                .clone()
+                .map(|f| TextInput::new(&f).small().fixed(px(240.))),
+        )
     }
 
     /// The one refresh control, routed to whichever sub-view is showing.
@@ -1359,7 +1396,7 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Ports: toolbar, then the fill-width table, then any kill error.
+    /// Ports: the panel header, then the fill-width table, then any probe or kill error.
     fn ports_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.refreshing;
         let table = self.network.table.clone();
@@ -1370,11 +1407,6 @@ impl AppState {
         let kill_error = table
             .as_ref()
             .and_then(|t| t.read(cx).delegate().kill_error.clone());
-        let count_label: SharedString = match &self.network.error {
-            Some(e) => format!("error: {e}").into(),
-            None if refreshing => "refreshing…".into(),
-            None => sid_ui::toolbar::count_label(count, "listening port").into(),
-        };
         let empty = (count == 0 && !refreshing && self.network.error.is_none()).then(|| {
             EmptyState::new("no listening ports")
                 .icon(Icon::Globe)
@@ -1384,20 +1416,15 @@ impl AppState {
                 ))
         });
 
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    .filter(self.network_filter_field())
-                    .count_label(count_label)
-                    .action(self.network_refresh_button(NetSubTab::Ports, refreshing, cx)),
-            )
+        self.sub_view_panel(NetSubTab::Ports, count, refreshing, None, cx)
+            .children(notice_row(theme, self.network.error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(kill_error.map(|e| error_line(theme, e)))
+            .children(notice_row(theme, kill_error))
             .into_any_element()
     }
 
-    /// Services: toolbar (with the `system|user` scope control in it), table, action error.
+    /// Services: the panel header (with the `system|user` scope control in it), the
+    /// table, then any list or action error.
     fn services_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.svc_refreshing;
         let scope = self.network.svc_scope;
@@ -1409,14 +1436,6 @@ impl AppState {
         let action_error = table
             .as_ref()
             .and_then(|t| t.read(cx).delegate().action_error.clone());
-        let count_label: SharedString = match &self.network.svc_error {
-            Some(e) => format!("error: {e}").into(),
-            None if refreshing => "refreshing…".into(),
-            None => {
-                sid_ui::toolbar::count_label(count, &format!("{} service", svc_scope_label(scope)))
-                    .into()
-            }
-        };
         let empty = (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
             EmptyState::new("no units")
                 .icon(Icon::Settings)
@@ -1426,21 +1445,19 @@ impl AppState {
                 ))
         });
 
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    .filter(self.network_filter_field())
-                    // The scope control belongs *in* the toolbar, not on a bordered row of
-                    // its own beneath it: it narrows the same list the filter beside it
-                    // narrows, and a second full-width bar for two chips was a third
-                    // horizontal rule in the top 100px of the screen.
-                    .child(self.svc_scope_control(scope, cx))
-                    .count_label(count_label)
-                    .action(self.network_refresh_button(NetSubTab::Services, refreshing, cx)),
-            )
+        // The scope control is a *secondary* header action, between the filter and
+        // refresh: it narrows the same list the filter beside it narrows, and a second
+        // full-width bar for two chips was a third horizontal rule in the top 100px of
+        // the screen.
+        let secondary = self.svc_scope_control(scope, cx).into_any_element();
+        self.sub_view_panel(NetSubTab::Services, count, refreshing, Some(secondary), cx)
+            // The one sub-view whose header says more than its own name: the two scopes
+            // are disjoint unit sets, so `SYSTEM SERVICES · 12` and `USER SERVICES · 3`
+            // are counts of different things and the header has to say which.
+            .title(format!("{} services", svc_scope_label(scope)))
+            .children(notice_row(theme, self.network.svc_error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(action_error.map(|e| error_line(theme, e)))
+            .children(notice_row(theme, action_error))
             .into_any_element()
     }
 
@@ -1471,7 +1488,7 @@ impl AppState {
     /// `docker not installed` is an expected local-machine condition, not a failure, so it
     /// gets an [`EmptyState`] — the same component every other "nothing here" surface uses
     /// — rather than the two dim centred lines this file used to hand-roll.
-    fn docker_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn docker_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.docker_refreshing;
         let not_installed = self.network.docker_not_installed;
         let table = self.network.docker_table.clone();
@@ -1479,15 +1496,6 @@ impl AppState {
             .as_ref()
             .map(|t| t.read(cx).delegate().containers.len())
             .unwrap_or(0);
-        let count_label: SharedString = if not_installed {
-            "docker not installed".into()
-        } else {
-            match &self.network.docker_error {
-                Some(e) => format!("error: {e}").into(),
-                None if refreshing => "refreshing…".into(),
-                None => sid_ui::toolbar::count_label(count, "container").into(),
-            }
-        };
 
         let body: AnyElement = if not_installed {
             EmptyState::new("docker not installed — no daemon reachable")
@@ -1507,21 +1515,15 @@ impl AppState {
             table_pane(table.as_ref(), empty)
         };
 
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    .filter(self.network_filter_field())
-                    .count_label(count_label)
-                    .action(self.network_refresh_button(NetSubTab::Docker, refreshing, cx)),
-            )
+        self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
+            .children(notice_row(theme, self.network.docker_error.clone()))
             .child(body)
             .into_any_element()
     }
 
     /// Kubernetes: toolbar (with the context control in it), then the pods table, the
     /// no-contexts state, or the graceful-absence state.
-    fn kube_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn kube_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.kube_refreshing;
         let not_installed = self.network.kube_not_installed;
         let context_count = self.network.kube_contexts.len();
@@ -1530,20 +1532,6 @@ impl AppState {
             .as_ref()
             .map(|t| t.read(cx).delegate().pods.len())
             .unwrap_or(0);
-        let count_label: SharedString = if not_installed {
-            "kubectl not installed".into()
-        } else {
-            match &self.network.kube_error {
-                Some(e) => format!("error: {e}").into(),
-                None if refreshing => "refreshing…".into(),
-                None => format!(
-                    "{} · {}",
-                    sid_ui::toolbar::count_label(context_count, "context"),
-                    sid_ui::toolbar::count_label(count, "pod")
-                )
-                .into(),
-            }
-        };
 
         let body: AnyElement = if not_installed {
             EmptyState::new("kubectl not installed — no cluster")
@@ -1568,15 +1556,14 @@ impl AppState {
             table_pane(table.as_ref(), empty)
         };
 
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    .filter(self.network_filter_field())
-                    .children(self.kube_context_control(cx))
-                    .count_label(count_label)
-                    .action(self.network_refresh_button(NetSubTab::Kubernetes, refreshing, cx)),
-            )
+        // The context strip is the sub-view's secondary action — `[PODS · n] [filter]
+        // [contexts] [refresh]` — and its own count (`2 contexts`) is the strip itself,
+        // not a second number in the header.
+        let secondary = self
+            .kube_context_control(cx)
+            .map(IntoElement::into_any_element);
+        self.sub_view_panel(NetSubTab::Kubernetes, count, refreshing, secondary, cx)
+            .children(notice_row(theme, self.network.kube_error.clone()))
             .child(body)
             .into_any_element()
     }
@@ -1621,25 +1608,19 @@ impl AppState {
         )
     }
 
-    /// Interfaces: toolbar, then one bounded card holding the always-visible interfaces
-    /// and the collapsed `hidden (N)` group.
+    /// Interfaces: the panel header, then the always-visible interfaces and the
+    /// collapsed `hidden (N)` group inside the same panel every other sub-view uses.
     ///
     /// Not a [`FillTable`] like the other four sub-views, and deliberately so: the whole
     /// point of this view is the *grouping* (primary interfaces always shown,
     /// generic/virtual ones — [`is_hidden_interface`] — behind one disclosure), and
     /// `gpui-component`'s table has no row-group concept to express that with. What it
-    /// does adopt is everything else: a card boundary instead of a bare bordered strip, a
-    /// real disclosure [`Button`] instead of a `▸`/`▾` text glyph, and [`Badge`]s instead
-    /// of coloured words for up/down and the default route.
+    /// does adopt is everything else: the shared panel boundary instead of a bare
+    /// bordered strip, a real disclosure [`Button`] instead of a `▸`/`▾` text glyph, and
+    /// [`Badge`]s instead of coloured words for up/down and the default route.
     fn interfaces_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.refreshing;
         let total = self.network.interfaces.len();
-        let count_label: SharedString = match &self.network.error {
-            Some(e) => format!("error: {e}").into(),
-            None if refreshing => "refreshing…".into(),
-            None => sid_ui::toolbar::count_label(total, "interface").into(),
-        };
-
         let default_name = self.network.default_route.clone();
         let visible_rows: Vec<AnyElement> = self
             .network
@@ -1657,8 +1638,10 @@ impl AppState {
         let expanded = self.network.interfaces_expanded;
         let nothing_to_show = visible_rows.is_empty() && hidden_count == 0;
 
-        let card = Card::new()
-            .title("interfaces")
+        // No inner card: the sub-view panel around it *is* the frame, and a second one
+        // inside it was two hairlines and two fills for one list.
+        let list = v_flex()
+            .w_full()
             .child(v_flex().w_full().children(visible_rows))
             .children((hidden_count > 0).then(|| {
                 v_flex()
@@ -1692,23 +1675,17 @@ impl AppState {
                     .into_any_element()
             }));
 
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    .filter(self.network_filter_field())
-                    .count_label(count_label)
-                    .action(self.network_refresh_button(NetSubTab::Interfaces, refreshing, cx)),
-            )
+        self.sub_view_panel(NetSubTab::Interfaces, total, refreshing, None, cx)
+            .children(notice_row(theme, self.network.error.clone()))
             .child(
                 div()
                     .id("net-ifaces-scroll")
                     .flex_1()
                     .min_h(px(0.))
                     .w_full()
-                    .pt_3()
+                    .p_3()
                     .overflow_y_scroll()
-                    .child(card),
+                    .child(list),
             )
             .into_any_element()
     }
@@ -2220,6 +2197,14 @@ fn table_pane<D: FillTableDelegate + 'static>(
 /// same under `MinContent` as under `MaxContent`, so without `min_w(0)` the line's
 /// automatic minimum size is the whole error string and it neither wraps nor clips — and
 /// a systemd or docker error runs to 100+ characters.
+/// An [`error_line`] carrying the padding a panel body deliberately does not supply, or
+/// nothing at all when there is no message. `flex_none` so it never eats the height the
+/// table below it is claiming.
+fn notice_row(theme: &Theme, message: Option<String>) -> Option<impl IntoElement + use<>> {
+    let theme = theme.clone();
+    message.map(move |m| div().flex_none().px_3().pt_2().child(error_line(&theme, m)))
+}
+
 fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
     h_flex()
         .gap_1p5()
