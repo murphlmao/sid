@@ -80,16 +80,16 @@ use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
 use sid_sysinfo::SysinfoProvider;
 
-use super::{TextInput, is_field_submit};
+use super::is_field_submit;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
-    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, Meter, Segment, SegmentSelect,
-    SegmentedControl, StatCluster, StyledExt as _, Toolbar, Typography as _, h_flex, scaled,
-    sortable_th, v_flex,
+    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, Segment,
+    SegmentSelect, SegmentedControl, StatCluster, StyledExt as _, TextInput, Toolbar,
+    Typography as _, h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -163,7 +163,7 @@ pub struct SystemsTabState {
     table: Option<Entity<TableState<ProcessesDelegate>>>,
     /// The filter input, shared by name/command/user/pid substring matching — same
     /// shared-filter-input pattern as `NetworkTabState::filter`.
-    filter: Option<Entity<TextInput>>,
+    filter: Option<Entity<InputState>>,
     /// Kept alive so the `cx.observe(&filter, ..)` subscription isn't dropped —
     /// mirrors `NetworkTabState::_filter_sub`.
     _filter_sub: Option<Subscription>,
@@ -182,7 +182,7 @@ pub struct SystemsTabState {
     /// field's wrapper in [`AppState::config_files_view`], the same technique
     /// `db_tab.rs`'s inline rename/folder-edit rows use — rather than a change-event
     /// subscription, since there's nothing to react to until the user commits.
-    pin_input: Option<Entity<TextInput>>,
+    pin_input: Option<Entity<InputState>>,
     /// Inline error under the pin input (e.g. a nonexistent path) — cleared on the
     /// next successful pin or edit.
     pin_error: Option<String>,
@@ -670,7 +670,11 @@ impl AppState {
                 Toolbar::new()
                     // Capped rather than filling the row: a 1900px-wide filter field is
                     // as wrong as the 652px table it used to sit above.
-                    .filter(div().max_w(scaled(320.)).children(filter))
+                    .filter(
+                        div()
+                            .max_w(scaled(320.))
+                            .children(filter.map(|f| TextInput::new(&f))),
+                    )
                     .count_label(count_label)
                     .action(
                         Button::new("systems-refresh", "refresh")
@@ -703,8 +707,8 @@ impl AppState {
             self.systems.table = Some(table);
         }
         if self.systems.filter.is_none() {
-            let filter = cx.new(|cx| TextInput::new(cx, "filter"));
-            // `TextInput` has no change-callback; `cx.observe` fires on every
+            let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter"));
+            // The field has no change-callback; `cx.observe` fires on every
             // `cx.notify()` it makes while editing — see `network_tab.rs`'s "Filtering"
             // doc section for why this is the wiring pattern rather than a callback.
             let sub = cx.observe(&filter, |this: &mut Self, _filter, cx| {
@@ -714,7 +718,8 @@ impl AppState {
             self.systems._filter_sub = Some(sub);
         }
         if self.systems.pin_input.is_none() {
-            self.systems.pin_input = Some(cx.new(|cx| TextInput::new(cx, "pin a file… (~/ ok)")));
+            self.systems.pin_input =
+                Some(cx.new(|cx| InputState::new(window, cx).placeholder("pin a file… (~/ ok)")));
         }
     }
 
@@ -725,7 +730,7 @@ impl AppState {
             .systems
             .filter
             .as_ref()
-            .map(|f| f.read(cx).content().to_string())
+            .map(|f| f.read(cx).value().to_string())
             .unwrap_or_default();
         if let Some(table) = self.systems.table.clone() {
             table.update(cx, |state, cx| {
@@ -888,12 +893,12 @@ impl AppState {
 
     /// The "pin a file…" input's submit action (Enter, or the small "+ pin" affordance):
     /// tilde-expand, reject a nonexistent path inline, else pin + clear the input.
-    fn submit_pin(&mut self, cx: &mut Context<Self>) {
+    fn submit_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self
             .systems
             .pin_input
             .as_ref()
-            .map(|i| i.read(cx).content().to_string())
+            .map(|i| i.read(cx).value().to_string())
             .unwrap_or_default();
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -912,7 +917,7 @@ impl AppState {
         }
         self.systems.pin_error = None;
         if let Some(input) = self.systems.pin_input.clone() {
-            input.update(cx, |i, cx| i.reset(cx));
+            input.update(cx, |i, cx| i.set_value("", window, cx));
         }
         self.refresh_config_files(cx);
     }
@@ -982,22 +987,22 @@ impl AppState {
                                     .flex_1()
                                     .max_w(px(420.))
                                     .on_key_down(cx.listener(
-                                        |this, ev: &KeyDownEvent, _window, cx| {
+                                        |this, ev: &KeyDownEvent, window, cx| {
                                             if is_field_submit(&ev.keystroke) {
                                                 cx.stop_propagation();
-                                                this.submit_pin(cx);
+                                                this.submit_pin(window, cx);
                                             }
                                         },
                                     ))
-                                    .children(pin_input),
+                                    .children(pin_input.map(|i| TextInput::new(&i))),
                             )
                             .child(
                                 Button::new("cfg-pin-submit", "pin")
                                     .small()
                                     .icon(Icon::Add)
                                     .on_click(cx.listener(
-                                        |this, _ev: &ClickEvent, _window, cx| {
-                                            this.submit_pin(cx);
+                                        |this, _ev: &ClickEvent, window, cx| {
+                                            this.submit_pin(window, cx);
                                         },
                                     )),
                             ),
