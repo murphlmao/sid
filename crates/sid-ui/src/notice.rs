@@ -1,4 +1,4 @@
-//! Inline notices — the one-line "that didn't work" that lives *in* a form.
+//! Inline notices — the "that didn't work" that lives *in* a form.
 //!
 //! Distinct from [`crate::Toast`], and the distinction is where the message belongs, not
 //! how big it is: a toast is an event that floats over the screen and can be dismissed;
@@ -6,6 +6,14 @@
 //! changes. The kill error under a process row, the connection error under a DB form's
 //! footer, the "no rows" caveat under a paged result — none of those make sense
 //! anywhere but where they are.
+//!
+//! The message wraps to two lines rather than clamping to one — an OS error can run
+//! past what a form's width can hold on one line, and the old one-line clamp taught it
+//! to end in an ellipsis instead. A caller with more to say than the sentence itself
+//! (what, and separately why) can add a [`detail`](InlineNotice::detail) line, in the
+//! Meta role and always `muted` regardless of tone — mirroring [`crate::Toast`]'s
+//! title-then-message shape, but as a *second* line under the message rather than
+//! above it, since a notice's message is the headline here.
 //!
 //! # What this replaces
 //!
@@ -17,11 +25,12 @@
 //! ([`caveat_line`]) that the other two do not have.
 
 use gpui::{
-    App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _, Window, rgb,
+    App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _, Window,
+    prelude::FluentBuilder as _, rgb,
 };
 
 use crate::icon::Icon;
-use crate::styled::{StyledExt as _, h_flex};
+use crate::styled::{h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::typography::Typography as _;
 
@@ -69,7 +78,8 @@ impl NoticeTone {
     }
 }
 
-/// A one-line notice: a glyph from the registry, then the message.
+/// A notice: a glyph from the registry, then the message, wrapped to at most two
+/// lines, with an optional `detail` line under it.
 ///
 /// ```ignore
 /// v_flex().children(self.kill_error.clone().map(error_line))
@@ -78,6 +88,7 @@ impl NoticeTone {
 pub struct InlineNotice {
     tone: NoticeTone,
     message: SharedString,
+    detail: Option<SharedString>,
 }
 
 impl InlineNotice {
@@ -86,7 +97,17 @@ impl InlineNotice {
         Self {
             tone,
             message: message.into(),
+            detail: None,
         }
+    }
+
+    /// A second line under the message: the "why", once the sentence itself is the
+    /// whole first line and there is still a reason or a recommendation to give.
+    /// Always `muted`, independent of `tone` — the elaboration is not itself the
+    /// failure.
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 }
 
@@ -107,6 +128,7 @@ impl RenderOnce for InlineNotice {
         h_flex()
             .w_full()
             .min_w_0()
+            .items_start()
             .gap_1p5()
             .py_1()
             // The role sets the measurement, the tone sets the ink. The copies this
@@ -116,15 +138,34 @@ impl RenderOnce for InlineNotice {
             .text_color(rgb(ink))
             .child(self.tone.icon().small().text_color(rgb(ink)))
             .child(
-                // An error message is arbitrary text from an OS call — it can be a
-                // sentence or it can be 400 characters of `ssh: handshake failed:`.
-                // Without the pair it sets its own min-content width to the whole
-                // string and pushes the form it belongs to off the screen.
-                gpui::div()
+                v_flex()
                     .flex_1()
                     .min_w_0()
-                    .clamp_one_line()
-                    .child(self.message),
+                    .gap_0p5()
+                    .child(
+                        // An error message is arbitrary text from an OS call — it can be
+                        // a sentence or it can be 400 characters of `ssh: handshake
+                        // failed:`. `min_w_0` on a `flex_1` child is the landmines-doc
+                        // fix trio's other half: without it gpui reports this element's
+                        // min-content width as the whole string and it never shrinks to
+                        // the row's real width, so it never gets a wrap width to wrap
+                        // *at*. Two lines, then a real ellipsis for what still overflows.
+                        gpui::div()
+                            .min_w_0()
+                            .line_clamp(2)
+                            .text_ellipsis()
+                            .child(self.message),
+                    )
+                    .when_some(self.detail, |this, detail| {
+                        this.child(
+                            gpui::div()
+                                .min_w_0()
+                                .text_meta(&theme)
+                                .line_clamp(2)
+                                .text_ellipsis()
+                                .child(detail),
+                        )
+                    }),
             )
     }
 }
@@ -185,6 +226,17 @@ mod tests {
         assert_eq!(caveat_line("x").tone, NoticeTone::Caveat);
         assert_eq!(error_line("boom").message.as_ref(), "boom");
         assert_eq!(NoticeTone::default(), NoticeTone::Error);
+    }
+
+    #[test]
+    fn detail_defaults_to_none_and_the_builder_sets_it() {
+        // No API break: a caller that never calls `.detail(..)` gets exactly the old
+        // one-`Option`-field shape, just unset.
+        assert_eq!(error_line("boom").detail, None);
+        assert_eq!(
+            error_line("boom").detail("why").detail.as_deref(),
+            Some("why")
+        );
     }
 
     #[test]

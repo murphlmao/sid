@@ -574,6 +574,39 @@ fn secret_keyring_selector(enabled: bool, cx: &mut Context<AppState>) -> Segment
         }))
 }
 
+/// Split `app::secret_status_message`'s composed line into the sentence ("what is
+/// happening") and, when there is one, the trailing detail ("why", plus the pacman
+/// recommendation).
+///
+/// That function builds the string as `"secrets: {effective}[ — {warning}][
+/// ({recommendation})]"` — the recommendation, when present, is always the LAST
+/// top-level `(...)` group, appended after everything else with nothing following it.
+/// Depth-counting from the end finds exactly that group even though both `effective`
+/// (e.g. `"in-memory (no persistence)"`) and the recommendation itself (`"...(e.g.
+/// `sudo pacman -S gnome-keyring`)..."`) contain their own, unrelated parens that a
+/// first-`(`/last-`)` split would catch instead.
+fn split_status_detail(message: &str) -> (&str, Option<&str>) {
+    if !message.ends_with(')') {
+        return (message, None);
+    }
+    let mut depth = 0i32;
+    for (i, c) in message.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    let sentence = message[..i].trim_end();
+                    let detail = &message[i + 1..message.len() - 1];
+                    return (sentence, Some(detail));
+                }
+            }
+            _ => {}
+        }
+    }
+    (message, None)
+}
+
 /// The Storage section: the global data dir + the two files that live under it,
 /// plus a note that the encrypted-file secret vault (round-D §A) is dormant.
 /// Paths are recomputed here rather than exposed from `app.rs` — `data_dir()` is
@@ -778,11 +811,20 @@ impl AppState {
     ) -> impl IntoElement + use<> {
         // The backend sid actually ended up with, as a notice rather than a paragraph
         // of muted prose: red when the keyring is missing and secrets are degraded,
-        // muted when it is only telling you which backend is in use.
+        // muted when it is only telling you which backend is in use. Split into the
+        // sentence (what happened) and, when there is one, a `detail` line (why, plus
+        // the pacman recommendation) — `secret_status_message` composes both into one
+        // string, and at ~140 characters for the degraded case that used to be one
+        // line clamped down to an ellipsis.
+        let (sentence, detail) = split_status_detail(&self.secrets_status_detail);
         let backend = if self.secrets_degraded {
-            error_line(self.secrets_status_detail.clone())
+            error_line(sentence.to_string())
         } else {
-            caveat_line(self.secrets_status_detail.clone())
+            caveat_line(sentence.to_string())
+        };
+        let backend = match detail {
+            Some(detail) => backend.detail(detail.to_string()),
+            None => backend,
         };
 
         Card::new()
@@ -1139,6 +1181,41 @@ mod tests {
         let (_dir, store) = tmp_store();
         persist_secret_keyring_enabled(&store, false).expect("persist keyring toggle");
         assert!(!store.settings().unwrap().secret_keyring_enabled);
+    }
+
+    #[test]
+    fn split_status_detail_finds_the_outer_recommendation_past_nested_parens() {
+        // The real degraded message (`app::secret_status_message`, keyring unavailable):
+        // both `effective` and the recommendation itself carry their own parens, so a
+        // naive first-`(`/last-`)` split would cut the sentence at "in-memory (" and
+        // leave "no persistence)" dangling in front of the warning.
+        let msg = "secrets: in-memory (no persistence) — OS keyring unavailable (no \
+                    Secret Service provider is running); secrets will not persist \
+                    across restarts (install a Secret Service provider (e.g. `sudo \
+                    pacman -S gnome-keyring`) so secrets persist across restarts)";
+        let (sentence, detail) = split_status_detail(msg);
+        assert_eq!(
+            sentence,
+            "secrets: in-memory (no persistence) — OS keyring unavailable (no Secret \
+             Service provider is running); secrets will not persist across restarts"
+        );
+        assert_eq!(
+            detail,
+            Some(
+                "install a Secret Service provider (e.g. `sudo pacman -S gnome-keyring`) \
+                 so secrets persist across restarts"
+            )
+        );
+    }
+
+    #[test]
+    fn split_status_detail_is_sentence_only_when_the_backend_is_healthy() {
+        // `secret_status_message("OS keyring", None, None)` — no warning, no
+        // recommendation, nothing to split off.
+        assert_eq!(
+            split_status_detail("secrets: OS keyring"),
+            ("secrets: OS keyring", None)
+        );
     }
 
     #[test]
