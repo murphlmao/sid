@@ -2174,6 +2174,7 @@ impl AppState {
         Button::new("db-diagram-open", "diagram")
             .small()
             .ghost()
+            .icon(Icon::Diagram)
             .disabled(self.db.schema.is_none())
             .tooltip("open the relationships diagram in its own window")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {

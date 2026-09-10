@@ -168,6 +168,14 @@ pub enum Icon {
     Kubernetes,
     /// Network interfaces / adapters.
     Interfaces,
+    /// A relationships/ER diagram — the Database tab's schema pop-out.
+    ///
+    /// Draws Lucide's `workflow` (two linked boxes) rather than `git-fork` (three
+    /// linked circles) or `network` — the latter is already [`Icon::Interfaces`], and a
+    /// second meaning on the same glyph is confusable at 14px next to a real one.
+    /// `workflow`'s two boxes-and-a-line read as "entities, related", which is the
+    /// diagram button's actual job; `git-fork` reads as version-control branching.
+    Diagram,
 }
 
 impl Icon {
@@ -224,6 +232,7 @@ impl Icon {
         Icon::Docker,
         Icon::Kubernetes,
         Icon::Interfaces,
+        Icon::Diagram,
     ];
 
     /// The bundled asset this icon draws. Going through the library's own `IconName`
@@ -281,6 +290,7 @@ impl Icon {
             Icon::Docker => IconName::Container,
             Icon::Kubernetes => IconName::Boxes,
             Icon::Interfaces => IconName::Network,
+            Icon::Diagram => IconName::Workflow,
         }
     }
 
