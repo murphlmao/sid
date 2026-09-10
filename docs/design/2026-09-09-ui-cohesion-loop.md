@@ -100,9 +100,12 @@ Every item is gated by before/after captures in all four themes and a
       Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
       to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
       `SegmentedControl`s, the keyring status an `InlineNotice`. `system.md` amended.
-- [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
-      responsive grid, and the home surface gets a second region (recent sessions or
-      per-host last-connected) so the screen does not read as empty when it has data.
+- [x] **Wide-window layouts: SSH home.** Done 2026-09-09: the connections surface is one
+      `Card` panel (`CONNECTIONS · n`, header = the toolbar row `[label·count] [quick-connect
+      filter] [add] [connect]`, legend in the footer). The void is now bounded by the panel and
+      empty on purpose; `CardGrid` keeps its 300/340px column caps because stretching two cards
+      across 2560px recreates the per-line-stretch defect `grid.rs` documents. No fabricated
+      second region: the store has no per-host last-connected fact.
 - [x] **Kbd chips lost their chrome under gpui-component 0.6.1**: fixed 2026-09-09.
       `gpui_component::Kbd` painted through the library's own unconfigured theme tokens;
       `sid-ui/src/kbd.rs` now draws its own chip (surface, hairline, `rounded_sm`, Meta ink) and
@@ -112,15 +115,15 @@ Every item is gated by before/after captures in all four themes and a
       (`line_clamp(2)`), optional `.detail(..)` second line in Meta/muted; Settings splits the
       keyring message into sentence + recommendation. Verified at 1920 and 700px and in the
       gallery.
-- [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
-      compress to icons below a breakpoint or the scope chips collapse to one; ties into the
-      scope-switcher item.
-- [ ] **SSH session strip.** The `home  +` strip under the top bar is a row of tiny chips
-      that looks unfinished. Make it a proper tab bar with the same height and active
-      treatment as the top tabs, or fold it into the panel header.
-- [ ] **Scope switcher.** `Global` and `acme-api (demo)` in the top-right read as two
-      unrelated chips. Render them as one segmented scope control with the active scope
-      filled.
+- [x] **Top bar clips at 700px**: fixed 2026-09-09. Below ~900 design px (same currency as the
+      Settings rail breakpoint) the tabs collapse to icon-only with tooltips; verified on SSH
+      and Database at 700x900 and at 150% zoom.
+- [x] **SSH session strip.** Done 2026-09-09: same `chrome_tab` box as the top bar (height,
+      accent underline, hover fill); each session tab shows StatusDot + saved alias + a
+      hover-revealed close; `+` is a tooltipped IconButton. Still clamps when many.
+- [x] **Scope switcher.** Done 2026-09-09: one `SegmentedControl` (recessed track, active
+      scope filled); `ScopeChip` stays the per-item origin badge. All six top tabs gained
+      icons.
 - [x] **System tab.** Done 2026-09-09: meters were already on a framed `StatCluster`/`Card`
       (verified by capture); the Command column now falls back to the process name in
       `muted` ink (`ProcessInfo::cmd_is_fallback`, decided in `sid-sysinfo`).
