@@ -587,13 +587,16 @@ impl DbConnForm {
             "save to:".into()
         };
 
+        let workspace_note =
+            workspace_option_note(ws_active).unwrap_or("— .sid/ · travels with git");
+
         v_flex().gap_1().child(Self::field_label(label, cx)).child(
             v_flex()
                 .gap_0p5()
                 .child(option(
                     "save-workspace",
                     "workspace",
-                    "— .sid/ · travels with git",
+                    workspace_note,
                     SaveTarget::Workspace,
                     ws_active && !locked,
                     self.save_to == Some(SaveTarget::Workspace),
@@ -619,6 +622,13 @@ fn kind_index(kinds: &[DbKind], kind: DbKind) -> usize {
     kinds.iter().position(|k| *k == kind).unwrap_or(0)
 }
 
+/// Why the `workspace` option is disabled, if it is — see `host_form::
+/// workspace_option_note`, which this duplicates on purpose (see this file's own
+/// "kept local so `ui` stays self-contained" rule on `radio_mark` below).
+fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
+    (!ws_active).then_some("— no workspace focused")
+}
+
 /// The save-to picker's radio mark — see `host_form::radio_mark`, which this duplicates
 /// on purpose: `SaveTarget`, `preselect` and `add_guard` are already duplicated between
 /// these two modules under this file's "kept local so `ui` stays self-contained" rule,
@@ -627,8 +637,9 @@ fn kind_index(kinds: &[DbKind], kind: DbKind) -> usize {
 fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
     let edge = match (selected, enabled) {
         (true, _) => theme.accent,
-        (false, true) => theme.border,
-        (false, false) => theme.faint,
+        // Was inverted — see `host_form::radio_mark`'s doc comment.
+        (false, true) => theme.muted,
+        (false, false) => theme.border,
     };
     div()
         .size_3()
@@ -891,6 +902,16 @@ pub(crate) fn stage_secret(
 mod tests {
     use super::*;
     use sid_secrets::keyring::{FakeKeyring, KeyringStore};
+
+    #[test]
+    fn a_focused_workspace_leaves_the_option_alone() {
+        assert_eq!(workspace_option_note(true), None);
+    }
+
+    #[test]
+    fn no_focused_workspace_explains_why_its_disabled() {
+        assert_eq!(workspace_option_note(false), Some("— no workspace focused"));
+    }
 
     #[test]
     fn the_save_to_rows_come_after_every_field_however_many_there_are() {

@@ -736,13 +736,16 @@ impl HostForm {
             "save to:".into()
         };
 
+        let workspace_note =
+            workspace_option_note(ws_active).unwrap_or("— .sid/ · travels with git");
+
         v_flex().gap_1().child(Self::field_label(label, cx)).child(
             v_flex()
                 .gap_0p5()
                 .child(option(
                     "save-workspace",
                     "workspace",
-                    "— .sid/ · travels with git",
+                    workspace_note,
                     SaveTarget::Workspace,
                     ws_active && !locked,
                     self.save_to == Some(SaveTarget::Workspace),
@@ -788,6 +791,14 @@ fn auth_at(index: usize) -> AuthChoice {
         .map_or(AuthChoice::Agent, |(_, choice)| *choice)
 }
 
+/// Why the `workspace` option is disabled, if it is. `None` while a workspace is
+/// focused, when the option's own everyday description ("— .sid/ · travels with
+/// git") stays put — a greyed row with no reason read as broken, not "add a
+/// workspace first".
+fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
+    (!ws_active).then_some("— no workspace focused")
+}
+
 /// The save-to picker's radio mark: a ring that gains a filled core when chosen.
 ///
 /// Drawn rather than glyphed. The `●`/`○` pair this replaces renders in whatever the
@@ -796,8 +807,11 @@ fn auth_at(index: usize) -> AuthChoice {
 fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
     let edge = match (selected, enabled) {
         (true, _) => theme.accent,
-        (false, true) => theme.border,
-        (false, false) => theme.faint,
+        // Was inverted: the choosable, unselected ring read fainter (`border`) than
+        // the disabled one (`faint`), so a genuinely clickable option looked less
+        // present than one you cannot click.
+        (false, true) => theme.muted,
+        (false, false) => theme.border,
     };
     div()
         .size_3()
@@ -1103,6 +1117,16 @@ pub(crate) fn stage_secret(
 mod tests {
     use super::*;
     use sid_secrets::keyring::{FakeKeyring, KeyringStore};
+
+    #[test]
+    fn a_focused_workspace_leaves_the_option_alone() {
+        assert_eq!(workspace_option_note(true), None);
+    }
+
+    #[test]
+    fn no_focused_workspace_explains_why_its_disabled() {
+        assert_eq!(workspace_option_note(false), Some("— no workspace focused"));
+    }
 
     fn input(alias: &str, user: &str, host: &str, port: &str) -> FormInput {
         FormInput {
