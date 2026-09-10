@@ -180,7 +180,33 @@ Every item is gated by before/after captures in all four themes and a
       tabs need and the nine modules import from it; the two `Tooltip` sites in `session.rs`
       use `sid_ui::Tipped`. Only `main.rs` names `gpui_component::` now. (`table::state::
       render_cell` was a private upstream module all along; its mentions were prose.)
-- [ ] **Final gate.** Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
+- [ ] **Gate fixes (sid-ui + theme)**, from the 2026-09-10 final gate: `Card::panel` header
+      gets a fixed height so a header without actions is not 5px shorter (Database HISTORY);
+      `CardChrome::Raised` header gets the hairline under it (Settings APPEARANCE, System);
+      `FillTable` stops painting ruled/striped phantom rows below the data (blocker: Network
+      Ports shows 26 rows of chrome for 10 rows of data); cosmos-light `accent` vs `danger`
+      are 1.13:1 apart (one red), dusk `danger` is 4.0:1 on surface, cosmos-light `well`
+      (#fff) is brighter than `bg` so recessed reads raised — fix tokens, extend the contrast
+      guard to all palettes and add an accent/danger separation guard.
+- [ ] **Gate fixes (tabs)**: Database `CONNECTIONS · n` excludes the always-present store row;
+      Database row `delete` is a labelled button beside two icon squares (mirror Workspaces:
+      `IconButton` at rest, `ConfirmButton` when armed) and the two row templates place the
+      origin chip differently; Network Ports renders a bare `—` in the action column for rows
+      without an owner (blank it) and no explanation that owners need root; System Command
+      cells hard-clip without an ellipsis (`clamp_one_line` + `min_w(0)`); Workspaces detail
+      empty state is unframed canvas (wrap in `Card::panel`) and `3h · 0c` is unexplained
+      (spell it out); SSH quick-connect field is 32px so the panel header is 49px not 41px
+      (`.small()`); host/DB forms: the disabled `workspace` radio gives no reason and the
+      enabled ring is fainter than the disabled one.
+- [ ] **Nit sweep** (taste calls the gate raised, pick the cheap ones): the accent `connect`
+      in the SSH header outranks the per-card connect; the status legend sits 800px from the
+      dots it explains; right-click menu Title Case vs lowercase buttons; System panels inset
+      16px vs 12px elsewhere; the scope switcher's track is flush to the window's top edge;
+      theme swatches for bg/surface invisible on the selected row; Swap meter says "none"
+      three ways; void popover raise is only 4/255; key chip in the host form is accent-filled.
+- [ ] **Final gate.** Ran 2026-09-10 as a workflow (4 opus reviewers, one per theme, 34 PNGs;
+      8 sonnet refuters, one per screen): 66 raw findings, 41 non-nit, 28 confirmed (12
+      distinct), 1 blocker. Re-run after the two gate-fix branches land. Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
 ## 3. Open GitHub issues
