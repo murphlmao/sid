@@ -103,13 +103,15 @@ Every item is gated by before/after captures in all four themes and a
 - [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
       responsive grid, and the home surface gets a second region (recent sessions or
       per-host last-connected) so the screen does not read as empty when it has data.
-- [ ] **Kbd chips lost their chrome under gpui-component 0.6.1** (regression the upgrade A/B
-      missed: Settings was not captured). `gpui_component::Kbd` draws no box in 0.6; the
-      keymap values in Settings → Keyboard render as bare `Ctrl+K` text. `sid-ui/src/kbd.rs`
-      must draw its own chip (surface fill, hairline, Meta role), and the gallery's KBD band
-      is the gate.
-- [ ] **`InlineNotice` clamps to one line**, so the ~140-char degraded-keyring message in
-      Settings truncates. Let a notice wrap to two lines (or split title/detail like `Toast`).
+- [x] **Kbd chips lost their chrome under gpui-component 0.6.1**: fixed 2026-09-09.
+      `gpui_component::Kbd` painted through the library's own unconfigured theme tokens;
+      `sid-ui/src/kbd.rs` now draws its own chip (surface, hairline, `rounded_sm`, Meta ink) and
+      keeps the library only as a key-name formatter. Verified in Settings → Keyboard, the
+      command palette, the gallery (capture at 2000x2400 to reach the band) and cosmos-light.
+- [x] **`InlineNotice` clamps to one line**: fixed 2026-09-09. Body wraps to two lines
+      (`line_clamp(2)`), optional `.detail(..)` second line in Meta/muted; Settings splits the
+      keyring message into sentence + recommendation. Verified at 1920 and 700px and in the
+      gallery.
 - [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
       compress to icons below a breakpoint or the scope chips collapse to one; ties into the
       scope-switcher item.
@@ -154,16 +156,17 @@ Every item is gated by before/after captures in all four themes and a
 - [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
 - [x] #4 as decided above (merged 2026-09-09; live-verified: `stty size` 56x113 at 100%,
       35x75 at 150% over the docker sshd fixture; `SID_UI_SCALE` env override for captures).
-- [ ] #4 follow-up: the SFTP sidebar's own pixel arithmetic (`sidebar_metrics::MIN/MAX/
-      TERMINAL_MIN`, `plan_entry_row`'s 318/406px thresholds) is still authored at 100% against
-      an already-zoomed viewport, so size/date columns truncate at 150%. Same fix class as
-      table columns and modal geometry: scale the declarations, thread `UiScale` through
-      `sidebar_width`/`plan_entry_row`.
+- [x] #4 follow-up done 2026-09-09: `sidebar_width` and `plan_entry_row` take a `UiScale`
+      read off `window.rem_size()`; thresholds scale before comparing; pinned by
+      `zooming_in_does_not_move_the_column_decision_for_a_proportionally_wider_row`. Live
+      150% capture over sshd not done (agent lost to the rate limit); unit-tested only.
 
 ## 4. Backlog carried from the July resume doc
 
 - [ ] Table frame cost: ~26% of cell builds are discarded by gpui each frame
-      (`docs/design/2026-07-27-table-frame-cost.md`).
+      (`docs/design/2026-07-27-table-frame-cost.md`). Started 2026-09-09 and dropped when the
+      org spend limit hit; re-verify against gpui-pre 0.3.4 / `DataTable` before optimising.
+      Lowest priority on this list: perf, not cohesion.
 - [x] `scripts/lib/sid-app.sh` extracted (92 lines shared); `sid-shot.sh` now verifies the
       sid window sits on its headless output before `grim` and checks the PNG dimensions
       afterwards, refusing with a one-line reason otherwise. Merged 2026-09-09.
@@ -299,3 +302,34 @@ commits; do not invent one).
   `with_assets(..)` had to move from `Assets` to `AllAssets` for any of this to actually
   render. Gate green (fmt/clippy/tests); SSH right-click menu still shows no icons for
   rename/delete — that's `ssh_home.rs`'s `PopupMenuItem` list, out of this branch's scope.
+- 2026-09-09 20:38: all five agents (text-input retirement, SFTP sidebar zoom, table frame
+  cost, Kbd chrome, SSH/chrome pass) were killed by the org's monthly spend limit (HTTP 429).
+  Resumed 21:51 when the limit reset: sidebar zoom gated by the orchestrator and merged
+  (c7d31de); text-input, Kbd and SSH/chrome agents resumed with their context; table frame
+  cost dropped (see §4). While they were down, the sidebar agent had also been caught editing
+  main's worktree instead of its own; its changes were moved and main restored.
+- 2026-09-09: `kbd-chrome` branch (not merged): `sid_ui::Kbd` lost its box in the 0.6.1
+  upgrade because `gpui_component::kbd::Kbd::render()` paints through the library's own
+  (unconfigured) theme rather than sid's tokens, so every chip in Settings → Keyboard,
+  the command palette and the modal cheat sheet resolved to bare text. `kbd.rs` now draws
+  the chip itself — `surface` fill, hairline `border`, `rounded_sm`, Meta-role text, same
+  as `Badge`'s neutral tone — for both a parsed `Chip::Stroke` (still formatted through
+  the library's pure, theme-free `Kbd::format()` for the platform key-name table) and an
+  unparsed `Chip::Literal`, so the two are indistinguishable side by side again. Public
+  API unchanged; no call site moved. Gate green (fmt/clippy/full workspace test suite,
+  hygiene.rs included). Gallery's `kbd` card gained a bare single-key example (`Escape`)
+  alongside the existing two-key/modifier-heavy/sequence/unparseable ones.
+- 2026-09-09: `notice-wrap` branch (not merged): `sid_ui::InlineNotice` was clamping its
+  body to one line, so the ~140+ char degraded-keyring message in Settings → Behaviour
+  ellipsized mid-sentence. It now wraps to two lines (`min_w_0` + `line_clamp(2)` in place
+  of the one-line clamp) and takes an optional `.detail(..)` line — Meta role, always
+  `muted` regardless of tone — for a "why" separate from the "what". Settings' behavior
+  section now splits `secret_status_message`'s composed line via a depth-counted paren
+  scan (`split_status_detail`, `settings_tab.rs`) rather than touching `app.rs`, which two
+  other agents had checked out. Gallery's "inline notice" card gained the wrapped-long and
+  message+detail examples. Gate green (fmt/clippy/tests, 51 suites). Captures: 1920x1080
+  and 700x900 Settings → Behaviour both show the full sentence wrapped and the detail line
+  legible with no overflow, though at 700px this sandbox's actual D-Bus probe reason text
+  (much longer than the estimate) still needs the ellipsis on the sentence — the detail
+  line itself stays whole; 2000x1200 gallery capture (scrolled to the "structure" column)
+  confirms all three notice shapes render cleanly in both tones.

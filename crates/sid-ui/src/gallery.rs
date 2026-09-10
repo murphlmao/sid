@@ -363,9 +363,10 @@ fn chips(theme: &Theme) -> Vec<gpui::AnyElement> {
             .title("kbd")
             .child(row(
                 theme,
-                "display syntax · gpui syntax · chord · unparseable",
+                "single key · two-key chord · modifier-heavy chord · sequence · unparseable",
                 h_flex()
                     .gap_3()
+                    .child(Kbd::new("Escape"))
                     .child(Kbd::new("Ctrl+K"))
                     .child(Kbd::new("ctrl-shift-t"))
                     .child(Kbd::new("ctrl-k ctrl-s"))
@@ -433,12 +434,33 @@ fn structure(theme: &Theme, filter: &Entity<InputState>) -> Vec<gpui::AnyElement
                 "a property of the thing above it, not an event floating over the \
                  screen — it stays until that thing changes",
             ))
+            // One line: short enough that the two-line wrap below never engages.
             .child(error_line("kill: operation not permitted (pid 1)"))
             .child(caveat_line("sorted within this page only"))
+            // Wrapped to two lines rather than clamped to one: this used to end
+            // "...remain after the age…" — an OS error is arbitrary length and the
+            // clamp cost the half that told you what actually happened.
             .child(error_line(
                 "connect: ssh: handshake failed: no supported authentication methods \
                  remain after the agent refused every identity offered for this host",
             ))
+            // Message + detail: the Settings → Behaviour keyring notice's own shape,
+            // in both tones — the sentence is what happened, the muted second line is
+            // why, plus what to do about it.
+            .child(
+                error_line(
+                    "secrets: in-memory (no persistence) — OS keyring unavailable \
+                     (no Secret Service provider is running)",
+                )
+                .detail(
+                    "install a Secret Service provider (e.g. `sudo pacman -S \
+                     gnome-keyring`) so secrets persist across restarts",
+                ),
+            )
+            .child(
+                caveat_line("showing the first 500 of 12,000 matching rows")
+                    .detail("narrow the filter to see the rest"),
+            )
             .into_any_element(),
         Card::new()
             .title("card · panel")
