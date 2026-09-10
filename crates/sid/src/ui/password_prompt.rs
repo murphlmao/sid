@@ -54,10 +54,18 @@ pub struct PasswordPromptModal {
 }
 
 impl PasswordPromptModal {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, label: impl Into<SharedString>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        label: impl Into<SharedString>,
+    ) -> Self {
         Self {
             label: label.into(),
-            password: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("password")),
+            password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("password")
+            }),
             error: None,
             focus_handle: cx.focus_handle(),
         }
@@ -66,7 +74,8 @@ impl PasswordPromptModal {
     /// Move keyboard focus into the password field. Called once, right after the modal
     /// entity is created (see `AppState::open_password_prompt`).
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
-        self.password.update(cx, |state, cx| state.focus(window, cx));
+        self.password
+            .update(cx, |state, cx| state.focus(window, cx));
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {

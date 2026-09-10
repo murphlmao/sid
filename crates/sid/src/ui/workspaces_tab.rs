@@ -775,7 +775,9 @@ impl WorkspacesTabState {
             fleet: None,
             fleet_generation: 0,
             add_open: false,
-            add_input: Some(cx.new(|cx| InputState::new(window, cx).placeholder("~/path/to/workspace"))),
+            add_input: Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("~/path/to/workspace")),
+            ),
             add_error: None,
             renaming: None,
             unregister_arm: ConfirmArm::new(),
@@ -1477,9 +1479,7 @@ impl AppState {
                             _ => {}
                         }
                     }))
-                    .children(
-                        input.map(|i| div().flex_1().min_w(px(0.)).child(TextInput::new(&i))),
-                    )
+                    .children(input.map(|i| div().flex_1().min_w(px(0.)).child(TextInput::new(&i))))
                     .child(
                         Button::new("ws-add-submit", "add")
                             .primary()

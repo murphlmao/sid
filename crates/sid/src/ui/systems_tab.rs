@@ -1012,11 +1012,9 @@ impl AppState {
                                 Button::new("cfg-pin-submit", "pin")
                                     .small()
                                     .icon(Icon::Add)
-                                    .on_click(cx.listener(
-                                        |this, _ev: &ClickEvent, window, cx| {
-                                            this.submit_pin(window, cx);
-                                        },
-                                    )),
+                                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                        this.submit_pin(window, cx);
+                                    })),
                             ),
                     )
                     .count_label(sid_ui::toolbar::count_label(

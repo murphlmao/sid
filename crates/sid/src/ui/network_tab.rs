@@ -1318,7 +1318,9 @@ impl AppState {
     /// The shared filter field, capped rather than filling the toolbar row: a 1900px-wide
     /// filter box is as wrong as the 648px table it used to sit above.
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div().max_w(px(320.)).children(self.network.filter.clone().map(|f| TextInput::new(&f)))
+        div()
+            .max_w(px(320.))
+            .children(self.network.filter.clone().map(|f| TextInput::new(&f)))
     }
 
     /// The one refresh control, routed to whichever sub-view is showing.

@@ -164,7 +164,8 @@ impl HomeTabState {
         Self {
             collapsed_folders: HashSet::new(),
             search: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("user@host[:port] — filter, connect, or add")
+                InputState::new(window, cx)
+                    .placeholder("user@host[:port] — filter, connect, or add")
             }),
             edit: None,
             quick_note: None,
@@ -1048,7 +1049,9 @@ impl AppState {
             return;
         };
         self.ssh_home.quick_note = None;
-        self.ssh_home.search.update(cx, |input, cx| input.set_value("", window, cx));
+        self.ssh_home
+            .search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.row_primary_action(host, (alias.to_string(), origin.clone()), window, cx);
     }
 
@@ -1104,7 +1107,9 @@ impl AppState {
             return;
         };
         self.ssh_home.quick_note = None;
-        self.ssh_home.search.update(cx, |input, cx| input.set_value("", window, cx));
+        self.ssh_home
+            .search
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.connect_host(
             host,
             Some((submitted.alias.clone(), target.clone())),
@@ -1456,7 +1461,13 @@ impl AppState {
                     // Same `min_w(0) + overflow_hidden` clip as the quick-connect box —
                     // a long in-progress rename/folder value must not bleed out of the
                     // card it belongs to.
-                    .child(div().w_full().min_w(px(0.)).overflow_hidden().child(TextInput::new(&input)))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .child(TextInput::new(&input)),
+                    )
                     .child(div().text_meta(&t).text_color(rgb(t.accent)).child(flag)),
             )
             .into_any_element()

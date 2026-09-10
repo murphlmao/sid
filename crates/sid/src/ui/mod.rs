@@ -1,13 +1,15 @@
-//! sid's screens: one module per tab, plus the modals and the single-line
-//! [`TextInput`] they share.
+//! sid's screens: one module per tab, plus the modals they share.
 //!
-//! Shared *widgets* and the semantic tokens live in the `sid-ui` crate, not here — see
+//! Shared *widgets* — including the single-line text field, `sid_ui::TextInput`/
+//! `SearchInput` — and the semantic tokens live in the `sid-ui` crate, not here — see
 //! that crate's docs and `docs/design/2026-07-26-ui-overhaul-plan.md`. The theme module
 //! these screens read (`sid_ui::theme`) moved there with it.
 //!
-//! The input's actions are declared here and bound once via [`init`], scoped to the
-//! `TextInput` key context so they never collide with other bindings; the form's
-//! `escape`/`enter` bindings are scoped to `HostForm` the same way.
+//! Every field's own std-editing chords (ctrl-backspace, ctrl-shift-arrows, Tab) come
+//! from `gpui_component::input::InputState`, which `sid_ui::TextInput` wraps — nothing
+//! here binds them. What *is* declared here and bound once via [`init`] are the
+//! form-level `escape`/`enter` bindings, each scoped to its own key context (`HostForm`,
+//! `DbConnForm`, `PasswordPrompt`, …) on an ancestor of the focused field.
 
 pub mod command_palette;
 pub mod config_editor;
@@ -21,13 +23,11 @@ pub mod session;
 pub mod settings_tab;
 pub mod ssh_home;
 pub mod systems_tab;
-mod text_input;
 pub mod workspaces_tab;
 
 pub use session::{SessionStatus, SshSession, SshSessionEvent};
-pub use text_input::TextInput;
 
-use gpui::{App, KeyBinding, Keystroke, actions};
+use gpui::{App, KeyBinding, Keystroke};
 
 /// Does this keystroke mean "submit the single-line field I am in"?
 ///
@@ -46,68 +46,12 @@ pub(crate) fn is_field_submit(keystroke: &Keystroke) -> bool {
     keystroke.key == "enter" && !m.control && !m.alt && !m.shift && !m.platform && !m.function
 }
 
-actions!(
-    text_input,
-    [
-        Backspace,
-        Delete,
-        Left,
-        Right,
-        WordLeft,
-        WordRight,
-        SelectLeft,
-        SelectRight,
-        SelectAll,
-        SelectToHome,
-        SelectToEnd,
-        Home,
-        End,
-        ShowCharacterPalette,
-        Paste,
-        Cut,
-        Copy,
-    ]
-);
-
-/// The key context the input's bindings are scoped to. Must match the `key_context`
-/// set in [`TextInput`]'s `render`.
-const CONTEXT: &str = "TextInput";
-
-/// Register the [`TextInput`] keybindings. Call once from `main`, before opening the
-/// window. Every binding is scoped to the `TextInput` context so app-level shortcuts
-/// added later (in other contexts) do not clash.
-///
-/// Cross-platform note: we bind both `cmd-` and `ctrl-` for clipboard/select-all so the
-/// element works on Linux/Wayland now (ctrl) without needing a rebind on macOS later
-/// (cmd). This is the one deliberate seam the CLAUDE.md "accommodate, don't solve" rule
-/// allows for an input element that is otherwise platform-agnostic.
+/// Register the form-level keybindings. Call once from `main`, before opening the
+/// window.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, Some(CONTEXT)),
-        KeyBinding::new("delete", Delete, Some(CONTEXT)),
-        KeyBinding::new("left", Left, Some(CONTEXT)),
-        KeyBinding::new("right", Right, Some(CONTEXT)),
-        KeyBinding::new("ctrl-left", WordLeft, Some(CONTEXT)),
-        KeyBinding::new("ctrl-right", WordRight, Some(CONTEXT)),
-        KeyBinding::new("alt-left", WordLeft, Some(CONTEXT)),
-        KeyBinding::new("alt-right", WordRight, Some(CONTEXT)),
-        KeyBinding::new("shift-left", SelectLeft, Some(CONTEXT)),
-        KeyBinding::new("shift-right", SelectRight, Some(CONTEXT)),
-        KeyBinding::new("home", Home, Some(CONTEXT)),
-        KeyBinding::new("end", End, Some(CONTEXT)),
-        KeyBinding::new("shift-home", SelectToHome, Some(CONTEXT)),
-        KeyBinding::new("shift-end", SelectToEnd, Some(CONTEXT)),
-        KeyBinding::new("ctrl-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("ctrl-x", Cut, Some(CONTEXT)),
-        KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
-        KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
-        KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
-        KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some(CONTEXT)),
         // Host-form bindings, scoped to its own key context. They sit on an ancestor of
-        // the focused TextInput, so they fire from any field inside the form.
+        // the focused field, so they fire from any field inside the form.
         KeyBinding::new("escape", host_form::FormCancel, Some("HostForm")),
         KeyBinding::new("enter", host_form::FormSubmit, Some("HostForm")),
         // DB connection form bindings (W4), scoped the same way as the host form's.

@@ -65,7 +65,8 @@ use crate::ui::is_field_submit;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme;
 use sid_ui::{
-    Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _, h_flex, v_flex,
+    Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _, h_flex,
+    v_flex,
 };
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
@@ -235,7 +236,11 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sudo password"));
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("sudo password")
+        });
         password.update(cx, |state, cx| state.focus(window, cx));
         let Some(editor) = self.systems.editor.as_mut() else {
             return;

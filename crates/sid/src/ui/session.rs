@@ -41,7 +41,9 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
-use sid_ui::{InputState, Row, StyledExt as _, TextInput, Typography as _, UiScale, scaled, theme, v_flex};
+use sid_ui::{
+    InputState, Row, StyledExt as _, TextInput, Typography as _, UiScale, scaled, theme, v_flex,
+};
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
 /// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
