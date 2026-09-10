@@ -40,8 +40,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
 use sid_ui::{
-    InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale, scaled, theme,
-    v_flex,
+    InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale, bridge::SCRIM,
+    scaled, theme, v_flex,
 };
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
@@ -2609,7 +2609,7 @@ impl SshSession {
                         .justify_center()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .bg(rgba(0x000000a8))
+                        .bg(rgba(SCRIM))
                         .child(
                             div()
                                 .w(scaled(640.))

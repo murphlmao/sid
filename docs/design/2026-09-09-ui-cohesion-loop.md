@@ -168,13 +168,19 @@ Every item is gated by before/after captures in all four themes and a
       consumer reads the token; `bridge::contrast_ink` flipped the solid warning badge's label
       by itself). New guard test sweeps every light ink against bg/surface/well at 4.5:1. Dark
       palettes byte-identical; void and dusk re-checked.
-- [ ] **Light follow-ups** (other files): `app.rs` `gpu_status_badge` still hard-codes
-      `rgb(0x1a1a1a)` on the warning fill (2.7:1 on the deeper amber) → use
-      `bridge::contrast_ink`, which also retires one raw-hex exemption in `system.md`. Not
-      light-specific: a `PopupMenu` is `popover = surface` floating over a `surface` panel (only
-      the hairline separates them; needs a derived raised-surface mapping in `bridge.rs` for all
-      four themes); the modal scrim is typed as `rgba(0x000000a8)` at five call sites instead of
-      `bridge::SCRIM`.
+- [x] **Light follow-ups**: done 2026-09-10, test-first. Warning badge ink via
+      `bridge::contrast_ink` (raw-hex exemption retired from `system.md`); the scrim is
+      `bridge::SCRIM` at all five sites (hygiene allowlist tightened first, watched go red on
+      the five literals); popovers and tooltips sit on `bridge::raised_surface(t) = mix(surface,
+      fg, 0.07)`, which lightens the three dark palettes and darkens cosmos-light (three tests
+      observed red against a stub first). Right-click menu verified raised in all four themes.
+- [ ] **Library boundary.** Final-gate check on 2026-09-10 found 15 `gpui_component::` imports
+      across nine `crates/sid` modules (`table::{Column, ColumnSort, TableDelegate,
+      TableState, state::render_cell}`, `menu::{ContextMenuExt, PopupMenu, PopupMenuItem}`,
+      `input::{Editor, EditorState, InputEvent, InputState, Position}`, `Root`,
+      `tooltip::Tooltip`). `sid-ui` re-exports them from one facade module; tab modules import
+      from `sid_ui`; a hygiene ratchet bans `gpui_component::` under `crates/sid/src` except
+      `main.rs` (the composition root is the one place that knows both sides).
 - [ ] **Final gate.** Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
@@ -552,3 +558,30 @@ per CLAUDE.md. Agent briefs must state which decision is being extracted and nam
   unreadable — via System → Config files, clicked unlock, 3 Tabs from the password field lands
   back on the password field, proving the trap wraps within password ↔ cancel ↔ unlock and
   never reaches the editor behind the scrim).
+- 2026-09-10: the three "Light follow-ups" items, on `light-followups` (worktree
+  `~/vcs/sid-wt/light-followups`, not merged), one commit each. `app.rs`'s `gpu_status_badge`
+  now calls `bridge::contrast_ink(t, warning)` instead of a hard-coded `rgb(0x1a1a1a)` label
+  (2.7:1 on cosmos-light's deeper amber); the case was already covered by
+  `bridge::the_ink_follows_the_fill_not_the_tone_name`, so no new test was needed there, and
+  the near-black-label exemption is gone from both `system.md` and `hygiene.rs`'s
+  `EXEMPT_LITERALS`. The modal scrim's five stray `rgba(0x000000a8)` call sites (`app.rs`,
+  `command_palette.rs`, `config_editor.rs`, `session.rs`, `db_tab.rs`) now read
+  `bridge::SCRIM`; `hygiene.rs`'s literal exemption is replaced with a file exemption
+  (`defines_the_scrim`, `bridge.rs` only) so the hex can't quietly reappear elsewhere —
+  confirmed red on exactly those five lines before the swap, green after. Popover depth:
+  `bridge::raised_surface(t)` (`mix(t.surface, t.fg, 0.07)`, tests written and observed red
+  against a stub before the real mix) replaces `colors.popover = hex(t.surface)`, so a
+  `PopupMenu`/`Tooltip` (same `popover` field in gpui-component 0.6.1 — no separate `tooltip`
+  colour to touch) now sits one step above the panel it floats over instead of sharing its
+  fill: cosmos `0x13131f`→`0x22222e`, void `0x0a0a0a`→`0x1a1a1a`, dusk `0x1c1812`→`0x2b261f`,
+  cosmos-light `0xeaeaf2`→`0xdbdbe4` (darkens, the other three lighten — one formula, no
+  light/dark branch, because `fg` sits at the opposite brightness extreme from `surface` in
+  every built-in). All three tested well past the 4.5:1 floor against `fg`
+  (`popover_foreground`). Gate: fmt, clippy (`--workspace --all-targets -D warnings`), full
+  `cargo test --workspace` green, `hygiene.rs` green. Captures: `lf-menu-{cosmos,cosmos-
+  light,void,dusk}.png` (right-click a connections card — the popover now reads as a distinct
+  panel over the card, not just a hairline, in all four), `lf-scrim-light.png` (Add host modal
+  in cosmos-light — scrim unchanged, same 66%-black wash). Skipped: the software-rendering
+  badge capture — no `SID_GPU=software`-style preflight override exists in `sid-gpu`/`main.rs`
+  (only `SID_GPU_SKIP_PREFLIGHT`, which skips the check rather than forcing the degraded
+  path), so `gpu_status_badge` was verified by its existing bridge test instead of a capture.

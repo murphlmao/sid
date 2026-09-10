@@ -146,6 +146,21 @@ pub fn pressed_of(t: &Theme, color: u32) -> u32 {
     mix(color, dark_ink(t), 0.14)
 }
 
+/// A step above `surface` for chrome with no scrim to separate it from the panel it
+/// floats over — a `PopupMenu`/popover, a tooltip.
+///
+/// `Elevation::Overlay` (sid-ui's own modal/card depth ladder) can share `surface`'s
+/// fill for a modal because the scrim underneath does the separating; a popover has no
+/// scrim, so on a `surface`-backed panel only the hairline told them apart. Mixing
+/// `surface` toward `fg` — the reading ink, which sits at the opposite end of the
+/// palette's brightness from `surface` in every built-in — raises it *toward
+/// legibility* rather than toward a fixed light or dark endpoint: the same formula
+/// lightens a dark palette's popover and darkens cosmos-light's without a light/dark
+/// branch. The 7% fraction is small enough to read as "one step", not a new surface.
+pub fn raised_surface(t: &Theme) -> u32 {
+    mix(t.surface, t.fg, 0.07)
+}
+
 /// `0xRRGGBB` as the `#RRGGBB` string the library's config parser accepts.
 fn hex(color: u32) -> Option<SharedString> {
     Some(format!("#{:06x}", color & 0xff_ffff).into())
@@ -284,7 +299,10 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.table_active_border = hex(t.accent);
 
     // -- popovers / menus ----------------------------------------------
-    colors.popover = hex(t.surface);
+    // Raised one step above `surface`, not equal to it: a `PopupMenu`/popover floats
+    // over a `surface` panel with no scrim between them, unlike a modal. `Tooltip`
+    // reads this same field (gpui-component 0.6.1 has no separate `tooltip` colour).
+    colors.popover = hex(raised_surface(t));
     colors.popover_foreground = hex(t.fg);
 
     // -- chrome ---------------------------------------------------------
@@ -432,7 +450,13 @@ mod tests {
             );
             assert_eq!(c.table, rgb(t.bg).into(), "{}: table bg", t.name);
             assert_eq!(c.table_hover, rgb(t.selection).into(), "{}: hover", t.name);
-            assert_eq!(c.popover, rgb(t.surface).into(), "{}: popover", t.name);
+            // Raised one step above `surface`, not equal to it — see `raised_surface`.
+            assert_eq!(
+                c.popover,
+                rgb(raised_surface(&t)).into(),
+                "{}: popover",
+                t.name
+            );
             assert_eq!(c.ring, rgb(t.accent).into(), "{}: ring", t.name);
             assert_eq!(c.caret, rgb(t.accent).into(), "{}: caret", t.name);
             // The library's `accent` is the list/menu hover fill, NOT sid's accent.
@@ -540,6 +564,64 @@ mod tests {
                 t.name
             );
         }
+    }
+
+    /// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`. Local copy of
+    /// `theme.rs`'s test-only helper — small enough that importing it isn't worth a
+    /// `pub(crate)` seam just for two test modules.
+    fn contrast(a: u32, b: u32) -> f32 {
+        let luminance = |c: u32| {
+            let channel = |shift: u32| {
+                let v = ((c >> shift) & 0xff) as f32 / 255.;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn raised_surface_differs_from_surface_and_stays_readable() {
+        // The bug: a `PopupMenu`/popover is `popover = surface` floating over a
+        // `surface` panel, so only the hairline told them apart in every palette.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let popover = raised_surface(&t);
+            assert_ne!(
+                popover, t.surface,
+                "{}: popover must differ from surface",
+                t.name
+            );
+            let c = contrast(popover, t.fg);
+            assert!(
+                c >= 4.5,
+                "{}: popover_foreground (fg) on the raised popover is {c:.2}:1",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn raised_surface_lightens_dark_palettes_and_darkens_cosmos_light() {
+        // One formula, no light/dark branch: mixing toward `fg` (the reading ink, which
+        // sits at the opposite brightness extreme from `surface` in every built-in)
+        // lightens a dark palette's popover and darkens cosmos-light's automatically.
+        for t in [cosmos(), void(), dusk()] {
+            assert!(
+                brightness(raised_surface(&t)) > brightness(t.surface),
+                "{}: dark palette's popover should lighten",
+                t.name
+            );
+        }
+        let light = cosmos_light();
+        assert!(
+            brightness(raised_surface(&light)) < brightness(light.surface),
+            "cosmos-light's popover should darken"
+        );
     }
 
     #[test]

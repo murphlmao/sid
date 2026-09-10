@@ -8,8 +8,9 @@
 //!    not emoji and are not flagged — they are being retired by migration, not by this
 //!    test.
 //! 2. **Semantic tokens are the only colour source.** No `rgb(0x..)` / `rgba(0x..)`
-//!    literal outside the palette definitions, with the two exemptions the design
-//!    system itself names.
+//!    literal outside the palette definitions (`theme.rs`) or the modal scrim's
+//!    definition (`bridge.rs`) — every other call site reads a token or
+//!    `sid_ui::bridge::SCRIM`.
 //! 3. **The type scale is the only text-size source.** No `text_xs()` / `text_sm()` /
 //!    `text_size(..)` / `font_weight(..)` / `font_family(..)` outside
 //!    `sid_ui::typography`, which defines them. Call sites name a *role*
@@ -150,21 +151,19 @@ fn the_emoji_scanner_actually_detects_emoji() {
     }
 }
 
-/// `rgb(0x..)` / `rgba(0x..)` literals that the design system exempts, with its reason.
-const EXEMPT_LITERALS: &[(&str, &str)] = &[
-    // ".interface-design/system.md": the theme-agnostic modal scrim. A scrim must
-    // darken whatever is behind it, so it cannot follow a palette.
-    // `sid_ui::bridge::SCRIM` is the canonical spelling.
-    ("0x000000a8", "the modal scrim"),
-    // ".interface-design/system.md": the warning badge's near-black label, which must
-    // stay readable on every palette's mid-brightness amber.
-    // `sid_ui::bridge::contrast_ink` supersedes it; the badges migrate later.
-    ("0x1a1a1a", "the warning-badge label"),
-];
-
 /// Files allowed to contain palette literals, because they *are* the palette.
 fn defines_the_palette(file: &Path) -> bool {
     file.ends_with("sid-ui/src/theme.rs")
+}
+
+/// The one other file allowed to type a raw colour: `bridge.rs`, where
+/// `sid_ui::bridge::SCRIM` (the theme-agnostic modal scrim) is defined. A scrim must
+/// darken whatever is behind it, so it cannot follow a palette — see
+/// `.interface-design/system.md`. Every other call site reads the constant; this is a
+/// file exemption rather than a literal one so the hex can't quietly reappear anywhere
+/// else.
+fn defines_the_scrim(file: &Path) -> bool {
+    file.ends_with("sid-ui/src/bridge.rs")
 }
 
 #[test]
@@ -172,15 +171,12 @@ fn no_raw_colour_literals_outside_the_palette() {
     let mut offences = Vec::new();
     for root in scanned_roots() {
         for file in rust_files(&root) {
-            if defines_the_palette(&file) {
+            if defines_the_palette(&file) || defines_the_scrim(&file) {
                 continue;
             }
             let text = std::fs::read_to_string(&file).expect("utf-8 source");
             for (n, line) in shipping_lines(&text) {
                 for literal in colour_literals(line) {
-                    if EXEMPT_LITERALS.iter().any(|(l, _)| *l == literal) {
-                        continue;
-                    }
                     offences.push(format!(
                         "{}:{n}: raw colour {literal} — read a token from sid_ui::theme",
                         file.display(),
