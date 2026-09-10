@@ -277,6 +277,18 @@ Route by difficulty, not by habit:
 Commit messages follow the trailer convention already on `main` (check the last ten
 commits; do not invent one).
 
+**Design discipline (Murphy, 2026-09-09 23:42): every change follows systems-first design.**
+Ports and adapters as CLAUDE.md already binds, sharpened: (1) a decision (which element owns
+the focus trap, which chrome variant fits the width, whether a fallback name is shown, what
+colour clears contrast) lives in a pure function with no window/clock/env/I/O in its
+signature, and is reached through a named port; (2) that function gets its failing test
+first, then the minimum code to pass, then refactor (RED must be observed; a test that
+passes on first run is mutated to prove it can fail); (3) tests attach at ports with in-memory
+fakes, never through the compositor or Docker, and each behaviour has exactly one test home;
+(4) adapters (gpui element code, sysinfo, russh, redb) translate and never decide; (5) time,
+randomness and env enter through ports. Rendering itself stays observation-gated by capture,
+per CLAUDE.md. Agent briefs must state which decision is being extracted and name its test.
+
 ## Blocked
 
 - Closing GitHub #1 (fixed in July) and #2 (merged 3afd482) needs Murphy: `gh` is not
