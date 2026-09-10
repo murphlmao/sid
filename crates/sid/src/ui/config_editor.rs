@@ -55,7 +55,7 @@ use gpui::{
     AnyElement, ClickEvent, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, SharedString,
     Subscription, Window, actions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
 };
-use gpui_component::input::{Editor, EditorState, InputEvent};
+use sid_ui::component::{Editor, EditorState, InputEvent};
 
 use sid_core::privfs::{Access, Passphrase, PrivError, PrivilegedFs};
 use sid_privfs::SudoPrivilegedFs;

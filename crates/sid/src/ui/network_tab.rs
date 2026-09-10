@@ -84,7 +84,6 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, SharedString, Subscription,
     Window, div, prelude::*, px, rgb,
 };
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_containers::{DockerCliProvider, KubectlCliProvider};
 use sid_core::containers::{
     ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
@@ -96,6 +95,7 @@ use sid_sysinfo::SysinfoProvider;
 
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
+use sid_ui::component::{Column, ColumnSort, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
@@ -2218,8 +2218,8 @@ fn notice_row(message: Option<String>) -> Option<impl IntoElement + use<>> {
 ///    reference is sliced mid-glyph at the column edge.
 ///
 /// `whitespace_normal()` is part of that third decision and is **not** removable: the
-/// upstream table wraps every cell in a container that sets `whitespace_nowrap`
-/// (`gpui_component::table::state::render_cell`), and `Nowrap` pins `TextElement`'s
+/// upstream table wraps every cell in a container that sets `whitespace_nowrap` (the
+/// library's private `table::state::render_cell`), and `Nowrap` pins `TextElement`'s
 /// `wrap_width` to `None` — the same defect `StyledExt::clamp_one_line` documents in
 /// gpui's `truncate()`, arriving by inheritance instead. Restoring `Normal` on the cell
 /// itself is what lets the second layout pass carry a real width and truncate; without

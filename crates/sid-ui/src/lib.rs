@@ -101,3 +101,23 @@ pub use toast::{Toast, ToastPaint, ToastTone};
 pub use toolbar::Toolbar;
 pub use tooltip::Tipped;
 pub use typography::{ALL_TYPE_ROLES, TypeRole, TypeSpec, Typography, UI_MONO};
+
+/// A facade over the handful of `gpui_component` types the tab modules still need to
+/// name directly — a table delegate, a popup menu, a raw `InputState` — because nothing
+/// in this crate wraps them yet. It exists so `gpui_component` is named in exactly two
+/// places in this workspace: here, and the composition root (`crates/sid/src/main.rs`).
+/// That keeps a library swap or version bump to one blast radius instead of nine;
+/// `crates/sid-ui/tests/hygiene.rs` enforces that nothing outside those two places names
+/// it directly.
+///
+/// Add to this list only for a real call-site need, and only after checking whether
+/// [`Tipped`], [`TextInput`], [`table`] or another wrapper here already covers it —
+/// every addition is one more place the next `gpui-component` move has to touch.
+pub mod component {
+    pub use gpui_component::{
+        Root,
+        input::{Editor, EditorState, InputEvent, InputState, Position},
+        menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
+        table::{Column, ColumnSort, TableDelegate, TableState},
+    };
+}

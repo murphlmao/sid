@@ -37,11 +37,11 @@ use gpui::{
     AnyElement, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent,
     SharedString, Window, actions, div, prelude::*, px, rgb,
 };
-use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote};
 use crate::ui::{SessionStatus, host_form};
+use sid_ui::component::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_ui::{
     Button, Card, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, InputState,
     List, Row, StatusDot, StatusLegend, StyledExt as _, TextInput, Typography as _,
@@ -119,8 +119,8 @@ pub(crate) struct HomeTabState {
     /// (attached to the whole scroll container, in [`AppState::ssh_home_main`]),
     /// which decides card-menu vs. "+ Add connection" from this.
     ///
-    /// This indirection exists because `gpui_component::menu::ContextMenuExt` can't be
-    /// attached once per card: its convenience method hardcodes the wrapper's element id
+    /// This indirection exists because `ContextMenuExt` (`sid_ui::component::ContextMenuExt`)
+    /// can't be attached once per card: its convenience method hardcodes the wrapper's element id
     /// to the literal string `"context-menu"`, and none of the ancestors between the
     /// scroll container and any given card differ per card — every card's wrapper
     /// would collide on the exact same `GlobalElementId`, sharing (and clobbering) one

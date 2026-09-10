@@ -28,9 +28,10 @@ use gpui::{
     IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size,
 };
-use gpui_component::Root;
-use gpui_component::input::{Editor, EditorState, InputEvent, Position};
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
+use sid_ui::component::{
+    Column, ColumnSort, Editor, EditorState, InputEvent, Position, Root, TableDelegate,
+    TableState,
+};
 use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
     Row, SchemaGraph, SchemaInfo, TableInfo,

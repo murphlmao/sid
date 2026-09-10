@@ -6,8 +6,9 @@
 //! these screens read (`sid_ui::theme`) moved there with it.
 //!
 //! Every field's own std-editing chords (ctrl-backspace, ctrl-shift-arrows, Tab) come
-//! from `gpui_component::input::InputState`, which `sid_ui::TextInput` wraps — nothing
-//! here binds them. What *is* declared here and bound once via [`init`] are the
+//! from the library's `input::InputState` (`sid_ui::component::InputState`), which
+//! `sid_ui::TextInput` wraps — nothing here binds them. What *is* declared here and bound
+//! once via [`init`] are the
 //! form-level `escape`/`enter` bindings, each scoped to its own key context (`HostForm`,
 //! `DbConnForm`, `PasswordPrompt`, …) on an ancestor of the focused field.
 

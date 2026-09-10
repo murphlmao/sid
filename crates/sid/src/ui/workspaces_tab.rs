@@ -37,8 +37,6 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::git::{
     Branch, CommitInfo, GitError, GitStatus, RepoSummary, StatusEntry, StatusKind,
 };
@@ -47,6 +45,7 @@ use sid_store::{DbConnection, Host, Scope, ViewFilters, WorkspaceId, WorkspaceMe
 use crate::app::{AppState, Tab};
 use crate::git_registry;
 use crate::ui::session::ssh_runtime;
+use sid_ui::component::{Column, ColumnSort, ContextMenuExt, PopupMenu, PopupMenuItem, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
@@ -425,8 +424,8 @@ fn text_cell(theme: &Theme, ink: u32, s: impl Into<SharedString>) -> AnyElement 
 /// no `…` (never gpui's `truncate()` — see `StyledExt::clamp_one_line`).
 ///
 /// `whitespace_normal()` is the third of those and the least obvious: the upstream table
-/// wraps every cell in a `whitespace_nowrap` container
-/// (`gpui_component::table::state::render_cell`), and `Nowrap` pins `TextElement`'s
+/// wraps every cell in a `whitespace_nowrap` container (the library's private
+/// `table::state::render_cell`), and `Nowrap` pins `TextElement`'s
 /// `wrap_width` to `None` — the exact defect `clamp_one_line` documents in gpui's
 /// `truncate()`, arriving by inheritance. It is why `reach_export_c` and
 /// `feature/offline-fir` used to end flush against their column edge with no `…`.

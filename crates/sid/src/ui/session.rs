@@ -37,12 +37,11 @@ use sid_store::{Host, PanelSide};
 use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
-use gpui_component::tooltip::Tooltip;
-
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
 use sid_ui::{
-    InputState, Row, StyledExt as _, TextInput, Typography as _, UiScale, scaled, theme, v_flex,
+    InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale, scaled, theme,
+    v_flex,
 };
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
@@ -1902,9 +1901,7 @@ impl SshSession {
             // being a permanent 6px stripe down the middle of the tab.
             .bg(rgb(if active { accent } else { bg }))
             .hover(|s| s.bg(rgb(accent)))
-            .tooltip(|window, cx| {
-                Tooltip::new("drag to resize · double-click to reset").build(window, cx)
-            })
+            .tip("drag to resize · double-click to reset")
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |session, ev: &MouseDownEvent, _window, cx| {
@@ -2357,7 +2354,7 @@ impl SshSession {
                     .clamp_one_line()
                     .text_color(rgb(fg))
                     .child(name)
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+                    .tip(tooltip.clone()),
             )
             .when(plan.show_size, |row| {
                 row.meta(meta_column(size, plan.scale.scale_px(row_metrics::SIZE)))

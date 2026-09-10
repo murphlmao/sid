@@ -216,7 +216,7 @@ fn section_rail(
 }
 
 /// One rail row. Keyboard-reachable through gpui's own tab-stop ring —
-/// `gpui_component::Root` (this window's root) binds Tab to `focus_next`, and
+/// `Root` (`sid_ui::component::Root`, this window's root) binds Tab to `focus_next`, and
 /// `tab_index` both makes the element focusable and enrols it, with gpui keeping the
 /// focus handle in element state. No second focus system, and no `FocusHandle` of
 /// this screen's own.

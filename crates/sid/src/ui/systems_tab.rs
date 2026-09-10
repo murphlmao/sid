@@ -75,7 +75,6 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, SharedString,
     Subscription, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
 use sid_sysinfo::SysinfoProvider;
@@ -84,6 +83,7 @@ use super::is_field_submit;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
+use sid_ui::component::{Column, ColumnSort, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,

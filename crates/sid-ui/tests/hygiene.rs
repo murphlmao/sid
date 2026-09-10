@@ -557,6 +557,52 @@ fn the_banned_call_scanner_flags_the_call_and_not_its_neighbours() {
     assert!(banned_calls("    .clamp_one_line() // was .truncate()").is_empty());
 }
 
+// ---------------------------------------------------------------------------------
+// The rendering library is named only in sid-ui and the composition root
+// ---------------------------------------------------------------------------------
+
+/// `crates/sid/src` alone — the app crate's own source, where `gpui_component` must not
+/// be named outside the composition root. `sid-ui` is the adapter crate; it legitimately
+/// wraps `gpui_component` everywhere, so it is not scanned here.
+fn app_crate_src() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/sid-ui has a parent")
+        .join("sid/src")
+}
+
+/// The one file allowed to name `gpui_component` directly: the composition root that
+/// wires the adapter's `Root` into the window.
+fn is_the_composition_root(file: &Path) -> bool {
+    file.ends_with("sid/src/main.rs")
+}
+
+#[test]
+fn the_rendering_library_is_named_only_in_sid_ui_and_the_composition_root() {
+    let mut offences = Vec::new();
+    for file in rust_files(&app_crate_src()) {
+        if is_the_composition_root(&file) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).expect("utf-8 source");
+        for (n, line) in shipping_lines(&text) {
+            if line.contains("gpui_component::") {
+                offences.push(format!(
+                    "{}:{n}: names gpui_component directly — use sid_ui::component (or \
+                     sid_ui::Tipped for tooltips) instead",
+                    file.display()
+                ));
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "the rendering library is named only in sid-ui and the composition root \
+         (crates/sid/src/main.rs):\n{}",
+        offences.join("\n")
+    );
+}
+
 #[test]
 fn the_test_region_split_skips_each_test_module_and_resumes_after_it() {
     let src = "fn a() { rgb(0x111111) }\n\
