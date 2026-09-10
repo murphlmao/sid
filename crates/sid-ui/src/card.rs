@@ -36,6 +36,7 @@ use gpui::{
 };
 
 use crate::elevation::Elevation;
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
 use crate::typography::Typography;
@@ -89,6 +90,19 @@ fn panel_body() -> gpui::Div {
     v_flex().flex_1().min_h_0()
 }
 
+/// The one height a titled card's header row is drawn at, in design pixels at 100%
+/// zoom: the 24px small-control box (`ButtonSize::Sm`, what a header filter, icon
+/// button or `ConfirmButton` is) plus `py_2`'s 8px above and below.
+///
+/// A header is a *row*, not a box that grows to its tallest child. Without this the
+/// same strip measured 41px with an action control, 36px with none (Database's
+/// HISTORY) and 40px in Settings at the 2026-09-10 gate — three heights for one
+/// contract, and the difference lands exactly where two panels sit side by side. The
+/// height is stated here rather than left to the children, and there is deliberately
+/// no per-call-site knob: a panel whose header disagrees with its neighbour's is the
+/// bug, not a layout the caller should be able to ask for.
+pub const PANEL_HEADER_HEIGHT: Pixels = px(40.);
+
 /// A panel's header: the ruled strip the body scrolls under.
 ///
 /// `flex_none` is the other half of [`panel_body`]'s `flex_1` — a header that could
@@ -96,11 +110,18 @@ fn panel_body() -> gpui::Div {
 /// is the same box `Toolbar` draws (`toolbar.rs`) — the two used to disagree (`py(6.)`
 /// here, `py_2` there), which is exactly the "different box" a panel's header and a
 /// bare `Toolbar` should never have, since the whole point of this shape is that a
-/// panel's header *is* the toolbar row. `sid_ui::Toolbar` stays a separate type only
+/// panel's header *is* the toolbar row, at one [`PANEL_HEADER_HEIGHT`] regardless of
+/// what it carries. `sid_ui::Toolbar` stays a separate type only
 /// because `systems_tab.rs` still renders one outside a `Card::panel`; the box is the
 /// single contract either way.
 fn panel_header() -> gpui::Div {
-    h_flex().flex_none().justify_between().gap_3().px_3().py_2()
+    h_flex()
+        .flex_none()
+        .justify_between()
+        .gap_3()
+        .px_3()
+        .py_2()
+        .h(scaled(f32::from(PANEL_HEADER_HEIGHT)))
 }
 
 /// The floor a header's actions may shrink a filter field down to, once the title
@@ -358,6 +379,21 @@ mod tests {
         // body's height changes as the list does.
         assert_eq!(style_of(panel_header()).flex_grow, Some(0.));
         assert_eq!(style_of(panel_header()).flex_shrink, Some(0.));
+    }
+
+    #[test]
+    fn a_panel_header_is_one_height_whatever_it_carries() {
+        // The gate measured three heights for one contract (41 / 36 / 40). The row
+        // states its own height, so an empty header and a header with a control are
+        // the same strip.
+        assert_eq!(
+            style_of(panel_header()).size.height,
+            Some(scaled(f32::from(PANEL_HEADER_HEIGHT)).into()),
+            "a panel header is drawn at PANEL_HEADER_HEIGHT"
+        );
+        // ...and that height is the small-control box plus the py_2 padding, which is
+        // what makes it the same row a toolbar draws.
+        assert_eq!(f32::from(PANEL_HEADER_HEIGHT), 24. + 8. + 8.);
     }
 
     #[test]
