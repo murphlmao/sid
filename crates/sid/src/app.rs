@@ -37,7 +37,8 @@ use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
     BadgeTone, Icon, IconButton, ScopeChip, ScopeOrigin, Segment, SegmentSelect, SegmentedControl,
     StatusBar, StatusDot, StatusItem, StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
-    bridge::pressed_of, modal, scaled, theme, toolbar::count_label,
+    bridge::{contrast_ink, pressed_of},
+    modal, scaled, theme, toolbar::count_label,
 };
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
@@ -1731,11 +1732,11 @@ impl AppState {
             .text_meta(t)
             .cursor_pointer()
             .bg(rgb(warning))
-            // Deliberately not a theme token: a near-black label reads clearly against
-            // every theme's amber `warning` tone, which a theme-following text color
-            // could not guarantee (cosmos-light's `bg` is a light off-white —
-            // unreadable on the same amber pill).
-            .text_color(rgb(0x1a1a1a))
+            // The fill's own brightness decides the label, not a fixed near-black:
+            // cosmos-light's `warning` is a deep amber that needs a light label, like
+            // every other filled swatch in that palette (see `bridge::contrast_ink`'s
+            // doc comment for why the ink follows the fill, not the tone's name).
+            .text_color(rgb(contrast_ink(t, warning)))
             .child("sw")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.gpu_badge_open = !this.gpu_badge_open;

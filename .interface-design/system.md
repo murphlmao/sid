@@ -8,7 +8,7 @@ orientation and engagement, never decoration.
 `crates/sid-ui/src/theme.rs` is the single source: bg / surface / well / border /
 fg / fg_strong / muted / faint / accent / success / warning / danger / selection
 (+ ansi[16] for the terminal). No raw hex in UI code except the theme-agnostic
-modal scrim `rgba(0x000000a8)` and the warning-badge's near-black label.
+modal scrim `rgba(0x000000a8)`.
 
 ## Depth
 Borders + surface shifts only. No shadows. Hairline `border` separates regions;

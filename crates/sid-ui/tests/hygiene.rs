@@ -8,7 +8,7 @@
 //!    not emoji and are not flagged — they are being retired by migration, not by this
 //!    test.
 //! 2. **Semantic tokens are the only colour source.** No `rgb(0x..)` / `rgba(0x..)`
-//!    literal outside the palette definitions, with the two exemptions the design
+//!    literal outside the palette definitions, with the one exemption the design
 //!    system itself names.
 //! 3. **The type scale is the only text-size source.** No `text_xs()` / `text_sm()` /
 //!    `text_size(..)` / `font_weight(..)` / `font_family(..)` outside
@@ -156,10 +156,6 @@ const EXEMPT_LITERALS: &[(&str, &str)] = &[
     // darken whatever is behind it, so it cannot follow a palette.
     // `sid_ui::bridge::SCRIM` is the canonical spelling.
     ("0x000000a8", "the modal scrim"),
-    // ".interface-design/system.md": the warning badge's near-black label, which must
-    // stay readable on every palette's mid-brightness amber.
-    // `sid_ui::bridge::contrast_ink` supersedes it; the badges migrate later.
-    ("0x1a1a1a", "the warning-badge label"),
 ];
 
 /// Files allowed to contain palette literals, because they *are* the palette.
