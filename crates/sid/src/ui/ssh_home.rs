@@ -825,7 +825,7 @@ impl AppState {
     ) -> PopupMenu {
         let key = (host.alias.clone(), origin.clone());
         menu.item(
-            PopupMenuItem::new("Connect")
+            PopupMenuItem::new("connect")
                 .icon(Icon::Terminal.el())
                 .on_click({
                     let this = this.clone();
@@ -841,7 +841,7 @@ impl AppState {
                 }),
         )
         .item(
-            PopupMenuItem::new("Rename")
+            PopupMenuItem::new("rename")
                 .icon(Icon::Rename.el())
                 .on_click({
                     let this = this.clone();
@@ -857,7 +857,7 @@ impl AppState {
                 }),
         )
         .item(
-            PopupMenuItem::new("Edit…")
+            PopupMenuItem::new("edit…")
                 .icon(Icon::Settings.el())
                 .on_click({
                     let this = this.clone();
@@ -873,7 +873,7 @@ impl AppState {
                 }),
         )
         .item(
-            PopupMenuItem::new("Assign folder…")
+            PopupMenuItem::new("assign folder…")
                 .icon(Icon::Folder.el())
                 .on_click({
                     let this = this.clone();
@@ -922,7 +922,7 @@ impl AppState {
         })
         .separator()
         .item(
-            PopupMenuItem::new("Delete")
+            PopupMenuItem::new("delete")
                 .icon(Icon::Trash.el())
                 .on_click({
                     let secret_ref = host.secret_ref.clone();
