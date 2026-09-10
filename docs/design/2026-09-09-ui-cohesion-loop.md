@@ -168,13 +168,12 @@ Every item is gated by before/after captures in all four themes and a
       consumer reads the token; `bridge::contrast_ink` flipped the solid warning badge's label
       by itself). New guard test sweeps every light ink against bg/surface/well at 4.5:1. Dark
       palettes byte-identical; void and dusk re-checked.
-- [ ] **Light follow-ups** (other files): `app.rs` `gpu_status_badge` still hard-codes
-      `rgb(0x1a1a1a)` on the warning fill (2.7:1 on the deeper amber) → use
-      `bridge::contrast_ink`, which also retires one raw-hex exemption in `system.md`. Not
-      light-specific: a `PopupMenu` is `popover = surface` floating over a `surface` panel (only
-      the hairline separates them; needs a derived raised-surface mapping in `bridge.rs` for all
-      four themes); the modal scrim is typed as `rgba(0x000000a8)` at five call sites instead of
-      `bridge::SCRIM`.
+- [x] **Light follow-ups**: done 2026-09-10, test-first. Warning badge ink via
+      `bridge::contrast_ink` (raw-hex exemption retired from `system.md`); the scrim is
+      `bridge::SCRIM` at all five sites (hygiene allowlist tightened first, watched go red on
+      the five literals); popovers and tooltips sit on `bridge::raised_surface(t) = mix(surface,
+      fg, 0.07)`, which lightens the three dark palettes and darkens cosmos-light (three tests
+      observed red against a stub first). Right-click menu verified raised in all four themes.
 - [ ] **Library boundary.** Final-gate check on 2026-09-10 found 15 `gpui_component::` imports
       across nine `crates/sid` modules (`table::{Column, ColumnSort, TableDelegate,
       TableState, state::render_cell}`, `menu::{ContextMenuExt, PopupMenu, PopupMenuItem}`,
