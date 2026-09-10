@@ -341,6 +341,7 @@ pub trait SysProvider: Send + Sync {
 ///     pid: Pid::from_u32(1),
 ///     name: "init".into(),
 ///     cmd: "/sbin/init".into(),
+///     cmd_is_fallback: false,
 ///     cpu_pct: 0.0,
 ///     rss_bytes: 0,
 ///     started_unix_secs: 0,
@@ -355,8 +356,14 @@ pub struct ProcessInfo {
     pub pid: Pid,
     /// Short name (argv[0] basename).
     pub name: String,
-    /// Full command line (argv joined by spaces).
+    /// Full command line (argv joined by spaces), or — when that's empty/unavailable
+    /// (another user's process without permission to read `/proc/<pid>/cmdline`, or a
+    /// kernel thread with no argv at all) — `name` standing in for it, so the column
+    /// still carries information instead of a bare dash. See [`Self::cmd_is_fallback`].
     pub cmd: String,
+    /// True when [`Self::cmd`] is the process name, not a real command line. UI cells
+    /// key their ink off this so a stand-in name reads as dimmer than an actual argv.
+    pub cmd_is_fallback: bool,
     /// Aggregate CPU percent (0..=100 per core; >100 possible on multi-core).
     pub cpu_pct: f32,
     /// Resident set size in bytes.

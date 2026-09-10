@@ -102,10 +102,9 @@ Every item is gated by before/after captures in all four themes and a
 - [ ] **Scope switcher.** `Global` and `acme-api (demo)` in the top-right read as two
       unrelated chips. Render them as one segmented scope control with the active scope
       filled.
-- [ ] **System tab.** Meter cards framed as panels (July item, re-verify with a real
-      capture). The process table's Command column shows `—` for most rows because the
-      command line is unreadable without privileges; fall back to the process name instead
-      of a dash so the table is not two-thirds placeholders.
+- [x] **System tab.** Done 2026-09-09: meters were already on a framed `StatCluster`/`Card`
+      (verified by capture); the Command column now falls back to the process name in
+      `muted` ink (`ProcessInfo::cmd_is_fallback`, decided in `sid-sysinfo`).
 - [ ] **Icon-only buttons.** File and gear on SSH cards, diagram and delete on Database
       connections, git and close on Workspaces rows: same size, same hit area, tooltip
       present on every one (the July plan made tooltips type-required; verify no call site
@@ -245,3 +244,15 @@ commits; do not invent one).
   `sid-cap.sh` verified from main against the upgraded renderer (Workspaces capture).
   Note for Murphy: while probing the Lua `hyprctl eval` API the harness agent ran an
   untargeted `hl.dsp.window.close()` on the live session; it confirmed nothing closed.
+- 2026-09-09: System tab, two defects (`system-tab` branch). Command column: 20 of 31 rows
+  at 1272px were showing a bare `—` because another user's/kernel processes' cmdline is
+  unreadable; `sid-sysinfo::processes::resolve_cmd` now falls back to the process name at
+  the mapping layer (`ProcessInfo::cmd_is_fallback` carries the fact), and the Command cell
+  renders that fallback in `muted` ink versus `fg` for a real argv, same Mono size either
+  way. Meter cards: re-verified by capture rather than re-built — `overview_cluster` already
+  puts CPU/Memory/Swap on a `StatCluster`/`Card` with a `SYSTEM` header, summary line and a
+  labelled `16 cores` per-core strip, matching the Database panel's `Elevation::Surface`
+  chrome exactly (same helper, not just the same look). Captures at 1272x900, 1920x1080
+  (cosmos + cosmos-light) and 2560x1400 confirm both: no dash-only Command cells for named
+  processes, fallback ink visibly dimmer, meters framed, table fills the width, nothing
+  clipped.

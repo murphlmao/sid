@@ -45,6 +45,24 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_cmd(UpdateKind::OnlyIfNotSet)
 }
 
+/// What to show in a process's command-line cell, and whether it's standing in for
+/// one.
+///
+/// `/proc/<pid>/cmdline` reads back empty — not an error — for another user's process
+/// this caller lacks permission to inspect, and kernel threads never had one to begin
+/// with. Measured on a 1272px window: 20 of the table's 31 rows hit exactly this, so
+/// the Command column was mostly a dash. Falling back to the process name (always
+/// readable) is the fix "at the source of the fact": every caller of
+/// [`list_processes`] gets a populated cell, and the `bool` return lets them still
+/// tell a real argv from the stand-in.
+pub(crate) fn resolve_cmd(name: &str, raw_cmd: &str) -> (String, bool) {
+    if raw_cmd.trim().is_empty() {
+        (name.to_string(), true)
+    } else {
+        (raw_cmd.to_string(), false)
+    }
+}
+
 /// Refresh + collect the list of processes. Cleaned up between calls by
 /// `sysinfo::System::refresh_specifics` (sysinfo prunes dead processes
 /// itself on each refresh).
@@ -63,11 +81,14 @@ pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInf
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
-        let cmd = cmd_vec.join(" ");
+        let raw_cmd = cmd_vec.join(" ");
+        let name = proc.name().to_string_lossy().into_owned();
+        let (cmd, cmd_is_fallback) = resolve_cmd(&name, &raw_cmd);
         out.push(ProcessInfo {
             pid: Pid::from_u32(pid.as_u32()),
-            name: proc.name().to_string_lossy().into_owned(),
+            name,
             cmd,
+            cmd_is_fallback,
             cpu_pct: proc.cpu_usage(),
             rss_bytes: proc.memory(),
             started_unix_secs: proc.start_time() as i64,
@@ -81,6 +102,32 @@ pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fallback decision this fixes: an empty/unreadable command line falls back
+    /// to the process name, and the `bool` says so — the fact the Command column's
+    /// ink keys off, rather than every caller re-deriving "is this a fallback" from
+    /// `cmd == name`.
+    #[test]
+    fn resolve_cmd_falls_back_to_the_name_when_the_command_line_is_empty() {
+        assert_eq!(
+            resolve_cmd("nginx", ""),
+            ("nginx".to_string(), true),
+            "no cmdline at all (kernel thread, or unreadable /proc entry)"
+        );
+        assert_eq!(
+            resolve_cmd("nginx", "   "),
+            ("nginx".to_string(), true),
+            "whitespace-only argv counts as empty too"
+        );
+    }
+
+    #[test]
+    fn resolve_cmd_keeps_a_real_command_line_as_is() {
+        assert_eq!(
+            resolve_cmd("nginx", "/usr/sbin/nginx -g daemon off;"),
+            ("/usr/sbin/nginx -g daemon off;".to_string(), false)
+        );
+    }
 
     /// The row-count invariant the Systems tab depends on: userland threads are folded
     /// away, processes and kernel threads are not. Pinned as a pure predicate because the
