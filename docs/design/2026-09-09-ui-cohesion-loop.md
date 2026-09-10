@@ -626,3 +626,30 @@ per CLAUDE.md. Agent briefs must state which decision is being extracted and nam
   `secrets in memory` status all render as before. Merged main mid-task (light follow-ups:
   `bridge::SCRIM`, `raised_surface`) — one import-list conflict in `session.rs`, resolved as
   the union; re-gated clean after.
+
+- 2026-09-10: the four **Gate fixes (sid-ui + theme)** defects, on `gate-ui` (worktree
+  `sid-wt/gate-ui`), one commit each, every decision red first. (1) `card::PANEL_HEADER_HEIGHT`
+  = 40px (the 24px `ButtonSize::Sm` box + `py_2`), applied by `panel_header()` and asserted by
+  `a_panel_header_is_one_height_whatever_it_carries` — RED as `left: None`; the gate's 41/36/40
+  are now one strip, no per-call-site knob. (2) `card::header_bar(chrome, theme)` extracted, then
+  switched from `body_fills_container()` to `is_raised()`, so `Card::new().title(..)` (Settings
+  APPEARANCE, the System panels) gets the same ruled header as `Card::panel`; a titled raised
+  card moves its `p_3` onto the body so the rule spans the card, and `Card::section` stays
+  unruled on purpose. RED: "Raised: header hairline". (3) `table::rows_to_paint(data, viewport)`
+  = `data` — the library ties its striped *fake-row* fill to the same flag as the zebra
+  (`state.rs` `calculate_extra_rows_needed`), so `FillTable` reads the viewport off the vertical
+  scroll handle and only asks for `stripe` when the data already reaches the floor. RED:
+  `fewer_rows_than_the_viewport_paints_only_the_data`, left 36 right 10. Network PORTS filtered
+  to 2 rows now ends at the data on plain surface. (4) tokens: cosmos-light `danger`
+  `#c03040`→`#8c1550` (36→94 apart from `accent` on a redmean ΔE, 7.5:1 on surface),
+  cosmos-light `well` `#ffffff`→`#e6e6ee` (below `surface` and `bg`; as dark as `warning`'s
+  4.5:1 floor allows), dusk `danger` `#d04a4a`→`#e05070` (4.00→4.67:1 on surface, 4.29→5.00 on
+  bg). `bridge::light_ink` follows: a light palette's lightest surface is `bg` now, not `well`.
+  Three guards added, all observed RED: the AA sweep covers all four palettes' status inks,
+  `accent_and_danger_are_distinguishable_in_every_palette` (ΔE ≥ 70), and
+  `well_is_recessed_relative_to_bg_in_every_palette` (void's pure-black `bg` is the one
+  documented exemption — nothing can sit below it). `ansi` untouched in both palettes; the dark
+  palettes are otherwise byte-identical. Gate: fmt, clippy `--workspace --all-targets
+  -D warnings`, `cargo test --workspace` green. Captures: `gu-net-light.png` +
+  `gu-net-light-few.png`, `gu-db.png`, `gu-settings-light.png`, `gu-ssh-dusk.png`,
+  `gu-gallery-light.png`. NOT merged — left on the branch for review.
