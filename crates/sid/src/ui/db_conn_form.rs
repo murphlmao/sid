@@ -476,6 +476,10 @@ impl DbConnForm {
                 h_flex().child(
                     SegmentedControl::new("db-form-kind")
                         .segments(kinds.iter().map(|k| k.label()))
+                        // Shares `name`'s index and renders after it, so gpui orders it
+                        // there by paint order. Left at the default 0 the strip would
+                        // sort ahead of every field in the form.
+                        .tab_index(NAME_TAB_INDEX)
                         .selected(selected)
                         .on_select(cx.listener(move |this, ev: &SegmentSelect, window, cx| {
                             if let Some(&kind) = by_index.get(ev.index) {
@@ -504,7 +508,7 @@ impl DbConnForm {
                 // The name field is tab_index 1; descriptor fields follow it in render
                 // order (2, 3, …) regardless of widget kind, so a `Choice`/`Bool` field
                 // between two text fields doesn't renumber anything after it.
-                .child(TextInput::new(input).tab_index(ix as isize + 2))
+                .child(TextInput::new(input).tab_index(descriptor_tab_index(ix)))
                 // Framed rather than captioned: what this says is that the value will
                 // not survive the session, which is a consequence, not a placeholder.
                 .when_some(password_hint, |el, hint| el.child(Toast::info(hint)))
@@ -517,6 +521,9 @@ impl DbConnForm {
                     .child(
                         SegmentedControl::new(SharedString::from(format!("db-form-choice-{ix}")))
                             .segments(options.clone())
+                            // The same slot a text field at this position would take —
+                            // a `Choice` field is a field.
+                            .tab_index(descriptor_tab_index(ix))
                             .selected(selected)
                             .on_select(cx.listener(
                                 move |this, ev: &SegmentSelect, _window, cx| {
@@ -538,6 +545,7 @@ impl DbConnForm {
         let locked = matches!(self.mode, FormMode::Edit { .. });
         let ws_active = self.workspace.is_some();
         let theme = theme::active(cx).clone();
+        let save_to = save_to_tab_index(self.fields.len());
 
         let option = |id: &'static str,
                       title: &'static str,
@@ -550,6 +558,10 @@ impl DbConnForm {
             let ink = if enabled { theme.fg } else { theme.faint };
             Row::new(id)
                 .selected(selected)
+                // Reachable from the keyboard for the same reason as the host form's —
+                // it is a required choice inside a modal. After the last descriptor
+                // field, wherever the engine put it.
+                .tab_index(save_to)
                 .leading(radio_mark(selected, enabled, theme))
                 // Title and note in the same slot — see `host_form::save_to_selector`
                 // for why the right-anchored meta slot is the wrong home for it.
@@ -664,7 +676,7 @@ impl Render for DbConnForm {
                     .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                         cx.emit(DbConnFormEvent::Cancel);
                     }))
-                    .child(self.field("name", &self.name, 1, cx))
+                    .child(self.field("name", &self.name, NAME_TAB_INDEX, cx))
                     .child(match &self.mode {
                         FormMode::Add => self.kind_selector(cx).into_any_element(),
                         FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),
@@ -746,6 +758,23 @@ pub(crate) fn add_guard(
     } else {
         Ok(())
     }
+}
+
+/// The `name` field's place in the tab order, shared with the `engine` selector that
+/// renders directly under it (gpui sorts equal indices by paint order).
+const NAME_TAB_INDEX: isize = 1;
+
+/// Where the descriptor field at `ix` sits: straight after `name`, in render order and
+/// regardless of widget kind, so a `Choice`/`Bool` field between two text fields does not
+/// renumber anything after it.
+fn descriptor_tab_index(ix: usize) -> isize {
+    ix as isize + NAME_TAB_INDEX + 1
+}
+
+/// Where the `save to:` rows sit for a form with `fields` descriptor fields: after the
+/// last of them, which is where they render.
+fn save_to_tab_index(fields: usize) -> isize {
+    descriptor_tab_index(fields)
 }
 
 /// Which `save to:` option an add form preselects. Identical logic to the host form's
@@ -862,6 +891,34 @@ pub(crate) fn stage_secret(
 mod tests {
     use super::*;
     use sid_secrets::keyring::{FakeKeyring, KeyringStore};
+
+    #[test]
+    fn the_save_to_rows_come_after_every_field_however_many_there_are() {
+        // gpui sorts tab stops by index first and paint order only within an index, so
+        // "last in the form" is arithmetic, not layout — and the descriptor count is the
+        // engine's, not this module's (postgres has five fields, sqlite has one). A
+        // fixed constant here would put the layer picker in the middle of a Postgres
+        // form and past the end of a SQLite one.
+        for fields in [0usize, 1, 5, 12] {
+            let last = (0..fields).map(descriptor_tab_index).max();
+            assert!(
+                last.is_none_or(|last| save_to_tab_index(fields) > last),
+                "{fields} fields: save-to lands at or before the last one"
+            );
+            assert!(save_to_tab_index(fields) > NAME_TAB_INDEX, "and after name");
+        }
+    }
+
+    #[test]
+    fn a_descriptor_field_never_collides_with_the_name_field() {
+        // The engine selector shares `name`'s index deliberately (paint order separates
+        // them); a descriptor field must not, or the form's first two stops become three
+        // in an order nothing decided.
+        for ix in [0usize, 1, 7] {
+            assert!(descriptor_tab_index(ix) > NAME_TAB_INDEX);
+        }
+        assert!(descriptor_tab_index(0) < descriptor_tab_index(1));
+    }
 
     fn conn(id: &str, secret_ref: Option<&str>) -> DbConnection {
         DbConnection {

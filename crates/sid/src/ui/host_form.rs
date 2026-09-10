@@ -41,6 +41,18 @@ actions!(
     ]
 );
 
+/// The `port` field's place in the tab order, and the `auth` selector's with it.
+///
+/// The fields are numbered by hand from 1 (`alias`, `user`, `host`, `port`, `key path`,
+/// `passphrase`, `password`) because gpui sorts tab stops by index first and paint order
+/// only within an index — so a control that does not name one sits at 0 and jumps the
+/// whole form. Only the two indices something else has to agree with are named.
+const PORT_TAB_INDEX: isize = 4;
+
+/// The `save to:` rows' place: after every field, because that is where they render and
+/// because choosing a layer is the last decision the form asks for.
+const SAVE_TO_TAB_INDEX: isize = 8;
+
 /// Which auth method the segmented selector has chosen. UI-side mirror of
 /// [`AuthMethod`] minus the data payload (the key path lives in its own input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -592,6 +604,10 @@ impl HostForm {
             h_flex().child(
                 SegmentedControl::new("host-form-auth")
                     .segments(AUTH_SEGMENTS.map(|(label, _)| label))
+                    // Shares the port field's index and renders after it, so gpui orders
+                    // it there by paint order. Left at the default 0 the whole strip
+                    // would sort ahead of `alias`.
+                    .tab_index(PORT_TAB_INDEX)
                     .selected(auth_index(self.auth))
                     .on_select(cx.listener(|this, ev: &SegmentSelect, window, cx| {
                         this.set_auth(auth_at(ev.index), window, cx);
@@ -687,6 +703,11 @@ impl HostForm {
                       cx: &mut Context<Self>| {
             let ink = if enabled { theme.fg } else { theme.faint };
             Row::new(id)
+                .selected(selected)
+                // The picker is a required choice inside a modal, so it has to be
+                // reachable from the keyboard — it was the one control in this form that
+                // Tab could not get to. Last in the order, where it renders.
+                .tab_index(SAVE_TO_TAB_INDEX)
                 .selected(selected)
                 .leading(radio_mark(selected, enabled, theme))
                 // Title and note in the *same* slot: `Row`'s meta slot is right-anchored,
@@ -832,10 +853,11 @@ impl Render for HostForm {
                     .child(self.field("user", &self.user, 2, cx))
                     .child(self.field("host", &self.host, 3, cx))
                     .child(
-                        v_flex()
-                            .gap_1()
-                            .child(Self::field_label("port", cx))
-                            .child(TextInput::new(&self.port).fixed(px(90.)).tab_index(4)),
+                        v_flex().gap_1().child(Self::field_label("port", cx)).child(
+                            TextInput::new(&self.port)
+                                .fixed(px(90.))
+                                .tab_index(PORT_TAB_INDEX),
+                        ),
                     )
                     .child(self.auth_selector(cx))
                     .when(self.auth == AuthChoice::Key, |modal| {

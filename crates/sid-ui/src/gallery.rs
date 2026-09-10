@@ -135,6 +135,10 @@ impl Render for Gallery {
             // this band has to be *in* a 1200px capture, and the gallery is four times
             // that tall. The strip is drawn where it can be seen, not where it lives.
             .child(status_band(&theme))
+            // Directly under the status strip for the same reason: focus is the one
+            // state a still image cannot show by drawing it twice, so this band has to
+            // be somewhere a `--key Tab` capture can actually reach.
+            .child(focus_band(&theme))
             // The specimen is a full-width band rather than a fifth column: the samples
             // are sentences, and a fifth of 1920px is not a line of text.
             .child(type_specimen(&theme))
@@ -1098,6 +1102,73 @@ fn no_floor_field(theme: &Theme) -> impl IntoElement + use<> {
         .rounded_md()
         .elevation(Elevation::Well, theme)
         .child(div().text_meta(theme).child(""))
+}
+
+/// The focus band — every tab stop `sid-ui` has, in one run.
+///
+/// Focus is the one state the rest of this screen cannot show. Every other state is a
+/// property of an element the gallery can simply draw twice (a disabled button beside an
+/// enabled one); focus belongs to the *window*, exactly one element has it, and no
+/// arrangement of specimens makes it visible. So this band is not a specimen — it is a
+/// **route**: the controls that are tab stops, laid out in the order Tab visits them, so
+/// `sid-cap.sh --key Tab --key Tab …` walks the ring and each capture shows the ring on
+/// the next one. Anything that renders here and never lights up is a control the keyboard
+/// cannot reach.
+fn focus_band(theme: &Theme) -> impl IntoElement + use<> {
+    let controls = h_flex()
+        .flex_wrap()
+        .gap_2()
+        .child(Button::new("gallery-focus-btn", "secondary"))
+        .child(Button::new("gallery-focus-primary", "primary").primary())
+        .child(Button::new("gallery-focus-off", "disabled").disabled(true))
+        .child(IconButton::new(
+            "gallery-focus-icon",
+            Icon::Refresh,
+            "refresh",
+        ))
+        .child(
+            SegmentedControl::new("gallery-focus-seg")
+                .segments(["one", "two", "three"])
+                .selected(1),
+        );
+
+    let rows = List::stack()
+        .child(
+            Row::new("gallery-focus-row-a")
+                .tab_index(0)
+                .selected(true)
+                .leading(Radio::new(true))
+                .child("workspace")
+                .on_click(|_, _, _| {}),
+        )
+        .child(
+            Row::new("gallery-focus-row-b")
+                .tab_index(0)
+                .leading(Radio::new(false))
+                .child("global")
+                .on_click(|_, _, _| {}),
+        );
+
+    div().w_full().px_4().pb_4().child(
+        Card::new()
+            .title("focus")
+            .child(div().text_meta(theme).child(
+                "one accent hairline, everywhere — Tab walks this row left to right; the \
+                 disabled button is skipped",
+            ))
+            .child(row(theme, "buttons · segments", controls))
+            .child(row(theme, "rows that opted in", rows))
+            .child(row(
+                theme,
+                "a clickable status item is a stop too",
+                StatusBar::new()
+                    .left(StatusItem::new("gallery-focus-status", "125%").on_click(|_, _, _| {}))
+                    .left(StatusItem::new(
+                        "gallery-focus-status-inert",
+                        "not clickable",
+                    )),
+            )),
+    )
 }
 
 /// The status bar band — the app's bottom strip, in both of its states.

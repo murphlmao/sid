@@ -37,6 +37,7 @@ use gpui::{
 };
 
 use crate::badge::{BadgeFill, BadgeTone};
+use crate::bridge::pressed_of;
 use crate::icon::Icon;
 use crate::scale::scaled;
 use crate::status_dot::{ConnectionState, StatusDot};
@@ -161,8 +162,17 @@ impl RenderOnce for StatusItem {
                     .child(self.label),
             )
             .when_some(self.on_click, |this, on_click| {
+                // An actionable item gets the whole set, because the strip is where the
+                // states are hardest to guess: the words look identical to the inert
+                // ones beside them, so hover, press and the focus ring are the only
+                // things that say "this one does something". A tab stop too — clicking
+                // is not the keyboard-first way to reset the zoom.
+                let pressed = rgb(pressed_of(&theme, theme.selection));
                 this.cursor_pointer()
+                    .tab_index(0)
+                    .focus_ring(&theme)
                     .hover_fill(&theme)
+                    .active(move |s| s.bg(pressed))
                     .on_click(move |ev, window, cx| on_click(ev, window, cx))
             })
     }

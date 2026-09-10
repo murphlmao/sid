@@ -5,7 +5,7 @@
 //! 17 files. Each of those is a place where a call site could have typed something else,
 //! and several did. These helpers give the spec exactly one spelling.
 
-use gpui::{Div, InteractiveElement, Styled, div, rgb};
+use gpui::{Div, InteractiveElement, Styled, div, rgb, transparent_black};
 
 use crate::elevation::Elevation;
 use crate::theme::Theme;
@@ -102,6 +102,45 @@ pub trait StyledExt: Styled + Sized {
         let fill = rgb(theme.selection);
         self.hover(move |s| s.bg(fill))
     }
+
+    /// The keyboard focus ring — the one shape a focused control takes in sid.
+    ///
+    /// An `accent` hairline while the element holds focus, over a **transparent hairline
+    /// at rest**. Both halves matter:
+    ///
+    /// - The colour is [`focus_ring_color`] and nothing else. `bridge` already maps the
+    ///   borrowed `gpui-component` widgets' `ring` token to the same value, so the ring
+    ///   `Button` gets from the library and the ring an element gets from here cannot
+    ///   drift apart.
+    /// - The resting border is what makes the ring free: without it a focused row would
+    ///   grow 2px on both axes the instant Tab reached it and shove its neighbours,
+    ///   which reads as a rendering bug rather than as focus.
+    ///
+    /// Call it **before** any border colour the element draws for itself — a rest colour
+    /// is an ordinary style field and overwrites this one, while the ring is a focus
+    /// refinement gpui applies on top of whatever the rest style resolved to.
+    ///
+    /// The element still has to be focusable for a ring to ever show:
+    /// `InteractiveElement::tab_index` (which also enrols it as a tab stop) or
+    /// `track_focus`.
+    fn focus_ring(self, theme: &Theme) -> Self
+    where
+        Self: InteractiveElement,
+    {
+        let ring = rgb(focus_ring_color(theme));
+        self.border_1()
+            .border_color(transparent_black())
+            .focus(move |s| s.border_color(ring))
+    }
+}
+
+/// The ink every focus ring in sid is drawn in: the `accent` token.
+///
+/// A function rather than an inline field read so "the focus ring is the accent" is one
+/// statement with one test, and so the borrowed widgets' ring (`bridge`'s
+/// `ThemeColor::ring`) has something to be checked against.
+pub fn focus_ring_color(theme: &Theme) -> u32 {
+    theme.accent
 }
 
 impl<T: Styled + Sized> StyledExt for T {}
@@ -185,6 +224,55 @@ mod tests {
         // `flex_none` alone is exactly the bug — assert it does *not* set align_self, so
         // nobody "simplifies" the pair back down to one call.
         assert_eq!(style_of(div().flex_none()).align_self, None);
+    }
+
+    #[test]
+    fn the_focus_ring_costs_no_layout_until_it_appears() {
+        // The whole reason the helper draws a *transparent* hairline at rest: a ring
+        // that materialises a border only when focused grows the element by 2px on both
+        // axes the moment Tab reaches it, and every neighbour jumps. The rest border has
+        // to be there, and it has to be invisible.
+        let t = cosmos();
+        let s = style_of(div().focus_ring(&t));
+        assert!(s.border_widths.top.is_some(), "a hairline at rest");
+        assert!(s.border_widths.left.is_some());
+        assert_eq!(
+            s.border_color,
+            Some(transparent_black()),
+            "invisible until focused"
+        );
+    }
+
+    #[test]
+    fn an_elements_own_rest_border_wins_over_the_rings() {
+        // The documented call order — `.focus_ring(theme)` first, the element's own
+        // border colour after — has to actually resolve that way, or a segmented
+        // control's chip loses its hairline to the ring's transparent rest colour.
+        let t = cosmos();
+        let s = style_of(div().focus_ring(&t).border_color(rgb(t.border)));
+        assert_eq!(s.border_color, Some(Hsla::from(rgb(t.border))));
+    }
+
+    #[test]
+    fn every_ring_is_the_accent_and_separates_from_the_chrome_it_rings() {
+        // One ring, one token, four palettes. A ring the same colour as the border it
+        // replaces is not a ring.
+        for t in [
+            cosmos(),
+            crate::theme::void(),
+            crate::theme::dusk(),
+            crate::theme::cosmos_light(),
+        ] {
+            assert_eq!(focus_ring_color(&t), t.accent, "{}", t.name);
+            for backdrop in [t.bg, t.surface, t.selection, t.border] {
+                assert_ne!(
+                    focus_ring_color(&t),
+                    backdrop,
+                    "{}: the ring dissolves into {backdrop:06x}",
+                    t.name
+                );
+            }
+        }
     }
 
     #[test]

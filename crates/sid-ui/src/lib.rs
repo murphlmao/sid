@@ -87,7 +87,7 @@ pub use scope_chip::{ScopeChip, ScopeOrigin};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use status_bar::{StatusBar, StatusItem};
 pub use status_dot::{ConnectionState, StatusDot, StatusLegend};
-pub use styled::{StyledExt, h_flex, v_flex};
+pub use styled::{StyledExt, focus_ring_color, h_flex, v_flex};
 // `TABLE_CHROME` is re-exported at the root alongside the rest of the table surface:
 // every call site that needs it is doing column arithmetic and already imports
 // `ColumnWidth` from here, and having exactly one of the pair live a module deeper was

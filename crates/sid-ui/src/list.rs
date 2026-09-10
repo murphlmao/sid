@@ -36,7 +36,7 @@ use gpui::{
     prelude::FluentBuilder as _, px, rgb,
 };
 
-use crate::bridge::hover_of;
+use crate::bridge::{hover_of, pressed_of};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::typography::Typography;
@@ -88,6 +88,11 @@ pub struct RowPaint {
     pub fill: Option<u32>,
     /// Fill under the pointer, or `None` for a row nothing can be done to.
     pub hover_fill: Option<u32>,
+    /// Fill while held down, or `None` for an inert row. One rung *past* the hover in
+    /// the same direction [`crate::Button`] takes: hover steps toward the palette's
+    /// lightest ink, pressed toward its darkest, so "raised" and "pushed in" read the
+    /// same way on a row as on a button.
+    pub pressed_fill: Option<u32>,
 }
 
 impl RowPaint {
@@ -98,25 +103,29 @@ impl RowPaint {
     ///   clicked" stay distinguishable.
     /// - An **actionable** row is transparent at rest and fills on hover. That hover is
     ///   the only thing telling a reader the row does anything at all.
-    /// - An **inert** row does not move. A hover fill on a row with no behaviour is a
-    ///   promise the UI cannot keep.
+    /// - An **inert** row does not move, under the pointer or under a press. A hover fill
+    ///   on a row with no behaviour is a promise the UI cannot keep.
     pub fn resolve(selected: bool, actionable: bool, theme: &Theme) -> Self {
         match (selected, actionable) {
             (true, true) => RowPaint {
                 fill: Some(theme.selection),
                 hover_fill: Some(hover_of(theme, theme.selection)),
+                pressed_fill: Some(pressed_of(theme, theme.selection)),
             },
             (true, false) => RowPaint {
                 fill: Some(theme.selection),
                 hover_fill: None,
+                pressed_fill: None,
             },
             (false, true) => RowPaint {
                 fill: None,
                 hover_fill: Some(theme.selection),
+                pressed_fill: Some(pressed_of(theme, theme.selection)),
             },
             (false, false) => RowPaint {
                 fill: None,
                 hover_fill: None,
+                pressed_fill: None,
             },
         }
     }
@@ -139,6 +148,7 @@ impl RowPaint {
 pub struct Row {
     id: ElementId,
     selected: bool,
+    tab_index: Option<isize>,
     /// A group name, so descendants can style themselves against this row's hover.
     group: Option<gpui::SharedString>,
     leading: Option<AnyElement>,
@@ -156,6 +166,7 @@ impl Row {
         Self {
             id: id.into(),
             selected: false,
+            tab_index: None,
             group: None,
             leading: None,
             children: Vec::new(),
@@ -170,6 +181,23 @@ impl Row {
     /// Fill this row with the `selection` token — the active/current item.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Put this row in the keyboard tab order, at `index`, and give it the focus ring.
+    ///
+    /// **Opt-in, and deliberately so.** A list is a *surface* in some screens and
+    /// furniture in others: the save-to picker in a modal and the SSH connection cards
+    /// are the thing the user came to operate, and a keyboard-first app that can only
+    /// reach them with the mouse is not one — but a 400-row process table that enrols
+    /// every row makes Tab useless everywhere else in the window. The screen decides,
+    /// because only the screen knows which of its lists is the point.
+    ///
+    /// It also costs a hairline: a tab-stop row draws the transparent rest border the
+    /// ring needs (see [`crate::StyledExt::focus_ring`]), so it stands 2px taller than
+    /// an unenrolled one. Enrol a whole list or none of it, never half.
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = Some(index);
         self
     }
 
@@ -272,6 +300,16 @@ impl RenderOnce for Row {
             .when_some(hover_fill, |this, fill| {
                 let fill = rgb(fill);
                 this.hover(move |s| s.bg(fill))
+            })
+            .when_some(paint.pressed_fill, |this, fill| {
+                let fill = rgb(fill);
+                this.active(move |s| s.bg(fill))
+            })
+            // The ring's transparent hairline only appears on rows that can actually be
+            // focused: on the other several hundred it would be 2px of height bought
+            // for a state they can never enter.
+            .when_some(self.tab_index, |this, index| {
+                this.tab_index(index).focus_ring(&theme)
             })
             .when_some(self.leading, |this, leading| {
                 this.child(div().flex_none().child(leading))

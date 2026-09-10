@@ -35,6 +35,7 @@ use gpui::{
     prelude::FluentBuilder as _, rgb, transparent_black,
 };
 
+use crate::bridge::pressed_of;
 use crate::elevation::Elevation;
 use crate::icon::Icon;
 use crate::styled::{StyledExt as _, h_flex};
@@ -63,6 +64,12 @@ pub struct SegmentPaint {
     /// Fill under the pointer. `None` for the selected segment, which is already filled
     /// and is not going anywhere when you point at it.
     pub hover_fill: Option<u32>,
+    /// Fill while held down. Unlike the hover, **every** segment has one, including the
+    /// selected one: a press is feedback about the click, not about the selection, and a
+    /// re-click on the active segment is a legal gesture (the handler fires for it, and
+    /// a caller may treat it as "reload this view"). A chip that does not move when you
+    /// push it reads as dead.
+    pub pressed_fill: u32,
 }
 
 /// The colour decision, as a pure function of (selected, palette).
@@ -77,6 +84,7 @@ pub fn segment_paint(selected: bool, theme: &Theme) -> SegmentPaint {
             ink: theme.fg_strong,
             border: Some(theme.border),
             hover_fill: None,
+            pressed_fill: pressed_of(theme, theme.selection),
         }
     } else {
         SegmentPaint {
@@ -84,6 +92,7 @@ pub fn segment_paint(selected: bool, theme: &Theme) -> SegmentPaint {
             ink: theme.muted,
             border: None,
             hover_fill: Some(theme.selection),
+            pressed_fill: pressed_of(theme, theme.selection),
         }
     }
 }
@@ -143,6 +152,7 @@ pub struct SegmentedControl {
     id: SharedString,
     segments: Vec<Segment>,
     selected: usize,
+    tab_index: isize,
     on_select: Option<SelectHandler>,
 }
 
@@ -154,6 +164,7 @@ impl SegmentedControl {
             id: id.into(),
             segments: Vec::new(),
             selected: 0,
+            tab_index: 0,
             on_select: None,
         }
     }
@@ -177,6 +188,20 @@ impl SegmentedControl {
         self
     }
 
+    /// Where this control sits in the keyboard tab order. Every segment takes the same
+    /// index, so the strip is one stop-run and gpui orders the chips inside it by paint
+    /// order.
+    ///
+    /// The default, `0`, is right for a toolbar or a sub-view switcher, which sits among
+    /// buttons that are also at 0 and is therefore visited in paint order like them. **A
+    /// form has to say otherwise**: its fields are numbered from 1, and a control left at
+    /// 0 sorts ahead of all of them — which would put the host form's `auth` selector
+    /// before the alias field the user is meant to fill in first.
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = index;
+        self
+    }
+
     /// Called with the clicked segment — including the already-selected one, so a caller
     /// may treat a re-click as "reload this view" if it wants to.
     pub fn on_select(
@@ -194,6 +219,7 @@ impl RenderOnce for SegmentedControl {
         let selected = resolve_selected(self.selected, self.segments.len());
         let on_select = self.on_select;
         let base = self.id;
+        let tab_index = self.tab_index;
 
         h_flex()
             .flex_none()
@@ -228,9 +254,17 @@ impl RenderOnce for SegmentedControl {
                     .rounded_md()
                     .cursor_pointer()
                     .text_body(&theme)
+                    // A segment is a control, so it is a tab stop — this is the sub-view
+                    // switcher on Network, System and Settings, and a keyboard-first app
+                    // that can only change view with the mouse is not one. Index 0 puts
+                    // the strip in paint order alongside the buttons around it rather
+                    // than ahead of a form's numbered fields; a form overrides it.
+                    .tab_index(tab_index)
                     // Always a 1px border, transparent when unselected: without it the
-                    // chips would resize by 2px as the selection moves.
-                    .border_1()
+                    // chips would resize by 2px as the selection moves. `focus_ring`
+                    // declares exactly that border, and adds the ring on top of it — so
+                    // the segment's own rest colour has to be set *after* it.
+                    .focus_ring(&theme)
                     .border_color(
                         paint
                             .border
@@ -240,6 +274,7 @@ impl RenderOnce for SegmentedControl {
                     .when_some(paint.hover_fill, |this, fill| {
                         this.hover(move |s| s.bg(rgb(fill)))
                     })
+                    .active(move |s| s.bg(rgb(paint.pressed_fill)))
                     .text_color(rgb(paint.ink))
                     .when_some(segment.icon, |this, icon| {
                         // `flex_none` on the glyph: when the label elides, the icon must
@@ -340,6 +375,25 @@ mod tests {
                 "{}: inactive label",
                 t.name
             );
+        }
+    }
+
+    #[test]
+    fn every_segment_acknowledges_a_press_including_the_selected_one() {
+        // The hover and the press answer different questions — "is this a control" vs
+        // "did my click land" — so the selected chip opts out of the first and not the
+        // second. It has to move: `on_select` fires for a re-click, and a control that
+        // runs a handler without moving reads as dead.
+        for t in palettes() {
+            for selected in [true, false] {
+                let paint = segment_paint(selected, &t);
+                let backdrop = paint.fill.unwrap_or_else(|| TRACK.fill(&t));
+                assert_ne!(
+                    paint.pressed_fill, backdrop,
+                    "{}: {selected} press is invisible",
+                    t.name
+                );
+            }
         }
     }
 
