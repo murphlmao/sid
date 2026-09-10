@@ -43,7 +43,7 @@ use sid_store::{Attributed, Host, Scope};
 use crate::app::{AppState, can_demote, can_promote};
 use crate::ui::{SessionStatus, TextInput, host_form};
 use sid_ui::{
-    Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, Row,
+    Button, Card, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, Row,
     StatusDot, StatusLegend, StyledExt as _, Typography as _, card::header_text, caveat_line,
     h_flex, scaled, theme, v_flex,
 };
@@ -614,60 +614,108 @@ impl AppState {
             sections.push(section.into_any_element());
         }
 
-        v_flex()
+        let t = theme::active(cx).clone();
+        // The one panel this screen has, in the vocabulary Database and Settings already
+        // speak: `surface` fill, hairline, uppercase `CONNECTIONS · n` header, and the
+        // controls anchored to that header rather than floating on the canvas above it.
+        //
+        // The header row IS the toolbar row, in the house order
+        // `[label · count] [filter] [secondary] [primary]`: the quick-connect box is the
+        // filter (it filters the grid as you type), `add connection` is the secondary
+        // act, and `connect` — the tab's one accent — is the primary one. One row at one
+        // height, where this screen previously spent two: a header carrying a four-item
+        // dot legend, and a second strip under it holding the field.
+        let panel = Card::panel("connections")
+            .count(self.hosts.len())
             .flex_1()
             .min_h(px(0.))
-            .child(self.home_header(cx))
-            .child(self.quick_connect_box(cx))
-            .child(
-                List::scrolling("ssh-home-grid")
-                    // The grid's own gutter and the gap between folder sections. `p_4`
-                    // matches the status bar directly above, so the first card's left
-                    // edge lines up with the chrome instead of floating.
-                    .gap_4()
-                    .p_4()
-                    // Right-click *anywhere* in the grid defaults to "no card" —
-                    // `capture_any_mouse_down` fires during the CAPTURE phase, which
-                    // completes in full before any BUBBLE-phase handler runs (see
-                    // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
-                    // pass over every listener, then bubble is a second full pass, in
-                    // reverse/child-first order). So this always resets the target
-                    // first; a specific card's own `on_mouse_down(Right, ..)` (an
-                    // ordinary BUBBLE-phase handler, see `host_card`) then fires
-                    // straight after and overrides it back to `Some(host)` — but only
-                    // when the click actually landed on that card. Reaching for this
-                    // instead of a plain bubble-phase clear on this same container:
-                    // bubble fires child-before-parent, so a bubble-phase clear here
-                    // would run AFTER (and stomp) a card's bubble-phase set, not before.
-                    .capture_any_mouse_down(cx.listener(
-                        |this, ev: &MouseDownEvent, _window, cx| {
-                            if ev.button == MouseButton::Right {
-                                this.ssh_home.right_click_target = None;
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .children(sections)
-                    // Nothing to show: say which nothing this is, and hand back a way
-                    // out of it. See `home_empty`. It takes the free height rather than
-                    // a fixed 280px, so an empty screen is centred in the window instead
-                    // of pinned under the toolbar.
-                    .when_some(empty, |this, empty| {
-                        this.child(self.home_empty_state(empty, cx))
-                    })
-                    // Trailing empty space below the last row of cards, so "right-click
-                    // empty space → Add connection" has somewhere to land even when the
-                    // grid is short — purely a layout spacer; the capture-phase reset
-                    // above is what actually makes empty-space right-clicks correct.
-                    // Skipped when an empty state is up, since that already claims the
-                    // free height.
-                    .when(empty.is_none(), |this| {
-                        this.child(div().flex_1().min_h(scaled(48.)))
-                    })
-                    // ONE context menu for the whole grid — see `right_click_target`'s
-                    // doc comment on why this can't be attached per-card.
-                    .context_menu(self.grid_context_menu(cx)),
+            .action(self.quick_connect_field(cx))
+            .action(
+                Button::new("ssh-home-add-connection", "add connection")
+                    .small()
+                    .icon(Icon::Add)
+                    .tooltip("Save a new SSH connection")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_add_form(window, cx);
+                    })),
             )
+            .action(self.quick_connect_go(cx));
+
+        v_flex().flex_1().min_h(px(0.)).p_3().child(
+            panel
+                // What the box has to say back: the inline `add … as a connection`
+                // row, and the note left by an Enter that named nothing. Both are
+                // answers to what was just typed, so they sit directly under the
+                // field's row rather than anywhere else.
+                .children(self.quick_connect_answer(cx))
+                .child(
+                    List::scrolling("ssh-home-grid")
+                        // The grid's own gutter and the gap between folder sections.
+                        .gap_4()
+                        .p_3()
+                        // Right-click *anywhere* in the grid defaults to "no card" —
+                        // `capture_any_mouse_down` fires during the CAPTURE phase, which
+                        // completes in full before any BUBBLE-phase handler runs (see
+                        // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
+                        // pass over every listener, then bubble is a second full pass, in
+                        // reverse/child-first order). So this always resets the target
+                        // first; a specific card's own `on_mouse_down(Right, ..)` (an
+                        // ordinary BUBBLE-phase handler, see `host_card`) then fires
+                        // straight after and overrides it back to `Some(host)` — but only
+                        // when the click actually landed on that card. Reaching for this
+                        // instead of a plain bubble-phase clear on this same container:
+                        // bubble fires child-before-parent, so a bubble-phase clear here
+                        // would run AFTER (and stomp) a card's bubble-phase set, not before.
+                        .capture_any_mouse_down(cx.listener(
+                            |this, ev: &MouseDownEvent, _window, cx| {
+                                if ev.button == MouseButton::Right {
+                                    this.ssh_home.right_click_target = None;
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                        .children(sections)
+                        // Nothing to show: say which nothing this is, and hand back
+                        // a way out of it. See `home_empty`. It takes the free
+                        // height rather than a fixed 280px, so an empty screen is
+                        // centred in the panel instead of pinned under the header.
+                        .when_some(empty, |this, empty| {
+                            this.child(self.home_empty_state(empty, cx))
+                        })
+                        // Trailing empty space below the last row of cards, so
+                        // "right-click empty space → Add connection" has somewhere
+                        // to land even when the grid is short — purely a layout
+                        // spacer; the capture-phase reset above is what actually
+                        // makes empty-space right-clicks correct. It is also all
+                        // that is under the cards on a wide window, and deliberately
+                        // so: there is no per-host fact in the store worth a second
+                        // region (no last-connected time, no recents), and inventing
+                        // one to fill the panel would be decoration with a data
+                        // shape. Skipped when an empty state is up, since that
+                        // already claims the free height.
+                        .when(empty.is_none(), |this| {
+                            this.child(div().flex_1().min_h(scaled(48.)))
+                        })
+                        // ONE context menu for the whole grid — see
+                        // `right_click_target`'s doc comment on why this can't be
+                        // attached per-card.
+                        .context_menu(self.grid_context_menu(cx)),
+                )
+                // The dot vocabulary, in the panel's footer. It used to be the middle
+                // third of the toolbar row, which spent the screen's most valuable
+                // strip on documentation: a legend is not a control and never
+                // changes, so it belongs at the foot of the thing it explains, under
+                // a hairline, in the same Meta ink as every other count and hint.
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .justify_end()
+                        .px_3()
+                        .py(scaled(6.))
+                        .hairline_t(&t)
+                        .child(StatusLegend::new("ssh-home-legend")),
+                ),
+        )
     }
 
     /// The list's empty state: a headline, one line of what to do next, and a real
@@ -756,9 +804,11 @@ impl AppState {
         this: Entity<AppState>,
         label: &'static str,
     ) -> PopupMenu {
-        menu.item(PopupMenuItem::new(label).on_click(move |_ev, window, cx| {
-            this.update(cx, |state, cx| state.open_add_form(window, cx));
-        }))
+        menu.item(PopupMenuItem::new(label).icon(Icon::Add.el()).on_click(
+            move |_ev, window, cx| {
+                this.update(cx, |state, cx| state.open_add_form(window, cx));
+            },
+        ))
     }
 
     /// The per-row menu: connect, the same in-place rename/folder-assign the row's hover
@@ -773,191 +823,181 @@ impl AppState {
         scope: Scope,
     ) -> PopupMenu {
         let key = (host.alias.clone(), origin.clone());
-        menu.item(PopupMenuItem::new("Connect").on_click({
-            let this = this.clone();
-            let host = host.clone();
-            let key = key.clone();
-            move |_ev, window, cx| {
-                let host = host.clone();
-                let key = key.clone();
-                this.update(cx, |state, cx| {
-                    state.connect_host(host, Some(key), window, cx)
-                });
-            }
-        }))
-        .item(PopupMenuItem::new("Rename").on_click({
-            let this = this.clone();
-            let alias = host.alias.clone();
-            let origin = origin.clone();
-            move |_ev, window, cx| {
-                let alias = alias.clone();
-                let origin = origin.clone();
-                this.update(cx, |state, cx| {
-                    state.start_rename(alias, origin, window, cx)
-                });
-            }
-        }))
-        .item(PopupMenuItem::new("Edit…").on_click({
-            let this = this.clone();
-            let host = host.clone();
-            let origin = origin.clone();
-            move |_ev, window, cx| {
-                let host = host.clone();
-                let origin = origin.clone();
-                this.update(cx, |state, cx| {
-                    state.open_edit_form(host, origin, window, cx)
-                });
-            }
-        }))
-        .item(PopupMenuItem::new("Assign folder…").on_click({
-            let this = this.clone();
-            let alias = host.alias.clone();
-            let origin = origin.clone();
-            let folder = host.folder.clone();
-            move |_ev, window, cx| {
-                let alias = alias.clone();
-                let origin = origin.clone();
-                let folder = folder.clone();
-                this.update(cx, |state, cx| {
-                    state.start_folder_edit(alias, origin, folder, window, cx)
-                });
-            }
-        }))
-        .when(can_promote(&origin), |menu| {
-            menu.item(PopupMenuItem::new("Promote to global").on_click({
-                let this = this.clone();
-                let alias = host.alias.clone();
-                let origin = origin.clone();
-                move |_ev, _window, cx| {
-                    let alias = alias.clone();
+        menu.item(
+            PopupMenuItem::new("Connect")
+                .icon(Icon::Terminal.el())
+                .on_click({
+                    let this = this.clone();
+                    let host = host.clone();
+                    let key = key.clone();
+                    move |_ev, window, cx| {
+                        let host = host.clone();
+                        let key = key.clone();
+                        this.update(cx, |state, cx| {
+                            state.connect_host(host, Some(key), window, cx)
+                        });
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Rename")
+                .icon(Icon::Rename.el())
+                .on_click({
+                    let this = this.clone();
+                    let alias = host.alias.clone();
                     let origin = origin.clone();
-                    this.update(cx, |state, cx| state.promote_row(&alias, &origin, cx));
-                }
-            }))
+                    move |_ev, window, cx| {
+                        let alias = alias.clone();
+                        let origin = origin.clone();
+                        this.update(cx, |state, cx| {
+                            state.start_rename(alias, origin, window, cx)
+                        });
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Edit…")
+                .icon(Icon::Settings.el())
+                .on_click({
+                    let this = this.clone();
+                    let host = host.clone();
+                    let origin = origin.clone();
+                    move |_ev, window, cx| {
+                        let host = host.clone();
+                        let origin = origin.clone();
+                        this.update(cx, |state, cx| {
+                            state.open_edit_form(host, origin, window, cx)
+                        });
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Assign folder…")
+                .icon(Icon::Folder.el())
+                .on_click({
+                    let this = this.clone();
+                    let alias = host.alias.clone();
+                    let origin = origin.clone();
+                    let folder = host.folder.clone();
+                    move |_ev, window, cx| {
+                        let alias = alias.clone();
+                        let origin = origin.clone();
+                        let folder = folder.clone();
+                        this.update(cx, |state, cx| {
+                            state.start_folder_edit(alias, origin, folder, window, cx)
+                        });
+                    }
+                }),
+        )
+        .when(can_promote(&origin), |menu| {
+            menu.item(
+                PopupMenuItem::new("Promote to global")
+                    .icon(Icon::ArrowUp.el())
+                    .on_click({
+                        let this = this.clone();
+                        let alias = host.alias.clone();
+                        let origin = origin.clone();
+                        move |_ev, _window, cx| {
+                            let alias = alias.clone();
+                            let origin = origin.clone();
+                            this.update(cx, |state, cx| state.promote_row(&alias, &origin, cx));
+                        }
+                    }),
+            )
         })
         .when(can_demote(&origin, &scope), |menu| {
-            menu.item(PopupMenuItem::new("Demote to workspace").on_click({
-                let this = this.clone();
-                let alias = host.alias.clone();
-                move |_ev, _window, cx| {
-                    let alias = alias.clone();
-                    this.update(cx, |state, cx| state.demote_row(&alias, cx));
-                }
-            }))
+            menu.item(
+                PopupMenuItem::new("Demote to workspace")
+                    .icon(Icon::ArrowDown.el())
+                    .on_click({
+                        let this = this.clone();
+                        let alias = host.alias.clone();
+                        move |_ev, _window, cx| {
+                            let alias = alias.clone();
+                            this.update(cx, |state, cx| state.demote_row(&alias, cx));
+                        }
+                    }),
+            )
         })
         .separator()
-        .item(PopupMenuItem::new("Delete").on_click({
-            let secret_ref = host.secret_ref.clone();
-            move |_ev, _window, cx| {
-                let (alias, origin) = key.clone();
-                let secret_ref = secret_ref.clone();
-                this.update(cx, |state, cx| {
-                    state.delete_row(&alias, &origin, secret_ref.as_deref(), cx)
-                });
-            }
-        }))
+        .item(
+            PopupMenuItem::new("Delete")
+                .icon(Icon::Trash.el())
+                .on_click({
+                    let secret_ref = host.secret_ref.clone();
+                    move |_ev, _window, cx| {
+                        let (alias, origin) = key.clone();
+                        let secret_ref = secret_ref.clone();
+                        this.update(cx, |state, cx| {
+                            state.delete_row(&alias, &origin, secret_ref.as_deref(), cx)
+                        });
+                    }
+                }),
+        )
     }
 
-    /// The screen's header row: the count, the status legend, and the `+ add connection`
-    /// affordance on the right edge. Opens the exact same [`HostForm::new_add`] path as
-    /// every other add-connection entry point (the tab-strip `+`, the empty state's
-    /// button, the grid's empty-space context menu) — see `AppState::open_add_form`.
-    fn home_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx).clone();
-        let count = self.hosts.len();
-        let label: SharedString = header_text("connections", Some(count)).into();
-        h_flex()
-            .w_full()
-            .gap_4()
-            .px_4()
-            .py_2()
-            .hairline_b(&t)
-            .child(div().flex_none().section_label(&t).child(label))
-            // The dot vocabulary, spelled out once, beside the count it qualifies — the
-            // grid paints a 6px circle per card and nothing else on screen says what it
-            // means. `flex_1` parks it in the middle so the add button keeps the right
-            // edge to itself; the legend wraps inside this box on a narrow window.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(StatusLegend::new("ssh-home-legend")),
-            )
-            .child(
-                Button::new("ssh-home-add-connection", "add connection")
-                    .small()
-                    .icon(Icon::Add)
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_form(window, cx);
-                    })),
-            )
-    }
-
-    /// The box across the top: filter, connect, and — since issue #2 — the one place a
-    /// connection gets *added* without leaving the keyboard.
-    fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx).clone();
-        let search = self.ssh_home.search.clone();
-        let query = self.ssh_home.search.read(cx).content().to_string();
-        let matched = saved_match(&self.hosts, &query).is_some();
-        // A red filled square with a `⏎` in it used to sit here: sid's most emphatic
-        // affordance, spent on "submit this text field", while the tab's actual primary
-        // verb had no button at all. Now it is a labelled button and says which of the
-        // box's two jobs it performs — the same box is also the list filter, and typing
-        // in it never needs this.
-        let go = Button::new("ssh-quick-connect-go", "connect")
-            .primary()
-            .icon(Icon::Terminal)
-            .tooltip("open the saved connection you typed — or add it, if it isn't saved yet")
-            .on_click(
-                cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
-            );
-
-        let mut col = div()
+    /// The quick-connect box, as the panel header's **filter** slot.
+    ///
+    /// It is the tab's filter (it narrows the grid as you type) and, since issue #2, the
+    /// one place a connection gets added without leaving the keyboard — so it sits in
+    /// the toolbar contract's filter position and nowhere else. The key context rides on
+    /// this wrapper rather than on a surrounding column, because the wrapper is now the
+    /// only ancestor of the focused `TextInput` this screen controls; `QuickConnectGo`
+    /// (Enter) dispatches up the focus tree from the field and finds it here.
+    fn quick_connect_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // `TextInput` paints its shaped line at its own natural width, ignoring the
+        // box's flex-assigned bounds (see `TextElement::paint` in `text_input.rs` — it
+        // calls `line.paint` with no content mask). Left unclipped, the
+        // placeholder/typed text bled straight through the button beside it and into
+        // whatever sat past it. `min_w(0)` lets this flex item actually shrink;
+        // `overflow_hidden` then clips the input's own paint (including its nested
+        // `TextElement`) to that width — a content mask gpui's `Div` establishes around
+        // all of its descendants' painting, not just its own quad, so it fixes the child
+        // without needing to touch the shared `TextInput` element.
+        //
+        // A definite width, not `flex_1`: this lives in a header's action group, which
+        // is `flex_none` so the title beside it is the thing that elides. 300px is a
+        // `user@host:port` and change — a 2000px-wide text field is not a better text
+        // field, and letting it run the full width would drag the `connect` button it
+        // submits to the far edge of the screen.
+        div()
             .key_context(QUICK_CONNECT_CONTEXT)
             .on_action(cx.listener(|this, _: &QuickConnectGo, window, cx| {
                 this.quick_connect(window, cx);
             }))
-            .flex()
-            .flex_col()
-            .gap_1()
-            .px_4()
-            .py_2()
-            .hairline_b(&t)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        // `TextInput` paints its shaped line at its own natural width,
-                        // ignoring the box's flex-assigned bounds (see `TextElement::
-                        // paint` in `text_input.rs` — it calls `line.paint` with no
-                        // content mask). Left unclipped, the placeholder/typed text
-                        // bled straight through the `go` button beside it and into
-                        // whatever sat past it. `min_w(0)` lets this flex item actually
-                        // shrink to the row's available width (the flexbox default
-                        // min-width is content-sized, which would fight `flex_1` here);
-                        // `overflow_hidden` then clips the input's own paint (including
-                        // its nested `TextElement`) to that width — a content mask
-                        // gpui's `Div` establishes around all of its descendants'
-                        // painting, not just its own quad, so it fixes the child
-                        // without needing to touch the shared `TextInput` element.
-                        // Capped, unlike the grid below it: a 2000px-wide text field is
-                        // not a better text field, and letting it run the full width
-                        // would drag the `connect` button it submits to the far edge of
-                        // the screen — the exact "action a screen-width from its
-                        // subject" the grid exists to stop doing.
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .max_w(scaled(640.))
-                            .overflow_hidden()
-                            .child(search),
-                    )
-                    .child(go),
-            );
+            .flex_none()
+            .w(scaled(300.))
+            .min_w(px(0.))
+            .overflow_hidden()
+            .child(self.ssh_home.search.clone())
+    }
+
+    /// The screen's primary action: open what the box names.
+    ///
+    /// A red filled square with a `⏎` in it used to sit here: sid's most emphatic
+    /// affordance, spent on "submit this text field", while the tab's actual primary
+    /// verb had no button at all. Now it is a labelled button and says which of the
+    /// box's two jobs it performs — the same box is also the list filter, and typing in
+    /// it never needs this. It is the screen's ONE accent (the per-card `connect` is
+    /// deliberately `Secondary`; see `host_card`).
+    fn quick_connect_go(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        Button::new("ssh-quick-connect-go", "connect")
+            .small()
+            .primary()
+            .icon(Icon::Terminal)
+            .tooltip("Open the saved connection you typed — or add it, if it isn't saved yet")
+            .on_click(
+                cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
+            )
+    }
+
+    /// What the box has to say back, if anything: the inline add row and the note left
+    /// by an Enter that named nothing. Both live under the header, above the grid.
+    fn quick_connect_answer(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::active(cx).clone();
+        let query = self.ssh_home.search.read(cx).content().to_string();
+        let matched = saved_match(&self.hosts, &query).is_some();
+        let mut out: Vec<AnyElement> = Vec::new();
         // The inline add row — issue #2's headline. It appears the moment what is typed
         // stops naming anything saved, which is also the moment the grid below has
         // nothing left to show; before this, that state was a dead end with a "clear the
@@ -968,31 +1008,45 @@ impl AppState {
             let seed = add_seed(&query);
             let label: SharedString =
                 format!("add {} as a connection…", seed_display(&seed)).into();
-            col = col.child(
-                Row::new("ssh-quick-add")
-                    .leading(
-                        Icon::Add
-                            .el()
-                            .size(px(14.))
-                            .text_color(rgb(t.accent))
-                            .into_any_element(),
+            out.push(
+                div()
+                    .flex_none()
+                    .px_2()
+                    .pt_1()
+                    .child(
+                        Row::new("ssh-quick-add")
+                            .leading(
+                                Icon::Add
+                                    .el()
+                                    .size(px(14.))
+                                    .text_color(rgb(t.accent))
+                                    .into_any_element(),
+                            )
+                            .child(div().text_body(&t).clamp_one_line().child(label))
+                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                                this.open_seeded_add_form(seed.clone(), window, cx);
+                            })),
                     )
-                    .child(div().text_body(&t).clamp_one_line().child(label))
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                        this.open_seeded_add_form(seed.clone(), window, cx);
-                    })),
+                    .into_any_element(),
             );
         }
-        // What used to live here: "saved connections below · double-click a name to
-        // rename · right-click for more" — 12px of muted prose doing the job of three
+        // What used to live beside this: "saved connections below · double-click a name
+        // to rename · right-click for more" — 12px of muted prose doing the job of three
         // controls. Every one of those interactions still works; none of them is
         // documentation-only any more. What lives here now is the answer to an Enter that
         // hit nothing, and it is a `caveat` rather than an error: typing the name of a
         // machine you have not saved yet is not a mistake.
         if let Some(note) = &self.ssh_home.quick_note {
-            col = col.child(caveat_line(note.clone()));
+            out.push(
+                div()
+                    .flex_none()
+                    .px_3()
+                    .pt_1()
+                    .child(caveat_line(note.clone()))
+                    .into_any_element(),
+            );
         }
-        col
+        out
     }
 
     /// `⏎` / the `connect` button: open the saved connection the box *names*, or — when
@@ -1302,7 +1356,7 @@ impl AppState {
         let files = {
             let host = host.clone();
             let key = key.clone();
-            IconButton::new(slot("ssh-card-files"), Icon::File, "browse files (SFTP)")
+            IconButton::new(slot("ssh-card-files"), Icon::File, "Browse files (SFTP)")
                 .small()
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.row_browse_files(host.clone(), key.clone(), window, cx);
@@ -1311,15 +1365,11 @@ impl AppState {
         let edit = {
             let host = host.clone();
             let origin = origin.clone();
-            IconButton::new(
-                slot("ssh-card-edit-btn"),
-                Icon::Settings,
-                "edit this connection",
-            )
-            .small()
-            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                this.open_edit_form(host.clone(), origin.clone(), window, cx);
-            }))
+            IconButton::new(slot("ssh-card-edit-btn"), Icon::Settings, "Edit connection")
+                .small()
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                    this.open_edit_form(host.clone(), origin.clone(), window, cx);
+                }))
         };
 
         // The body click. One click picks the card up, two open it — see
