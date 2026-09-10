@@ -146,13 +146,20 @@ Every item is gated by before/after captures in all four themes and a
 |:--|:--|:--|:--|
 | 1 | init error (GPU preflight panic) | **fixed** in July, still open on GitHub | close it |
 | 2 | quick connect: add connection from the field | **merged** (`p2-quick-connect`, 2026-09-09) | inline `add user@host…` row opens the prefilled add form; Enter on an unknown host opens that form instead of dialling; scan `~/.ssh` for keys, prefer `id_ed25519` then `id_rsa`; when agent auth is chosen and `SSH_AUTH_SOCK` is unset, say so and offer key auth |
-| 3 | std ctrl operations in fields (ctrl+backspace, ctrl+shift+arrows, Tab) | `sid-ui` `TextInput` shipped with these; **old `ui/text_input.rs` still used by `host_form`, `db_conn_form`, `app.rs`** | finish the migration, then verify in every form |
+| 3 | std ctrl operations in fields (ctrl+backspace, ctrl+shift+arrows, Tab) | **done** 2026-09-09: every field is a `sid-ui` input; old widget deleted | finish the migration, then verify in every form |
 | 4 | ctrl `+` / `-` zoom | **merged** (`p4-zoom`, 2026-09-09) | one scale factor for the whole UI including the terminal grid (reflows cells), persisted in `Settings`, clamped 50–200%, ctrl+0 resets |
 
 - [ ] Close #1 (needs a GitHub token or Murphy; the GitHub MCP connector failed to
       authenticate this session and `gh` is not installed).
-- [ ] #3: migrate the remaining call sites to `sid_ui` inputs, then **delete
-      `crates/sid/src/ui/text_input.rs`** (959 lines duplicating `gpui_component::input`).
+- [x] #3 done 2026-09-09: twelve call sites (not three) migrated to `sid_ui` inputs across
+      every tab, both forms, the palette, the password prompt and the config editor;
+      `crates/sid/src/ui/text_input.rs` (971 lines) deleted, net −1049 lines. Masking, tab
+      order, Enter/Esc, seed prefill and key chips verified by capture.
+- [ ] Follow-up from #3: **modals do not trap focus.** `window.focus_next()` walks the
+      window's flat tab-stop list, so Tab off a modal's last field can land on a background
+      field (SSH home's search box, Database's result filter). Needs a focus-trap primitive in
+      `sid-ui` (`Modal` owns a tab group and wraps at its ends); belongs with the interaction
+      states pass.
 - [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
 - [x] #4 as decided above (merged 2026-09-09; live-verified: `stty size` 56x113 at 100%,
       35x75 at 150% over the docker sshd fixture; `SID_UI_SCALE` env override for captures).
