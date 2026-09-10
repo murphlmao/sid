@@ -57,19 +57,26 @@ pub trait StyledExt: Styled + Sized {
 
     /// One line of text, cut with a real `…` when it does not fit.
     ///
-    /// **Use this, not `gpui`'s `truncate()`.** They mean the same thing and only one of
-    /// them works. `truncate()` sets `white_space: Nowrap` alongside the ellipsis, and
-    /// `TextElement`'s measured-layout cache (see `elements/text.rs`) keys itself on
-    /// `wrap_width`, which is *always* `None` under `Nowrap`. So the first measure pass —
-    /// taffy's intrinsic sizing, where the available width is `MaxContent` and there is
-    /// nothing to truncate *to* — caches the full-width layout, and the second pass, the
-    /// one that finally knows how wide the element is, hits that cache and returns early
-    /// without ever truncating. The text then gets hard-clipped by `overflow_hidden`,
-    /// mid-glyph, with no ellipsis: an SSH card read `prod-eu-west-1-application-serv`
-    /// jammed against its origin chip.
+    /// Still the right spelling, not `gpui`'s `truncate()` — even though the bug this
+    /// helper was written for is now fixed upstream. `truncate()` sets `white_space:
+    /// Nowrap` alongside the ellipsis, which used to pin `TextElement`'s measured-layout
+    /// cache's `wrap_width` to `None`: the intrinsic-sizing pass cached the full-width
+    /// layout, and the second pass — the one that actually knows the element's width — hit
+    /// that cache and returned before truncating. gpui-pre 0.3.4 fixed it: the cache in
+    /// `elements/text.rs` now also keys on `truncate_width` and skips itself whenever
+    /// truncation is in play, so `truncate()` would truncate correctly today.
     ///
-    /// Clamping to one line instead leaves `white_space` at `Normal`, so the second pass
-    /// carries a real `wrap_width`, misses the cache, and truncates with the suffix.
+    /// Two reasons this still isn't `self.truncate()`: `tests/hygiene.rs`'s
+    /// `no_banned_calls` bans the literal `.truncate(` spelling outright, upstream fix or
+    /// not, so it's still the wrong call to type. And ~40 call sites already name *this*
+    /// helper — it is the seam that matters, not which `gpui` primitive sits behind it.
+    /// `line_clamp(1)` + `text_ellipsis()` leaves `white_space` at `Normal`, so it never
+    /// depended on the bug (fixed or not) to begin with, and stays the body.
+    ///
+    /// Unrelated and still open: `gpui` reports a text element's min-content width as its
+    /// *full* string width, so callers still need their own `min_w(0)` (plus `flex_none()`
+    /// on the sibling that must not grow) alongside this call — see the Landmines in
+    /// `docs/design/2026-07-27-session-resume.md`. This helper does not fold that in.
     fn clamp_one_line(self) -> Self {
         self.line_clamp(1).text_ellipsis()
     }

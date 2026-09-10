@@ -429,3 +429,16 @@ commits; do not invent one).
   whole at 700px. Gate: fmt, clippy, 51 suites, `hygiene.rs` green. Captures: three tabs ×
   {1920, cosmos-light, 700x900}, both selected states, all five Network sub-views, the query
   run and EXPLAIN panels, and a real git repo registered live to reach Branches/Status/Log.
+- 2026-09-09: §1 follow-up (retire `clamp_one_line()`) checked and left open, doc-only change
+  on `clamp-retire`. `clamp_one_line()`'s body (`line_clamp(1).text_ellipsis()`) never used
+  `white_space: Nowrap`, so it never depended on the cache bug gpui-pre 0.3.4 fixed — nothing
+  to retire in the implementation. Two reasons to keep the seam rather than inline gpui's now-
+  fixed `truncate()` at its ~40 call sites: `tests/hygiene.rs`'s `no_banned_calls` still bans
+  the literal `.truncate(` spelling outright, upstream fix or not; and the helper name is the
+  contract, not which primitive backs it. Doc comment updated to say so. Confirmed the other
+  two Landmines are still open and unrelated: every examined call site (`workspaces_tab.rs`,
+  `network_tab.rs`, `db_tab.rs`) still pairs its own `min_w(0)` beside `.clamp_one_line()` —
+  that half of the fix trio stays a caller responsibility, not folded into the helper. Gate:
+  fmt, clippy, 51 suites green. Captures at 900x700 (Workspaces, Network → Ports, Database,
+  and Workspaces in cosmos-light): every long path/address ellipsizes inside its box, nothing
+  overflows or pushes a sibling off the right edge.
