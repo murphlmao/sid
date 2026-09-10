@@ -40,8 +40,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
-use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, StyledExt as _, Typography as _, UiScale, scaled, theme, v_flex};
+use crate::ui::is_field_submit;
+use sid_ui::{InputState, Row, StyledExt as _, TextInput, Typography as _, UiScale, scaled, theme, v_flex};
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
 /// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
@@ -365,7 +365,7 @@ pub struct SshSession {
     show_hidden: bool,
     /// The "go to path" toolbar field (P5.3) — navigates the whole remote filesystem, not
     /// just child directories.
-    goto_input: Entity<TextInput>,
+    goto_input: Entity<InputState>,
     /// `view`'s open preview, if any (P5.3).
     preview: Option<Preview>,
     /// Which side of the terminal the file sidebar renders on (ssh-v3). Initialized from
@@ -393,6 +393,7 @@ impl SshSession {
         secret: Result<Option<Vec<u8>>, String>,
         known_hosts_path: PathBuf,
         dock_side: PanelSide,
+        window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
@@ -415,7 +416,7 @@ impl SshSession {
                 sidebar_width_pref: None,
                 sidebar_drag: None,
                 show_hidden: true,
-                goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
+                goto_input: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/go")),
                 preview: None,
                 dock_side,
             };
@@ -797,7 +798,7 @@ impl SshSession {
     /// Read the "go to path" field and navigate there. A bare (non-absolute) entry is rooted
     /// (`etc` -> `/etc`) — the field navigates the filesystem, not the current directory.
     fn goto_submit(&mut self, cx: &mut Context<Self>) {
-        let target = self.goto_input.read(cx).content().trim().to_string();
+        let target = self.goto_input.read(cx).value().trim().to_string();
         if target.is_empty() {
             return;
         }
@@ -2039,17 +2040,12 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    // `v_flex`, not a plain `div`: a `TextInput` sizes itself entirely in
-                    // percentages, and a `display: block` parent doesn't resolve them —
-                    // the field collapsed to its own padding and border, a ~20px stub
-                    // that swallowed clicks aimed at the field you could see. A flex
-                    // column stretches it to a real width on the cross axis, which is
-                    // exactly why the stacked form fields never had this bug.
-                    //
-                    // Enter submits, same as clicking `Go`. `TextInput` claims neither
-                    // Enter nor Escape, so the wrapper can take it — the technique
-                    // `db_tab`'s inline rename rows use for the same shape (one field,
-                    // one button beside it).
+                    // Enter submits, same as clicking `Go`. `sid_ui::TextInput` declares
+                    // its own width and the library's single-line `Input` propagates an
+                    // unhandled Enter (see `sid_ui::input`'s module doc), so this ancestor
+                    // `on_key_down` still gets first look — the technique `db_tab`'s
+                    // inline rename rows use for the same shape (one field, one button
+                    // beside it).
                     .child(
                         v_flex()
                             .id("session-goto-field")
@@ -2061,7 +2057,7 @@ impl SshSession {
                                     session.goto_submit(cx);
                                 }
                             }))
-                            .child(self.goto_input.clone()),
+                            .child(TextInput::new(&self.goto_input)),
                     )
                     .child(go),
             )

@@ -68,8 +68,13 @@ use gpui::{
 };
 use gpui_component::{
     Sizable as _,
-    input::{IndentInline, Input, InputEvent, InputState, OutdentInline},
+    input::{IndentInline, Input, InputEvent, OutdentInline},
 };
+
+// Re-exported so `crates/sid` can hold `Entity<InputState>` fields and build masked
+// fields (`InputState::new(window, cx).masked(true)`) without naming `gpui_component`
+// itself — the one type the app crate needs by name, not just by wrapper.
+pub use gpui_component::input::InputState;
 
 use crate::button::ButtonSize;
 use crate::icon::Icon;

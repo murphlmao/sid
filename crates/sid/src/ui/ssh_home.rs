@@ -41,11 +41,11 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote};
-use crate::ui::{SessionStatus, TextInput, host_form};
+use crate::ui::{SessionStatus, host_form};
 use sid_ui::{
-    Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, Row,
-    StatusDot, StatusLegend, StyledExt as _, Typography as _, card::header_text, caveat_line,
-    h_flex, scaled, theme, v_flex,
+    Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, InputState, List,
+    Row, StatusDot, StatusLegend, StyledExt as _, TextInput, Typography as _, card::header_text,
+    caveat_line, h_flex, scaled, theme, v_flex,
 };
 
 actions!(
@@ -78,12 +78,12 @@ enum InlineEdit {
     Rename {
         alias: String,
         origin: Scope,
-        input: Entity<TextInput>,
+        input: Entity<InputState>,
     },
     Folder {
         alias: String,
         origin: Scope,
-        input: Entity<TextInput>,
+        input: Entity<InputState>,
     },
 }
 
@@ -106,7 +106,7 @@ pub(crate) struct HomeTabState {
     collapsed_folders: HashSet<String>,
     /// Quick-connect / filter box: as-you-type substring filter over the grid, and — on
     /// Enter — either the saved connection the text *names* or an invitation to add it.
-    search: Entity<TextInput>,
+    search: Entity<InputState>,
     /// The row currently mid-rename or mid-folder-edit, if any.
     edit: Option<InlineEdit>,
     /// What the box's last Enter had to say, shown under it until the next attempt or
@@ -157,13 +157,15 @@ impl HomeTabState {
     /// (`Ctrl+F` / `Ctrl+/`) handler for the SSH tab, which used to be a no-op here
     /// because Network was the only tab with a filter wired up.
     pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut gpui::App) {
-        TextInput::focus(&self.search, window, cx);
+        self.search.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<AppState>) -> Self {
         Self {
             collapsed_folders: HashSet::new(),
-            search: cx.new(|cx| TextInput::new(cx, "user@host[:port] — filter, connect, or add")),
+            search: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("user@host[:port] — filter, connect, or add")
+            }),
             edit: None,
             quick_note: None,
             right_click_target: None,
@@ -582,7 +584,7 @@ impl AppState {
     /// This IS the connection manager; there is no second list anywhere (the old
     /// sidebar/main split showed the same hosts twice).
     pub(crate) fn ssh_home_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.ssh_home.search.read(cx).content().to_string();
+        let query = self.ssh_home.search.read(cx).value().to_string();
         let filtered = filter_hosts(&self.hosts, &query);
         let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
         let empty = home_empty(self.hosts.len(), owned.len());
@@ -706,8 +708,10 @@ impl AppState {
                 .action(
                     Button::new("ssh-empty-clear", "clear filter")
                         .icon(Icon::Close)
-                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                            this.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.ssh_home
+                                .search
+                                .update(cx, |input, cx| input.set_value("", window, cx));
                             this.ssh_home.quick_note = None;
                             cx.notify();
                         })),
@@ -898,7 +902,7 @@ impl AppState {
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx).clone();
         let search = self.ssh_home.search.clone();
-        let query = self.ssh_home.search.read(cx).content().to_string();
+        let query = self.ssh_home.search.read(cx).value().to_string();
         let matched = saved_match(&self.hosts, &query).is_some();
         // A red filled square with a `⏎` in it used to sit here: sid's most emphatic
         // affordance, spent on "submit this text field", while the tab's actual primary
@@ -954,7 +958,7 @@ impl AppState {
                             .min_w(px(0.))
                             .max_w(scaled(640.))
                             .overflow_hidden()
-                            .child(search),
+                            .child(TextInput::new(&search)),
                     )
                     .child(go),
             );
@@ -1005,7 +1009,7 @@ impl AppState {
     /// is one it can open again tomorrow. The cost is one dialog on first use of a host;
     /// the price it replaces is a session you cannot find twice.
     fn quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.ssh_home.search.read(cx).content().to_string();
+        let text = self.ssh_home.search.read(cx).value().to_string();
         match quick_enter(&self.hosts, &text) {
             QuickEnter::Nothing => {
                 self.ssh_home.quick_note = None;
@@ -1044,7 +1048,7 @@ impl AppState {
             return;
         };
         self.ssh_home.quick_note = None;
-        self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+        self.ssh_home.search.update(cx, |input, cx| input.set_value("", window, cx));
         self.row_primary_action(host, (alias.to_string(), origin.clone()), window, cx);
     }
 
@@ -1100,7 +1104,7 @@ impl AppState {
             return;
         };
         self.ssh_home.quick_note = None;
-        self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+        self.ssh_home.search.update(cx, |input, cx| input.set_value("", window, cx));
         self.connect_host(
             host,
             Some((submitted.alias.clone(), target.clone())),
@@ -1433,7 +1437,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = theme::active(cx).clone();
-        let (input, flag): (Entity<TextInput>, &'static str) = match edit {
+        let (input, flag): (Entity<InputState>, &'static str) = match edit {
             InlineEdit::Rename { input, .. } => (input.clone(), "renaming · Enter/Esc"),
             InlineEdit::Folder { input, .. } => (input.clone(), "folder · Enter/Esc"),
         };
@@ -1452,7 +1456,7 @@ impl AppState {
                     // Same `min_w(0) + overflow_hidden` clip as the quick-connect box —
                     // a long in-progress rename/folder value must not bleed out of the
                     // card it belongs to.
-                    .child(div().w_full().min_w(px(0.)).overflow_hidden().child(input))
+                    .child(div().w_full().min_w(px(0.)).overflow_hidden().child(TextInput::new(&input)))
                     .child(div().text_meta(&t).text_color(rgb(t.accent)).child(flag)),
             )
             .into_any_element()
@@ -1468,11 +1472,11 @@ impl AppState {
     ) {
         let seed = alias.clone();
         let input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx, "alias");
-            ti.set_content(seed, cx);
-            ti
+            let mut state = InputState::new(window, cx).placeholder("alias");
+            state.set_value(seed, window, cx);
+            state
         });
-        TextInput::focus(&input, window, cx);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.ssh_home.edit = Some(InlineEdit::Rename {
             alias,
             origin,
@@ -1491,13 +1495,13 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let input = cx.new(|cx| {
-            let mut ti = TextInput::new(cx, "folder (blank = none)");
+            let mut state = InputState::new(window, cx).placeholder("folder (blank = none)");
             if let Some(f) = current {
-                ti.set_content(f, cx);
+                state.set_value(f, window, cx);
             }
-            ti
+            state
         });
-        TextInput::focus(&input, window, cx);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.ssh_home.edit = Some(InlineEdit::Folder {
             alias,
             origin,
@@ -1525,7 +1529,7 @@ impl AppState {
                 origin,
                 input,
             } => {
-                let new_alias = input.read(cx).content().trim().to_string();
+                let new_alias = input.read(cx).value().trim().to_string();
                 if new_alias.is_empty() || new_alias == alias {
                     cx.notify();
                     return;
@@ -1541,7 +1545,7 @@ impl AppState {
                 origin,
                 input,
             } => {
-                let folder = input.read(cx).content().trim().to_string();
+                let folder = input.read(cx).value().trim().to_string();
                 let folder = if folder.is_empty() {
                     None
                 } else {

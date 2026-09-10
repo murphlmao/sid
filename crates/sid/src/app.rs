@@ -302,6 +302,7 @@ impl AppState {
         secrets_degraded: bool,
         secrets_status: String,
         render_soft_reason: Option<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let db = DbTabState::new(&store, &Scope::Global, ViewFilters::default());
@@ -346,11 +347,11 @@ impl AppState {
             active_session: None,
             file_browser_side,
             ui_scale,
-            ssh_home: HomeTabState::new(cx),
+            ssh_home: HomeTabState::new(window, cx),
             db,
             network,
             systems,
-            workspaces: WorkspacesTabState::new(cx),
+            workspaces: WorkspacesTabState::new(window, cx),
             settings,
             password_prompt: None,
             _password_prompt_subscription: None,
@@ -615,7 +616,7 @@ impl AppState {
             self.open_password_prompt(label, PendingSecretPrompt::Ssh { host, source }, window, cx);
             return;
         }
-        self.finish_connect(host, source, secret, cx);
+        self.finish_connect(host, source, secret, window, cx);
     }
 
     /// The connect-or-open half of [`Self::connect_host`], split out so the password
@@ -627,11 +628,13 @@ impl AppState {
         host: Host,
         source: Option<(String, Scope)>,
         secret: Result<Option<Vec<u8>>, String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let label: SharedString = format!("{}@{}", host.user, host.host).into();
         let known_hosts_path = data_dir().join("known_hosts");
-        let session = SshSession::open(host, secret, known_hosts_path, self.file_browser_side, cx);
+        let session =
+            SshSession::open(host, secret, known_hosts_path, self.file_browser_side, window, cx);
         let dock_toggle = cx.subscribe(&session, Self::on_session_event);
         self.ssh_sessions.push(SshTab {
             label,
@@ -845,7 +848,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let modal = cx.new(|cx| PasswordPromptModal::new(cx, label));
+        let modal = cx.new(|cx| PasswordPromptModal::new(window, cx, label));
         modal.update(cx, |it, cx| it.focus_first(window, cx));
         self._password_prompt_subscription =
             Some(cx.subscribe_in(&modal, window, Self::on_password_prompt_event));
@@ -892,7 +895,7 @@ impl AppState {
                         .secrets
                         .put(&SecretId::new(secret_ref), password.as_bytes());
                 }
-                self.finish_connect(host, source, Ok(Some(password.into_bytes())), cx);
+                self.finish_connect(host, source, Ok(Some(password.into_bytes())), window, cx);
             }
             PendingSecretPrompt::Db { secret_ref, retry } => {
                 let _ = self
