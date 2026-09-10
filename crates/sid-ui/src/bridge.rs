@@ -122,8 +122,10 @@ pub fn dark_ink(t: &Theme) -> u32 {
 /// A label colour that stays readable on top of `fill`.
 ///
 /// Replaces the "near-black label" hack that filled badges hand-rolled: derived from
-/// the fill's own brightness, so amber `warning` gets dark ink and dark-red `accent`
-/// gets light ink, in every palette, without a raw hex literal.
+/// the fill's own brightness, not from the tone's name, without a raw hex literal. The
+/// dark palettes' pale amber `warning` gets dark ink and their dark-red `accent` gets
+/// light ink — and cosmos-light, whose `warning` has to be a deep amber to be readable
+/// as text, gets a light label on that same badge.
 pub fn contrast_ink(t: &Theme, fill: u32) -> u32 {
     if brightness(fill) > 0.5 {
         dark_ink(t)
@@ -499,16 +501,24 @@ mod tests {
     }
 
     #[test]
-    fn warning_gets_dark_ink_and_accent_gets_light_ink() {
-        // Pins the two cases that motivated the helper: amber fills need near-black
-        // labels (what `app.rs`'s badges hard-coded), dark-red accents need white —
-        // including on cosmos-light, whose `fg_strong` is pure black.
-        for t in [cosmos(), void(), cosmos_light()] {
+    fn the_ink_follows_the_fill_not_the_tone_name() {
+        // Pins the cases that motivated the helper: a *pale* amber fill needs a
+        // near-black label (what `app.rs`'s badges hard-coded), a dark-red accent needs
+        // white — including on cosmos-light, whose `fg_strong` is pure black.
+        for t in [cosmos(), void(), dusk()] {
             assert_eq!(contrast_ink(&t, t.warning), dark_ink(&t), "{}", t.name);
+        }
+        for t in [cosmos(), void(), cosmos_light()] {
             assert_eq!(contrast_ink(&t, t.accent), light_ink(&t), "{}", t.name);
         }
         // dusk's accent is a bright amber-orange: dark ink, like a warning.
         assert_eq!(contrast_ink(&dusk(), dusk().accent), dark_ink(&dusk()));
+        // And the mirror image — the whole reason the ink is derived from the fill
+        // rather than the tone's name: cosmos-light's `warning` is a DEEP amber (a pale
+        // one cannot be read as text on an off-white canvas), so the same helper hands
+        // that badge a light label, like the rest of that palette's filled swatches.
+        let light = cosmos_light();
+        assert_eq!(contrast_ink(&light, light.warning), light_ink(&light));
     }
 
     #[test]

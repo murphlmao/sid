@@ -139,6 +139,17 @@ pub fn dusk() -> Theme {
 }
 
 /// Light variant of cosmos — off-white canvas, darkened accents.
+///
+/// A hue that reads as "amber" or "cyan" against a near-black canvas is a *pale* one,
+/// and pale ink on an off-white canvas is a smear: this palette used to carry cosmos's
+/// tones over at roughly their original lightness, so `warning`, `success` and `muted`
+/// all sat under the 4.5:1 floor as text (2.9, 3.7 and 4.1 against `surface`). The
+/// status hues are now the *dark* member of their family — the same amber and teal,
+/// deep enough to read as a sentence, as a 1px outline badge and as a status dot on
+/// any of the three light surfaces. That flips which ink a filled swatch wants, and
+/// [`crate::bridge::contrast_ink`] flips with it: the solid warning badge takes a light
+/// label here, like every other tone in this palette. The fill follows the token, so no
+/// call site has to know.
 pub fn cosmos_light() -> Theme {
     Theme {
         name: "cosmos-light",
@@ -148,11 +159,11 @@ pub fn cosmos_light() -> Theme {
         border: 0xd0d0dc,
         fg: 0x181824,
         fg_strong: 0x000000,
-        muted: 0x707082,
+        muted: 0x5c5c6e,
         faint: 0xa0a0b0,
         accent: 0xb03030,
-        success: 0x408090,
-        warning: 0xb08030,
+        success: 0x246e7c,
+        warning: 0x8a5f1a,
         danger: 0xc03040,
         selection: 0xdedee8,
         ansi: [
@@ -291,6 +302,59 @@ mod tests {
             let lum = |c: u32| ((c >> 16 & 0xff) + (c >> 8 & 0xff) + (c & 0xff)) / 3;
             assert!(lum(t.fg) > lum(t.bg) + 120, "{}: fg readable", t.name);
             assert!(lum(t.muted) > lum(t.bg) + 80, "{}: muted readable", t.name);
+        }
+    }
+
+    /// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`.
+    fn contrast(a: u32, b: u32) -> f32 {
+        let luminance = |c: u32| {
+            let channel = |shift: u32| {
+                let v = ((c >> shift) & 0xff) as f32 / 255.;
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        };
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn the_light_palettes_inks_clear_aa_on_every_surface_they_land_on() {
+        // The light pass's guard. On a dark canvas the status hues are *pale*, so they
+        // clear AA by construction and only `bg` was ever worth checking; on an
+        // off-white canvas the same hues have to be dark, and an ink checked against
+        // `bg` alone still smears on a card. So this sweeps every text bed.
+        //
+        // Not run over the dark built-ins on purpose: cosmos's `accent` is a fill-first
+        // token that sits at 4.1:1 as text there, which is a separate (pre-existing)
+        // decision, not something this palette's floor should silently re-open.
+        //
+        // `faint` is exempt everywhere — it is the decorative/disabled tone, the one
+        // thing meant to recede (~2.2:1 in every built-in, dark ones included).
+        // `selection` is exempt as a bed: it is a row fill, and a row's ink is `fg`.
+        for t in [cosmos_light()] {
+            for (ink_name, ink) in [
+                ("fg", t.fg),
+                ("fg_strong", t.fg_strong),
+                ("muted", t.muted),
+                ("accent", t.accent),
+                ("success", t.success),
+                ("warning", t.warning),
+                ("danger", t.danger),
+            ] {
+                for (bed_name, bed) in [("bg", t.bg), ("surface", t.surface), ("well", t.well)] {
+                    let ratio = contrast(ink, bed);
+                    assert!(
+                        ratio >= 4.5,
+                        "{}: {ink_name} on {bed_name} is {ratio:.2}:1",
+                        t.name
+                    );
+                }
+            }
         }
     }
 
