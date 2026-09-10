@@ -12,8 +12,9 @@ today with `scripts/sid-shot.sh` (two of seven captures grabbed the wrong output
 The July UI overhaul plan (`2026-07-26-ui-overhaul-plan.md`) is mostly executed: `sid-ui`
 exists with ~30 modules (buttons, badges, cards, toolbar, tables with fill-width columns,
 modal, toast, inputs, type scale, theme bridge), all six tabs sit on it, and the gallery
-renders coherently. `docs/HANDOFF.md` is two months stale and describes a much earlier state.
-The resume doc `2026-07-27-session-resume.md` is the accurate one.
+renders coherently. `docs/HANDOFF.md` was two months stale as of this morning; it has since
+been rewritten from the current tree (see its own "Last verified" line) and is the accurate
+orientation doc again — this checklist's Log section is now the changelog layered on top of it.
 
 What is left is not "the UI is broken" but "the UI is a set of correct panels that do not yet
 read as one application". The gaps below are visible in today's captures.
@@ -504,3 +505,11 @@ commits; do not invent one).
   Captures: Database and Network at 700x900 (`RESULTS`/`PORTS` read whole), Database with the
   demo sqlite connection selected (diagram icon visible), and the gallery at 2000x2400
   (`ICON · 52`, `Icon::Diagram` included).
+- 2026-09-09: `docs/HANDOFF.md` rewritten from the current tree on branch `handoff`
+  (worktree `~/vcs/sid-wt/handoff`, not merged). Verified against source rather than
+  copied forward: 51 suites / 1580 tests passing at `main` @ 066baa2, the six-tab keymap
+  in `keymap.rs`, the `sid-cap.sh` flag set, the `sid-ui` module list, and that
+  `docs/ci/github-actions-ci.yml` is still not under `.github/`. Also fixed this file's
+  "Where the project actually stands" paragraph, which pointed at the old HANDOFF as
+  stale and the session-resume doc as the accurate one — backwards now that HANDOFF is
+  current again.
