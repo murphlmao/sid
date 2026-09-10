@@ -44,19 +44,31 @@ A registry-only upgrade path now exists:
 | `gpui-component` | 0.5.1 | 0.6.1 (2026-09-09) | depends on `gpui-pre ^0.3.1`; crate split into `gpui-base` / `gpui-kit` / assets |
 | `gpui-component-assets` | 0.5.1 | replaced by `gpui-kit-assets` 0.6.1 | icon registry path may change |
 
-- [ ] **Upgrade spike** (own worktree, timeboxed to one loop iteration): bump to
+- [x] **Upgrade spike** — DONE 2026-09-09, merged to main. gpui-pre 0.3.4 + gpui-pre-platform
+      + gpui-component 0.6.1 + gpui-kit-assets 0.6.1. 29 files, ~50 min. Churn: `Window::focus`
+      takes `&mut App`, `Line::paint` takes `TextAlign`, `Table` → `DataTable`, `InputState` split
+      (`EditorState` for code editors), `Style::text` no longer `Option`, `flex_grow(f)`. Zero of
+      the ~450 `div()` sites changed. One regression caught by A/B capture and fixed in
+      `sid-ui` `Button`: 0.6 draws a `Custom` variant's rest fill at 20% alpha and drops its
+      border. Original spec: bump to
       `gpui-pre` 0.3.4 + `gpui-pre-platform` + `gpui-component` 0.6.1, fix the entry point
       (`Application::new()` becomes the platform crate's application constructor), the
       `sid-ui` theme bridge (`ThemeColor` field set), the Table/Input/menu/tooltip call
       sites (16 direct `gpui_component::` uses in `sid`), and whatever `Styled`/element API
       churn hits the ~450 `div()` sites. Gate: clean build, clippy, tests, gallery + six
       tabs captured in all four themes with no regressions. Merge if green.
-- [ ] If the spike does not converge in one iteration: park the branch, record the blockers
-      in this file, and run the visual work on 0.2.2. The `sid-ui` crate exists exactly so
-      that a later migration has one blast radius.
-- [ ] After the upgrade, re-test the three gpui landmines from the resume doc (`truncate()`
-      never ellipsizes, text min-content width equals full width, `h_flex()` zero-height
-      table) and delete the workarounds that newer gpui makes unnecessary.
+- [x] (moot: the spike converged.)
+- [x] Landmines re-tested against gpui-pre 0.3.4 source: `truncate()` is FIXED upstream
+      (`text.rs` caches `truncate_width`; `TruncateStart`/`TruncateMiddle` added); text
+      min-content width, `h_flex()` zero height, and `Window::refresh` mid-draw are UNCHANGED,
+      keep those workarounds. `Column.width` is still `Pixels`-only in 0.6.1, so `FillTable` stays.
+- [ ] Follow-up: retire `clamp_one_line()` (~40 call sites) in favour of gpui's fixed
+      `truncate()`, after a targeted render check on the longest strings (workspace paths,
+      IPv6 addresses, DB connection paths) in all four themes.
+- [ ] Follow-up: `gpui-kit-assets` 0.6.1 ships all 1830 Lucide icons (0.5.1 had 86). Give
+      `Icon::Trash` a bin (not `circle-x`), `Icon::Rename` a pencil (not `replace`), and real
+      glyphs to Database Run/Export and Network's Docker/Kubernetes/Interfaces sub-views. Each
+      is a decision about a live screen; do them in the cohesion pass for that tab.
 
 Recommended order: spike **first**. Doing the visual passes on 0.2.2 and migrating afterwards
 means verifying every screen twice.
@@ -219,3 +231,7 @@ commits; do not invent one).
   terminal grid re-shapes from `rem_size` each frame, no second channel. Also lands
   `fix(scripts): sid-cap's click support dies on a namespace package`, so `harness-lib`
   must merge main before it finishes.
+- 2026-09-09: gpui upgrade merged (ff to 9e2300e). Gate on the merged tree: 51 suites, 1560
+  tests (one retired icon-ratchet test), clippy clean; captures of SSH, Database, Network,
+  gallery, 150% zoom and a real ctrl+= chord all match. Lockfile grew by the gpui-pre
+  family, wgpu, accesskit and platform crates; 86 old entries dropped.
