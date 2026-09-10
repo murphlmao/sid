@@ -514,3 +514,29 @@ commits; do not invent one).
   "Where the project actually stands" paragraph, which pointed at the old HANDOFF as
   stale and the session-resume doc as the accurate one — backwards now that HANDOFF is
   current again.
+- 2026-09-09: the three "not touched, by scope" items from the interaction-states pass, on
+  `focus-followups` (not merged). The Settings rail item now calls `StyledExt::focus_ring`
+  instead of hand-rolling the same accent-on-focus border. `app.rs`'s `chrome_tab` (top bar +
+  SSH session strip) gained a pressed fill, a tab stop at index 0, and the ring; the first
+  cut reused `border_color` for both the ring and the active-tab underline and painted the
+  underline's accent on all four edges the instant a merely-selected, unfocused tab rendered
+  — caught by the `ff-tabs` capture and fixed by giving the underline its own absolutely-
+  positioned bottom bar, independent of the ring. The config editor's Save/close controls are
+  now `sid_ui::Button` (which needed a new `Button`/`IconButton::tab_index` builder — neither
+  exposed one before) at indices 1/2, after the editor buffer's own default 0. A security
+  review of the same code found a real bug in the trap this morning's modal-focus-trap pass
+  landed: the backdrop's `focus_trap` stayed registered the whole time the sudo-unlock prompt
+  was open too, so `FocusTrapManager`'s one `HashMap` held both it and the panel's own trap,
+  and which one answered `active_focus_trap` came down to iteration order — when the backdrop
+  won, Tab out of the password field could rest on the file body or Save/close behind the
+  scrim. `trap_owner(prompt_open)` now hands the one registration to the panel while it's open
+  and the backdrop while it isn't, never both; the typed password is scrubbed
+  (`close_unlock_prompt`) before the field drops on every path that closes the prompt, not
+  only the retry path that already did. Gate: fmt, clippy, workspace tests green. Captures:
+  `ff-tabs.png` (4 Tabs on SSH lands on the 4th top tab, Workspaces, ringed — confirmed 1/2/3
+  Tabs land on SSH/Database/Network in turn), `ff-rail.png` (Settings rail item ringed via the
+  shared helper, confirmed with a click into the rail first since a fresh launch's first ~13
+  Tab stops are all in the top chrome), `ff-editor.png` (opened `/etc/sudoers` — root-owned,
+  unreadable — via System → Config files, clicked unlock, 3 Tabs from the password field lands
+  back on the password field, proving the trap wraps within password ↔ cancel ↔ unlock and
+  never reaches the editor behind the scrim).
