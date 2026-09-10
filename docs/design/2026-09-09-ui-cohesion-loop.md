@@ -245,3 +245,10 @@ commits; do not invent one).
   `sid-cap.sh` verified from main against the upgraded renderer (Workspaces capture).
   Note for Murphy: while probing the Lua `hyprctl eval` API the harness agent ran an
   untargeted `hl.dsp.window.close()` on the live session; it confirmed nothing closed.
+- 2026-09-09: Settings rebuilt as a left section rail (Appearance / Behaviour /
+  Keyboard / Storage) beside a left-aligned, 880px-capped content pane of `surface`
+  panels, collapsing to a `SegmentedControl` below ~900 design px. The three
+  hand-rolled chip strips in Behaviour became `sid_ui::SegmentedControl`, the keyring
+  status became an `InlineNotice` with the restart caveat moved under the control it
+  applies to, and nav items are Tab-reachable via gpui's own tab-stop ring. Branch
+  `settings-layout`, not merged.
