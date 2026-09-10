@@ -616,7 +616,7 @@ impl AppState {
 
         v_flex()
             .flex_1()
-            .p_4()
+            .p_3()
             .gap_3()
             .child(overview)
             .child(self.system_sub_view_strip(sub_view, cx))
