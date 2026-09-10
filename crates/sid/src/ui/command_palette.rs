@@ -21,7 +21,7 @@ use gpui::{
 
 use crate::app::AppState;
 use crate::keymap::{self, Action};
-use sid_ui::{InputState, Kbd, StyledExt as _, TextInput, Typography as _, theme};
+use sid_ui::{InputState, Kbd, StyledExt as _, TextInput, Typography as _, bridge::SCRIM, theme};
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list
@@ -238,7 +238,7 @@ impl AppState {
                         .pt(px(120.))
                         .w(viewport.width)
                         .h(viewport.height)
-                        .bg(rgba(0x000000a8))
+                        .bg(rgba(SCRIM))
                         .child(
                             div()
                                 .id("palette-panel")

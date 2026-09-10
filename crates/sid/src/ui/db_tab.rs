@@ -49,7 +49,8 @@ use sid_ui::{
     Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, Elevation,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List,
     PANEL_FILTER_FLOOR, Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput,
-    Typography as _, caveat_line, error_line, h_flex, scaled, sortable_th, theme, v_flex,
+    Typography as _, bridge::SCRIM, caveat_line, error_line, h_flex, scaled, sortable_th, theme,
+    v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -1287,7 +1288,7 @@ impl AppState {
                         .justify_center()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .bg(rgba(0x000000a8))
+                        .bg(rgba(SCRIM))
                         .child(
                             div()
                                 .w(px(640.))

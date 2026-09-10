@@ -37,8 +37,9 @@ use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
     BadgeTone, Icon, IconButton, ScopeChip, ScopeOrigin, Segment, SegmentSelect, SegmentedControl,
     StatusBar, StatusDot, StatusItem, StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
-    bridge::{contrast_ink, pressed_of},
-    modal, scaled, theme, toolbar::count_label,
+    bridge::{SCRIM, contrast_ink, pressed_of},
+    modal, scaled, theme,
+    toolbar::count_label,
 };
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
@@ -1418,7 +1419,7 @@ impl AppState {
                         .justify_center()
                         .w(viewport.width)
                         .h(viewport.height)
-                        .bg(rgba(0x000000a8))
+                        .bg(rgba(SCRIM))
                         .child(
                             div()
                                 .w(scaled(420.))

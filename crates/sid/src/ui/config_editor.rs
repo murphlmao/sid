@@ -66,8 +66,8 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::focus::FocusTrapElement as _;
 use sid_ui::theme;
 use sid_ui::{
-    Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _, h_flex,
-    v_flex,
+    Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _,
+    bridge::SCRIM, h_flex, v_flex,
 };
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
@@ -664,7 +664,7 @@ impl AppState {
             .justify_center()
             .w(viewport.width)
             .h(viewport.height)
-            .bg(rgba(0x000000a8))
+            .bg(rgba(SCRIM))
             .on_action(cx.listener(|this, _: &ConfigEditorCancel, window, cx| {
                 this.dismiss_config_editor_layer(window, cx);
             }))
@@ -893,7 +893,7 @@ fn unlock_prompt_layer(
         // The canonical scrim token, not a second hand-picked black: this layer stacks
         // over the editor's own backdrop, and a scrim must darken whatever is behind it
         // rather than follow a palette.
-        .bg(rgba(sid_ui::bridge::SCRIM))
+        .bg(rgba(SCRIM))
         .child(
             v_flex()
                 .id("config-editor-unlock-prompt")
