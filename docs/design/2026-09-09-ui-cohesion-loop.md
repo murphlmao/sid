@@ -490,3 +490,19 @@ commits; do not invent one).
   bug: a `PopupMenu` is `popover` = `surface` over a `surface` panel in *all four* palettes, so
   only its hairline separates it; and the modal scrim is typed out as `rgba(0x000000a8)` at
   five call sites instead of the `bridge::SCRIM` that exists for it.
+- 2026-09-09: panel/toolbar follow-ups, on `panel-followups` (worktree branch, not merged).
+  `sid_ui::Toolbar` stays — `systems_tab.rs` still renders one outside a `Card::panel` — but
+  its box now matches `Card::panel`'s header (`px_3().py_2()` both places; the header used
+  `py(6.)`). `db_tab.rs`/`network_tab.rs` dropped their file-private `error_line`/`caveat_line`
+  copies for `sid_ui::notice`'s; confirmed against a provoked SQLite syntax error that the
+  notice still reads correctly (red icon, two-line wrap). Added `Icon::Diagram` (Lucide
+  `workflow`, not `git-fork` or `network` — the latter is already `Icon::Interfaces`), wired
+  as the Database `diagram` button's leading icon. And the narrow-header item from the
+  previous entry: `Card::panel`'s header actions cluster was `flex_none` (rigid), so a wide
+  fixed-width filter never gave up width and the title elided first; it is now `flex_initial`
+  (grow 0, shrink 1), and the Database/Network filters shrink down to a new
+  `sid_ui::PANEL_FILTER_FLOOR` (120px) before the title does. Gate: fmt, clippy
+  (`--workspace --all-targets -D warnings`), full `cargo test --workspace` all green.
+  Captures: Database and Network at 700x900 (`RESULTS`/`PORTS` read whole), Database with the
+  demo sqlite connection selected (diagram icon visible), and the gallery at 2000x2400
+  (`ICON · 52`, `Icon::Diagram` included).
