@@ -93,11 +93,23 @@ Every item is gated by before/after captures in all four themes and a
       [secondary actions] [primary action]` at one height. Today SSH has a legend strip and
       an add button, Database has a status string plus filter plus three buttons, Workspaces
       has count plus refresh plus add. Same order, same height, same gaps everywhere.
-- [ ] **Wide-window layouts.** Settings is an 880px centered column in a 2000px window with
-      dead margins on both sides. Move to a left settings nav plus content pane, or at least
-      left-align to the content gutter. SSH home: two ~340px cards then a void. Cards fill a
+- [x] **Wide-window layouts: Settings.** Done 2026-09-09: 220px section rail (Appearance ·
+      Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
+      to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
+      `SegmentedControl`s, the keyring status an `InlineNotice`. `system.md` amended.
+- [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
       responsive grid, and the home surface gets a second region (recent sessions or
       per-host last-connected) so the screen does not read as empty when it has data.
+- [ ] **Kbd chips lost their chrome under gpui-component 0.6.1** (regression the upgrade A/B
+      missed: Settings was not captured). `gpui_component::Kbd` draws no box in 0.6; the
+      keymap values in Settings → Keyboard render as bare `Ctrl+K` text. `sid-ui/src/kbd.rs`
+      must draw its own chip (surface fill, hairline, Meta role), and the gallery's KBD band
+      is the gate.
+- [ ] **`InlineNotice` clamps to one line**, so the ~140-char degraded-keyring message in
+      Settings truncates. Let a notice wrap to two lines (or split title/detail like `Toast`).
+- [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
+      compress to icons below a breakpoint or the scope chips collapse to one; ties into the
+      scope-switcher item.
 - [ ] **SSH session strip.** The `home  +` strip under the top bar is a row of tiny chips
       that looks unfinished. Make it a proper tab bar with the same height and active
       treatment as the top tabs, or fold it into the panel header.
