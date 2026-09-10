@@ -100,12 +100,7 @@ fn panel_body() -> gpui::Div {
 /// because `systems_tab.rs` still renders one outside a `Card::panel`; the box is the
 /// single contract either way.
 fn panel_header() -> gpui::Div {
-    h_flex()
-        .flex_none()
-        .justify_between()
-        .gap_3()
-        .px_3()
-        .py_2()
+    h_flex().flex_none().justify_between().gap_3().px_3().py_2()
 }
 
 /// A titled container. See the module docs for the two shapes.
