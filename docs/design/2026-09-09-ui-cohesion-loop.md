@@ -681,3 +681,26 @@ per CLAUDE.md. Agent briefs must state which decision is being extracted and nam
   phantom-row fix, three palette tokens) — no conflicts, none of it touched these seven
   files. Captures at 1920x1080 confirm each defect gone, including the db delete control
   armed and the add-host modal's radio band. Left on the branch for review.
+- 2026-09-10: Nit sweep, eight small visual decisions, on `nit-sweep` (not merged).
+  SSH home: the status-dot legend moved from a footer ~800px below the dots to one
+  Meta-role row under the CONNECTIONS header; the right-click menu's `Connect`/
+  `Rename`/`Edit…`/`Assign folder…`/`Delete` are lowercase like every other button.
+  System tab: root inset matches every other tab's `p_3` (was `p_4`); an unconfigured
+  swap now renders only the `Swap` label and `none configured` caption via
+  `Meter::hide_bar` (was an em-dash value, an empty bar, and the caption, three ways
+  of saying the same thing). Top chrome: the scope switcher and badge share one
+  right cluster with `py_1` so the track floats instead of sitting flush against the
+  bar's edges; verified no clipping at 700px. `sid_ui::bridge::raised_surface` (the
+  popover raise) now enforces a 0.06 relative-luma floor above `surface` instead of a
+  flat 7% mix — RED first
+  (`a_popover_clears_a_minimum_step_above_surface_in_every_palette` failed on
+  cosmos/void/dusk, ~0.007-0.011 relative luma against the 0.06 floor); the existing
+  4.5:1 contrast-to-fg test held unchanged (6.9-7.9:1 on the boosted palettes).
+  Settings' theme-row swatches ring in `chrome.faint` instead of `chrome.border`,
+  which was a token step from `selection`/`well` by design and disappeared under a
+  near-black/near-white swatch on the active row. Host form: the selected `~/.ssh`
+  key chip is neutral solid with an accent hairline border instead of a solid accent
+  fill, so it is no longer the loudest mark in the form; unselected chips are neutral
+  outline. Gate: fmt, clippy `--workspace --all-targets -D warnings`, `cargo test
+  --workspace` all green, zero failures. Captures at default size, void, 700x900 and
+  the add-host modal confirm each fix. Left on the branch for review.
