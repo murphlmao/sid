@@ -117,14 +117,20 @@ Every item is gated by before/after captures in all four themes and a
 | 1 | init error (GPU preflight panic) | **fixed** in July, still open on GitHub | close it |
 | 2 | quick connect: add connection from the field | **merged** (`p2-quick-connect`, 2026-09-09) | inline `add user@host…` row opens the prefilled add form; Enter on an unknown host opens that form instead of dialling; scan `~/.ssh` for keys, prefer `id_ed25519` then `id_rsa`; when agent auth is chosen and `SSH_AUTH_SOCK` is unset, say so and offer key auth |
 | 3 | std ctrl operations in fields (ctrl+backspace, ctrl+shift+arrows, Tab) | `sid-ui` `TextInput` shipped with these; **old `ui/text_input.rs` still used by `host_form`, `db_conn_form`, `app.rs`** | finish the migration, then verify in every form |
-| 4 | ctrl `+` / `-` zoom | not started | one scale factor for the whole UI including the terminal grid (reflows cells), persisted in `Settings`, clamped 50–200%, ctrl+0 resets |
+| 4 | ctrl `+` / `-` zoom | **merged** (`p4-zoom`, 2026-09-09) | one scale factor for the whole UI including the terminal grid (reflows cells), persisted in `Settings`, clamped 50–200%, ctrl+0 resets |
 
 - [ ] Close #1 (needs a GitHub token or Murphy; the GitHub MCP connector failed to
       authenticate this session and `gh` is not installed).
 - [ ] #3: migrate the remaining call sites to `sid_ui` inputs, then **delete
       `crates/sid/src/ui/text_input.rs`** (959 lines duplicating `gpui_component::input`).
 - [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
-- [ ] #4 as decided above.
+- [x] #4 as decided above (merged 2026-09-09; live-verified: `stty size` 56x113 at 100%,
+      35x75 at 150% over the docker sshd fixture; `SID_UI_SCALE` env override for captures).
+- [ ] #4 follow-up: the SFTP sidebar's own pixel arithmetic (`sidebar_metrics::MIN/MAX/
+      TERMINAL_MIN`, `plan_entry_row`'s 318/406px thresholds) is still authored at 100% against
+      an already-zoomed viewport, so size/date columns truncate at 150%. Same fix class as
+      table columns and modal geometry: scale the declarations, thread `UiScale` through
+      `sidebar_width`/`plan_entry_row`.
 
 ## 4. Backlog carried from the July resume doc
 
@@ -157,9 +163,10 @@ there evicts RAM).
 | `worktree-agent-a0dc992fc7f17e063` | none | 3 commits, 55 behind; a `sid-privileged` crate that main superseded with `sid-privfs` (c33d329, 8099059, 3c46099) | nothing to merge; delete the remote branch |
 
 - [x] `p2-quick-connect`: gate + review + merge to main (fda1893, fast-forward, 2026-09-09).
-- [ ] `p4-zoom`: finish (see the four commit messages for the design), gate, merge to main.
-- [ ] Delete `origin/worktree-agent-a0dc992fc7f17e063` (superseded), and the two merged
-      `worktree-agent-*` branches once their local branches land.
+- [x] `p4-zoom`: finished, gated on the merged tree (51 suites, 1561 tests, clippy clean),
+      merged to main 2026-09-09.
+- [x] Deleted `origin/worktree-agent-a0dc992fc7f17e063` (superseded) and the two merged
+      `worktree-agent-*` branches.
 
 ## How to run the loop
 
@@ -207,3 +214,8 @@ commits; do not invent one).
   workspace was untouched). `p2-quick-connect` merge pushed and its origin branch deleted.
   Harness agent re-briefed to drop `hyprctl keyword` and never fall back to on-screen
   capture; zoom agent re-briefed onto `sid-cap.sh`.
+- 2026-09-09: `p4-zoom` merged (one import conflict in `ssh_home.rs` against the
+  quick-connect merge, resolved as the union). Zoom rides `Window::set_rem_size`; the
+  terminal grid re-shapes from `rem_size` each frame, no second channel. Also lands
+  `fix(scripts): sid-cap's click support dies on a namespace package`, so `harness-lib`
+  must merge main before it finishes.
