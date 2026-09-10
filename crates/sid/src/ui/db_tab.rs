@@ -48,8 +48,8 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::{
     Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, Elevation,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List,
-    Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput, Theme, Typography as _, h_flex,
-    scaled, sortable_th, theme, v_flex,
+    Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput, Typography as _, caveat_line,
+    error_line, h_flex, scaled, sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -1161,52 +1161,6 @@ fn where_filter_scaffold(table: &str, column: &str) -> String {
 
 // ---- shared chrome ------------------------------------------------------------------
 
-/// An inline failure notice: the registry's error glyph, then the message.
-///
-/// The same shape `systems_tab.rs` uses (that copy is file-private, so this is a second
-/// spelling of four lines rather than an import — a candidate for `sid-ui` proper).
-/// Replaces this tab's three literal `✗` prefixes, each of which was drawn by whatever
-/// the text font had at whatever weight.
-/// The message **must** be allowed to shrink and to wrap. gpui measures a text element's
-/// min-content width as its entire string, so a flex child holding one carries an
-/// automatic minimum of the whole message: without `min_w(0)` this line does not shrink,
-/// does not wrap, and is not clipped — it simply paints past its parent. That is not
-/// theoretical here. The narrowest caller is the schema panel inside the 280px left
-/// column, with no `overflow_hidden` anywhere in its chain, so any driver error longer
-/// than about 35 characters — which is all of them — used to paint straight across the
-/// SQL editor beside it.
-///
-/// It wraps rather than clamping to one line, unlike most of the overflow fixes in this
-/// file: 280px of a `connection refused (os error 111)` is a message the reader has to
-/// act on, and one line of it would be `connection refused (os …`. A wrapped error stays
-/// inside its box, which is the invariant; a truncated one only *looks* like it does.
-fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
-    h_flex()
-        .items_start()
-        .gap_1p5()
-        .py_1()
-        .text_meta(theme)
-        .text_color(rgb(theme.danger))
-        .child(div().flex_none().child(Icon::Error.small()))
-        .child(div().flex_1().min_w(px(0.)).child(message))
-}
-
-/// An advisory line: the same shape as [`error_line`] in `muted` rather than `danger`.
-///
-/// Deliberately not the danger colour. A page-local sort ([`page_view_caveat`]) is not
-/// a failure — nothing went wrong and nothing needs fixing — it is a statement about
-/// what the numbers on screen mean. Painting it red would train the eye to skip the
-/// real errors that share this slot.
-fn caveat_line(theme: &Theme, message: &'static str) -> impl IntoElement + use<> {
-    h_flex()
-        .items_start()
-        .gap_1p5()
-        .py_1()
-        .text_meta(theme)
-        .child(div().flex_none().child(Icon::Info.small()))
-        .child(div().flex_1().min_w(px(0.)).child(message))
-}
-
 impl DbTabState {
     /// Build the DB tab state and load its initial connection list for `scope`. A read
     /// failure here is swallowed (matches `AppState::new`'s host-list bootstrap
@@ -1294,7 +1248,7 @@ impl AppState {
         let error_banner = self
             .error
             .clone()
-            .map(|e| div().px_4().hairline_b(&t).child(error_line(&t, e)));
+            .map(|e| div().px_4().hairline_b(&t).child(error_line(e)));
 
         v_flex()
             .flex_1()
@@ -1645,7 +1599,7 @@ impl AppState {
                 .p_3()
                 .gap_2()
                 .child(sql_editor)
-                .children(error_text.map(|e| error_line(&t, e))),
+                .children(error_text.map(error_line)),
         );
 
         // A plan takes the whole results slot while it is up, as its own panel rather
@@ -1688,7 +1642,7 @@ impl AppState {
                 v_flex()
                     .flex_1()
                     .min_h_0()
-                    .children(caveat.map(|c| div().px_3().child(caveat_line(&t, c))))
+                    .children(caveat.map(|c| div().px_3().child(caveat_line(c))))
                     .children(notice.map(|n| div().px_3().child(n)))
                     .child(self.results_area(cx)),
             )
@@ -2168,7 +2122,7 @@ impl AppState {
         } else if let Some(err) = &self.db.schema_error {
             div()
                 .px_2()
-                .child(error_line(&t, err.clone()))
+                .child(error_line(err.clone()))
                 .into_any_element()
         } else {
             let rows = match &self.db.schema {

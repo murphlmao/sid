@@ -100,8 +100,8 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, Segment,
-    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _, h_flex,
-    sortable_th, v_flex,
+    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _, error_line,
+    h_flex, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -1260,11 +1260,11 @@ impl AppState {
         let theme = theme::active(cx).clone();
         let sub_tab = self.network.sub_tab;
         let body: AnyElement = match sub_tab {
-            NetSubTab::Ports => self.ports_view(&theme, cx),
-            NetSubTab::Services => self.services_view(&theme, cx),
+            NetSubTab::Ports => self.ports_view(cx),
+            NetSubTab::Services => self.services_view(cx),
             NetSubTab::Interfaces => self.interfaces_view(&theme, cx),
-            NetSubTab::Docker => self.docker_view(&theme, cx),
-            NetSubTab::Kubernetes => self.kube_view(&theme, cx),
+            NetSubTab::Docker => self.docker_view(cx),
+            NetSubTab::Kubernetes => self.kube_view(cx),
         };
 
         v_flex()
@@ -1397,7 +1397,7 @@ impl AppState {
     }
 
     /// Ports: the panel header, then the fill-width table, then any probe or kill error.
-    fn ports_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn ports_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.refreshing;
         let table = self.network.table.clone();
         let count = table
@@ -1417,15 +1417,15 @@ impl AppState {
         });
 
         self.sub_view_panel(NetSubTab::Ports, count, refreshing, None, cx)
-            .children(notice_row(theme, self.network.error.clone()))
+            .children(notice_row(self.network.error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(notice_row(theme, kill_error))
+            .children(notice_row(kill_error))
             .into_any_element()
     }
 
     /// Services: the panel header (with the `system|user` scope control in it), the
     /// table, then any list or action error.
-    fn services_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn services_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.svc_refreshing;
         let scope = self.network.svc_scope;
         let table = self.network.services_table.clone();
@@ -1455,9 +1455,9 @@ impl AppState {
             // are disjoint unit sets, so `SYSTEM SERVICES · 12` and `USER SERVICES · 3`
             // are counts of different things and the header has to say which.
             .title(format!("{} services", svc_scope_label(scope)))
-            .children(notice_row(theme, self.network.svc_error.clone()))
+            .children(notice_row(self.network.svc_error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(notice_row(theme, action_error))
+            .children(notice_row(action_error))
             .into_any_element()
     }
 
@@ -1488,7 +1488,7 @@ impl AppState {
     /// `docker not installed` is an expected local-machine condition, not a failure, so it
     /// gets an [`EmptyState`] — the same component every other "nothing here" surface uses
     /// — rather than the two dim centred lines this file used to hand-roll.
-    fn docker_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn docker_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.docker_refreshing;
         let not_installed = self.network.docker_not_installed;
         let table = self.network.docker_table.clone();
@@ -1516,14 +1516,14 @@ impl AppState {
         };
 
         self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
-            .children(notice_row(theme, self.network.docker_error.clone()))
+            .children(notice_row(self.network.docker_error.clone()))
             .child(body)
             .into_any_element()
     }
 
     /// Kubernetes: toolbar (with the context control in it), then the pods table, the
     /// no-contexts state, or the graceful-absence state.
-    fn kube_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn kube_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let refreshing = self.network.kube_refreshing;
         let not_installed = self.network.kube_not_installed;
         let context_count = self.network.kube_contexts.len();
@@ -1563,7 +1563,7 @@ impl AppState {
             .kube_context_control(cx)
             .map(IntoElement::into_any_element);
         self.sub_view_panel(NetSubTab::Kubernetes, count, refreshing, secondary, cx)
-            .children(notice_row(theme, self.network.kube_error.clone()))
+            .children(notice_row(self.network.kube_error.clone()))
             .child(body)
             .into_any_element()
     }
@@ -1676,7 +1676,7 @@ impl AppState {
             }));
 
         self.sub_view_panel(NetSubTab::Interfaces, total, refreshing, None, cx)
-            .children(notice_row(theme, self.network.error.clone()))
+            .children(notice_row(self.network.error.clone()))
             .child(
                 div()
                     .id("net-ifaces-scroll")
@@ -2187,32 +2187,11 @@ fn table_pane<D: FillTableDelegate + 'static>(
     }
 }
 
-/// An inline failure notice: the registry's error glyph, then the message.
-///
-/// Both of this tab's error lines used to open with a literal `✗` — a Dingbats codepoint
-/// drawn by whatever the text font happened to have, at whatever weight, with no size or
-/// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG that
-/// inherits both.
-/// The message is a flex item that has to be *allowed* to shrink: gpui text measures the
-/// same under `MinContent` as under `MaxContent`, so without `min_w(0)` the line's
-/// automatic minimum size is the whole error string and it neither wraps nor clips — and
-/// a systemd or docker error runs to 100+ characters.
-/// An [`error_line`] carrying the padding a panel body deliberately does not supply, or
-/// nothing at all when there is no message. `flex_none` so it never eats the height the
-/// table below it is claiming.
-fn notice_row(theme: &Theme, message: Option<String>) -> Option<impl IntoElement + use<>> {
-    let theme = theme.clone();
-    message.map(move |m| div().flex_none().px_3().pt_2().child(error_line(&theme, m)))
-}
-
-fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
-    h_flex()
-        .gap_1p5()
-        .py_1()
-        .text_meta(theme)
-        .text_color(rgb(theme.danger))
-        .child(Icon::Error.small())
-        .child(div().flex_1().min_w(px(0.)).clamp_one_line().child(message))
+/// An inline failure notice: `sid_ui::error_line`'s glyph and two-line wrap, carrying the
+/// padding a panel body deliberately does not supply, or nothing at all when there is no
+/// message. `flex_none` so it never eats the height the table below it is claiming.
+fn notice_row(message: Option<String>) -> Option<impl IntoElement + use<>> {
+    message.map(|m| div().flex_none().px_3().pt_2().child(error_line(m)))
 }
 
 /// One cell of a data table: monospace, on one rung, cut with an ellipsis.
