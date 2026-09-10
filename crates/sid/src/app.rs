@@ -34,7 +34,8 @@ use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
-    ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, UiScale, modal, scaled, theme,
+    BadgeTone, Icon, ScopeChip, ScopeOrigin, StatusBar, StatusItem, StyledExt as _,
+    Typography as _, UiScale, modal, scaled, theme, toolbar::count_label,
 };
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
@@ -133,21 +134,20 @@ pub struct AppState {
     pub(crate) hosts: Vec<Attributed<Host>>,
     pub(crate) error: Option<String>,
     /// Whether the effective secret backend is degraded (memory fallback — the keyring
-    /// is disabled, or it failed the startup probe). Drives the warning badge at the
-    /// tab strip's right end (see `secret_status_badge`) and the memory-aware password
-    /// helper copy in the host/DB forms (round-D §A.5); a healthy keyring renders
-    /// nothing and shows the normal copy. `pub(crate)` so `ui::host_form`/
+    /// is disabled, or it failed the startup probe). Chooses the status bar's secrets
+    /// word and ink (see `secrets_fact`) and the memory-aware password helper copy in
+    /// the host/DB forms (round-D §A.5). `pub(crate)` so `ui::host_form`/
     /// `ui::db_conn_form` construction sites (here and in `ui::db_tab`) can read it.
     pub(crate) secrets_degraded: bool,
     /// The full secret-backend status line (`secret_status_message`'s output: backend,
-    /// warning, recommendation) — shown in the warning badge's popover on click, and
-    /// (round-E §C) under the Settings screen's keyring toggle. Set once at startup;
+    /// warning, recommendation) — shown in the status bar's secrets popover on click,
+    /// and (round-E §C) under the Settings screen's keyring toggle. Set once at startup;
     /// nothing currently changes the backend mid-session, so this never needs to be
     /// refreshed after `AppState::new`. `pub(crate)` so `ui::settings_tab`'s Behavior
     /// section can read it directly, same convention as `secrets_degraded` above.
     pub(crate) secrets_status_detail: String,
-    /// Whether the warning badge's popover is open.
-    secret_badge_open: bool,
+    /// Whether the status bar's secrets popover is open.
+    secrets_detail_open: bool,
     /// Why rendering is on the software path, when it is (`None` = hardware —
     /// the overwhelmingly common case, which renders nothing at all). Set once
     /// at startup from the GPU pre-flight's verdict (see `main`); nothing
@@ -283,12 +283,12 @@ impl AppState {
     ///
     /// `secrets_degraded`/`secrets_status` come from `open_secrets`: whether the
     /// effective backend is memory (vs. a healthy keyring), and the full status text
-    /// (backend, warning, recommendation) — the former gates the warning badge (see
-    /// `secret_status_badge`), the latter feeds its popover. Round-D §A dropped the
-    /// startup unlock-or-create modal entirely (the encrypted-file backend is no longer
-    /// wired into `sid_secrets::resolve_secret_store`'s chain) and the persistent
-    /// "secrets: …" banner along with it — a degraded backend now shows as this small
-    /// badge instead of taking over the SSH tab's status line.
+    /// (backend, warning, recommendation) — the former picks the status bar's secrets
+    /// wording (see `AppState::status_bar`), the latter feeds its popover. Round-D §A
+    /// dropped the startup unlock-or-create modal entirely (the encrypted-file backend
+    /// is no longer wired into `sid_secrets::resolve_secret_store`'s chain) and the
+    /// persistent "secrets: …" banner along with it — the backend now shows as one word
+    /// at the foot of the window instead of taking over the SSH tab's status line.
     ///
     /// `seed_lists` is `open_store`'s `seed_if_empty` call, already read (and, on a
     /// first launch, re-read post-seed) — see [`SeedLists`]'s doc comment. Consuming it
@@ -338,7 +338,7 @@ impl AppState {
             error: None,
             secrets_degraded,
             secrets_status_detail: secrets_status,
-            secret_badge_open: false,
+            secrets_detail_open: false,
             render_soft_reason,
             gpu_badge_open: false,
             form: None,
@@ -1332,7 +1332,7 @@ impl AppState {
     // ---- rendering helpers --------------------------------------------------
 
     /// The single top chrome bar: `✦ sid` wordmark, the primary tabs, then (right-
-    /// aligned) the scope switcher chips and the secrets warning badge. One bar, not
+    /// aligned) the scope switcher chips and the software-rendering badge. One bar, not
     /// the previous two stacked ones — a whole row of chrome bought nothing but
     /// vertical clutter, and scope-switching is an occasional act that belongs at the
     /// edge, not on its own strip above everything.
@@ -1478,9 +1478,10 @@ impl AppState {
                     .children(tabs),
             )
             // Chips and badges hold the right edge. The chip row may shrink (its chips are
-            // clamped and it scrolls) but the badges never do — a degraded-secrets or
-            // software-rendering warning that scrolls out of the window is a warning that
-            // was not delivered.
+            // clamped and it scrolls) but the badge never does — a software-rendering
+            // warning that scrolls out of the window is a warning that was not delivered.
+            // (The secrets warning left this bar entirely: it is a word in the status bar
+            // now, see `status_bar`.)
             .child(
                 div()
                     .id("scope-switcher")
@@ -1492,61 +1493,46 @@ impl AppState {
                     .overflow_x_scroll()
                     .children(scope_chips),
             )
-            .children(self.secret_status_badge(cx))
             .children(self.gpu_status_badge(cx))
     }
 
-    /// Round-D §A's warning badge: a small yellow `!` pill at the primary tab strip's
-    /// right end, rendered only while `secrets_degraded` is true (memory fallback — a
-    /// healthy keyring renders nothing at all, here or anywhere else). Replaces the old
-    /// persistent "secrets: …" status line: nothing takes up permanent screen space
-    /// unless something is actually degraded. Click toggles a small popover — anchored
-    /// at the badge's own flow position (`Anchor::TopRight`, same trigger-attached
-    /// pattern as `db_tab`'s export menu), not a full-viewport modal — showing the full
-    /// `secret_status_message` text (backend, warning, recommendation).
-    fn secret_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        if !self.secrets_degraded {
-            return None;
-        }
+    /// The app-wide status bar (`sid_ui::StatusBar`): the strip under the active tab
+    /// that says what sid is holding, and what the view is doing.
+    ///
+    /// **Left**, in order: the secrets backend *in words* — `keyring` in success ink, or
+    /// `secrets in memory` in warning ink with a glyph. This is where the top bar's lone
+    /// yellow `!` pill went, and the reason it went is the reason it was never good: a
+    /// warning mark that needs a click to say what it means is not a warning. Clicking
+    /// still opens the same `secret_status_message` detail (backend, warning,
+    /// recommendation), now anchored above the strip it came from. Then the open SSH
+    /// session count, absent at zero — an ops bar reports what *is*. Then the selected
+    /// Database connection with the same dot its own row draws (`db_status`).
+    ///
+    /// **Right**: facts about the view rather than the work — the zoom readout while it
+    /// is not 100% (click resets, exactly as ctrl+0 does) and, under `SID_PERF`, the
+    /// last frame's cost, which until now existed only as stderr spam.
+    ///
+    /// The workspace scope is deliberately **not** repeated here. It is already a chip
+    /// in the top bar, and "one list per fact" governs single facts too.
+    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
-        let (warning, border, surface, fg) = (t.warning, t.border, t.surface, t.fg);
-        let badge = div()
-            .id("secret-status-badge")
-            .px_2()
-            .py(scaled(2.))
-            .rounded_full()
-            .text_meta(t)
-            .cursor_pointer()
-            .bg(rgb(warning))
-            // Deliberately not a theme token: a near-black label reads clearly against
-            // every theme's `warning` tone (they're all mid-brightness ambers), which a
-            // theme-following text color could not guarantee (e.g. cosmos-light's `bg`
-            // is a light off-white — unreadable on the same amber pill).
-            .text_color(rgb(0x1a1a1a))
-            .child("!")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                this.secret_badge_open = !this.secret_badge_open;
-                // Mutually exclusive with the GPU popover: both `anchored()` to
-                // `Anchor::TopRight` with the same window snap-margin and the same
-                // `with_priority(2)`, so open together they occupy the identical spot
-                // and the later-drawn GPU one wins. `secrets_degraded` and
-                // `render_soft_reason` are independent — a VM with no keyring daemon
-                // *and* lavapipe shows both pills — so this is a reachable state, not
-                // a theoretical one.
-                this.gpu_badge_open = false;
-                cx.notify();
-            }));
+        let (border, surface, fg) = (t.border, t.surface, t.fg);
+        let degraded = self.secrets_degraded;
+        let (word, tone) = secrets_fact(degraded);
 
-        let popover = self.secret_badge_open.then(|| {
+        // The popover rides beside the item rather than inside it: `StatusItem` has no
+        // child slot on purpose (it is a word, a mark and a click), and an `anchored()`
+        // element is `Position::Absolute`, so a wrapper costs the strip no width.
+        let popover = self.secrets_detail_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Anchor::TopRight)
+                    .anchor(Anchor::BottomLeft)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()
                             .id("secret-status-popover")
                             .occlude()
-                            .mt_1()
+                            .mb_1()
                             .max_w(scaled(360.))
                             .p_3()
                             .rounded_md()
@@ -1561,23 +1547,57 @@ impl AppState {
             .with_priority(2)
         });
 
-        Some(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                // Never shrinks: see `tab_strip`'s right-edge comment.
-                .flex_none()
-                .child(badge)
-                .children(popover),
-        )
+        let secrets = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .child(
+                StatusItem::new("status-secrets", word)
+                    .tone(tone)
+                    // The glyph is spent only on the degraded state. A healthy backend
+                    // gets one quiet word: chrome that decorates the good news trains
+                    // the eye to skip the bad.
+                    .when(degraded, |item| item.icon(Icon::Warning))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.secrets_detail_open = !this.secrets_detail_open;
+                        cx.notify();
+                    })),
+            )
+            .children(popover);
+
+        let mut bar = StatusBar::new().left(secrets);
+        if let Some(label) = ssh_session_fact(self.ssh_sessions.len()) {
+            bar = bar.left(StatusItem::new("status-ssh", label));
+        }
+        if let Some((name, state)) = self.db_status() {
+            bar = bar.left(StatusItem::new("status-db", format!("db: {name}")).dot(state));
+        }
+        if !self.ui_scale.is_default() {
+            bar = bar.right(
+                // Click is ctrl+0: the readout only exists while it has something to
+                // say, so the one thing it can usefully do is make itself go away.
+                StatusItem::new("status-zoom", self.ui_scale.label()).on_click(cx.listener(
+                    |this, _ev: &ClickEvent, _window, cx| this.set_ui_scale(UiScale::DEFAULT, cx),
+                )),
+            );
+        }
+        let frame_us = LAST_FRAME_US.load(std::sync::atomic::Ordering::Relaxed);
+        if frame_us > 0 {
+            bar = bar.right(StatusItem::new(
+                "status-perf",
+                format!("{:.1} ms", frame_us as f64 / 1000.),
+            ));
+        }
+        bar
     }
 
-    /// The GPU pre-flight's software-rendering badge: a small `sw` pill next to the
-    /// secrets badge, rendered only while the render path is degraded (hardware
-    /// rendering — the overwhelmingly common case — shows nothing at all). Exactly
-    /// the `secret_status_badge` pattern: click toggles a trigger-anchored popover
-    /// with the why, plus the `sid --gpu-report` pointer for the full evidence.
+    /// The GPU pre-flight's software-rendering badge: a small `sw` pill at the tab
+    /// strip's right end, rendered only while the render path is degraded (hardware
+    /// rendering — the overwhelmingly common case — shows nothing at all). Click
+    /// toggles a trigger-anchored popover with the why, plus the `sid --gpu-report`
+    /// pointer for the full evidence. The last pill in the top bar: the secrets warning
+    /// that used to sit beside it is now a word in the status bar (`status_bar`).
     fn gpu_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let reason = self.render_soft_reason.as_deref()?;
         let t = theme::active(cx);
@@ -1590,17 +1610,18 @@ impl AppState {
             .text_meta(t)
             .cursor_pointer()
             .bg(rgb(warning))
-            // Same non-token near-black as `secret_status_badge` — readable on every
-            // theme's amber `warning` tone, which a theme-following text color could
-            // not guarantee.
+            // Deliberately not a theme token: a near-black label reads clearly against
+            // every theme's amber `warning` tone, which a theme-following text color
+            // could not guarantee (cosmos-light's `bg` is a light off-white —
+            // unreadable on the same amber pill).
             .text_color(rgb(0x1a1a1a))
             .child("sw")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.gpu_badge_open = !this.gpu_badge_open;
-                // The other half of the mutual exclusion — see `secret_status_badge`:
-                // both popovers snap to the same window corner, so one has to close
-                // for the other to be readable at all.
-                this.secret_badge_open = false;
+                // The secrets popover no longer needs closing here. The two used to
+                // snap to the same window corner and the later-drawn one won; the
+                // secrets detail now rises from the status bar's bottom-left, so both
+                // can be open at once and neither hides the other.
                 cx.notify();
             }));
 
@@ -1679,8 +1700,8 @@ impl AppState {
     /// the common case with no error — renders nothing.
     ///
     /// Round-D §A dropped the startup secrets-backend notice this bar used to double as
-    /// (a persistent "secrets: …" line) — a degraded backend now shows as the small
-    /// warning badge at the tab strip's right end instead (see `secret_status_badge`).
+    /// (a persistent "secrets: …" line) — the backend is a word at the foot of the
+    /// window now, on every tab (see `AppState::status_bar`).
     fn ssh_status_bar(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let e = self.error.as_ref()?;
         let t = theme::active(cx);
@@ -2005,6 +2026,11 @@ impl Render for AppState {
                     .min_h(px(0.))
                     .child(content),
             )
+            // Under the tab, above every overlay. It shrinks the tab's box rather than
+            // overlaying it, which is what makes the SSH terminal reflow to fewer rows
+            // (`ui::session::grid_size` measures the pane it is actually given) and the
+            // scrolling tabs stop scrolling at a line that is still on screen.
+            .child(self.status_bar(cx))
             .children(overlay)
             .children(db_overlay)
             .children(password_prompt_overlay)
@@ -2013,6 +2039,40 @@ impl Render for AppState {
             // Last child, so its paint closure runs at the very end of the paint phase.
             .children(perf_start.map(|start| perf_probe(self.active_tab, start)))
     }
+}
+
+/// The last frame's total cost in microseconds — written by [`perf_probe`]'s paint
+/// closure, read by [`AppState::status_bar`] on the *next* frame.
+///
+/// A static rather than a field on [`AppState`] for two reasons. [`perf_probe`] is a free
+/// function holding no entity handle, so it has nothing to write into; and a value that
+/// is one frame stale needs no `cx.notify()`, while a `notify` issued from inside paint
+/// on every frame is an infinite render loop that would make the instrument change what
+/// it measures. Zero means "no frame has ever been timed", which is exactly the state
+/// when `SID_PERF` is unset — so it doubles as the readout's visibility gate and the bar
+/// needs no second env lookup.
+static LAST_FRAME_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The secrets item's word and ink: the whole of what the retired `!` badge was trying
+/// to say, said.
+///
+/// Pure, because this is the single place sid decides whether the secret backend is
+/// *reported* as healthy, and a warning that silently flips to the reassuring wording is
+/// the one failure here worth a test.
+fn secrets_fact(degraded: bool) -> (&'static str, BadgeTone) {
+    if degraded {
+        ("secrets in memory", BadgeTone::Warning)
+    } else {
+        ("keyring", BadgeTone::Success)
+    }
+}
+
+/// The open-SSH-session count for the status bar, or `None` at zero.
+///
+/// Hidden rather than rendered as `0 ssh sessions`: the bar reports what sid is holding,
+/// and a count of nothing is not a fact about the app — it is a fact about the bar.
+fn ssh_session_fact(open: usize) -> Option<String> {
+    (open > 0).then(|| count_label(open, "ssh session"))
 }
 
 /// The frame timer, as an element.
@@ -2049,6 +2109,10 @@ fn perf_probe(tab: Tab, start: std::time::Instant) -> impl IntoElement {
         move |_, _, _| start.elapsed(),
         move |_, layout: std::time::Duration, _, _| {
             let total = start.elapsed();
+            LAST_FRAME_US.store(
+                total.as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             eprintln!(
                 "sid-perf: frame {:?} build={:.2}ms layout={:.2}ms total={:.2}ms",
                 tab,
@@ -2120,8 +2184,8 @@ pub struct SeedLists {
 /// candidate; `Settings::secret_file_enabled` is dormant, see its doc comment).
 ///
 /// Returns the store every secret call site uses, whether the effective backend is
-/// degraded (memory — feeds `AppState::secrets_degraded`, which gates the tab strip's
-/// warning badge), and the full status text for that badge's popover: which backend is
+/// degraded (memory — feeds `AppState::secrets_degraded`, which picks the status bar's
+/// secrets wording), and the full status text for that item's popover: which backend is
 /// live, plus any warning/recommendation.
 pub fn open_secrets(store: &Store) -> (Box<dyn sid_secrets::SecretStore>, bool, String) {
     let settings = store.settings().unwrap_or_default();
@@ -2412,6 +2476,33 @@ mod tests {
         assert!(!delete_click_executes(None, &row));
         // …second click on the same row executes.
         assert!(delete_click_executes(Some(&row), &row));
+    }
+
+    // ---- status bar: which items are on it, given what is true --------------------
+
+    /// Every visibility rule the bottom bar has, in one place.
+    ///
+    /// These fail silently by nature — nothing errors, an item simply stops appearing
+    /// (or, worse, a degraded backend starts reading as a healthy one) — which is the
+    /// whole reason they are pure functions rather than `if`s buried in `status_bar`.
+    #[test]
+    fn the_status_bar_says_what_is_true_and_hides_what_is_not() {
+        // The fact the retired `!` badge could not state without a click.
+        assert_eq!(secrets_fact(false), ("keyring", BadgeTone::Success));
+        assert_eq!(
+            secrets_fact(true),
+            ("secrets in memory", BadgeTone::Warning)
+        );
+
+        // Sessions: absent at zero, pluralised after one.
+        assert_eq!(ssh_session_fact(0), None);
+        assert_eq!(ssh_session_fact(1).as_deref(), Some("1 ssh session"));
+        assert_eq!(ssh_session_fact(3).as_deref(), Some("3 ssh sessions"));
+
+        // Zoom rides a predicate `UiScale` already owns — asserted here so the bar's
+        // "only when it has something to say" rule is written down beside the others.
+        assert!(UiScale::DEFAULT.is_default());
+        assert!(!UiScale::from_percent(125).is_default());
     }
 
     // ---- ssh-v3 session-tab close bookkeeping (pure) -----------------------------

@@ -1694,9 +1694,12 @@ impl AppState {
                     .action(
                         // Browse mode's Run re-reads the table already on screen, so it
                         // is labelled for what it does. Same id, same slot, same size —
-                        // only the word and the tooltip change.
+                        // only the word, tooltip and leading icon change (`play` for a
+                        // fresh run, the same `redo` `network_refresh_button` uses for a
+                        // re-read).
                         Button::new("db-run", if browse { "Reload" } else { "Run" })
                             .primary()
+                            .icon(if browse { Icon::Refresh } else { Icon::Run })
                             .size(QUERY_ACTION_SIZE)
                             .loading(self.db.running)
                             .disabled(browse && self.browse_table().is_none())
@@ -1746,6 +1749,43 @@ impl AppState {
                 .iter()
                 .any(|a| a.item.id == STORE_BROWSE_ID),
         )
+    }
+
+    /// The Database tab's one line for the app-wide status bar: the selected
+    /// connection's display name and the very dot its own row is drawing, or `None`
+    /// when nothing is selected.
+    ///
+    /// Goes through [`connection_dot`] rather than re-deriving the state, so the strip
+    /// at the foot of the window and the row in the panel cannot disagree — one fact,
+    /// one decision, two places that render it.
+    pub(crate) fn db_status(&self) -> Option<(String, ConnectionState)> {
+        let id = self.db.active_id.as_deref()?;
+        let state = connection_dot(
+            self.db.client.is_some() && self.db.client_for.as_deref() == Some(id),
+            // The selected row *is* the active one, so the busy/failed states — which
+            // belong to the current selection and nothing else — apply here by
+            // construction.
+            true,
+            self.db.running || self.db.schema_loading,
+            self.db.schema_error.is_some(),
+        );
+        if self.browse_mode() {
+            return Some((STORE_BROWSE_LABEL.to_string(), state));
+        }
+        let name = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| {
+                if a.item.name.is_empty() {
+                    a.item.id.clone()
+                } else {
+                    a.item.name.clone()
+                }
+            })
+            .unwrap_or_else(|| id.to_string());
+        Some((name, state))
     }
 
     /// The store table currently loaded in browse mode, if any.
@@ -2084,6 +2124,7 @@ impl AppState {
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let button = Button::new("db-export-open", "Export")
+            .icon(Icon::Export)
             .size(QUERY_ACTION_SIZE)
             .tooltip("export the results now on screen")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {

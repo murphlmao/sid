@@ -1,5 +1,12 @@
-//! Settings screen (round-E §C): a single, spacey scrollable column with four
-//! sections — Theme, Behavior, Keyboard, Storage.
+//! Settings screen (round-E §C): a left section rail — Appearance, Behaviour,
+//! Keyboard, Storage — beside a content pane holding one panel at a time.
+//!
+//! It used to be one 880px column centred in the window, so a 2000px window was
+//! 56% empty on *both* sides and every section stacked into one long scroll with
+//! bare headers as the only structure. The column is still capped at 880px for
+//! reading comfort, but it is anchored to the content gutter, and the width that
+//! buys goes to the rail. Below ~900 design px (see [`rail_fits`]) the rail becomes
+//! a `SegmentedControl` above the content, so nothing has to overflow sideways.
 //!
 //! Follows the `ui::db_tab`/`ui::network_tab`/`ui::systems_tab` module convention:
 //! state lives in [`SettingsTabState`], and every render/mutation method is a
@@ -24,13 +31,274 @@
 //! helper into `main.rs`'s startup path), and refreshes every window so the
 //! switch is visible immediately, per round-E §C.1.
 
-use gpui::{AnyElement, ClickEvent, Context, Keystroke, div, prelude::*, px, rgb};
+use std::rc::Rc;
+
+use gpui::{
+    AnyElement, App, ClickEvent, Context, KeyDownEvent, Keystroke, Pixels, Window, div, prelude::*,
+    px, rgb, transparent_black,
+};
 use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store};
 
 use crate::app::AppState;
 use crate::keymap::{self, Action, Chord, RebindOutcome};
-use sid_ui::Typography as _;
-use sid_ui::{Kbd, scaled, theme};
+use sid_ui::{Card, Kbd, SegmentSelect, SegmentedControl, caveat_line, error_line, scaled, theme};
+use sid_ui::{StyledExt as _, Typography as _};
+
+// ---- the screen's shape -----------------------------------------------------
+
+/// The section rail's width. Wide enough for the longest label at 150% zoom,
+/// narrow enough that it reads as navigation serving the content rather than as a
+/// peer of it.
+const RAIL_W: f32 = 220.;
+
+/// The widest a reading column gets, per the design system. Unlike the old
+/// centred column this is a *cap*, not a centring rule — the pane starts at the
+/// content gutter, so a wide window grows the empty space on one side only.
+const CONTENT_MAX_W: f32 = 880.;
+
+/// Below this window width the rail costs more than it orients: 220 + 880 no
+/// longer fit side by side, and a squeezed column under a rail reads worse than a
+/// full one under a segmented strip.
+const RAIL_MIN_VIEWPORT: f32 = 900.;
+
+/// Whether the window is wide enough for the section rail.
+///
+/// Both sides are *design* pixels: the breakpoint goes through [`scaled`] so a
+/// 1920px window at 150% zoom (1280 design px of room) collapses to the strip,
+/// which is the whole point of measuring in the same currency the layout is
+/// authored in. Pure, so the rule is testable without a window.
+fn rail_fits(viewport_width: Pixels, rem_size: Pixels) -> bool {
+    viewport_width >= scaled(RAIL_MIN_VIEWPORT).to_pixels(rem_size)
+}
+
+/// The Settings screen's sections, in nav order.
+///
+/// The whole navigation state of this screen: which one of these is showing. There
+/// is no scroll position to restore and no per-section state — a section is a
+/// filter over what the content pane builds, nothing more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SettingsSection {
+    #[default]
+    Appearance,
+    Behaviour,
+    Keyboard,
+    Storage,
+}
+
+impl SettingsSection {
+    /// Every section, in the order the nav lists them.
+    const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Behaviour,
+        Self::Keyboard,
+        Self::Storage,
+    ];
+
+    /// The nav item's label, and — uppercased by [`Card`] — its panel's header. One
+    /// string for both so the two can never disagree about what a section is called.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Behaviour => "Behaviour",
+            Self::Keyboard => "Keyboard",
+            Self::Storage => "Storage",
+        }
+    }
+
+    /// This section's position in [`Self::ALL`] — the segmented strip's index.
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&s| s == self).unwrap_or(0)
+    }
+
+    /// The section at `index`, falling back to the default rather than panicking: the
+    /// index comes from a click on a control built from the same list, so an
+    /// out-of-range value can only mean the two drifted, and a wrong-but-showing
+    /// screen beats a crashed one.
+    fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+}
+
+/// How a nav click reaches `AppState`. `Rc` because both nav shapes hand the same
+/// handler to every item.
+type SectionSelect = Rc<dyn Fn(SettingsSection, &mut Window, &mut App)>;
+
+/// The Settings frame: the section nav beside the content pane on a wide window,
+/// above it on a narrow one.
+///
+/// A `RenderOnce` element rather than a plain function because the breakpoint needs
+/// [`Window::viewport_size`], and `settings_tab` deliberately takes no `&mut Window`
+/// (it builds no lazy widget, unlike every other tab). An element is handed the
+/// window at render time, which is the cheapest way in and costs `app.rs` nothing.
+#[derive(IntoElement)]
+struct SettingsFrame {
+    active: SettingsSection,
+    on_select: SectionSelect,
+    content: AnyElement,
+}
+
+impl RenderOnce for SettingsFrame {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = theme::active(cx).clone();
+        let rail = rail_fits(window.viewport_size().width, window.rem_size());
+        let nav = if rail {
+            section_rail(&t, self.active, &self.on_select)
+        } else {
+            section_strip(&t, self.active, &self.on_select)
+        };
+
+        div()
+            .flex()
+            .map(|this| {
+                if rail {
+                    this.flex_row()
+                } else {
+                    this.flex_col()
+                }
+            })
+            .flex_1()
+            .min_h(px(0.))
+            .bg(rgb(t.bg))
+            .text_color(rgb(t.fg))
+            .child(nav)
+            .child(
+                // The content gutter: capped for reading comfort, but anchored to the
+                // pane's left edge. The old screen centred this column, so a 2000px
+                // window put 560px of nothing on *both* sides of it.
+                div()
+                    .id("settings-content")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .p_4()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(scaled(CONTENT_MAX_W))
+                            .child(self.content),
+                    ),
+            )
+    }
+}
+
+/// The wide-window nav: a fixed column of sections.
+///
+/// Shares the canvas fill and separates with a hairline, per the design system's
+/// sidebar rule — a second background colour here would split the screen into two
+/// worlds instead of one.
+fn section_rail(
+    t: &theme::Theme,
+    active: SettingsSection,
+    on_select: &SectionSelect,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(scaled(RAIL_W))
+        .gap_1()
+        // `py_4` matches the content pane's own top padding, so the first nav label
+        // lines up with the first panel's header instead of floating above it.
+        .px_2()
+        .py_4()
+        .border_r_1()
+        .border_color(rgb(t.border))
+        .children(
+            SettingsSection::ALL
+                .iter()
+                .enumerate()
+                .map(|(ix, &section)| {
+                    nav_item(t, ix, section, section == active, on_select.clone())
+                }),
+        )
+        .into_any_element()
+}
+
+/// One rail row. Keyboard-reachable through gpui's own tab-stop ring —
+/// `gpui_component::Root` (this window's root) binds Tab to `focus_next`, and
+/// `tab_index` both makes the element focusable and enrols it, with gpui keeping the
+/// focus handle in element state. No second focus system, and no `FocusHandle` of
+/// this screen's own.
+fn nav_item(
+    t: &theme::Theme,
+    ix: usize,
+    section: SettingsSection,
+    active: bool,
+    on_select: SectionSelect,
+) -> AnyElement {
+    let by_key = on_select.clone();
+    div()
+        .id(("settings-nav", ix))
+        .tab_index(ix as isize)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .cursor_pointer()
+        // Always a border, transparent at rest: the focus ring must not resize the row
+        // when it appears.
+        .border_1()
+        .border_color(transparent_black())
+        .when(active, |this| this.bg(rgb(t.selection)))
+        .hover(|s| s.bg(rgb(t.selection)))
+        .focus(|s| s.border_color(rgb(t.accent)))
+        .text_body(t)
+        .text_color(rgb(if active { t.fg_strong } else { t.muted }))
+        .child(
+            // The active marker: a short accent rule, painted transparent when the
+            // section is not active so the label never shifts sideways.
+            div()
+                .flex_none()
+                .w(scaled(2.))
+                .h(scaled(16.))
+                .rounded_md()
+                .when(active, |this| this.bg(rgb(t.accent))),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .clamp_one_line()
+                .child(section.label()),
+        )
+        .on_click(move |_ev: &ClickEvent, window, cx| on_select(section, window, cx))
+        .on_key_down(move |ev: &KeyDownEvent, window, cx| {
+            if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                by_key(section, window, cx);
+            }
+        })
+        .into_any_element()
+}
+
+/// The narrow-window nav: the same four sections as a segmented strip above the
+/// content, so nothing has to overflow sideways.
+fn section_strip(
+    t: &theme::Theme,
+    active: SettingsSection,
+    on_select: &SectionSelect,
+) -> AnyElement {
+    let on_select = on_select.clone();
+    div()
+        .flex_none()
+        .px_4()
+        .py_2()
+        .border_b_1()
+        .border_color(rgb(t.border))
+        .child(
+            SegmentedControl::new("settings-nav")
+                .segments(SettingsSection::ALL.map(SettingsSection::label))
+                .selected(active.index())
+                .on_select(move |ev: &SegmentSelect, window, cx| {
+                    on_select(SettingsSection::from_index(ev.index), window, cx);
+                }),
+        )
+        .into_any_element()
+}
 
 /// Settings tab state: a cached snapshot of the persisted [`Settings`] (loaded
 /// once in `AppState::new`, refreshed after every successful write — never
@@ -55,6 +323,8 @@ pub struct SettingsTabState {
     /// The last rebind attempt's inline verdict, shown under its own row. Only refusals
     /// land here — a successful rebind speaks for itself by changing the chip.
     notice: Option<(Action, String)>,
+    /// Which section the nav is on. The only navigation state this screen has.
+    section: SettingsSection,
 }
 
 impl SettingsTabState {
@@ -65,6 +335,7 @@ impl SettingsTabState {
             keybindings: load_overrides(store),
             capturing: None,
             notice: None,
+            section: SettingsSection::default(),
         }
     }
 
@@ -189,15 +460,12 @@ fn refusal_message(outcome: &RebindOutcome) -> Option<String> {
 
 // ---- render pieces (free functions — no `self` needed) ---------------------
 
-/// A section header: the [`Label`] role, uppercased, with `mb_2`.
+/// One labeled control inside a section panel: a muted label above, the
+/// interactive content below.
 ///
-/// [`Label`]: sid_ui::TypeRole::Label
-fn section_header(chrome: &theme::Theme, label: &str) -> impl IntoElement {
-    div().text_label(chrome).mb_2().child(label.to_uppercase())
-}
-
-/// One labeled control inside a section: a muted label above, the interactive
-/// content below.
+/// `min_w(0)` because gpui reports a text element's min-content width as its whole
+/// string: without it a long path in the Storage panel sets the row's minimum to
+/// its own width and paints straight out of the card.
 fn labeled_row(
     chrome: &theme::Theme,
     label: &'static str,
@@ -206,6 +474,7 @@ fn labeled_row(
     div()
         .flex()
         .flex_col()
+        .min_w(px(0.))
         .gap_1()
         .child(div().text_meta(chrome).child(label))
         .child(content)
@@ -242,6 +511,69 @@ fn row_button(
         .child(label)
 }
 
+/// The Behaviour panel's option lists, each as one `(value, label)` table. One list
+/// per control so the labels and the values cannot drift: the segmented control
+/// reports an index back into the same array it was built from.
+const SCOPES: [(DefaultScope, &str); 3] = [
+    (DefaultScope::Global, "global"),
+    (DefaultScope::Workspace, "workspace"),
+    (DefaultScope::Ask, "ask"),
+];
+const SIDES: [(PanelSide, &str); 2] = [(PanelSide::Left, "left"), (PanelSide::Right, "right")];
+const KEYRING: [(bool, &str); 2] = [(true, "enabled"), (false, "disabled")];
+
+/// Where `current` sits in an option table. Falls back to the first option rather
+/// than to "nothing selected", which would read as the app having forgotten the
+/// setting.
+fn selected_index<T: PartialEq>(options: &[(T, &str)], current: &T) -> usize {
+    options
+        .iter()
+        .position(|(value, _)| value == current)
+        .unwrap_or(0)
+}
+
+/// `default_scope`, as the app's own segmented control.
+///
+/// These three were hand-rolled chip strips — three near-identical copies of a
+/// bordered, `surface`-filled row that predates [`SegmentedControl`] and got the
+/// track/chip elevation backwards on every palette. The component owns that
+/// decision now (`sid_ui::segmented::segment_paint`), and it is tested against all
+/// four themes.
+fn default_scope_selector(current: DefaultScope, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-default-scope")
+        .segments(SCOPES.map(|(_, label)| label))
+        .selected(selected_index(&SCOPES, &current))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(scope, _)) = SCOPES.get(ev.index) {
+                this.set_default_scope(scope, cx);
+            }
+        }))
+}
+
+/// Which side the SFTP file panel docks on.
+fn file_browser_side_selector(current: PanelSide, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-file-browser-side")
+        .segments(SIDES.map(|(_, label)| label))
+        .selected(selected_index(&SIDES, &current))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(side, _)) = SIDES.get(ev.index) {
+                this.set_file_browser_side_pref(side, cx);
+            }
+        }))
+}
+
+/// Whether secrets go to the OS keyring.
+fn secret_keyring_selector(enabled: bool, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-secret-keyring")
+        .segments(KEYRING.map(|(_, label)| label))
+        .selected(selected_index(&KEYRING, &enabled))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(value, _)) = KEYRING.get(ev.index) {
+                this.set_secret_keyring_enabled(value, cx);
+            }
+        }))
+}
+
 /// The Storage section: the global data dir + the two files that live under it,
 /// plus a note that the encrypted-file secret vault (round-D §A) is dormant.
 /// Paths are recomputed here rather than exposed from `app.rs` — `data_dir()` is
@@ -257,22 +589,21 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
             chrome,
             label,
             div()
+                .min_w(px(0.))
+                .clamp_one_line()
                 .text_mono(chrome)
                 .child(path.to_string_lossy().into_owned()),
         )
     };
 
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(section_header(chrome, "storage"))
+    Card::new()
+        .title(SettingsSection::Storage.label())
         .child(path_row("data directory", data_dir))
         .child(path_row("store file", store_path))
         .child(path_row("demo database", demo_db_path))
-        .child(div().text_meta(chrome).text_color(rgb(chrome.faint)).child(
+        .child(caveat_line(
             "the encrypted-file secret vault is dormant (round D §A) — keyring or \
-                 in-memory only",
+             in-memory only",
         ))
 }
 
@@ -284,51 +615,44 @@ impl AppState {
     pub(crate) fn settings_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         let chrome = theme::active(cx).clone();
         let settings = self.settings.cached.clone();
+        let active = self.settings.section;
 
-        let error = self.settings.error.clone().map(|e| {
-            div()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .text_meta(&chrome)
-                .text_color(rgb(chrome.danger))
-                .child(format!("error: {e}"))
+        // One listener, shared by the rail and the strip: the index round-trips through
+        // `SettingsSection` so the two navs cannot disagree about what they selected.
+        let select = cx.listener(|this, index: &usize, _window, cx| {
+            this.settings.section = SettingsSection::from_index(*index);
+            cx.notify();
         });
+        let on_select: SectionSelect =
+            Rc::new(move |section, window, cx| select(&section.index(), window, cx));
 
-        // The active marker follows the LIVE theme (not the persisted name): identical
-        // in normal use (set_theme installs + persists together), and honest under the
-        // SID_THEME per-run override, where the persisted value deliberately differs.
-        let theme_section = self.theme_section(&chrome, chrome.name, cx);
-        let behavior_section = self.behavior_section(&chrome, &settings, cx);
-
-        div()
-            .id("settings-tab")
+        let content = div()
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .p_4()
-            .bg(rgb(chrome.bg))
-            .text_color(rgb(chrome.fg))
-            // Width-capped, centered content column: full-bleed settings rows on a
-            // wide window put a label on the left and its value/shortcut a full
-            // screen-width away (design review — same rule as the SSH home surface).
-            .items_center()
-            .child(
-                div()
-                    .w_full()
-                    .max_w(scaled(880.))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .children(error)
-                    .child(theme_section)
-                    .child(behavior_section)
-                    .child(self.keymap_section(&chrome, cx))
-                    .child(storage_section(&chrome)),
-            )
-            .into_any_element()
+            .gap_3()
+            .children(self.settings.error.clone().map(error_line))
+            .child(match active {
+                // The theme panel's active marker follows the LIVE theme (not the
+                // persisted name): identical in normal use (set_theme installs +
+                // persists together), and honest under the SID_THEME per-run override,
+                // where the persisted value deliberately differs.
+                SettingsSection::Appearance => self
+                    .theme_section(&chrome, chrome.name, cx)
+                    .into_any_element(),
+                SettingsSection::Behaviour => self
+                    .behavior_section(&chrome, &settings, cx)
+                    .into_any_element(),
+                SettingsSection::Keyboard => self.keymap_section(&chrome, cx).into_any_element(),
+                SettingsSection::Storage => storage_section(&chrome).into_any_element(),
+            })
+            .into_any_element();
+
+        SettingsFrame {
+            active,
+            on_select,
+            content,
+        }
+        .into_any_element()
     }
 
     // ---- Theme section --------------------------------------------------------
@@ -339,11 +663,9 @@ impl AppState {
         applied: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(section_header(chrome, "theme"))
+        Card::new()
+            .title(SettingsSection::Appearance.label())
+            .count(theme::THEME_NAMES.len())
             .children(
                 theme::THEME_NAMES
                     .iter()
@@ -385,10 +707,12 @@ impl AppState {
             .py_2()
             .rounded_md()
             .cursor_pointer()
+            // `well`, not `surface`: the row lives inside a `surface` panel now, and
+            // surface-on-surface is an invisible row.
             .bg(rgb(if active {
                 chrome.selection
             } else {
-                chrome.surface
+                chrome.well
             }))
             .border_1()
             .border_color(rgb(if active { chrome.accent } else { chrome.border }))
@@ -452,77 +776,50 @@ impl AppState {
         settings: &Settings,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let default_scope = self.default_scope_selector(chrome, settings.default_scope, cx);
-        let file_browser_side =
-            self.file_browser_side_selector(chrome, settings.file_browser_side, cx);
-        let keyring = self.secret_keyring_selector(chrome, settings.secret_keyring_enabled, cx);
+        // The backend sid actually ended up with, as a notice rather than a paragraph
+        // of muted prose: red when the keyring is missing and secrets are degraded,
+        // muted when it is only telling you which backend is in use.
+        let backend = if self.secrets_degraded {
+            error_line(self.secrets_status_detail.clone())
+        } else {
+            caveat_line(self.secrets_status_detail.clone())
+        };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(section_header(chrome, "behavior"))
+        Card::new()
+            .title(SettingsSection::Behaviour.label())
             .child(labeled_row(
                 chrome,
                 "default scope for new items",
-                default_scope,
+                default_scope_selector(settings.default_scope, cx),
             ))
-            .child(labeled_row(chrome, "file browser side", file_browser_side))
-            .child(labeled_row(chrome, "secret keyring", keyring))
-            .child(
+            .child(labeled_row(
+                chrome,
+                "file browser side",
+                file_browser_side_selector(settings.file_browser_side, cx),
+            ))
+            .child(labeled_row(
+                chrome,
+                "secret keyring",
                 div()
-                    .text_meta(chrome)
-                    .child(self.secrets_status_detail.clone()),
-            )
-            .child(
-                div()
-                    .text_meta(chrome)
-                    .text_color(rgb(chrome.faint))
-                    .child("changes take effect on restart"),
-            )
-    }
-
-    fn default_scope_selector(
-        &self,
-        chrome: &theme::Theme,
-        current: DefaultScope,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let options = [
-            (DefaultScope::Global, "global"),
-            (DefaultScope::Workspace, "workspace"),
-            (DefaultScope::Ask, "ask"),
-        ];
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .children(options.into_iter().enumerate().map(|(ix, (scope, label))| {
-                let active = current == scope;
-                div()
-                    .id(("default-scope", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_body(chrome)
-                    .cursor_pointer()
-                    .bg(rgb(if active {
-                        chrome.selection
-                    } else {
-                        chrome.surface
-                    }))
-                    .border_1()
-                    .border_color(rgb(if active { chrome.accent } else { chrome.border }))
-                    .text_color(rgb(if active {
-                        chrome.fg_strong
-                    } else {
-                        chrome.muted
-                    }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.set_default_scope(scope, cx);
-                    }))
-            }))
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.))
+                    .gap_1p5()
+                    .child(secret_keyring_selector(settings.secret_keyring_enabled, cx))
+                    // The restart caveat belongs to THIS control and to nothing else on
+                    // the screen: a theme switch is live, a scope default applies to the
+                    // next item, and the dock side fans out to every open session at
+                    // once. Only the secret backend is chosen once, at startup. It used
+                    // to sit at the bottom of the section, where it read as a warning
+                    // about all three.
+                    .child(
+                        div()
+                            .text_meta(chrome)
+                            .text_color(rgb(chrome.faint))
+                            .child("changes take effect on restart"),
+                    )
+                    .child(backend),
+            ))
     }
 
     pub(crate) fn set_default_scope(&mut self, scope: DefaultScope, cx: &mut Context<Self>) {
@@ -534,45 +831,6 @@ impl AppState {
             Err(e) => self.settings.error = Some(format!("failed to save default scope: {e}")),
         }
         cx.notify();
-    }
-
-    fn file_browser_side_selector(
-        &self,
-        chrome: &theme::Theme,
-        current: PanelSide,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let options = [(PanelSide::Left, "left"), (PanelSide::Right, "right")];
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .children(options.into_iter().enumerate().map(|(ix, (side, label))| {
-                let active = current == side;
-                div()
-                    .id(("file-browser-side", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_body(chrome)
-                    .cursor_pointer()
-                    .bg(rgb(if active {
-                        chrome.selection
-                    } else {
-                        chrome.surface
-                    }))
-                    .border_1()
-                    .border_color(rgb(if active { chrome.accent } else { chrome.border }))
-                    .text_color(rgb(if active {
-                        chrome.fg_strong
-                    } else {
-                        chrome.muted
-                    }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.set_file_browser_side_pref(side, cx);
-                    }))
-            }))
     }
 
     /// Persist `Settings::file_browser_side`, then fan the new value out to every
@@ -594,45 +852,6 @@ impl AppState {
             Err(e) => self.settings.error = Some(format!("failed to save file browser side: {e}")),
         }
         cx.notify();
-    }
-
-    fn secret_keyring_selector(
-        &self,
-        chrome: &theme::Theme,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let options = [(true, "enabled"), (false, "disabled")];
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .children(options.into_iter().enumerate().map(|(ix, (value, label))| {
-                let active = enabled == value;
-                div()
-                    .id(("secret-keyring", ix))
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .text_body(chrome)
-                    .cursor_pointer()
-                    .bg(rgb(if active {
-                        chrome.selection
-                    } else {
-                        chrome.surface
-                    }))
-                    .border_1()
-                    .border_color(rgb(if active { chrome.accent } else { chrome.border }))
-                    .text_color(rgb(if active {
-                        chrome.fg_strong
-                    } else {
-                        chrome.muted
-                    }))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.set_secret_keyring_enabled(value, cx);
-                    }))
-            }))
     }
 
     pub(crate) fn set_secret_keyring_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -677,29 +896,15 @@ impl AppState {
             )
         });
 
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(section_header(chrome, "keyboard"))
-                    .children(reset_all),
-            )
+        Card::new()
+            .title(SettingsSection::Keyboard.label())
+            .count(rows.len())
+            .when_some(reset_all, Card::action)
             .child(div().flex().flex_col().children(rows))
-            .child(
-                div()
-                    .mt_2()
-                    .text_meta(chrome)
-                    .text_color(rgb(chrome.faint))
-                    .child(
-                        "shortcuts carry Ctrl; inside a focused terminal a letter chord \
+            .child(div().text_meta(chrome).text_color(rgb(chrome.faint)).child(
+                "shortcuts carry Ctrl; inside a focused terminal a letter chord \
                          reaches sid as Ctrl+Shift+<key> and the shell keeps the plain one",
-                    ),
-            )
+            ))
     }
 
     /// One action's row: label, current binding, and — depending on state — the rebind /
@@ -781,11 +986,7 @@ impl AppState {
                     .px_3()
                     .py_2()
                     .rounded_md()
-                    .bg(rgb(if capturing {
-                        chrome.selection
-                    } else {
-                        chrome.bg
-                    }))
+                    .when(capturing, |this| this.bg(rgb(chrome.selection)))
                     .hover(|s| s.bg(rgb(chrome.selection)))
                     .child(div().flex_1().text_body(chrome).child(action.label()))
                     .children(custom_marker)
@@ -1102,6 +1303,66 @@ mod tests {
             keymap::effective_bindings(&state.overrides()),
             keymap::default_bindings()
         );
+    }
+
+    // ---- the screen's shape ------------------------------------------------
+
+    #[test]
+    fn a_fresh_state_opens_on_the_first_section() {
+        let (_dir, store) = tmp_store();
+        assert_eq!(
+            SettingsTabState::new(&store).section,
+            SettingsSection::ALL[0]
+        );
+    }
+
+    #[test]
+    fn every_section_round_trips_through_its_nav_index() {
+        // The rail and the segmented strip both speak indices; a section that does not
+        // survive the round trip would light the wrong nav item.
+        for section in SettingsSection::ALL {
+            assert_eq!(SettingsSection::from_index(section.index()), section);
+        }
+    }
+
+    #[test]
+    fn an_index_past_the_last_section_falls_back_instead_of_panicking() {
+        assert_eq!(
+            SettingsSection::from_index(SettingsSection::ALL.len()),
+            SettingsSection::default()
+        );
+    }
+
+    #[test]
+    fn the_rail_needs_room_for_itself_and_a_reading_column() {
+        // The defect this screen was rebuilt for: at 2000px there is room for both, so
+        // the rail shows and the column is left-aligned beside it.
+        let rem = px(16.);
+        assert!(rail_fits(px(2000.), rem), "2000px is a rail window");
+        assert!(
+            rail_fits(px(RAIL_MIN_VIEWPORT), rem),
+            "the breakpoint itself"
+        );
+        assert!(!rail_fits(px(700.), rem), "700px collapses to the strip");
+    }
+
+    #[test]
+    fn the_breakpoint_is_measured_in_design_pixels_not_device_ones() {
+        // At 150% a 1280px window has only ~853 design px of room — less than the rail
+        // plus a column — so it must collapse even though 1280 > 900.
+        let zoomed = px(16. * 1.5);
+        assert!(!rail_fits(px(1280.), zoomed));
+        assert!(
+            rail_fits(px(1280.), px(16.)),
+            "the same window at 100% fits"
+        );
+    }
+
+    #[test]
+    fn an_option_table_reports_the_index_of_the_current_value() {
+        assert_eq!(selected_index(&SCOPES, &DefaultScope::Ask), 2);
+        assert_eq!(selected_index(&SIDES, &PanelSide::Right), 1);
+        assert_eq!(selected_index(&KEYRING, &false), 1);
     }
 
     #[test]

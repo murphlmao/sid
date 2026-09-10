@@ -85,9 +85,11 @@ fn main() {
     preflight.mark_launch_attempt();
 
     gpui_platform::application()
-        // Bundled icon/font assets `gpui-component`'s widgets reference (e.g. `Table`
-        // column sort chevrons) — required by W5's SQL editor + results table.
-        .with_assets(gpui_kit_assets::Assets)
+        // The complete Lucide catalog (1830 SVGs), not `gpui_kit_assets::Assets`'s
+        // 86-icon compatibility subset: `sid_ui::Icon` (icon.rs) resolves through the
+        // full set now, so the running app needs the same source the registry's own
+        // test loads bytes from, or a bundle-bump-honest icon renders as nothing.
+        .with_assets(gpui_kit_assets::AllAssets)
         .run(move |cx| {
             ui::init(cx);
             gpui_component::init(cx);
@@ -101,8 +103,9 @@ fn main() {
             // persisted `Settings.secret_keyring_enabled` toggle (see
             // `app::open_secrets`; round-D §A dropped the encrypted-file backend from
             // the chain). The status text (which backend is live, plus any warning) is
-            // echoed to stderr for headless debugging, and shown in-app only when
-            // degraded (the tab strip's warning badge — see `app::AppState::new`).
+            // echoed to stderr for headless debugging, and shown in-app as the status
+            // bar's leftmost item — in words, in either state (see
+            // `app::AppState::status_bar`).
             let (secrets, secrets_degraded, secrets_status) = app::open_secrets(&store);
             eprintln!("sid: {secrets_status}");
             // Install the persisted theme as the process-wide palette global before

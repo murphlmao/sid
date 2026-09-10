@@ -17,9 +17,14 @@ Borders + surface shifts only. No shadows. Hairline `border` separates regions;
 
 ## Structure rules
 - ONE top chrome bar: wordmark · tabs · (right) scope chips · warning badge.
-- Reading surfaces (SSH home, Settings, config lists) are centered columns capped
-  at `max_w(880px)` — a label's action never lives a screen-width away. Data
-  tables (processes, ports, results) stay full-width.
+- Reading surfaces (SSH home, Settings, config lists) cap their column at
+  `max_w(880px)` — a label's action never lives a screen-width away — but the
+  column is **left-aligned to the content gutter, never centered**: centering left
+  dead margins on both sides of a 2000px window. A screen with sections (Settings)
+  spends the width it gains on a 220px section rail: `bg` fill, hairline right
+  border, `selection` on the active item, collapsing to a `SegmentedControl` above
+  the content below ~900 design px. Data tables (processes, ports, results) stay
+  full-width.
 - One list per fact. Never render the same collection twice on one screen.
 - Section headers: `text_xs` UPPERCASE `muted`, optionally `· count`.
 - Rows: `px_3 py_2`, `rounded_md`, hover = `selection` fill; primary action

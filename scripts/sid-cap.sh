@@ -18,6 +18,11 @@
 #
 # Requirements: sway, grim (pacman -S sway; wtype optional for --type).
 #
+# Shares repo-root discovery, hermetic XDG setup, launch/poll-for-window,
+# and the cleanup/--keep/print-path plumbing with scripts/sid-shot.sh via
+# scripts/lib/sid-app.sh — see that file for what's shared vs. kept here
+# (sway detection, all input injection, and the fullscreen+grim capture).
+#
 # Usage:
 #   scripts/sid-cap.sh --out shot.png                        # SSH tab, default size
 #   scripts/sid-cap.sh --tab system --out sys.png            # any primary tab
@@ -46,6 +51,10 @@
 #                      (default 16), release at X2,Y2 — drag-resizable dividers
 #                      (SFTP sidebar) and draggable boxes (DB diagram). Pacing is
 #                      deliberately brisk; see DRAG below before slowing it down.
+#   --scroll X,Y,N     park the pointer at X,Y and turn the wheel N notches (negative
+#                      scrolls up) — the only way to see the FOOT of a scrolling tab
+#                      (Settings, System) rather than its first screen. A move, never a
+#                      click, so it cannot activate the row it lands on.
 #   --key  KEYS        key chord, e.g. "Return", "ctrl+tab", "ctrl+shift+t" (repeatable).
 #                      NEEDS KEYBOARD FOCUS — the harness grabs it for you; see below.
 #   --type TEXT        wtype literal text (repeatable, needs wtype)
@@ -103,6 +112,8 @@
 
 set -uo pipefail
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/sid-app.sh"
+
 die() { echo "sid-cap: $*" >&2; exit 1; }
 
 TAB="ssh"
@@ -132,6 +143,7 @@ while [[ $# -gt 0 ]]; do
         --dclick) ACTIONS+=("dclick:$2"); shift 2 ;;
         --rclick) ACTIONS+=("rclick:$2"); shift 2 ;;
         --drag)  ACTIONS+=("drag:$2"); shift 2 ;;
+        --scroll) ACTIONS+=("scroll:$2"); shift 2 ;;
         --key)   ACTIONS+=("key:$2"); shift 2 ;;
         --type)  ACTIONS+=("type:$2"); shift 2 ;;
         --sleep) ACTIONS+=("sleep:$2"); shift 2 ;;
@@ -150,8 +162,7 @@ command -v sway >/dev/null 2>&1 || die "sway is not installed — it provides th
 command -v grim >/dev/null 2>&1 || die "grim is not installed (sudo pacman -S grim)"
 [[ "$TREE" -eq 1 || -n "$OUT" ]] || die "--out PATH is required (or --tree)"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+sid_app_locate_repo
 SID_BIN="$REPO_ROOT/target/debug/sid"
 
 # ---- 0. never photograph a stale binary ---------------------------------------------
@@ -202,11 +213,9 @@ cleanup() {
         echo "sid-cap: --keep: SWAYSOCK=$SWAYSOCK WAYLAND_DISPLAY=$(cat "$CAP_DIR/display" 2>/dev/null)" >&2
         return
     fi
-    [[ -n "${HOLDER_PID:-}" ]] && kill "$HOLDER_PID" >/dev/null 2>&1
-    [[ -n "${VPTR_PID:-}" ]] && kill "$VPTR_PID" >/dev/null 2>&1
-    [[ -n "$APP_PID" ]] && kill "$APP_PID" >/dev/null 2>&1
+    sid_app_kill_if_set "${HOLDER_PID:-}" "${VPTR_PID:-}" "$APP_PID"
     if [[ -n "${SWAYSOCK:-}" ]]; then swaymsg -s "$SWAYSOCK" exit >/dev/null 2>&1; fi
-    [[ -n "$SWAY_PID" ]] && kill "$SWAY_PID" >/dev/null 2>&1
+    sid_app_kill_if_set "$SWAY_PID"
     rm -rf "$CAP_DIR"
 }
 trap cleanup EXIT
@@ -242,18 +251,13 @@ export SWAYSOCK
 NESTED_DISPLAY="$(cat "$CAP_DIR/display")"
 
 # ---- 2. sid, hermetic by default ---------------------------------------------------
-declare -a APP_ENV=("WAYLAND_DISPLAY=$NESTED_DISPLAY" "SID_START_TAB=$TAB")
+sid_app_export_tab "$TAB"
+declare -a APP_ENV=("WAYLAND_DISPLAY=$NESTED_DISPLAY")
 [[ -n "$THEME" ]] && APP_ENV+=("SID_THEME=$THEME")
 [[ -n "${SID_PERF:-}" ]] && APP_ENV+=("SID_PERF=1")
-if [[ "$REAL" -ne 1 ]]; then
-    mkdir -p "$CAP_DIR/xdg/data" "$CAP_DIR/xdg/state" "$CAP_DIR/xdg/config"
-    if [[ -n "$XDG_SRC" ]]; then
-        # A prepared store (saved hosts, pinned known_hosts) — copied so the run
-        # stays hermetic and the source is never mutated.
-        cp -r "$XDG_SRC"/. "$CAP_DIR/xdg/data/"
-    fi
-    APP_ENV+=("XDG_DATA_HOME=$CAP_DIR/xdg/data" "XDG_STATE_HOME=$CAP_DIR/xdg/state" "XDG_CONFIG_HOME=$CAP_DIR/xdg/config")
-fi
+# sid_app_setup_xdg exports XDG_{DATA,STATE,CONFIG}_HOME (a prepared --xdg store is
+# copied in first so the source is never mutated); env below inherits them.
+sid_app_setup_xdg "$REAL" "$CAP_DIR/xdg" "$XDG_SRC"
 if [[ ${#EXTRA_ENV[@]} -gt 0 ]]; then
     APP_ENV+=("${EXTRA_ENV[@]}")
 fi
@@ -262,19 +266,21 @@ APP_PID=$!
 
 # Wait for the window (app_id "sid" — set in crates/sid/src/main.rs), then
 # fullscreen it so the capture is exactly the virtual output's size.
-FOUND=0
-for _ in $(seq 1 60); do
-    kill -0 "$APP_PID" 2>/dev/null || { cat "$CAP_DIR/sid.log" >&2; die "sid exited before opening a window (log above)"; }
-    if swaymsg -s "$SWAYSOCK" -t get_tree | python3 -c '
+sid_cap_detect_window() {
+    swaymsg -s "$SWAYSOCK" -t get_tree | python3 -c '
 import json, sys
 def walk(n):
     if n.get("app_id") == "sid": return True
     return any(walk(c) for c in n.get("nodes", []) + n.get("floating_nodes", []))
 sys.exit(0 if walk(json.load(sys.stdin)) else 1)
-' 2>/dev/null; then FOUND=1; break; fi
-    sleep 0.25
-done
-[[ "$FOUND" -eq 1 ]] || { cat "$CAP_DIR/sid.log" >&2; die "no sid window appeared in the nested compositor within 15s (log above)"; }
+' 2>/dev/null
+}
+
+sid_app_wait_for_window "$APP_PID" 15 0.25 "$CAP_DIR/sid.log" sid_cap_detect_window
+case $? in
+    1) die "sid exited before opening a window (log above)" ;;
+    2) die "no sid window appeared in the nested compositor within 15s (log above)" ;;
+esac
 swaymsg -s "$SWAYSOCK" '[app_id="sid"] fullscreen enable' >/dev/null
 
 if [[ "$TREE" -eq 1 ]]; then
@@ -309,13 +315,11 @@ ensure_vptr() {
     fi
     # The scanner's output uses package-relative imports (`from ..wayland import`),
     # so it must be generated INTO pywayland.protocol inside the venv.
+    # pywayland ships `protocol` as a namespace package (no __init__.py), so
+    # it has no __file__ — only __path__ resolves its directory.
     local proto_dir
-    # `__path__[0]`, not `dirname(__file__)`: `pywayland.protocol` is a NAMESPACE
-    # package (no `__init__.py`), so `__file__` is `None` and the old expression handed
-    # the scanner `-o ''` — "pywayland protocol generation failed", on a machine where
-    # nothing was actually wrong.
-    proto_dir="$("$venv/bin/python" -c 'import pywayland.protocol as p; print(p.__path__[0])')"
-    if [[ ! -d "$proto_dir/wlr_virtual_pointer_unstable_v1" ]]; then
+    proto_dir="$("$venv/bin/python" -c 'import pywayland.protocol; print(pywayland.protocol.__path__[0])')"
+    if [[ ! -f "$proto_dir/wlr_virtual_pointer_unstable_v1.py" ]]; then
         "$venv/bin/python" -m pywayland.scanner -i \
             /usr/share/wayland/wayland.xml \
             "$SCRIPT_DIR/cap-input/wlr-virtual-pointer-unstable-v1.xml" \
@@ -423,6 +427,20 @@ for action in "${ACTIONS[@]+"${ACTIONS[@]}"}"; do
             FOCUSED=1
             ptr_cmd "$kind $x $y ${SIZE/x/ }"
             ;;
+        scroll)
+            IFS=',' read -ra sc <<<"$arg"
+            [[ ${#sc[@]} -eq 3 ]] || die "--scroll wants X,Y,N, got '$arg'"
+            for n in "${sc[@]}"; do
+                [[ "$n" =~ ^-?[0-9]+$ ]] || die "--scroll wants integers, got '$arg'"
+            done
+            # A bare move: parking the pointer must not press anything.
+            ptr_cmd "move ${sc[0]} ${sc[1]} ${SIZE/x/ }"
+            if [[ "${sc[2]}" -lt 0 ]]; then
+                ptr_cmd "scrollup $(( -sc[2] ))"
+            else
+                ptr_cmd "scroll ${sc[2]}"
+            fi
+            ;;
         drag)
             IFS=',' read -ra d <<<"$arg"
             [[ ${#d[@]} -eq 4 || ${#d[@]} -eq 5 ]] \
@@ -466,5 +484,4 @@ stop_input
 
 # ---- 4. capture --------------------------------------------------------------------
 WAYLAND_DISPLAY="$NESTED_DISPLAY" grim -o HEADLESS-1 "$OUT" || die "grim capture failed"
-echo "sid-cap: wrote $OUT" >&2
-echo "$OUT"
+sid_app_emit_result "sid-cap" "$OUT"

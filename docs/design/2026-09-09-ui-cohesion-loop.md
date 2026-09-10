@@ -65,10 +65,13 @@ A registry-only upgrade path now exists:
 - [ ] Follow-up: retire `clamp_one_line()` (~40 call sites) in favour of gpui's fixed
       `truncate()`, after a targeted render check on the longest strings (workspace paths,
       IPv6 addresses, DB connection paths) in all four themes.
-- [ ] Follow-up: `gpui-kit-assets` 0.6.1 ships all 1830 Lucide icons (0.5.1 had 86). Give
-      `Icon::Trash` a bin (not `circle-x`), `Icon::Rename` a pencil (not `replace`), and real
-      glyphs to Database Run/Export and Network's Docker/Kubernetes/Interfaces sub-views. Each
-      is a decision about a live screen; do them in the cohesion pass for that tab.
+- [x] Follow-up icons, done 2026-09-09: `Icon::Trash` → `trash`, `Icon::Rename` → `pencil`,
+      new `Run`/`Export`/`Docker`/`Kubernetes`/`Interfaces` on Database buttons and the Network
+      segmented control. Two wiring fixes were needed for any of it to render: the registry now
+      resolves through `gpui_kit_assets::IconName` (the 1830-name catalog, not
+      `gpui_component::IconName`'s 86-entry subset) and `main.rs` embeds
+      `gpui_kit_assets::AllAssets`. Left for the SSH pass: the connection card's right-click
+      menu (`PopupMenuItem`) still shows rename/delete without icons.
 
 Recommended order: spike **first**. Doing the visual passes on 0.2.2 and migrating afterwards
 means verifying every screen twice.
@@ -78,10 +81,12 @@ means verifying every screen twice.
 Every item is gated by before/after captures in all four themes and a
 `interface-design:design-review` pass on the touched screen.
 
-- [ ] **App-wide status bar.** sid has no bottom bar. Real ops tools have one: active
-      scope, keyring state (move the top-right `!` badge's detail here), connection counts,
-      the `SID_PERF` readout when enabled. `StatusBar` was in the July checklist and was
-      never built.
+- [x] **App-wide status bar.** Done 2026-09-09: `sid_ui::StatusBar`/`StatusItem`, 26px
+      `surface` strip. Left: keyring state in words (click opens the old popover; the
+      top-right `!` badge is gone), `N ssh sessions`, `db: <name>` with its dot. Right: zoom
+      percent when ≠100% (click resets), last-frame ms under `SID_PERF`. Terminal pane
+      reflows by test (`a_shorter_pane_reflows_to_fewer_rows_and_the_same_columns`).
+      `sid-cap.sh` gained `--scroll`.
 - [ ] **One panel vocabulary.** Today Database uses bordered, rounded, headed panels; SSH
       home floats cards on the bare background; Workspaces uses a hairline sidebar; System
       has an unframed meter strip. Pick the Database treatment (surface fill, hairline
@@ -91,21 +96,32 @@ Every item is gated by before/after captures in all four themes and a
       [secondary actions] [primary action]` at one height. Today SSH has a legend strip and
       an add button, Database has a status string plus filter plus three buttons, Workspaces
       has count plus refresh plus add. Same order, same height, same gaps everywhere.
-- [ ] **Wide-window layouts.** Settings is an 880px centered column in a 2000px window with
-      dead margins on both sides. Move to a left settings nav plus content pane, or at least
-      left-align to the content gutter. SSH home: two ~340px cards then a void. Cards fill a
+- [x] **Wide-window layouts: Settings.** Done 2026-09-09: 220px section rail (Appearance ·
+      Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
+      to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
+      `SegmentedControl`s, the keyring status an `InlineNotice`. `system.md` amended.
+- [ ] **Wide-window layouts: SSH home.** Two ~340px cards then a void. Cards fill a
       responsive grid, and the home surface gets a second region (recent sessions or
       per-host last-connected) so the screen does not read as empty when it has data.
+- [ ] **Kbd chips lost their chrome under gpui-component 0.6.1** (regression the upgrade A/B
+      missed: Settings was not captured). `gpui_component::Kbd` draws no box in 0.6; the
+      keymap values in Settings → Keyboard render as bare `Ctrl+K` text. `sid-ui/src/kbd.rs`
+      must draw its own chip (surface fill, hairline, Meta role), and the gallery's KBD band
+      is the gate.
+- [ ] **`InlineNotice` clamps to one line**, so the ~140-char degraded-keyring message in
+      Settings truncates. Let a notice wrap to two lines (or split title/detail like `Toast`).
+- [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
+      compress to icons below a breakpoint or the scope chips collapse to one; ties into the
+      scope-switcher item.
 - [ ] **SSH session strip.** The `home  +` strip under the top bar is a row of tiny chips
       that looks unfinished. Make it a proper tab bar with the same height and active
       treatment as the top tabs, or fold it into the panel header.
 - [ ] **Scope switcher.** `Global` and `acme-api (demo)` in the top-right read as two
       unrelated chips. Render them as one segmented scope control with the active scope
       filled.
-- [ ] **System tab.** Meter cards framed as panels (July item, re-verify with a real
-      capture). The process table's Command column shows `—` for most rows because the
-      command line is unreadable without privileges; fall back to the process name instead
-      of a dash so the table is not two-thirds placeholders.
+- [x] **System tab.** Done 2026-09-09: meters were already on a framed `StatCluster`/`Card`
+      (verified by capture); the Command column now falls back to the process name in
+      `muted` ink (`ProcessInfo::cmd_is_fallback`, decided in `sid-sysinfo`).
 - [ ] **Icon-only buttons.** File and gear on SSH cards, diagram and delete on Database
       connections, git and close on Workspaces rows: same size, same hit area, tooltip
       present on every one (the July plan made tooltips type-required; verify no call site
@@ -148,9 +164,14 @@ Every item is gated by before/after captures in all four themes and a
 
 - [ ] Table frame cost: ~26% of cell builds are discarded by gpui each frame
       (`docs/design/2026-07-27-table-frame-cost.md`).
-- [ ] `scripts/lib/sid-app.sh`: collapse the ~60 duplicated lines between `sid-cap.sh` and
-      `sid-shot.sh`, and make `sid-shot.sh` verify it captured the sid window (today it
-      returned the wrong output twice).
+- [x] `scripts/lib/sid-app.sh` extracted (92 lines shared); `sid-shot.sh` now verifies the
+      sid window sits on its headless output before `grim` and checks the PNG dimensions
+      afterwards, refusing with a one-line reason otherwise. Merged 2026-09-09.
+- [ ] `sid-shot.sh` cannot capture at all on Murphy's Hyprland (Lua parser rejects
+      `hyprctl keyword` and legacy two-arg `dispatch`, exit 0); it now fails safely. Either
+      port its placement to `hyprctl eval`/new-syntax `dispatch` around workspace 4, or
+      delete it and make `sid-cap.sh` the only harness. Low priority: `sid-cap.sh` is what
+      the loop uses.
 - [ ] Rewrite `docs/HANDOFF.md` from the current tree. It still describes July 6.
 - [ ] CI: `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml` (blocked on token scope).
 
@@ -231,7 +252,50 @@ commits; do not invent one).
   terminal grid re-shapes from `rem_size` each frame, no second channel. Also lands
   `fix(scripts): sid-cap's click support dies on a namespace package`, so `harness-lib`
   must merge main before it finishes.
+- 2026-09-09: app-wide status bar landed on `status-bar` (`sid_ui::StatusBar`/`StatusItem`,
+  wired under the active tab in `app.rs`). Left: the secrets backend in words (`keyring` /
+  `secrets in memory`, clicking opens the detail the retired `!` badge opened), the open SSH
+  session count (hidden at zero), and `db: <name>` with the same dot `connection_dot` gives
+  its own row. Right: the zoom readout when it is not 100% (click = ctrl+0) and, under
+  `SID_PERF`, the last frame's ms — read from a static the paint closure stores into, since a
+  notify-per-frame from inside paint is an infinite render loop. The top-right `!` badge is
+  gone (`sw` stays). Terminal reflow verified: `grid_size` measures the pane it is given, so
+  26px less window is one row fewer, not a clipped one. Also `scripts/sid-cap.sh --scroll`,
+  which is how the Settings capture proved a scrolling tab still reaches its last line.
 - 2026-09-09: gpui upgrade merged (ff to 9e2300e). Gate on the merged tree: 51 suites, 1560
   tests (one retired icon-ratchet test), clippy clean; captures of SSH, Database, Network,
   gallery, 150% zoom and a real ctrl+= chord all match. Lockfile grew by the gpui-pre
   family, wgpu, accesskit and platform crates; 86 old entries dropped.
+- 2026-09-09: `harness-lib` merged: `scripts/lib/sid-app.sh`, a pywayland namespace-package
+  fix in `sid-cap.sh` (superset of the zoom branch's), `sid-shot.sh` placement verification.
+  `sid-cap.sh` verified from main against the upgraded renderer (Workspaces capture).
+  Note for Murphy: while probing the Lua `hyprctl eval` API the harness agent ran an
+  untargeted `hl.dsp.window.close()` on the live session; it confirmed nothing closed.
+- 2026-09-09: System tab, two defects (`system-tab` branch). Command column: 20 of 31 rows
+  at 1272px were showing a bare `—` because another user's/kernel processes' cmdline is
+  unreadable; `sid-sysinfo::processes::resolve_cmd` now falls back to the process name at
+  the mapping layer (`ProcessInfo::cmd_is_fallback` carries the fact), and the Command cell
+  renders that fallback in `muted` ink versus `fg` for a real argv, same Mono size either
+  way. Meter cards: re-verified by capture rather than re-built — `overview_cluster` already
+  puts CPU/Memory/Swap on a `StatCluster`/`Card` with a `SYSTEM` header, summary line and a
+  labelled `16 cores` per-core strip, matching the Database panel's `Elevation::Surface`
+  chrome exactly (same helper, not just the same look). Captures at 1272x900, 1920x1080
+  (cosmos + cosmos-light) and 2560x1400 confirm both: no dash-only Command cells for named
+  processes, fallback ink visibly dimmer, meters framed, table fills the width, nothing
+  clipped.
+- 2026-09-09: Settings rebuilt as a left section rail (Appearance / Behaviour /
+  Keyboard / Storage) beside a left-aligned, 880px-capped content pane of `surface`
+  panels, collapsing to a `SegmentedControl` below ~900 design px. The three
+  hand-rolled chip strips in Behaviour became `sid_ui::SegmentedControl`, the keyring
+  status became an `InlineNotice` with the restart caveat moved under the control it
+  applies to, and nav items are Tab-reachable via gpui's own tab-stop ring. Branch
+  `settings-layout`, not merged.
+- 2026-09-09: `icon-glyphs` branch (not merged): the `gpui-kit-assets` 0.6.1 bump made all
+  1830 Lucide SVGs available, so `sid_ui::Icon` now resolves through the full catalog
+  instead of `gpui-component`'s 86-icon compatibility subset. `Trash`/`Rename` draw a real
+  bin/pencil instead of their `circle-x`/`replace` stand-ins; new `Run`/`Export` icons on
+  the Database tab and `Docker`/`Kubernetes`/`Interfaces` icons on three of the Network
+  tab's five segments (`Ports`/`Services` stay label-only, deliberately). `main.rs`'s
+  `with_assets(..)` had to move from `Assets` to `AllAssets` for any of this to actually
+  render. Gate green (fmt/clippy/tests); SSH right-click menu still shows no icons for
+  rename/delete — that's `ssh_home.rs`'s `PopupMenuItem` list, out of this branch's scope.

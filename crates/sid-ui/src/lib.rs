@@ -55,6 +55,7 @@ pub mod radio;
 pub mod scale;
 pub mod scope_chip;
 pub mod segmented;
+pub mod status_bar;
 pub mod status_dot;
 pub mod styled;
 pub mod table;
@@ -83,6 +84,7 @@ pub use radio::{Radio, RadioPaint, radio_paint};
 pub use scale::{UiScale, scaled};
 pub use scope_chip::{ScopeChip, ScopeOrigin};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
+pub use status_bar::{StatusBar, StatusItem};
 pub use status_dot::{ConnectionState, StatusDot, StatusLegend};
 pub use styled::{StyledExt, h_flex, v_flex};
 // `TABLE_CHROME` is re-exported at the root alongside the rest of the table surface:
