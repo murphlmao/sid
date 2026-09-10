@@ -180,14 +180,15 @@ Every item is gated by before/after captures in all four themes and a
       tabs need and the nine modules import from it; the two `Tooltip` sites in `session.rs`
       use `sid_ui::Tipped`. Only `main.rs` names `gpui_component::` now. (`table::state::
       render_cell` was a private upstream module all along; its mentions were prose.)
-- [ ] **Gate fixes (sid-ui + theme)**, from the 2026-09-10 final gate: `Card::panel` header
-      gets a fixed height so a header without actions is not 5px shorter (Database HISTORY);
-      `CardChrome::Raised` header gets the hairline under it (Settings APPEARANCE, System);
-      `FillTable` stops painting ruled/striped phantom rows below the data (blocker: Network
-      Ports shows 26 rows of chrome for 10 rows of data); cosmos-light `accent` vs `danger`
-      are 1.13:1 apart (one red), dusk `danger` is 4.0:1 on surface, cosmos-light `well`
-      (#fff) is brighter than `bg` so recessed reads raised — fix tokens, extend the contrast
-      guard to all palettes and add an accent/danger separation guard.
+- [x] **Gate fixes (sid-ui + theme)**: done 2026-09-10, every one red-first. `card::
+      PANEL_HEADER_HEIGHT` (40px, zooms) so a header without actions is the same height;
+      `card::header_bar` rules every titled card's header off its body; `table::rows_to_paint
+      (data, viewport) = data` and `FillTable` only stripes when the data reaches the floor
+      (the blocker: a two-row Ports table now ends at its data); cosmos-light `danger`
+      #c03040→#8c1550 (ΔE from accent 36→94), cosmos-light `well` #ffffff→#e6e6ee (now below
+      bg), dusk `danger` #d04a4a→#e05070 (4.29→5.00 on bg). Three new guards sweep all four
+      palettes: status inks ≥4.5:1 on bg/surface/well, accent/danger ΔE ≥70, well recessed
+      relative to bg (void's pure-black bg exempt, documented).
 - [ ] **Gate fixes (tabs)**: Database `CONNECTIONS · n` excludes the always-present store row;
       Database row `delete` is a labelled button beside two icon squares (mirror Workspaces:
       `IconButton` at rest, `ConfirmButton` when armed) and the two row templates place the
