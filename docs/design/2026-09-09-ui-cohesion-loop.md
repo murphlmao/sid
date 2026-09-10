@@ -62,9 +62,10 @@ A registry-only upgrade path now exists:
       (`text.rs` caches `truncate_width`; `TruncateStart`/`TruncateMiddle` added); text
       min-content width, `h_flex()` zero height, and `Window::refresh` mid-draw are UNCHANGED,
       keep those workarounds. `Column.width` is still `Pixels`-only in 0.6.1, so `FillTable` stays.
-- [ ] Follow-up: retire `clamp_one_line()` (~40 call sites) in favour of gpui's fixed
-      `truncate()`, after a targeted render check on the longest strings (workspace paths,
-      IPv6 addresses, DB connection paths) in all four themes.
+- [x] Follow-up: retire `clamp_one_line()` — checked 2026-09-09, **not applicable**. The
+      helper is `line_clamp(1).text_ellipsis()` and never used the broken `truncate()` path;
+      the hygiene test bans the literal `.truncate(` regardless. Doc comment updated; render
+      check at 900x700 on workspace paths, ports and DB paths clean in cosmos and cosmos-light.
 - [x] Follow-up icons, done 2026-09-09: `Icon::Trash` → `trash`, `Icon::Rename` → `pencil`,
       new `Run`/`Export`/`Docker`/`Kubernetes`/`Interfaces` on Database buttons and the Network
       segmented control. Two wiring fixes were needed for any of it to render: the registry now
@@ -142,10 +143,16 @@ Every item is gated by before/after captures in all four themes and a
       tooltip (type-required by the 3-arg constructor); `Tipped::tip` covers non-button
       elements. System's pin/kill controls were not re-audited in this pass; check them in the
       cosmos-light sweep.
-- [ ] **Interaction states.** Hover, pressed, focused, disabled on every control, and a
-      visible focus ring for keyboard navigation (this is a keyboard-first app with no
-      visible focus indication in any capture). The gallery has a `BUTTON STATES` section;
-      make the app match it.
+- [x] **Interaction states.** Done 2026-09-09: one `StyledExt::focus_ring` helper (accent
+      hairline over a transparent rest hairline, so no layout shift); pressed + ring + tab stop
+      added to `Row` (opt-in `tab_index`), `SegmentedControl` segments (+ `tab_index` builder so a
+      strip sorts with its form), `StatusItem`; Button/IconButton already had every state
+      through the library ring mapped to `accent`. Gallery gained a FOCUS band.
+- [ ] **Focus follow-ups**: the Settings rail item hand-rolls the same ring (`settings_tab.rs`)
+      and should call `focus_ring`; `chrome_tab` in `app.rs` has hover only (no pressed, no
+      ring, not a tab stop); the config editor's save/close are hand-rolled `div().id(..)`
+      without `tab_index`, so Tab cannot reach Save there; consider `.focus_visible()` (ring
+      only on keyboard focus) if a mouse-click ring reads as noise.
 - [ ] **Empty states.** Database and Workspaces have the icon + headline + action pattern.
       SSH home has none for zero hosts, and the quick-connect field is the only thing on
       screen. Add the same pattern.
@@ -169,11 +176,11 @@ Every item is gated by before/after captures in all four themes and a
       every tab, both forms, the palette, the password prompt and the config editor;
       `crates/sid/src/ui/text_input.rs` (971 lines) deleted, net −1049 lines. Masking, tab
       order, Enter/Esc, seed prefill and key chips verified by capture.
-- [ ] Follow-up from #3: **modals do not trap focus.** `window.focus_next()` walks the
-      window's flat tab-stop list, so Tab off a modal's last field can land on a background
-      field (SSH home's search box, Database's result filter). Needs a focus-trap primitive in
-      `sid-ui` (`Modal` owns a tab group and wraps at its ends); belongs with the interaction
-      states pass.
+- [x] Follow-up from #3: **modals trap focus** as of 2026-09-09. `Modal` calls `tab_group()`
+      + gpui-component's `focus_trap` (trap handle kept in `use_keyed_state`); `TextInput`'s
+      Tab/Shift-Tab route through `sid_ui::focus::{next,prev}`; the config editor registers its
+      own trap on its backdrop. A/B capture: 25 Tabs stay inside the host form; with the trap
+      removed the same run lands on a background card's SFTP button.
 - [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
 - [x] #4 as decided above (merged 2026-09-09; live-verified: `stty size` 56x113 at 100%,
       35x75 at 150% over the docker sshd fixture; `SID_UI_SCALE` env override for captures).
