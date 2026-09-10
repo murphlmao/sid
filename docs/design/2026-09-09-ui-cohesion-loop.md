@@ -654,3 +654,27 @@ per CLAUDE.md. Agent briefs must state which decision is being extracted and nam
   -D warnings`, `cargo test --workspace` green. Captures: `gu-net-light.png` +
   `gu-net-light-few.png`, `gu-db.png`, `gu-settings-light.png`, `gu-ssh-dusk.png`,
   `gu-gallery-light.png`. NOT merged — left on the branch for review.
+- 2026-09-10: Final-gate tab defects fixed on `gate-tabs` (seven commits, not merged).
+  Database: `CONNECTIONS · n` now counts the always-rendered store-browse row
+  (`connections_count`, RED first); its `delete` control is an `IconButton(Trash)` at
+  rest and only becomes the labelled `ConfirmButton` once armed, mirroring
+  `workspaces_tab`'s unregister; `store_browse_row` and `render_connection_row` share one
+  trailing-chip layout. Network: `port_action(pid)` (RED first) turns an ownerless port's
+  action cell empty instead of a stray `—`, plus one Meta-role footer line, `n ports
+  without owner info (needs root)`, from a tested pure counter. System: the Command
+  column clamps to one line so a long argv ellipsizes instead of hard-clipping into User.
+  Workspaces: both `workspaces_detail_panel` empty states are now framed in
+  `Card::panel("workspace"/"detail")` like Database's RESULTS; the row's `{n}h · {n}c`
+  became `scope_counts_label` (RED first, singular/plural tested), and the redundant
+  "not a git repo" line under the `no git` chip is gone. SSH home: `quick_connect_field`'s
+  `TextInput` is `.small()`, matching the 41px header rung everywhere else. Host/DB
+  connection forms: the disabled `workspace` save-to radio explains itself via
+  `workspace_option_note` (RED first, duplicated per-file on purpose, same as the rest of
+  `save_to_selector`), and `radio_mark`'s enabled/disabled ring colours (`border`/`faint`)
+  were swapped to `muted`/`border` so the choosable option reads brighter than the
+  disabled one. Gate: fmt, clippy `--workspace --all-targets -D warnings`, `cargo test
+  --workspace` all green, re-run after merging main's sid-ui gate-fix pass
+  (`a51db99`: fixed 40px panel-header height, raised-card header hairline, `FillTable`'s
+  phantom-row fix, three palette tokens) — no conflicts, none of it touched these seven
+  files. Captures at 1920x1080 confirm each defect gone, including the db delete control
+  armed and the add-host modal's radio band. Left on the branch for review.
