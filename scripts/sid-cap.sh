@@ -51,6 +51,10 @@
 #                      (default 16), release at X2,Y2 — drag-resizable dividers
 #                      (SFTP sidebar) and draggable boxes (DB diagram). Pacing is
 #                      deliberately brisk; see DRAG below before slowing it down.
+#   --scroll X,Y,N     park the pointer at X,Y and turn the wheel N notches (negative
+#                      scrolls up) — the only way to see the FOOT of a scrolling tab
+#                      (Settings, System) rather than its first screen. A move, never a
+#                      click, so it cannot activate the row it lands on.
 #   --key  KEYS        key chord, e.g. "Return", "ctrl+tab", "ctrl+shift+t" (repeatable).
 #                      NEEDS KEYBOARD FOCUS — the harness grabs it for you; see below.
 #   --type TEXT        wtype literal text (repeatable, needs wtype)
@@ -139,6 +143,7 @@ while [[ $# -gt 0 ]]; do
         --dclick) ACTIONS+=("dclick:$2"); shift 2 ;;
         --rclick) ACTIONS+=("rclick:$2"); shift 2 ;;
         --drag)  ACTIONS+=("drag:$2"); shift 2 ;;
+        --scroll) ACTIONS+=("scroll:$2"); shift 2 ;;
         --key)   ACTIONS+=("key:$2"); shift 2 ;;
         --type)  ACTIONS+=("type:$2"); shift 2 ;;
         --sleep) ACTIONS+=("sleep:$2"); shift 2 ;;
@@ -421,6 +426,20 @@ for action in "${ACTIONS[@]+"${ACTIONS[@]}"}"; do
             # --key needs no separate focus step.
             FOCUSED=1
             ptr_cmd "$kind $x $y ${SIZE/x/ }"
+            ;;
+        scroll)
+            IFS=',' read -ra sc <<<"$arg"
+            [[ ${#sc[@]} -eq 3 ]] || die "--scroll wants X,Y,N, got '$arg'"
+            for n in "${sc[@]}"; do
+                [[ "$n" =~ ^-?[0-9]+$ ]] || die "--scroll wants integers, got '$arg'"
+            done
+            # A bare move: parking the pointer must not press anything.
+            ptr_cmd "move ${sc[0]} ${sc[1]} ${SIZE/x/ }"
+            if [[ "${sc[2]}" -lt 0 ]]; then
+                ptr_cmd "scrollup $(( -sc[2] ))"
+            else
+                ptr_cmd "scroll ${sc[2]}"
+            fi
             ;;
         drag)
             IFS=',' read -ra d <<<"$arg"

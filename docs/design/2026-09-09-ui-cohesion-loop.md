@@ -235,6 +235,16 @@ commits; do not invent one).
   terminal grid re-shapes from `rem_size` each frame, no second channel. Also lands
   `fix(scripts): sid-cap's click support dies on a namespace package`, so `harness-lib`
   must merge main before it finishes.
+- 2026-09-09: app-wide status bar landed on `status-bar` (`sid_ui::StatusBar`/`StatusItem`,
+  wired under the active tab in `app.rs`). Left: the secrets backend in words (`keyring` /
+  `secrets in memory`, clicking opens the detail the retired `!` badge opened), the open SSH
+  session count (hidden at zero), and `db: <name>` with the same dot `connection_dot` gives
+  its own row. Right: the zoom readout when it is not 100% (click = ctrl+0) and, under
+  `SID_PERF`, the last frame's ms — read from a static the paint closure stores into, since a
+  notify-per-frame from inside paint is an infinite render loop. The top-right `!` badge is
+  gone (`sw` stays). Terminal reflow verified: `grid_size` measures the pane it is given, so
+  26px less window is one row fewer, not a clipped one. Also `scripts/sid-cap.sh --scroll`,
+  which is how the Settings capture proved a scrolling tab still reaches its last line.
 - 2026-09-09: gpui upgrade merged (ff to 9e2300e). Gate on the merged tree: 51 suites, 1560
   tests (one retired icon-ratchet test), clippy clean; captures of SSH, Database, Network,
   gallery, 150% zoom and a real ctrl+= chord all match. Lockfile grew by the gpui-pre

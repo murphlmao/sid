@@ -1631,6 +1631,21 @@ mod grid_size_tests {
         assert_eq!(grid_size(pane, px(4.), px(8.)), (75, 200));
     }
 
+    /// The property the app-wide status bar exercises. The bar takes 26px off the
+    /// bottom of the window, so the terminal pane is *given* a shorter box — and this
+    /// function is fed that box (`render_grid`'s canvas measures `bounds.size`, and
+    /// `SshSession::resize` forwards the result to the PTY). The shell therefore gets
+    /// one row fewer and reflows its own output; nothing is drawn under the strip and
+    /// then hidden by it.
+    #[test]
+    fn a_shorter_pane_reflows_to_fewer_rows_and_the_same_columns() {
+        let pane = size(px(800.), px(600.));
+        assert_eq!(grid_size(pane, px(8.), px(16.)), (37, 100));
+        // The same window with the status bar under it: 600 - 26 = 574px of pane.
+        let under_the_bar = size(px(800.), px(574.));
+        assert_eq!(grid_size(under_the_bar, px(8.), px(16.)), (35, 100));
+    }
+
     #[test]
     fn a_pane_too_small_for_one_cell_is_still_a_one_by_one_grid() {
         // Zero rows or columns is a division by zero on the other end of the PTY.
