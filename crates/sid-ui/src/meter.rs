@@ -168,6 +168,7 @@ pub struct Meter {
     tone: Option<MeterTone>,
     segments: Vec<f32>,
     segments_label: Option<SharedString>,
+    bar: bool,
 }
 
 impl Meter {
@@ -182,6 +183,7 @@ impl Meter {
             tone: None,
             segments: Vec::new(),
             segments_label: None,
+            bar: true,
         }
     }
 
@@ -207,6 +209,15 @@ impl Meter {
     /// Override the derived [`MeterTone`].
     pub fn tone(mut self, tone: MeterTone) -> Self {
         self.tone = Some(tone);
+        self
+    }
+
+    /// Drop the track entirely — for a device with nothing to measure (an unconfigured
+    /// swap), where an empty bar next to a `—` value just repeats what the note already
+    /// says in a second and third way. Pair with a [`Meter::note`]; skip [`Meter::value`]
+    /// too, so the row reads as one fact (the label) plus its explanation.
+    pub fn hide_bar(mut self) -> Self {
+        self.bar = false;
         self
     }
 
@@ -264,9 +275,12 @@ impl RenderOnce for Meter {
                         )
                     }),
             )
-            .child(
-                track(&theme).child(div().h_full().rounded_sm().bg(rgb(fill)).w(relative(width))),
-            )
+            .when(self.bar, |this| {
+                this.child(
+                    track(&theme)
+                        .child(div().h_full().rounded_sm().bg(rgb(fill)).w(relative(width))),
+                )
+            })
             .when_some(self.note, |this, note| {
                 this.child(div().hint_text(&theme).child(note))
             })

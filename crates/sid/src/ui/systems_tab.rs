@@ -1279,7 +1279,9 @@ impl AppState {
                 humanize_bytes(ov.swap_total)
             ))
         } else {
-            Meter::new("Swap", 0.0).value("—").note("none configured")
+            // Unconfigured swap used to say so three ways at once: an em-dash value, an
+            // empty bar, and this caption. One fact, one caption — no value, no bar.
+            Meter::new("Swap", 0.0).hide_bar().note("none configured")
         };
 
         StatCluster::new()
