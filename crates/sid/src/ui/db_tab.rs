@@ -48,8 +48,8 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::{
     Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, Elevation,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List,
-    Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput, Typography as _, caveat_line,
-    error_line, h_flex, scaled, sortable_th, theme, v_flex,
+    PANEL_FILTER_FLOOR, Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput,
+    Typography as _, caveat_line, error_line, h_flex, scaled, sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -1622,17 +1622,18 @@ impl AppState {
                 // Capped, not filling: a 1200px-wide filter field is as wrong as the
                 // ribbon table it sits above used to be. Sized off the same rung as the
                 // buttons beside it, so the header row is one height.
-                // `FieldWidth`'s own 160px floor, not the 280px cap this field used to
-                // carry: a panel header's actions are `flex_none`, so every pixel the
-                // filter takes comes out of the title beside it, and this pane is only
-                // ~390px wide at a 700px window. Sized off the same rung as the buttons
-                // beside it, so the header row is one height.
-                div().children(
-                    self.db
-                        .result_filter
-                        .clone()
-                        .map(|f| TextInput::new(&f).small().fixed(px(160.))),
-                ),
+                // `FieldWidth`'s own 160px floor at rest, not the 280px cap this field
+                // used to carry — but `.flex_shrink_1()` down to `PANEL_FILTER_FLOOR`
+                // (120px) once the header is squeezed, so it is *this* that gives up
+                // width at a 700px window (this pane is only ~390px wide there), not
+                // the `RESULTS` title beside it (`card.rs`'s `header_actions`).
+                div().children(self.db.result_filter.clone().map(|f| {
+                    TextInput::new(&f)
+                        .small()
+                        .fixed(px(160.))
+                        .flex_shrink_1()
+                        .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
+                })),
             )
             .when_some(next_page, Card::action)
             // Far right, after the rest (Murphy: "download as csv should be on the far

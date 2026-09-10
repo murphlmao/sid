@@ -31,8 +31,8 @@
 //! `panel_header()` and a hand-built body; [`Card::panel`] is that arrangement, once.
 
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement, Refineable as _, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, IntoElement, ParentElement, Pixels, Refineable as _, RenderOnce, SharedString,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::elevation::Elevation;
@@ -101,6 +101,32 @@ fn panel_body() -> gpui::Div {
 /// single contract either way.
 fn panel_header() -> gpui::Div {
     h_flex().flex_none().justify_between().gap_3().px_3().py_2()
+}
+
+/// The floor a header's actions may shrink a filter field down to, once the title
+/// beside it is the one that should win the last of the row's width.
+///
+/// Below [`crate::input::FIELD_MIN_W`] (160px, the ordinary field floor everywhere
+/// else) on purpose: a panel header is the one place a field sits directly beside a
+/// title that also has to stay legible, and a narrow window (a 700px design width
+/// leaves the panel around 390px) does not have room for both at their usual floors.
+/// 120px is the smallest width that still shows a short placeholder (`"filter…"`)
+/// rather than collapsing to padding. See [`header_actions`] for the other half.
+pub const PANEL_FILTER_FLOOR: Pixels = px(120.);
+
+/// The header's actions cluster: right-aligned, one line, `gap_1` between controls.
+///
+/// `flex_initial` (grow 0, shrink 1), not `flex_none` — the bug this ratchets shut.
+/// The title beside it is `flex_1` + `min_w_0`, so with the *actions* pinned rigid
+/// (the old `flex_none`) every pixel a wide fixed-width filter claimed came straight
+/// out of the title, and at a 700px window the results/ports filter sat at its floor
+/// while `RESULTS`/`PORTS` elided. Letting this cluster shrink gives its own children
+/// the chance to give up space first: an ordinary action (an icon button, its label
+/// `flex_none` — see `button.rs`) has no give and holds its content width regardless,
+/// but a header filter built with `.flex_shrink_1()` down to [`PANEL_FILTER_FLOOR`]
+/// (`db_tab.rs`/`network_tab.rs`) now yields *before* the title does.
+fn header_actions(actions: Vec<AnyElement>) -> gpui::Div {
+    h_flex().flex_initial().gap_1().children(actions)
 }
 
 /// A titled container. See the module docs for the two shapes.
@@ -226,7 +252,7 @@ impl RenderOnce for Card {
                     .child(header_text(&title, self.count)),
             )
             .when(!self.actions.is_empty(), |this| {
-                this.child(h_flex().flex_none().gap_1().children(self.actions))
+                this.child(header_actions(self.actions))
             })
         });
 
@@ -332,6 +358,27 @@ mod tests {
         // body's height changes as the list does.
         assert_eq!(style_of(panel_header()).flex_grow, Some(0.));
         assert_eq!(style_of(panel_header()).flex_shrink, Some(0.));
+    }
+
+    #[test]
+    fn a_headers_actions_shrink_before_its_title_does() {
+        // `flex_initial`, not `flex_none`: grow stays 0 (an empty header does not
+        // stretch the actions cluster into dead space) but shrink is now 1, so a
+        // squeezed header takes the deficit out of the actions first — see
+        // `header_actions`'s doc comment for why that is backwards from the bug this
+        // replaces.
+        let style = style_of(header_actions(Vec::new()));
+        assert_eq!(style.flex_grow, Some(0.));
+        assert_eq!(style.flex_shrink, Some(1.));
+    }
+
+    #[test]
+    fn the_panel_filter_floor_is_smaller_than_the_ordinary_field_floor_but_still_a_field() {
+        // Smaller than the 160px every other field floors at (a panel header is
+        // tighter than a form), but still wide enough for a short placeholder —
+        // the same "a stub, not a field" bar `input.rs` sets for `FIELD_MIN_W`.
+        assert!(PANEL_FILTER_FLOOR < gpui::px(160.));
+        assert!(f32::from(PANEL_FILTER_FLOOR) >= 100.);
     }
 
     /// Read back a `Div`'s refined style — the trick `styled.rs`'s tests use.

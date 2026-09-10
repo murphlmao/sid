@@ -69,7 +69,7 @@ pub mod typography;
 pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
 pub use badge::{Badge, BadgeFill, BadgeTone};
 pub use button::{Button, ButtonSize, ButtonState, ButtonVariant, IconButton};
-pub use card::Card;
+pub use card::{Card, PANEL_FILTER_FLOOR};
 pub use elevation::Elevation;
 pub use empty_state::EmptyState;
 pub use grid::{CardGrid, CardPaint, GridCard};

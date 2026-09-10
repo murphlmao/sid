@@ -99,9 +99,9 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, Segment,
-    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _, error_line,
-    h_flex, sortable_th, v_flex,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, PANEL_FILTER_FLOOR,
+    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _,
+    error_line, h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -1347,17 +1347,19 @@ impl AppState {
     /// filter box is as wrong as the 648px table it used to sit above. `Sm`, so it lands
     /// on the same rung as the refresh button beside it and the header stays one height.
     ///
-    /// `Fixed` and not `Fill`/`Grow`, because a panel header's actions are `flex_none`:
-    /// a field that asked to grow would take the row's whole width and leave the panel's
-    /// own `PORTS · 13` title with nothing. The width it is fixed at is what the title
-    /// beside it has to live within at a narrow window.
+    /// `Fixed` and not `Fill`/`Grow`, because a field that asked to grow would take the
+    /// row's whole width and leave the panel's own `PORTS · 13` title with nothing. But
+    /// `.flex_shrink_1()` down to `PANEL_FILTER_FLOOR` (120px), so at a narrow window this
+    /// field is what gives up width, not the title beside it (`card.rs`'s
+    /// `header_actions`).
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div().children(
-            self.network
-                .filter
-                .clone()
-                .map(|f| TextInput::new(&f).small().fixed(px(240.))),
-        )
+        div().children(self.network.filter.clone().map(|f| {
+            TextInput::new(&f)
+                .small()
+                .fixed(px(240.))
+                .flex_shrink_1()
+                .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
+        }))
     }
 
     /// The one refresh control, routed to whichever sub-view is showing.
