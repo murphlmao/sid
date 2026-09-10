@@ -101,7 +101,7 @@ use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, PANEL_FILTER_FLOOR,
     Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _,
-    error_line, h_flex, scaled, sortable_th, v_flex,
+    caveat_line, error_line, h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -614,13 +614,11 @@ impl TableDelegate for PortsDelegate {
                 data_cell(t, fg, label)
             }
             _ => {
-                let Some(pid) = port.pid else {
-                    // Right-anchored like the buttons it stands in for: a socket with no
-                    // attributable pid is most of this table, and a left-aligned dash in
-                    // the action column would make the few real buttons look misaligned.
-                    return div()
-                        .size_full()
-                        .child(ActionCell::new().child(div().text_meta(t).child("—")));
+                let Some(PortAction::Kill(pid)) = port_action(port.pid) else {
+                    // No attributable owner, no action — an empty cell, not a
+                    // substitute dash (`port_action` is the decision; PID/Process keep
+                    // their own `—` for absent data, which this is not).
+                    return div().size_full().child(ActionCell::new());
                 };
                 let armed = self.kill_arm.is_armed(pid, now);
                 // Keyed by pid, not by row index: the rows under the pointer reorder on
@@ -1418,10 +1416,23 @@ impl AppState {
                 ))
         });
 
+        let unowned = table
+            .as_ref()
+            .map(|t| ports_without_owner(&t.read(cx).delegate().ports))
+            .unwrap_or(0);
+
         self.sub_view_panel(NetSubTab::Ports, count, refreshing, None, cx)
             .children(notice_row(self.network.error.clone()))
             .child(table_pane(table.as_ref(), empty))
             .children(notice_row(kill_error))
+            // One Meta-role line naming *why* some rows have no `kill` button — the
+            // fact `port_action` renders as an empty cell, not a `—`, still needs
+            // saying once rather than looking like an inconsistent table.
+            .when(unowned > 0, |el| {
+                el.child(div().flex_none().px_3().pt_2().child(caveat_line(format!(
+                    "{unowned} ports without owner info (needs root)"
+                ))))
+            })
             .into_any_element()
     }
 
@@ -2251,6 +2262,28 @@ fn action_click_executes(
         .is_some_and(|(armed_name, armed_action)| armed_name == name && *armed_action == action)
 }
 
+/// What the Ports table's action cell offers for one row, from the one fact that
+/// decides it: whether the socket has an attributable pid. A row with none is not
+/// missing a *value* the way an empty Process cell is — there is nothing to act on —
+/// so the render side must draw an empty cell, not a substitute dash pretending to be
+/// data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortAction {
+    Kill(Pid),
+}
+
+fn port_action(pid: Option<Pid>) -> Option<PortAction> {
+    pid.map(PortAction::Kill)
+}
+
+/// How many rows in `ports` have no attributable owner (no pid — usually another
+/// user's or the kernel's socket, unreadable without root). Backs the panel's one
+/// Meta-role note, so the tab says *why* some rows have no `kill` instead of leaving
+/// it to look inconsistent.
+fn ports_without_owner(ports: &[ListeningPort]) -> usize {
+    ports.iter().filter(|p| p.pid.is_none()).count()
+}
+
 /// Case-insensitive filter over the ports table: port-number prefix match,
 /// process/command substring, local-address substring, or an exact pid match. Empty
 /// (or all-whitespace) query matches everything.
@@ -2761,6 +2794,39 @@ fn sort_interfaces_default_first(interfaces: &mut [NetInterface], default_name: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate defect: an ownerless row (no pid) rendered a bare `—` in the action
+    /// cell instead of nothing, where every other row shows `kill`.
+    #[test]
+    fn an_ownerless_row_yields_no_action() {
+        assert_eq!(port_action(None), None);
+    }
+
+    #[test]
+    fn a_row_with_a_pid_yields_kill() {
+        let pid = Pid::from_u32(42);
+        assert_eq!(port_action(Some(pid)), Some(PortAction::Kill(pid)));
+    }
+
+    #[test]
+    fn ports_without_owner_counts_only_the_pidless_rows() {
+        assert_eq!(ports_without_owner(&[]), 0);
+        let owned = |pid: u32| ListeningPort {
+            protocol: Protocol::Tcp,
+            state: sid_core::sys::SocketState::Listen,
+            port: 80,
+            local_addr: String::new(),
+            pid: Some(Pid::from_u32(pid)),
+            command: String::new(),
+        };
+        let ownerless = ListeningPort {
+            pid: None,
+            ..owned(1)
+        };
+        assert_eq!(ports_without_owner(&[owned(1), owned(2)]), 0);
+        assert_eq!(ports_without_owner(&[owned(1), ownerless.clone()]), 1);
+        assert_eq!(ports_without_owner(&[ownerless.clone(), ownerless]), 2);
+    }
 
     /// Read back a cell's refined style — enough to assert what [`data_cell`] decided,
     /// without a renderer. Same trick `sid_ui::styled`'s own tests use.
