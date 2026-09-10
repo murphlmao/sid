@@ -328,6 +328,12 @@ fakes, never through the compositor or Docker, and each behaviour has exactly on
 randomness and env enter through ports. Rendering itself stays observation-gated by capture,
 per CLAUDE.md. Agent briefs must state which decision is being extracted and name its test.
 
+**Usage-limit recovery (Murphy, 2026-09-10 17:28):** when the org spend limit kills agents, the
+loop must resume by itself after the reset. Standing practice: keep the dynamic `/loop` wakeup
+armed AND schedule one-shot cron fires of the same `/loop` prompt a few minutes after the
+announced reset time (today 20:20 → fires at 20:23 and 21:47). On fire: list worktrees, resume
+killed agents by id with their context, restart killed workflows from their script path.
+
 ## Blocked
 
 - Closing GitHub #1 (fixed in July) and #2 (merged 3afd482) needs Murphy: `gh` is not
