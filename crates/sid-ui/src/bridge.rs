@@ -99,11 +99,15 @@ pub fn mix(color: u32, toward: u32, factor: f32) -> u32 {
 }
 
 /// The palette's lightest ink — white-ish in every built-in. Dark palettes have it as
-/// `fg_strong`; a light palette's `fg_strong` is black, so there it is `well` (the
-/// recess token, which is the lightest surface on a light palette).
+/// `fg_strong`; a light palette's `fg_strong` is black, so there it is `bg`, the
+/// lightest surface such a palette has.
+///
+/// It used to be `well`, back when a light `well` was pure white. It no longer is —
+/// `well` is the bottom rung of the depth ladder in every palette now, so on a light
+/// one it is the *darkest* surface, the opposite of what this asks for.
 pub fn light_ink(t: &Theme) -> u32 {
     if theme::is_light(t) {
-        t.well
+        t.bg
     } else {
         t.fg_strong
     }
