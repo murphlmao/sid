@@ -516,17 +516,29 @@ impl TableDelegate for ProcessesDelegate {
                 .text_color(rgb(theme.fg))
                 .child(proc.name.clone()),
             4 => {
-                // Kernel threads have no cmdline at all; an empty cell reads as a
-                // rendering failure, the em dash reads as "there is none".
+                // `sid_sysinfo::processes::resolve_cmd` already falls back to the
+                // process name for an empty/unreadable command line — see
+                // `ProcessInfo::cmd_is_fallback`'s doc comment — so an empty cell here
+                // only means both `cmd` and `name` were empty, which the dash still
+                // covers. The fallback stays on the same Mono rung as a real command
+                // line (same size, same family — the design system's "a data table
+                // sits on one rung" rule) and differs only in ink, so the user can
+                // tell "this is the name, not the argv" without the column looking
+                // like a different kind of cell.
                 let label: SharedString = if proc.cmd.trim().is_empty() {
                     "—".into()
                 } else {
                     proc.cmd.clone().into()
                 };
+                let ink = if proc.cmd.trim().is_empty() || proc.cmd_is_fallback {
+                    theme.muted
+                } else {
+                    theme.fg
+                };
                 div()
                     .px_2()
                     .text_mono(&theme)
-                    .text_color(rgb(theme.muted))
+                    .text_color(rgb(ink))
                     .child(label)
             }
             5 => {
@@ -1377,6 +1389,7 @@ mod tests {
             pid: Pid::from_u32(pid),
             name: name.to_string(),
             cmd: name.to_string(),
+            cmd_is_fallback: false,
             cpu_pct: cpu,
             rss_bytes: mem,
             started_unix_secs: 0,
