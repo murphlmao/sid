@@ -129,7 +129,12 @@ pub fn dusk() -> Theme {
         accent: 0xe87040,
         success: 0xa8d890,
         warning: 0xe8b04a,
-        danger: 0xd04a4a,
+        // A rose-red, not the old brick #d04a4a: that one was 4.00:1 on this palette's
+        // own `surface` (an error sentence you had to lean in to read) and sat close
+        // enough to the amber `accent` that a destructive button and an engage button
+        // were the same warm smudge at a glance. `ansi[1]` keeps the brick — the
+        // terminal's red is the user's shell colour, not a UI status ink.
+        danger: 0xe05070,
         selection: 0x241d14,
         ansi: [
             0x241d14, 0xd04a4a, 0x9ab86a, 0xe8b04a, 0x7a90a8, 0xc088a0, 0xa8c0b0, 0xd8c8b0,
@@ -155,7 +160,11 @@ pub fn cosmos_light() -> Theme {
         name: "cosmos-light",
         bg: 0xf4f4f8,
         surface: 0xeaeaf2,
-        well: 0xffffff,
+        // Below `surface`, which is below `bg`: a recess is cut *into* the panel it
+        // sits in. Pure white was the brightest token in the palette, so every input,
+        // editor and terminal well read as the one thing raised off the card. This is
+        // as dark as the rung goes before `warning` stops clearing AA on it (4.53:1).
+        well: 0xe6e6ee,
         border: 0xd0d0dc,
         fg: 0x181824,
         fg_strong: 0x000000,
@@ -164,7 +173,11 @@ pub fn cosmos_light() -> Theme {
         accent: 0xb03030,
         success: 0x246e7c,
         warning: 0x8a5f1a,
-        danger: 0xc03040,
+        // A deep crimson, a hue and a lightness away from the red `accent` — the same
+        // separation cosmos draws between its #d44141 and #ff5570. The old #c03040 was
+        // 1.13:1 from `accent` and the same hue family: "engage" and "destroy" were one
+        // colour. `ansi[9]` keeps #c03040 as the terminal's bright red.
+        danger: 0x8c1550,
         selection: 0xdedee8,
         ansi: [
             0x181824, 0xb03030, 0x3a7a4a, 0xa07020, 0x3a5aa8, 0x8040a0, 0x2a7a8a, 0x8a8a98,
@@ -322,30 +335,99 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
+    /// A cheap perceptual distance between two `0xRRGGBB` tokens — the "redmean"
+    /// approximation of CIE ΔE. A contrast ratio alone cannot answer "are these two
+    /// tokens telling the user different things": two reds at the same lightness are
+    /// 1.0:1 apart and still one colour, which is exactly cosmos-light's `accent` vs
+    /// `danger`. This counts hue and lightness together.
+    fn separation(a: u32, b: u32) -> f32 {
+        let ch = |c: u32, shift: u32| ((c >> shift) & 0xff) as f32;
+        let (r1, g1, b1) = (ch(a, 16), ch(a, 8), ch(a, 0));
+        let (r2, g2, b2) = (ch(b, 16), ch(b, 8), ch(b, 0));
+        let mean_r = (r1 + r2) / 2.;
+        ((2. + mean_r / 256.) * (r1 - r2).powi(2)
+            + 4. * (g1 - g2).powi(2)
+            + (2. + (255. - mean_r) / 256.) * (b1 - b2).powi(2))
+        .sqrt()
+    }
+
+    /// The floor two tokens that mean different things have to clear. Picked from the
+    /// palettes that already read correctly: cosmos separates its red `accent` from its
+    /// pink `danger` at 108, void at 81, dusk at 96 — cosmos-light's two reds sat at 36.
+    const TONES_APART: f32 = 70.;
+
     #[test]
-    fn the_light_palettes_inks_clear_aa_on_every_surface_they_land_on() {
-        // The light pass's guard. On a dark canvas the status hues are *pale*, so they
-        // clear AA by construction and only `bg` was ever worth checking; on an
-        // off-white canvas the same hues have to be dark, and an ink checked against
-        // `bg` alone still smears on a card. So this sweeps every text bed.
+    fn accent_and_danger_are_distinguishable_in_every_palette() {
+        // "Engage" and "this destroys something" are the two tones a user must never
+        // have to read a label to tell apart, and they sit side by side on every form
+        // footer. cosmos-light had them 1.13:1 and one hue apart: two reds.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let apart = separation(t.accent, t.danger);
+            assert!(
+                apart >= TONES_APART,
+                "{}: accent and danger are {apart:.0} apart",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn well_is_recessed_relative_to_bg_in_every_palette() {
+        // `well` is the bottom rung of the depth ladder (`.interface-design/system.md`):
+        // inputs, editors and terminal wells are *cut into* the panel around them.
+        // cosmos-light's was pure white — brighter than both `bg` and `surface`, so
+        // every recess in the light palette read as raised.
+        use crate::bridge::brightness;
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            assert!(
+                brightness(t.well) < brightness(t.surface),
+                "{}: well sits below the surface it is cut into",
+                t.name
+            );
+            // ...and below the canvas too, wherever the canvas has room beneath it.
+            // void's `bg` is pure black, the floor of the whole colour space, so its
+            // well can only nudge *up* — the one palette this half cannot ask about.
+            if t.bg != 0x000000 {
+                assert!(
+                    brightness(t.well) <= brightness(t.bg),
+                    "{}: well sits below the canvas",
+                    t.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_palettes_status_inks_clear_aa_on_every_surface_they_land_on() {
+        // The light pass's guard, widened. On a dark canvas the status hues are
+        // *pale*, so they clear AA by construction and only `bg` was ever worth
+        // checking; on an off-white canvas the same hues have to be dark, and an ink
+        // checked against `bg` alone still smears on a card. So this sweeps every text
+        // bed — and, since dusk's `danger` turned out to be a 4.0:1 smear on its own
+        // surface, every palette.
         //
-        // Not run over the dark built-ins on purpose: cosmos's `accent` is a fill-first
-        // token that sits at 4.1:1 as text there, which is a separate (pre-existing)
-        // decision, not something this palette's floor should silently re-open.
+        // `accent` is swept on the light palettes only: on a dark built-in it is a
+        // fill-first token that sits at 4.1:1 as text, which is a separate
+        // (pre-existing) decision, not something this floor should silently re-open.
         //
         // `faint` is exempt everywhere — it is the decorative/disabled tone, the one
         // thing meant to recede (~2.2:1 in every built-in, dark ones included).
         // `selection` is exempt as a bed: it is a row fill, and a row's ink is `fg`.
-        for t in [cosmos_light()] {
-            for (ink_name, ink) in [
-                ("fg", t.fg),
-                ("fg_strong", t.fg_strong),
-                ("muted", t.muted),
-                ("accent", t.accent),
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let mut inks = vec![
                 ("success", t.success),
                 ("warning", t.warning),
                 ("danger", t.danger),
-            ] {
+            ];
+            if is_light(&t) {
+                inks.extend([
+                    ("fg", t.fg),
+                    ("fg_strong", t.fg_strong),
+                    ("muted", t.muted),
+                    ("accent", t.accent),
+                ]);
+            }
+            for (ink_name, ink) in inks {
                 for (bed_name, bed) in [("bg", t.bg), ("surface", t.surface), ("well", t.well)] {
                     let ratio = contrast(ink, bed);
                     assert!(

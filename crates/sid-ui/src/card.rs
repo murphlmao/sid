@@ -36,6 +36,7 @@ use gpui::{
 };
 
 use crate::elevation::Elevation;
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
 use crate::typography::Typography;
@@ -89,6 +90,19 @@ fn panel_body() -> gpui::Div {
     v_flex().flex_1().min_h_0()
 }
 
+/// The one height a titled card's header row is drawn at, in design pixels at 100%
+/// zoom: the 24px small-control box (`ButtonSize::Sm`, what a header filter, icon
+/// button or `ConfirmButton` is) plus `py_2`'s 8px above and below.
+///
+/// A header is a *row*, not a box that grows to its tallest child. Without this the
+/// same strip measured 41px with an action control, 36px with none (Database's
+/// HISTORY) and 40px in Settings at the 2026-09-10 gate — three heights for one
+/// contract, and the difference lands exactly where two panels sit side by side. The
+/// height is stated here rather than left to the children, and there is deliberately
+/// no per-call-site knob: a panel whose header disagrees with its neighbour's is the
+/// bug, not a layout the caller should be able to ask for.
+pub const PANEL_HEADER_HEIGHT: Pixels = px(40.);
+
 /// A panel's header: the ruled strip the body scrolls under.
 ///
 /// `flex_none` is the other half of [`panel_body`]'s `flex_1` — a header that could
@@ -96,11 +110,35 @@ fn panel_body() -> gpui::Div {
 /// is the same box `Toolbar` draws (`toolbar.rs`) — the two used to disagree (`py(6.)`
 /// here, `py_2` there), which is exactly the "different box" a panel's header and a
 /// bare `Toolbar` should never have, since the whole point of this shape is that a
-/// panel's header *is* the toolbar row. `sid_ui::Toolbar` stays a separate type only
+/// panel's header *is* the toolbar row, at one [`PANEL_HEADER_HEIGHT`] regardless of
+/// what it carries. `sid_ui::Toolbar` stays a separate type only
 /// because `systems_tab.rs` still renders one outside a `Card::panel`; the box is the
 /// single contract either way.
 fn panel_header() -> gpui::Div {
-    h_flex().flex_none().justify_between().gap_3().px_3().py_2()
+    h_flex()
+        .flex_none()
+        .justify_between()
+        .gap_3()
+        .px_3()
+        .py_2()
+        .h(scaled(f32::from(PANEL_HEADER_HEIGHT)))
+}
+
+/// The bar a titled card's header sits in: [`panel_header`]'s ruled, fixed-height strip
+/// for anything that draws chrome of its own, a bare row for a flat section.
+///
+/// Only [`CardChrome::Panel`] used to take the rule, so Settings' APPEARANCE card and
+/// the System tab's panels ran their header straight into their body — two raised
+/// shapes disagreeing about what a card header is. A shape that paints a fill and a
+/// hairline paints the header rule too. [`CardChrome::Flat`] deliberately does not: it
+/// is a titled block on the canvas, the shape that exists because a second border there
+/// would only add noise.
+fn header_bar(chrome: CardChrome, theme: &theme::Theme) -> gpui::Div {
+    if chrome.is_raised() {
+        panel_header().hairline_b(theme)
+    } else {
+        h_flex().justify_between().gap_3()
+    }
 }
 
 /// The floor a header's actions may shrink a filter field down to, once the title
@@ -233,27 +271,27 @@ impl RenderOnce for Card {
         let theme = theme::active(cx).clone();
         let chrome = self.chrome;
         let panel = chrome.body_fills_container();
+        // A ruled header has to reach the card's edges, so a titled raised card moves
+        // its padding off the root and onto the body — the arrangement `panel` already
+        // had. An untitled card has no header to rule and keeps the padded root.
+        let ruled = chrome.is_raised() && self.title.is_some();
         let header = self.title.map(|title| {
-            let bar = if panel {
-                panel_header().hairline_b(&theme)
-            } else {
-                h_flex().justify_between().gap_3()
-            };
-            bar.child(
-                // `flex_1` + `min_w_0` + a clamp: a header is one line, and gpui reports
-                // a text element's min-content width as its *whole string*, so without
-                // the pair a long title pushes the header's actions off the card's right
-                // edge instead of eliding.
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .clamp_one_line()
-                    .section_label(&theme)
-                    .child(header_text(&title, self.count)),
-            )
-            .when(!self.actions.is_empty(), |this| {
-                this.child(header_actions(self.actions))
-            })
+            header_bar(chrome, &theme)
+                .child(
+                    // `flex_1` + `min_w_0` + a clamp: a header is one line, and gpui reports
+                    // a text element's min-content width as its *whole string*, so without
+                    // the pair a long title pushes the header's actions off the card's right
+                    // edge instead of eliding.
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .clamp_one_line()
+                        .section_label(&theme)
+                        .child(header_text(&title, self.count)),
+                )
+                .when(!self.actions.is_empty(), |this| {
+                    this.child(header_actions(self.actions))
+                })
         });
 
         let mut card = v_flex()
@@ -262,11 +300,13 @@ impl RenderOnce for Card {
             })
             // A panel does its padding per region (the header's own, the body's none),
             // because a scrolling body has to reach the card's edges.
-            .when(!panel, |this| this.p_3().gap_2())
+            .when(!panel && !ruled, |this| this.p_3().gap_2())
             .when(panel, |this| this.min_h_0())
             .children(header)
             .child(if panel {
                 panel_body().children(self.children)
+            } else if ruled {
+                v_flex().gap_2().p_3().children(self.children)
             } else {
                 v_flex().gap_2().children(self.children)
             })
@@ -358,6 +398,52 @@ mod tests {
         // body's height changes as the list does.
         assert_eq!(style_of(panel_header()).flex_grow, Some(0.));
         assert_eq!(style_of(panel_header()).flex_shrink, Some(0.));
+    }
+
+    #[test]
+    fn a_panel_header_is_one_height_whatever_it_carries() {
+        // The gate measured three heights for one contract (41 / 36 / 40). The row
+        // states its own height, so an empty header and a header with a control are
+        // the same strip.
+        assert_eq!(
+            style_of(panel_header()).size.height,
+            Some(scaled(f32::from(PANEL_HEADER_HEIGHT)).into()),
+            "a panel header is drawn at PANEL_HEADER_HEIGHT"
+        );
+        // ...and that height is the small-control box plus the py_2 padding, which is
+        // what makes it the same row a toolbar draws.
+        assert_eq!(f32::from(PANEL_HEADER_HEIGHT), 24. + 8. + 8.);
+    }
+
+    #[test]
+    fn every_raised_cards_header_is_ruled_off_from_its_body() {
+        // Settings APPEARANCE and the System panels ran header straight into body:
+        // only `Card::panel` drew the rule, so the two raised shapes disagreed about
+        // what a card header looks like. A card that paints a fill and a hairline
+        // paints the header rule too, and at the same height.
+        let t = crate::theme::cosmos();
+        for chrome in [CardChrome::Raised, CardChrome::Panel] {
+            let style = style_of(header_bar(chrome, &t));
+            assert!(
+                style.border_widths.bottom.is_some(),
+                "{chrome:?}: header hairline"
+            );
+            assert_eq!(
+                style.border_color,
+                Some(gpui::Hsla::from(gpui::rgb(t.border))),
+                "{chrome:?}: the border token, not a new colour"
+            );
+            assert_eq!(
+                style.size.height,
+                Some(scaled(f32::from(PANEL_HEADER_HEIGHT)).into()),
+                "{chrome:?}: one header height"
+            );
+        }
+        // A flat section is a titled block on the canvas, not a card — the shape that
+        // exists precisely so a second border adds no noise. It keeps its bare row.
+        let flat = style_of(header_bar(CardChrome::Flat, &t));
+        assert!(flat.border_widths.bottom.is_none(), "a section is unruled");
+        assert!(flat.size.height.is_none());
     }
 
     #[test]
