@@ -30,14 +30,13 @@
 //! past the card, and nothing scrolls. `db_tab.rs` worked around this with a local
 //! `panel_header()` and a hand-built body; [`Card::panel`] is that arrangement, once.
 
-use gpui::px;
-
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, Refineable as _, RenderOnce, SharedString,
     StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::elevation::Elevation;
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
 use crate::typography::Typography;
@@ -101,7 +100,7 @@ fn panel_header() -> gpui::Div {
         .justify_between()
         .gap_3()
         .px_3()
-        .py(px(6.))
+        .py(scaled(6.))
 }
 
 /// A titled container. See the module docs for the two shapes.

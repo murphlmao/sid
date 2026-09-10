@@ -274,6 +274,7 @@ fn table_columns(name: &str) -> Vec<Column> {
             "secret_keyring_enabled",
             "secret_file_enabled",
             "theme",
+            "ui_scale_percent",
         ],
         _ => &[],
     };
@@ -356,6 +357,7 @@ fn dump_table(store: &GlobalStore, table: &str) -> Result<(Vec<Column>, Vec<Row>
                     s.secret_keyring_enabled.to_string(),
                     s.secret_file_enabled.to_string(),
                     s.theme.clone(),
+                    s.ui_scale_percent.to_string(),
                 ],
             }]
         }
@@ -414,7 +416,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_introspect_settings_table_lists_all_five_fields() {
+    async fn schema_introspect_settings_table_lists_every_field() {
         // Round-D fix: `settings` used to expose only `default_scope`, silently
         // hiding the other `sid_store::Settings` fields from the browse engine.
         let (_dir, store) = seeded_store();
@@ -438,6 +440,7 @@ mod tests {
                 "secret_keyring_enabled",
                 "secret_file_enabled",
                 "theme",
+                "ui_scale_percent",
             ]
         );
     }
@@ -476,7 +479,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_paged_dumps_settings_table_with_all_five_fields() {
+    async fn query_paged_dumps_settings_table_with_every_field() {
         // Round-D fix: previously only `default_scope` was visible; the other
         // `sid_store::Settings` fields (including the dormant-but-still-persisted
         // `secret_file_enabled`) must show up too.
@@ -488,6 +491,7 @@ mod tests {
                 secret_keyring_enabled: false,
                 secret_file_enabled: true,
                 theme: "cosmos".into(),
+                ui_scale_percent: 150,
             })
             .unwrap();
         let client = RedbBrowseClient::wrap(store);
@@ -495,7 +499,7 @@ mod tests {
         assert_eq!(page.rows.len(), 1);
         assert_eq!(
             page.rows[0].values,
-            vec!["Global", "Right", "false", "true", "cosmos"]
+            vec!["Global", "Right", "false", "true", "cosmos", "150"]
         );
     }
 

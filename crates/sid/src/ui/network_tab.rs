@@ -2791,7 +2791,7 @@ mod tests {
         let text = style_of(data_cell(&t, t.muted, "0.0.0.0:22")).text.clone();
         assert_eq!(
             text.font_size,
-            Some(sid_ui::TypeRole::Mono.size().into()),
+            Some(sid_ui::TypeRole::Mono.length().into()),
             "every column sits on the body rung"
         );
         assert_eq!(
@@ -2892,7 +2892,7 @@ mod tests {
 
     /// The resolved pixel width of every column at `viewport`.
     fn resolved(columns: &mut FillColumns, viewport: f32) -> Vec<f32> {
-        columns.sync(viewport);
+        columns.sync(viewport, sid_ui::UiScale::DEFAULT);
         (0..columns.len())
             .map(|ix| f32::from(columns.column(ix).width))
             .collect()

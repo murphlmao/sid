@@ -32,6 +32,7 @@ use gpui::{
 };
 
 use crate::bridge::hover_of;
+use crate::scale::scaled;
 use crate::styled::v_flex;
 use crate::theme::{self, Theme};
 
@@ -330,12 +331,12 @@ impl RenderOnce for CardGrid {
                 div()
                     // A flex container, so the card inside stretches to the line height.
                     .flex()
-                    .flex_basis(min_col)
+                    .flex_basis(scaled(f32::from(min_col)))
                     .flex_grow_1()
                     // Nothing below `min_w(0)`: a window narrower than one column gets a
                     // squeezed card, never a horizontal scrollbar.
                     .min_w_0()
-                    .max_w(max_col)
+                    .max_w(scaled(f32::from(max_col)))
                     .child(child)
             }));
         grid.style().refine(&self.style);

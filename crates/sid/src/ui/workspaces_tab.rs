@@ -53,7 +53,7 @@ use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row, Segment,
     SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, TypeRole, Typography as _, h_flex,
-    sortable_th,
+    scaled, sortable_th,
 };
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
@@ -1412,7 +1412,7 @@ impl AppState {
         });
 
         div()
-            .w(px(300.))
+            .w(scaled(300.))
             .h_full()
             .flex()
             .flex_col()
@@ -1438,7 +1438,9 @@ impl AppState {
                     // The empty state owns the pane's height; the tail spacer is only
                     // there to give a short list somewhere to right-click.
                     .when_some(empty, |this, empty| this.child(empty))
-                    .when(count > 0, |this| this.child(div().flex_1().min_h(px(24.))))
+                    .when(count > 0, |this| {
+                        this.child(div().flex_1().min_h(scaled(24.)))
+                    })
                     .context_menu(self.workspaces_context_menu(cx)),
             )
     }
@@ -2299,7 +2301,7 @@ mod tests {
             .text
             .clone();
         assert_eq!(path.font_size, age.font_size, "one rung");
-        assert_eq!(path.font_size, Some(TypeRole::Body.size().into()));
+        assert_eq!(path.font_size, Some(TypeRole::Body.length().into()));
         assert_eq!(
             path.font_family.as_deref(),
             Some(sid_ui::UI_MONO),
@@ -2581,7 +2583,7 @@ mod tests {
         // keep their declared widths at every viewport; `Path` absorbs the difference.
         let mut cols = FleetDelegate::empty().columns;
         for viewport in [1000., 1400., 1700., 2600.] {
-            cols.sync(viewport);
+            cols.sync(viewport, sid_ui::UiScale::DEFAULT);
             let widths = fleet_widths(&cols);
             assert_eq!(&widths[2..5], &[90., 150., 120.], "{viewport}px: numerics");
             assert!(widths[5] >= 240., "{viewport}px: path floor");
@@ -2598,7 +2600,7 @@ mod tests {
         // Degenerate but real: too narrow to honour the declaration, so every column
         // stays legible and the table scrolls, rather than squeezing `Path` to nothing.
         let mut cols = FleetDelegate::empty().columns;
-        cols.sync(600.);
+        cols.sync(600., sid_ui::UiScale::DEFAULT);
         assert_eq!(fleet_widths(&cols), vec![150., 190., 90., 150., 120., 240.]);
     }
 

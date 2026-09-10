@@ -48,6 +48,7 @@ use gpui_component::{
 
 use crate::bridge::{contrast_ink, hover_of, mix, pressed_of};
 use crate::icon::Icon;
+use crate::scale::scaled;
 use crate::styled::h_flex;
 use crate::theme::{self, Theme};
 use crate::typography::{TypeRole, Typography};
@@ -110,12 +111,22 @@ impl ButtonSize {
         }
     }
 
-    /// The square edge of an [`IconButton`] at this size.
+    /// The square edge of an [`IconButton`] at this size, in logical pixels at 100%
+    /// zoom. [`ButtonSize::edge`] is what gets applied.
     fn square(self) -> gpui::Pixels {
         match self {
             ButtonSize::Sm => px(24.),
             ButtonSize::Md => px(32.),
         }
+    }
+
+    /// The square edge as a zoomable length.
+    ///
+    /// The glyph inside an icon button already scales — `gpui-component`'s `Size::Small`
+    /// is `size_3p5()`, i.e. rems — so an absolute box here would clip its own icon the
+    /// moment a user zoomed in.
+    fn edge(self) -> gpui::Rems {
+        scaled(f32::from(self.square()))
     }
 
     /// The label's place on the type scale. Set on the label child rather than
@@ -572,7 +583,7 @@ impl RenderOnce for IconButton {
         let paint = self.variant.paint(state, &theme);
         let size = self.size;
         let interactive = state.is_interactive();
-        let edge = size.square();
+        let edge = size.edge();
 
         let button = shell(cx, self.id, &paint, size, interactive)
             .w(edge)

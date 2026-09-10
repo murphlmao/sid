@@ -63,6 +63,7 @@ use crate::button::{ButtonSize, IconButton};
 use crate::elevation::Elevation;
 use crate::icon::Icon;
 use crate::kbd::Kbd;
+use crate::scale::UiScale;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::typography::Typography;
@@ -101,8 +102,9 @@ const KEY_HINT_MIN_WIDTH: f32 = 440.;
 /// and the buttons still say what they do — so a narrow modal loses it rather than
 /// overlapping its own footer. A heuristic, deliberately: an element cannot measure the
 /// button labels a caller has not built yet.
-pub fn shows_key_hint(width: Pixels) -> bool {
-    width >= px(KEY_HINT_MIN_WIDTH)
+pub fn shows_key_hint(width: Pixels, scale: UiScale) -> bool {
+    // `width` is a real, already-zoomed measurement; the threshold is authored at 100%.
+    width >= scale.scale_px(px(KEY_HINT_MIN_WIDTH))
 }
 
 /// The box a panel gets inside a given window.
@@ -128,8 +130,12 @@ pub struct PanelGeometry {
 ///
 /// In a window narrower than the gutters themselves the panel takes the full width: a
 /// clamped-to-nothing modal would be invisible, which is a worse answer than a tight one.
-pub fn panel_geometry(preferred: Pixels, viewport: Size<Pixels>) -> PanelGeometry {
-    let available = viewport.width - px(GUTTER * 2.);
+pub fn panel_geometry(preferred: Pixels, viewport: Size<Pixels>, scale: UiScale) -> PanelGeometry {
+    // The viewport is real pixels and needs no scaling; `preferred` and the gutter are
+    // authored at 100% and do. `HEIGHT_SHARE` is a ratio and is zoom-invariant — a modal
+    // may not take 135% of a short window because someone zoomed in.
+    let preferred = scale.scale_px(preferred);
+    let available = viewport.width - scale.scale_px(px(GUTTER)) * 2.;
     let width = if available > px(0.) {
         preferred.min(available)
     } else {
@@ -268,10 +274,13 @@ impl ParentElement for Modal {
 impl RenderOnce for Modal {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme::active(cx).clone();
-        let geometry = panel_geometry(self.width, window.viewport_size());
+        let scale = UiScale::from_rem_size(window.rem_size());
+        let geometry = panel_geometry(self.width, window.viewport_size(), scale);
         let body_id = SharedString::from(format!("{}-body", self.id));
         let dismiss_id = SharedString::from(format!("{}-dismiss", self.id));
-        let hint = self.submit_verb.filter(|_| shows_key_hint(geometry.width));
+        let hint = self
+            .submit_verb
+            .filter(|_| shows_key_hint(geometry.width, scale));
 
         // Title and close button only. The keyboard contract used to live up here beside
         // the title and, at a 300px panel, squeezed "Add host" down to "Add …" — the
@@ -378,7 +387,7 @@ mod tests {
 
     #[test]
     fn a_roomy_window_gives_the_panel_exactly_what_it_asked_for() {
-        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(1920., 1080.));
+        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(1920., 1080.), UiScale::DEFAULT);
         assert_eq!(g.width, px(DEFAULT_WIDTH));
         assert_eq!(g.max_height, px(1080. * HEIGHT_SHARE));
     }
@@ -387,7 +396,7 @@ mod tests {
     fn a_narrow_window_shrinks_the_panel_and_keeps_the_gutter() {
         // The failure: a 460px panel in a 400px window rendered 30px off each edge with
         // the save-to labels clipped.
-        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(400., 800.));
+        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(400., 800.), UiScale::DEFAULT);
         assert_eq!(g.width, px(400. - GUTTER * 2.));
         assert!(g.width < px(DEFAULT_WIDTH));
     }
@@ -395,7 +404,7 @@ mod tests {
     #[test]
     fn the_panel_never_touches_the_window_edge() {
         for w in [300., 480., 520., 1024., 2000.] {
-            let g = panel_geometry(px(DEFAULT_WIDTH), viewport(w, 800.));
+            let g = panel_geometry(px(DEFAULT_WIDTH), viewport(w, 800.), UiScale::DEFAULT);
             assert!(
                 g.width <= px(w - GUTTER * 2.),
                 "{w}px window: panel {:?} leaves no gutter",
@@ -408,7 +417,7 @@ mod tests {
     fn a_window_narrower_than_the_gutters_still_renders_a_panel() {
         // Pathological, but a modal clamped to zero width is invisible, and an invisible
         // modal is a hang: the app is waiting on input the user cannot see.
-        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(40., 40.));
+        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(40., 40.), UiScale::DEFAULT);
         assert_eq!(g.width, px(40.));
         assert!(g.width > px(0.));
     }
@@ -419,7 +428,7 @@ mod tests {
         // a docked pane, and it is what makes the body scroll instead of pushing the
         // footer off-window.
         for h in [400., 720., 1080., 2160.] {
-            let g = panel_geometry(px(DEFAULT_WIDTH), viewport(1920., h));
+            let g = panel_geometry(px(DEFAULT_WIDTH), viewport(1920., h), UiScale::DEFAULT);
             assert!(g.max_height < px(h), "{h}px window: panel fills it");
             assert!(g.max_height > px(h / 2.), "{h}px window: panel is cramped");
         }
@@ -427,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_wider_panel_is_honoured_when_it_fits() {
-        let g = panel_geometry(px(720.), viewport(1920., 1080.));
+        let g = panel_geometry(px(720.), viewport(1920., 1080.), UiScale::DEFAULT);
         assert_eq!(g.width, px(720.));
     }
 
@@ -435,18 +444,27 @@ mod tests {
     fn the_keyboard_hint_yields_before_the_footer_collides() {
         // The failure, seen in the gallery at a 300px panel: the hint and the button
         // row overlapped into `EnterCancel`.
-        assert!(shows_key_hint(px(DEFAULT_WIDTH)), "the form width shows it");
-        assert!(shows_key_hint(px(KEY_HINT_MIN_WIDTH)), "inclusive bound");
-        assert!(!shows_key_hint(px(380.)), "a one-field prompt drops it");
-        assert!(!shows_key_hint(px(300.)));
+        assert!(
+            shows_key_hint(px(DEFAULT_WIDTH), UiScale::DEFAULT),
+            "the form width shows it"
+        );
+        assert!(
+            shows_key_hint(px(KEY_HINT_MIN_WIDTH), UiScale::DEFAULT),
+            "inclusive bound"
+        );
+        assert!(
+            !shows_key_hint(px(380.), UiScale::DEFAULT),
+            "a one-field prompt drops it"
+        );
+        assert!(!shows_key_hint(px(300.), UiScale::DEFAULT));
     }
 
     #[test]
     fn a_window_too_narrow_for_the_panel_also_drops_the_hint() {
         // The hint decision reads the *resolved* width, not the requested one: a 460px
         // form in a 400px window is a 352px panel, and 352px has no room either.
-        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(400., 800.));
-        assert!(!shows_key_hint(g.width));
+        let g = panel_geometry(px(DEFAULT_WIDTH), viewport(400., 800.), UiScale::DEFAULT);
+        assert!(!shows_key_hint(g.width, UiScale::DEFAULT));
     }
 
     #[test]

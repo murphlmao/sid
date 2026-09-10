@@ -267,6 +267,22 @@ pub struct Settings {
     /// time. Absent in v1..v3 stores — defaults to `"cosmos"`.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// App zoom, as whole percent — `100` is unzoomed. One factor for the entire UI
+    /// (chrome, tables, forms, and the SSH terminal's cell grid), driven by `ctrl +` /
+    /// `ctrl -` / `ctrl 0`.
+    ///
+    /// A scalar identity-level preference, so it lives here beside [`Settings::theme`]
+    /// rather than in its own table the way `KeyBinding` does — that shape earns its keep
+    /// for a *collection* keyed by an id, and zoom is one number.
+    ///
+    /// Stored as the percent rather than an `f32` factor: the frontend's zoom ladder is
+    /// integer rungs precisely so that stepping in and back out is exact, and persisting
+    /// the float would reintroduce the drift the ladder exists to avoid. Any value is
+    /// accepted on read — `sid_ui::UiScale::from_percent` snaps it to the nearest rung and
+    /// clamps it — so a hand-edited or future-build value degrades to a usable zoom rather
+    /// than an error. Absent in v1..v4 stores — defaults to `100`.
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
 }
 
 impl Default for Settings {
@@ -277,6 +293,7 @@ impl Default for Settings {
             secret_keyring_enabled: true,
             secret_file_enabled: true,
             theme: default_theme(),
+            ui_scale_percent: default_ui_scale_percent(),
         }
     }
 }
@@ -294,6 +311,13 @@ fn default_theme() -> String {
 /// what `#[serde(default = "...")]` requires.
 fn default_secret_backend_enabled() -> bool {
     true
+}
+
+/// The `#[serde(default = ...)]` value for [`Settings::ui_scale_percent`]: `100`, i.e.
+/// unzoomed. Deliberately not `u16::default()` — a store that predates the field must
+/// read as "no zoom", never as 0%.
+fn default_ui_scale_percent() -> u16 {
+    100
 }
 
 /// The version-1 on-disk shape of [`Settings`] (before `file_browser_side`). Retained
@@ -361,14 +385,48 @@ pub(crate) struct SettingsV3 {
     pub secret_file_enabled: bool,
 }
 
-impl From<SettingsV3> for Settings {
+impl From<SettingsV3> for SettingsV4 {
     fn from(v: SettingsV3) -> Self {
-        Settings {
+        SettingsV4 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
             secret_file_enabled: v.secret_file_enabled,
             theme: default_theme(),
+        }
+    }
+}
+
+/// The version-4 on-disk shape of [`Settings`] (after `theme`, before
+/// `ui_scale_percent`). Retained only to decode legacy redb values;
+/// `From<SettingsV4> for Settings` migrates it forward with `ui_scale_percent: 100`.
+///
+/// postcard is positional, so a v4 value must be decoded against this exact 5-field
+/// layout — decoding it as the current [`Settings`] would run off the end of the payload
+/// looking for the zoom field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV4 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+impl From<SettingsV4> for Settings {
+    fn from(v: SettingsV4) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: default_ui_scale_percent(),
         }
     }
 }

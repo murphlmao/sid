@@ -169,6 +169,7 @@ fn settings_roundtrip() {
         secret_keyring_enabled: true,
         secret_file_enabled: true,
         theme: "cosmos".into(),
+        ui_scale_percent: 100,
     };
     s.set_settings(&want).unwrap();
     assert_eq!(s.get_settings().unwrap(), want);
@@ -186,6 +187,7 @@ fn settings_persist_across_reopen() {
             secret_keyring_enabled: true,
             secret_file_enabled: true,
             theme: "cosmos".into(),
+            ui_scale_percent: 100,
         })
         .unwrap();
     }
@@ -212,6 +214,7 @@ fn facade_settings_passthrough() {
             secret_keyring_enabled: true,
             secret_file_enabled: true,
             theme: "cosmos".into(),
+            ui_scale_percent: 100,
         })
         .unwrap();
     assert_eq!(
@@ -236,6 +239,7 @@ fn settings_secret_backend_toggles_default_true_and_round_trip_false() {
         secret_keyring_enabled: false,
         secret_file_enabled: false,
         theme: "cosmos".into(),
+        ui_scale_percent: 100,
     };
     s.set_settings(&want).unwrap();
     let got = s.get_settings().unwrap();

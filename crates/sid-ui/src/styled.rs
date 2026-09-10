@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(s.text.clone().color, Some(Hsla::from(rgb(t.muted))));
         assert_eq!(
             s.text.clone().font_size,
-            Some(crate::typography::TypeRole::Label.size().into()),
+            Some(crate::typography::TypeRole::Label.length().into()),
         );
         let h = style_of(div().hint_text(&t));
         assert_eq!(h.text.clone().color, Some(Hsla::from(rgb(t.muted))));

@@ -23,10 +23,15 @@
 //! box's search filter), [`parse_quick_connect`] (the `user@host[:port]` shorthand),
 //! [`connection_state`] (what a card's dot says), [`row_primary`] (what its primary
 //! button does), [`card_click_action`] (what clicking the card body itself does) and
-//! [`home_empty`] (which nothing the grid is showing). Rendering is observation-gated,
-//! per the plan's pragmatic-TDD rule.
+//! [`home_empty`] (which nothing the grid is showing). Issue #2 adds the decisions
+//! behind "add what I just typed": [`saved_match`] (does this text *name* a saved
+//! connection?), [`add_seed`]/[`seed_display`] (what an unmatched query hands the form),
+//! [`add_row_visible`] (when the inline add row is there) and [`quick_enter`] (what Enter
+//! does — never an ad-hoc dial any more). Rendering is observation-gated, per the plan's
+//! pragmatic-TDD rule.
 
 use std::collections::{BTreeMap, HashSet};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent,
@@ -36,10 +41,11 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use sid_store::{Attributed, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote};
-use crate::ui::{SessionStatus, TextInput};
+use crate::ui::{SessionStatus, TextInput, host_form};
 use sid_ui::{
-    Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, StatusDot,
-    StatusLegend, StyledExt as _, Typography as _, card::header_text, h_flex, theme, v_flex,
+    Button, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, List, Row,
+    StatusDot, StatusLegend, StyledExt as _, Typography as _, card::header_text, caveat_line,
+    h_flex, scaled, theme, v_flex,
 };
 
 actions!(
@@ -51,6 +57,7 @@ actions!(
         InlineEditCancel,
         /// Fire the quick-connect box (bound to `enter` in its key context) — found by
         /// the capture-harness shakedown: Enter did nothing, only the Go button worked.
+        /// Since issue #2 it opens a *saved* connection, or offers to add an unsaved one.
         QuickConnectGo,
     ]
 );
@@ -97,14 +104,16 @@ pub(crate) struct HomeTabState {
     /// folder anyone created and is never collapsible, so this only ever holds named
     /// folders.
     collapsed_folders: HashSet<String>,
-    /// Quick-connect / filter box: as-you-type substring filter over the grid, and
-    /// (the `⏎` button) a `user@host[:port]` parse for an ephemeral, unsaved connect.
+    /// Quick-connect / filter box: as-you-type substring filter over the grid, and — on
+    /// Enter — either the saved connection the text *names* or an invitation to add it.
     search: Entity<TextInput>,
     /// The row currently mid-rename or mid-folder-edit, if any.
     edit: Option<InlineEdit>,
-    /// The quick-connect box's last parse failure, shown under it until the next
-    /// attempt or edit.
-    quick_error: Option<String>,
+    /// What the box's last Enter had to say, shown under it until the next attempt or
+    /// edit. Only ever [`missing_message`] now: with ad-hoc dialling retired there is no
+    /// longer any such thing as a quick-connect parse *failure* — every non-empty query
+    /// either names a connection or seeds one.
+    quick_note: Option<String>,
     /// Which card (if any) the grid's last right-click landed on — `None` reads as
     /// "empty space" (or a folder header). Feeds the grid's *single* `context_menu`
     /// (attached to the whole scroll container, in [`AppState::ssh_home_main`]),
@@ -154,9 +163,9 @@ impl HomeTabState {
     pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
         Self {
             collapsed_folders: HashSet::new(),
-            search: cx.new(|cx| TextInput::new(cx, "user@host[:port] — quick connect / filter")),
+            search: cx.new(|cx| TextInput::new(cx, "user@host[:port] — filter, connect, or add")),
             edit: None,
-            quick_error: None,
+            quick_note: None,
             right_click_target: None,
             selected: None,
         }
@@ -386,9 +395,11 @@ pub(crate) fn section_title(folder: Option<&str>, named_folders: usize) -> Optio
 const UNGROUPED: &str = "ungrouped";
 
 /// Parse the quick-connect box's `user@host[:port]` shorthand. `None` if the text
-/// doesn't look like that shape at all — the same box doubles as a plain grid filter,
-/// so a partial query (most keystrokes) must not read as a failed connect attempt; only
-/// the `⏎` action treats a `None` as an actual error to surface.
+/// doesn't look like that shape at all — the same box doubles as a plain grid filter, so
+/// a partial query (most keystrokes) must not read as a failed connect attempt.
+///
+/// Since issue #2 a `None` is not an error anywhere: [`add_seed`] wraps this, and answers
+/// a rejection by seeding the add form with the raw text instead of throwing it away.
 pub(crate) fn parse_quick_connect(input: &str) -> Option<(String, String, u16)> {
     let s = input.trim();
     let (user, rest) = s.split_once('@')?;
@@ -400,6 +411,154 @@ pub(crate) fn parse_quick_connect(input: &str) -> Option<(String, String, u16)> 
         _ => (rest, 22),
     };
     Some((user.to_string(), host.to_string(), port))
+}
+
+/// The fields an unmatched quick-connect query hands to the add form (issue #2).
+///
+/// Everything typed survives the trip. A query that is not the strict `user@host[:port]`
+/// shape still produces a seed — the form's own validation is where a bad hostname gets
+/// argued with, and silently dropping half of what someone typed is a worse answer than
+/// showing it back to them in a field they can fix.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AddSeed {
+    /// The record's proposed name.
+    pub alias: String,
+    /// The login, empty when the query named no user.
+    pub user: String,
+    /// The hostname or address.
+    pub host: String,
+    /// The port; 22 unless the query said otherwise.
+    pub port: u16,
+}
+
+/// What the quick-connect box's Enter (and its `connect` button) does with what is
+/// currently typed.
+///
+/// **Ad-hoc dialling is deliberately gone.** Enter used to build a throwaway [`Host`] out
+/// of whatever parsed and connect to it with `source: None` — a session with no record
+/// behind it, no dot on any card, and nothing to come back to tomorrow. Issue #2 retires
+/// that: an unknown target is an invitation to save one, not a connection that evaporates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum QuickEnter {
+    /// Nothing typed — Enter has nothing to act on.
+    Nothing,
+    /// The text names a saved connection: dial that record.
+    Connect {
+        /// The matched record's alias.
+        alias: String,
+        /// The layer it was read from.
+        origin: Scope,
+    },
+    /// The text names something no layer holds: say so, and open the add form filled in
+    /// from it.
+    AddMissing(AddSeed),
+}
+
+/// The saved record `query` *names*, if any — the question "is this already a
+/// connection?", which is a different question from the one [`filter_hosts`] answers.
+///
+/// Exact, case-insensitive, and tried in the order a person means them: the record's own
+/// name first, then the address in the three shapes the address is written in. A
+/// substring is deliberately not a match — `web` narrows the grid to `web-1`, `web-2` and
+/// `web-3`, and Enter must not pick one of them for you.
+pub(crate) fn saved_match<'a>(
+    hosts: &'a [Attributed<Host>],
+    query: &str,
+) -> Option<&'a Attributed<Host>> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    let keys: [fn(&Host) -> String; 4] = [
+        |h| h.alias.to_ascii_lowercase(),
+        |h| format!("{}@{}", h.user, h.host).to_ascii_lowercase(),
+        |h| format!("{}@{}:{}", h.user, h.host, h.port).to_ascii_lowercase(),
+        |h| h.host.to_ascii_lowercase(),
+    ];
+    keys.into_iter()
+        .find_map(|key| hosts.iter().find(|a| key(&a.item) == q))
+}
+
+/// Fill an [`AddSeed`] from whatever is in the box.
+///
+/// Reuses [`parse_quick_connect`] for the strict shape and falls back to a forgiving
+/// split, so `deploy@web-1:notaport` seeds a *visible* broken host rather than quietly
+/// becoming `deploy@web-1`.
+pub(crate) fn add_seed(query: &str) -> AddSeed {
+    let s = query.trim();
+    if let Some((user, host, port)) = parse_quick_connect(s) {
+        return AddSeed {
+            alias: format!("{user}@{host}"),
+            user,
+            host,
+            port,
+        };
+    }
+    let (user, host) = match s.split_once('@') {
+        Some((user, host)) => (user.trim().to_string(), host.trim().to_string()),
+        None => (String::new(), s.to_string()),
+    };
+    let alias = match user.is_empty() {
+        true => host.clone(),
+        false => format!("{user}@{host}"),
+    };
+    AddSeed {
+        alias,
+        user,
+        host,
+        port: 22,
+    }
+}
+
+/// How a seed is written on the add row and in the "not saved" message — the same string
+/// in both, so the row you clicked and the sentence you get name the same thing.
+///
+/// The default port is left off: `deploy@web-1` is what the user typed and what they will
+/// recognise; `deploy@web-1:22` is the machine talking back.
+pub(crate) fn seed_display(seed: &AddSeed) -> String {
+    let base = match seed.user.is_empty() {
+        true => seed.host.clone(),
+        false => format!("{}@{}", seed.user, seed.host),
+    };
+    match seed.port {
+        22 => base,
+        port => format!("{base}:{port}"),
+    }
+}
+
+/// Whether the inline "add …" row belongs under the quick-connect box.
+///
+/// Non-empty and unmatched: the row is the answer to "what I typed isn't here", so it has
+/// nothing to say about an empty box, and offering to *add* a connection that already
+/// exists would be offering the one thing the add-mode guard is about to refuse.
+pub(crate) fn add_row_visible(query: &str, matched: bool) -> bool {
+    !query.trim().is_empty() && !matched
+}
+
+/// What Enter does, from the box's text and the composed host list.
+pub(crate) fn quick_enter(hosts: &[Attributed<Host>], query: &str) -> QuickEnter {
+    if query.trim().is_empty() {
+        return QuickEnter::Nothing;
+    }
+    match saved_match(hosts, query) {
+        Some(a) => QuickEnter::Connect {
+            alias: a.item.alias.clone(),
+            origin: a.origin.clone(),
+        },
+        None => QuickEnter::AddMissing(add_seed(query)),
+    }
+}
+
+/// The line shown under the box when Enter hit nothing — issue #2's *"must SAY it does
+/// not exist"*.
+///
+/// It names the target rather than the mistake, because there is no mistake: the form
+/// opening over this row is the rest of the sentence.
+pub(crate) fn missing_message(seed: &AddSeed) -> String {
+    format!(
+        "{} is not a saved connection — add it, and sid will open it once you do",
+        seed_display(seed)
+    )
 }
 
 // ---- rendering + row actions (observation-gated) ------------------------------------
@@ -503,7 +662,7 @@ impl AppState {
                     // Skipped when an empty state is up, since that already claims the
                     // free height.
                     .when(empty.is_none(), |this| {
-                        this.child(div().flex_1().min_h(px(48.)))
+                        this.child(div().flex_1().min_h(scaled(48.)))
                     })
                     // ONE context menu for the whole grid — see `right_click_target`'s
                     // doc comment on why this can't be attached per-card.
@@ -525,8 +684,8 @@ impl AppState {
             HomeEmpty::NoHosts => EmptyState::new("no saved connections")
                 .icon(Icon::Globe)
                 .guidance(
-                    "add a host to keep it here, or type user@host above to connect once \
-                     without saving",
+                    "type user@host in the box above and press Enter — sid fills the \
+                     form in for you, then opens the connection it saves",
                 )
                 .action(
                     Button::new("ssh-empty-add", "add connection")
@@ -541,15 +700,15 @@ impl AppState {
             HomeEmpty::NoMatch => EmptyState::new("no connection matches the filter")
                 .icon(Icon::Search)
                 .guidance(
-                    "clear the filter to see every saved connection, or press Enter to \
-                     connect to what you typed",
+                    "clear the filter to see every saved connection — or use the add row \
+                     above to save what you typed as a new one",
                 )
                 .action(
                     Button::new("ssh-empty-clear", "clear filter")
                         .icon(Icon::Close)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                             this.ssh_home.search.update(cx, |input, cx| input.reset(cx));
-                            this.ssh_home.quick_error = None;
+                            this.ssh_home.quick_note = None;
                             cx.notify();
                         })),
                 ),
@@ -558,7 +717,7 @@ impl AppState {
         // have something to centre itself in. `flex_1` claims the body's free height —
         // on a 1200px window that centres the panel in the canvas, where a fixed 280px
         // box would leave it hanging under the toolbar with 700px of nothing below it.
-        div().w_full().flex_1().min_h(px(320.)).child(state)
+        div().w_full().flex_1().min_h(scaled(320.)).child(state)
     }
 
     /// Builds the grid's single [`ContextMenuExt::context_menu`]: "+ Add connection"
@@ -734,10 +893,13 @@ impl AppState {
             )
     }
 
+    /// The box across the top: filter, connect, and — since issue #2 — the one place a
+    /// connection gets *added* without leaving the keyboard.
     fn quick_connect_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx).clone();
-        let danger = t.danger;
         let search = self.ssh_home.search.clone();
+        let query = self.ssh_home.search.read(cx).content().to_string();
+        let matched = saved_match(&self.hosts, &query).is_some();
         // A red filled square with a `⏎` in it used to sit here: sid's most emphatic
         // affordance, spent on "submit this text field", while the tab's actual primary
         // verb had no button at all. Now it is a labelled button and says which of the
@@ -746,7 +908,7 @@ impl AppState {
         let go = Button::new("ssh-quick-connect-go", "connect")
             .primary()
             .icon(Icon::Terminal)
-            .tooltip("connect to the typed user@host[:port] without saving it — or press Enter")
+            .tooltip("open the saved connection you typed — or add it, if it isn't saved yet")
             .on_click(
                 cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
             );
@@ -790,54 +952,161 @@ impl AppState {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .max_w(px(640.))
+                            .max_w(scaled(640.))
                             .overflow_hidden()
                             .child(search),
                     )
                     .child(go),
             );
+        // The inline add row — issue #2's headline. It appears the moment what is typed
+        // stops naming anything saved, which is also the moment the grid below has
+        // nothing left to show; before this, that state was a dead end with a "clear the
+        // filter" button on it. See `add_row_visible` for when, and `card_click_action`
+        // for why a *single* click is enough here and not on a card: this row is 20px
+        // tall, says exactly what it will do, and opens a form rather than a socket.
+        if add_row_visible(&query, matched) {
+            let seed = add_seed(&query);
+            let label: SharedString =
+                format!("add {} as a connection…", seed_display(&seed)).into();
+            col = col.child(
+                Row::new("ssh-quick-add")
+                    .leading(
+                        Icon::Add
+                            .el()
+                            .size(px(14.))
+                            .text_color(rgb(t.accent))
+                            .into_any_element(),
+                    )
+                    .child(div().text_body(&t).clamp_one_line().child(label))
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                        this.open_seeded_add_form(seed.clone(), window, cx);
+                    })),
+            );
+        }
         // What used to live here: "saved connections below · double-click a name to
         // rename · right-click for more" — 12px of muted prose doing the job of three
         // controls. Every one of those interactions still works; none of them is
-        // documentation-only any more.
-        if let Some(err) = &self.ssh_home.quick_error {
-            col = col.child(
-                div()
-                    .text_meta(&t)
-                    .text_color(rgb(danger))
-                    .child(err.clone()),
-            );
+        // documentation-only any more. What lives here now is the answer to an Enter that
+        // hit nothing, and it is a `caveat` rather than an error: typing the name of a
+        // machine you have not saved yet is not a mistake.
+        if let Some(note) = &self.ssh_home.quick_note {
+            col = col.child(caveat_line(note.clone()));
         }
         col
     }
 
-    /// `⏎`: parse the quick-connect box as `user@host[:port]` and, if it parses, open an
-    /// ephemeral (unsaved) session for it — `source: None`, so the grid's live-dot only
-    /// ever tracks saved hosts. A non-matching query (most partial input, since the same
-    /// box doubles as a filter) surfaces a short error instead of silently doing nothing.
+    /// `⏎` / the `connect` button: open the saved connection the box *names*, or — when
+    /// it names nothing — say so and offer to add it.
+    ///
+    /// **This no longer dials an unsaved host.** It used to: any text that parsed as
+    /// `user@host[:port]` became a throwaway [`Host`] and a session with `source: None`,
+    /// which meant a connection with no record behind it, no dot on any card, and nothing
+    /// to come back to. Issue #2 retires that deliberately — every connection sid opens
+    /// is one it can open again tomorrow. The cost is one dialog on first use of a host;
+    /// the price it replaces is a session you cannot find twice.
     fn quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.ssh_home.search.read(cx).content().to_string();
-        match parse_quick_connect(&text) {
-            Some((user, host, port)) => {
-                self.ssh_home.quick_error = None;
-                let alias = format!("{user}@{host}");
-                let host_rec = Host {
-                    alias,
-                    user,
-                    host,
-                    port,
-                    secret_ref: None,
-                    auth: sid_store::AuthMethod::default(),
-                    folder: None,
-                };
-                self.connect_host(host_rec, None, window, cx);
-                self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
-            }
-            None => {
-                self.ssh_home.quick_error = Some("expected user@host[:port]".to_string());
+        match quick_enter(&self.hosts, &text) {
+            QuickEnter::Nothing => {
+                self.ssh_home.quick_note = None;
                 cx.notify();
             }
+            QuickEnter::Connect { alias, origin } => {
+                self.quick_connect_saved(&alias, &origin, window, cx)
+            }
+            QuickEnter::AddMissing(seed) => {
+                self.ssh_home.quick_note = Some(missing_message(&seed));
+                self.open_seeded_add_form(seed, window, cx);
+            }
         }
+    }
+
+    /// Quick-connect's hit path: open (or switch to) the record the box named, then clear
+    /// the box — the filter has done its job once you are in the session.
+    ///
+    /// Goes through [`Self::row_primary_action`], not `connect_host`, so typing the name
+    /// of a host that is *already* connected switches to its tab instead of dialling a
+    /// second session — the same agreement [`row_primary`] enforces for the card's own
+    /// button.
+    fn quick_connect_saved(
+        &mut self,
+        alias: &str,
+        origin: &Scope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self
+            .hosts
+            .iter()
+            .find(|a| a.item.alias == alias && &a.origin == origin)
+            .map(|a| a.item.clone())
+        else {
+            return;
+        };
+        self.ssh_home.quick_note = None;
+        self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+        self.row_primary_action(host, (alias.to_string(), origin.clone()), window, cx);
+    }
+
+    /// Open the add form already holding `seed`, and dial the record once it is saved.
+    ///
+    /// The same path for the inline add row and for Enter-on-an-unknown-host: the row is
+    /// the mouse's spelling of that key, so they must not diverge into "one of these also
+    /// connects".
+    fn open_seeded_add_form(&mut self, seed: AddSeed, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity();
+        let after_save: host_form::AfterSave = Rc::new(move |host, target, window, cx| {
+            let (host, target) = (host.clone(), target.clone());
+            this.update(cx, |state, cx| {
+                state.connect_after_add(&host, &target, window, cx)
+            });
+        });
+        host_form::queue_add_prefill(
+            cx,
+            host_form::AddPrefill {
+                alias: seed.alias,
+                user: seed.user,
+                host: seed.host,
+                port: seed.port,
+                after_save: Some(after_save),
+            },
+        );
+        self.open_add_form(window, cx);
+    }
+
+    /// The follow-up to a save that came from quick-connect: dial what was just written.
+    ///
+    /// Re-reads the composed list rather than trusting the submission it is handed, for
+    /// two reasons. A save the add-mode guard refused never reached the store, and this
+    /// must do nothing rather than connect — so the *address* is compared too, not just
+    /// the alias, or a refused add would dial whichever record already owned that name.
+    /// And the stored record is the one carrying the `secret_ref` the secret lifecycle
+    /// just minted; the submitted one never has it.
+    fn connect_after_add(
+        &mut self,
+        submitted: &Host,
+        target: &Scope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let saved = self.hosts.iter().find(|a| {
+            &a.origin == target
+                && a.item.alias == submitted.alias
+                && a.item.user == submitted.user
+                && a.item.host == submitted.host
+                && a.item.port == submitted.port
+        });
+        let Some(host) = saved.map(|a| a.item.clone()) else {
+            return;
+        };
+        self.ssh_home.quick_note = None;
+        self.ssh_home.search.update(cx, |input, cx| input.reset(cx));
+        self.connect_host(
+            host,
+            Some((submitted.alias.clone(), target.clone())),
+            window,
+            cx,
+        );
     }
 
     /// One group's full-width heading: `WORK · 3` over a hairline, with a disclosure
@@ -877,10 +1146,10 @@ impl AppState {
             .child(match folder {
                 Some(_) => caret
                     .el()
-                    .size(px(14.))
+                    .size(scaled(14.))
                     .text_color(rgb(t.muted))
                     .into_any_element(),
-                None => div().w(px(14.)).flex_none().into_any_element(),
+                None => div().w(scaled(14.)).flex_none().into_any_element(),
             })
             .child(
                 div()
@@ -1124,7 +1393,7 @@ impl AppState {
                     .child(
                         div()
                             .flex_none()
-                            .max_w(px(120.))
+                            .max_w(scaled(120.))
                             .overflow_hidden()
                             .clamp_one_line()
                             .child(self.scope_chip(a)),
@@ -1412,6 +1681,214 @@ mod tests {
         assert_eq!(parse_quick_connect("user@"), None);
         assert_eq!(parse_quick_connect("user@host:"), None);
         assert_eq!(parse_quick_connect("user@host:notaport"), None);
+    }
+
+    // ---- "is what I typed already a connection?" (issue #2) -------------------------
+
+    fn addressed(alias: &str, user: &str, address: &str, port: u16) -> Attributed<Host> {
+        attributed(Host {
+            user: user.into(),
+            host: address.into(),
+            port,
+            ..host(alias, None)
+        })
+    }
+
+    #[test]
+    fn a_saved_alias_is_matched_whatever_case_or_padding_it_is_typed_in() {
+        let hosts = vec![addressed("Web-1", "deploy", "10.0.0.1", 22)];
+        assert!(saved_match(&hosts, "web-1").is_some());
+        assert!(saved_match(&hosts, "  WEB-1  ").is_some());
+    }
+
+    #[test]
+    fn the_address_matches_in_every_shape_it_is_written_in() {
+        let hosts = vec![addressed("prod", "deploy", "prod.acme.io", 2222)];
+        for query in [
+            "deploy@prod.acme.io",
+            "deploy@prod.acme.io:2222",
+            "prod.acme.io",
+        ] {
+            assert!(
+                saved_match(&hosts, query).is_some(),
+                "{query} should name this record"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_name_wins_over_another_records_address() {
+        // Someone who names a record after a hostname means *that record* when they type
+        // it, not the unrelated host that happens to answer on that address.
+        let hosts = vec![
+            addressed("db.internal", "root", "10.0.0.9", 22),
+            addressed("other", "deploy", "db.internal", 22),
+        ];
+        let found = saved_match(&hosts, "db.internal").expect("a match");
+        assert_eq!(found.item.alias, "db.internal");
+    }
+
+    #[test]
+    fn an_explicit_port_picks_out_the_record_on_that_port() {
+        let hosts = vec![
+            addressed("web-22", "deploy", "web.acme.io", 22),
+            addressed("web-alt", "deploy", "web.acme.io", 2222),
+        ];
+        let found = saved_match(&hosts, "deploy@web.acme.io:2222").expect("a match");
+        assert_eq!(found.item.alias, "web-alt");
+    }
+
+    #[test]
+    fn a_substring_narrows_the_grid_without_naming_a_connection() {
+        // The box does two jobs and this is the seam between them: `web` is a perfectly
+        // good filter and a terrible thing to dial. Pinned against the real filter so the
+        // two rules cannot drift into agreeing.
+        let hosts = vec![
+            addressed("web-1", "deploy", "10.0.0.1", 22),
+            addressed("web-2", "deploy", "10.0.0.2", 22),
+        ];
+        assert_eq!(filter_hosts(&hosts, "web").len(), 2);
+        assert_eq!(saved_match(&hosts, "web"), None);
+    }
+
+    #[test]
+    fn a_blank_box_names_nothing() {
+        let hosts = vec![addressed("web-1", "deploy", "10.0.0.1", 22)];
+        assert_eq!(saved_match(&hosts, ""), None);
+        assert_eq!(saved_match(&hosts, "   "), None);
+    }
+
+    // ---- seeding the add form -------------------------------------------------------
+
+    #[test]
+    fn a_full_target_seeds_every_field() {
+        assert_eq!(
+            add_seed("deploy@web-1.acme.io:2222"),
+            AddSeed {
+                alias: "deploy@web-1.acme.io".into(),
+                user: "deploy".into(),
+                host: "web-1.acme.io".into(),
+                port: 2222,
+            }
+        );
+    }
+
+    #[test]
+    fn a_target_without_a_port_seeds_the_default_one() {
+        assert_eq!(add_seed("root@10.1.50.2").port, 22);
+    }
+
+    #[test]
+    fn a_bare_hostname_seeds_the_host_and_leaves_the_user_to_be_filled_in() {
+        let seed = add_seed("web-1");
+        assert_eq!(seed.host, "web-1");
+        assert_eq!(seed.user, "");
+        assert_eq!(seed.alias, "web-1");
+    }
+
+    #[test]
+    fn an_unparseable_port_stays_visible_instead_of_being_dropped() {
+        // The strict parser rejects this outright; the seed must not answer by silently
+        // connecting to `deploy@web-1` on 22 — the user has to be able to see what they
+        // typed in order to fix it.
+        let seed = add_seed("deploy@web-1:notaport");
+        assert_eq!(seed.user, "deploy");
+        assert_eq!(seed.host, "web-1:notaport");
+    }
+
+    #[test]
+    fn the_seed_is_written_the_way_it_was_typed() {
+        assert_eq!(seed_display(&add_seed("deploy@web-1")), "deploy@web-1");
+        assert_eq!(
+            seed_display(&add_seed("deploy@web-1:2222")),
+            "deploy@web-1:2222"
+        );
+        assert_eq!(seed_display(&add_seed("web-1")), "web-1");
+    }
+
+    // ---- the add row, and what Enter does -------------------------------------------
+
+    #[test]
+    fn the_add_row_stays_away_from_an_empty_box() {
+        assert!(!add_row_visible("", false));
+        assert!(!add_row_visible("   ", false));
+    }
+
+    #[test]
+    fn the_add_row_appears_for_something_that_is_not_saved_yet() {
+        assert!(add_row_visible("deploy@web-9", false));
+    }
+
+    #[test]
+    fn the_add_row_stands_down_once_the_text_names_a_real_connection() {
+        assert!(!add_row_visible("web-1", true));
+    }
+
+    #[test]
+    fn enter_on_a_saved_connection_dials_that_record() {
+        let hosts = vec![addressed("web-1", "deploy", "10.0.0.1", 22)];
+        assert_eq!(
+            quick_enter(&hosts, "web-1"),
+            QuickEnter::Connect {
+                alias: "web-1".into(),
+                origin: Scope::Global,
+            }
+        );
+    }
+
+    #[test]
+    fn enter_on_an_unknown_host_offers_to_add_it_instead_of_dialling_it() {
+        // The behaviour issue #2 replaces: this used to build a throwaway `Host` and
+        // connect to it, leaving a session with no record behind it.
+        let hosts = vec![addressed("web-1", "deploy", "10.0.0.1", 22)];
+        let QuickEnter::AddMissing(seed) = quick_enter(&hosts, "deploy@web-9") else {
+            panic!("an unknown host must not resolve to a connect");
+        };
+        assert_eq!(seed.host, "web-9");
+        assert_eq!(seed.user, "deploy");
+    }
+
+    #[test]
+    fn enter_on_an_empty_box_does_nothing_at_all() {
+        let hosts = vec![addressed("web-1", "deploy", "10.0.0.1", 22)];
+        assert_eq!(quick_enter(&hosts, "  "), QuickEnter::Nothing);
+    }
+
+    #[test]
+    fn the_add_row_and_the_enter_key_never_disagree() {
+        // The row is the mouse's spelling of Enter. Pinned to each other rather than to a
+        // table, so a change to the matching rules can't leave one of them offering an
+        // add the other refuses.
+        let hosts = vec![
+            addressed("web-1", "deploy", "10.0.0.1", 22),
+            addressed("prod", "root", "prod.acme.io", 2222),
+        ];
+        for query in [
+            "",
+            "   ",
+            "web",
+            "web-1",
+            "WEB-1",
+            "deploy@10.0.0.1",
+            "root@prod.acme.io:2222",
+            "deploy@web-9",
+            "something else entirely",
+        ] {
+            let matched = saved_match(&hosts, query).is_some();
+            let offers_add = matches!(quick_enter(&hosts, query), QuickEnter::AddMissing(_));
+            assert_eq!(
+                add_row_visible(query, matched),
+                offers_add,
+                "{query:?}: the row and Enter disagree"
+            );
+        }
+    }
+
+    #[test]
+    fn the_missing_message_names_the_target_and_says_it_is_not_saved() {
+        let msg = missing_message(&add_seed("deploy@web-9"));
+        assert!(msg.contains("deploy@web-9"), "{msg}");
+        assert!(msg.contains("not a saved connection"), "{msg}");
     }
 
     #[test]

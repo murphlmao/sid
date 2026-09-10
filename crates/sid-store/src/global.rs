@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, KeyBinding,
-    PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
+    PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3, SettingsV4,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -54,10 +54,10 @@ pub(crate) const HOST_VERSION: u8 = 3;
 pub(crate) const CONNECTION_VERSION: u8 = 3;
 
 /// Current codec version for [`Settings`]. Bumped to 2 when `file_browser_side` was
-/// added and to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added; reads
-/// branch on the leading version byte and migrate older values forward (see
-/// [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 4;
+/// added, to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added, to 4 when
+/// `theme` was, and to 5 when `ui_scale_percent` was; reads branch on the leading version
+/// byte and migrate older values forward (see [`decode_settings`]).
+pub(crate) const SETTINGS_VERSION: u8 = 5;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -368,22 +368,26 @@ fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
 
 /// Decode a stored [`Settings`] value, branching on the leading codec version byte:
 /// `1` → the pre-`file_browser_side` [`SettingsV1`] shape; `2` → the pre-secret-toggle
-/// [`SettingsV2`] shape; `3` → the pre-`theme` [`SettingsV3`] shape; each migrates
-/// forward through the version chain, filling added fields with defaults; `4` → the
-/// current [`Settings`] shape. Any other version is rejected.
+/// [`SettingsV2`] shape; `3` → the pre-`theme` [`SettingsV3`] shape; `4` → the
+/// pre-`ui_scale_percent` [`SettingsV4`] shape; each migrates forward through the version
+/// chain, filling added fields with defaults; `5` → the current [`Settings`] shape. Any
+/// other version is rejected.
 fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
     match version {
-        1 => Ok(Settings::from(SettingsV3::from(SettingsV2::from(
-            decode_versioned::<SettingsV1>(bytes)?.1,
+        1 => Ok(Settings::from(SettingsV4::from(SettingsV3::from(
+            SettingsV2::from(decode_versioned::<SettingsV1>(bytes)?.1),
         )))),
-        2 => Ok(Settings::from(SettingsV3::from(
+        2 => Ok(Settings::from(SettingsV4::from(SettingsV3::from(
             decode_versioned::<SettingsV2>(bytes)?.1,
+        )))),
+        3 => Ok(Settings::from(SettingsV4::from(
+            decode_versioned::<SettingsV3>(bytes)?.1,
         ))),
-        3 => Ok(decode_versioned::<SettingsV3>(bytes)?.1.into()),
+        4 => Ok(decode_versioned::<SettingsV4>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -678,6 +682,78 @@ mod tests {
         }
     }
 
+    /// A crafted v4 (pre-`ui_scale_percent`) settings payload decodes as unzoomed, with
+    /// every pre-existing field preserved — including a non-default theme and a `false`
+    /// toggle, proving the hop copies rather than re-defaults them.
+    ///
+    /// The failure this pins is not cosmetic: postcard is positional and not
+    /// self-describing, so decoding a 5-field v4 payload against the 6-field current
+    /// shape runs off the end of the buffer. Without the hop, every existing user's
+    /// settings become an unreadable blob.
+    #[test]
+    fn settings_v4_payload_migrates_to_unzoomed() {
+        use crate::entities::DefaultScope;
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let v4 = SettingsV4 {
+            default_scope: DefaultScope::Workspace,
+            file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: false,
+            secret_file_enabled: true,
+            theme: "void".into(),
+        };
+        let bytes = encode_versioned(4, &v4).unwrap();
+        store
+            .with_write("seed v4", |txn| {
+                let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                tbl.insert(SETTINGS_KEY, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        let settings = store.get_settings().unwrap();
+        assert_eq!(
+            settings.ui_scale_percent, 100,
+            "a v4 store was never zoomed"
+        );
+        assert_eq!(settings.theme, "void", "the v4 theme is carried forward");
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+        assert_eq!(settings.file_browser_side, PanelSide::Right);
+        assert!(!settings.secret_keyring_enabled);
+        assert!(settings.secret_file_enabled);
+    }
+
+    /// The oldest payload still has to reach the newest shape: v1 predates four hops, and
+    /// the chain is only as good as its longest walk.
+    #[test]
+    fn a_v1_payload_walks_every_hop_to_an_unzoomed_current_shape() {
+        use crate::entities::DefaultScope;
+        let bytes = encode_versioned(1, &settings_v1(DefaultScope::Workspace)).unwrap();
+        let settings = decode_settings(&bytes).unwrap();
+        assert_eq!(settings.ui_scale_percent, 100);
+        assert_eq!(settings.theme, "cosmos");
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+    }
+
+    /// A zoom level survives the write/read round-trip verbatim — the store must not snap
+    /// or clamp it, because the ladder lives in the frontend and the store is a byte
+    /// carrier. (`sid_ui::UiScale::from_percent` is what makes an odd value usable.)
+    #[test]
+    fn a_zoom_level_round_trips_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let mut settings = Settings {
+            ui_scale_percent: 150,
+            ..Default::default()
+        };
+        store.set_settings(&settings).unwrap();
+        assert_eq!(store.get_settings().unwrap().ui_scale_percent, 150);
+        // ...and a value off the frontend's ladder is stored as given, not rejected.
+        settings.ui_scale_percent = 137;
+        store.set_settings(&settings).unwrap();
+        assert_eq!(store.get_settings().unwrap().ui_scale_percent, 137);
+    }
+
     /// A crafted v3 (pre-`theme`) settings payload decodes with `theme == "cosmos"`
     /// and every pre-existing field preserved — including a non-default `false`
     /// toggle, proving the migration copies rather than re-defaults them.
@@ -811,6 +887,7 @@ mod tests {
                 secret_keyring_enabled: false,
                 secret_file_enabled: true,
                 theme: "cosmos".into(),
+                ui_scale_percent: 125,
             })
             .unwrap();
         let raw = store
@@ -827,5 +904,6 @@ mod tests {
         );
         assert!(!store.get_settings().unwrap().secret_keyring_enabled);
         assert!(store.get_settings().unwrap().secret_file_enabled);
+        assert_eq!(store.get_settings().unwrap().ui_scale_percent, 125);
     }
 }

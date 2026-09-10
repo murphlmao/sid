@@ -27,8 +27,8 @@ use gpui::{
     App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent,
     Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ShapedLine, SharedString, TextRun, UnderlineStyle, Window, anchored, canvas, deferred, div,
-    fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
+    ShapedLine, SharedString, Size, TextRun, UnderlineStyle, Window, anchored, canvas, deferred,
+    div, fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -41,7 +41,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
 use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, StyledExt as _, Typography as _, theme, v_flex};
+use sid_ui::{Row, StyledExt as _, Typography as _, UiScale, scaled, theme, v_flex};
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
 /// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
@@ -52,6 +52,7 @@ use sid_ui::{Row, StyledExt as _, Typography as _, theme, v_flex};
 /// Every *chrome* string in this file — breadcrumb, file rows, preview — names a mono role and
 /// therefore renders in the UI mono family like the rest of the app.
 const MONO: &str = "CaskaydiaCove Nerd Font Mono";
+/// The cell font size at 100% zoom; `render_grid` scales it by the window's `UiScale`.
 const TERM_FONT_SIZE: Pixels = px(14.);
 
 /// The split's sizing rules — see [`sidebar_width`] for how they compose.
@@ -196,6 +197,11 @@ struct ShapedGridCache {
     cursor: (u16, u16),
     fg: Hsla,
     bg: Hsla,
+    /// The app zoom the rows were shaped at (GitHub #4). Part of the key for the same
+    /// reason the colors are: a zoom change is a *reshape*, at a different font size and
+    /// therefore a different cell size — and the cell size is what the canvas below turns
+    /// the pane's pixel bounds back into a rows/cols count with.
+    scale: UiScale,
     rows: Vec<ShapedLine>,
     /// Per row: the block-element cells painted procedurally instead of as font
     /// glyphs — see [`block_coverage`] (terminal-fidelity F4).
@@ -276,6 +282,20 @@ fn block_coverage(ch: char) -> Option<(&'static [CellRect], f32)> {
 /// share bit-identical edges and the rasterizer can't leave a gap.
 fn quad_edge(base: Pixels, unit: Pixels, cell: usize, frac: f32) -> Pixels {
     base + unit * (cell as f32 + frac)
+}
+
+/// How many whole cells of the given size fit in a pane — the grid the PTY is told to
+/// use. Pure, and the only place app zoom reaches the remote shell: the pane keeps its
+/// pixels and the cells grow, so zooming in hands the shell FEWER, larger columns and
+/// the far end reflows its own output (`SshSession::resize`).
+///
+/// Floored at one in both axes: a pane briefly narrower than a single cell (mid-drag, or
+/// a 200% zoom in a small window) must still be a grid — `rows`/`cols` of zero is a
+/// division by zero in every VT implementation there is.
+fn grid_size(pane: Size<Pixels>, cell_width: Pixels, line_height: Pixels) -> (u16, u16) {
+    let cols = ((pane.width / cell_width).floor() as u16).max(1);
+    let rows = ((pane.height / line_height).floor() as u16).max(1);
+    (rows, cols)
 }
 
 pub struct SshSession {
@@ -1593,6 +1613,33 @@ mod sidebar_width_tests {
 }
 
 #[cfg(test)]
+mod grid_size_tests {
+    use super::*;
+    use gpui::size;
+
+    /// The reflow property (GitHub #4). The pane is the same 800x600; only the cell got
+    /// bigger, because `render_grid` shapes the terminal font at `TERM_FONT_SIZE` scaled
+    /// by the window's `UiScale`. Fewer columns is the whole point — the alternative
+    /// (same grid, stretched cells) is not a zoom, it is a blur.
+    #[test]
+    fn a_bigger_cell_reflows_the_same_pane_to_fewer_rows_and_columns() {
+        let pane = size(px(800.), px(600.));
+        assert_eq!(grid_size(pane, px(8.), px(16.)), (37, 100));
+        // 150%: 8 -> 12, 16 -> 24.
+        assert_eq!(grid_size(pane, px(12.), px(24.)), (25, 66));
+        // 50%: 8 -> 4, 16 -> 8.
+        assert_eq!(grid_size(pane, px(4.), px(8.)), (75, 200));
+    }
+
+    #[test]
+    fn a_pane_too_small_for_one_cell_is_still_a_one_by_one_grid() {
+        // Zero rows or columns is a division by zero on the other end of the PTY.
+        assert_eq!(grid_size(size(px(3.), px(3.)), px(12.), px(24.)), (1, 1));
+        assert_eq!(grid_size(size(px(0.), px(0.)), px(12.), px(24.)), (1, 1));
+    }
+}
+
+#[cfg(test)]
 mod crumb_tests {
     use super::*;
 
@@ -1800,7 +1847,7 @@ impl SshSession {
         if self.sidebar_collapsed {
             return div()
                 .id("session-sidebar-expand")
-                .w(px(20.))
+                .w(scaled(20.))
                 .h_full()
                 .flex()
                 .pt_1()
@@ -2261,10 +2308,16 @@ impl SshSession {
     /// real size back out of the canvas's own paint bounds and reconciles
     /// `self.rows`/`self.cols` against it.
     ///
-    /// Shaping is memoized on `(grid_generation, cursor, default colors)` — see
+    /// Shaping is memoized on `(grid_generation, cursor, default colors, zoom)` — see
     /// [`ShapedGridCache`]. A re-render with no new PTY bytes (tab switches, overlay
     /// opens, sibling entity notifies) reuses the previous pass instead of deep-cloning
     /// and re-shaping the whole grid.
+    ///
+    /// App zoom (GitHub #4) enters here and nowhere else: the font size is
+    /// [`TERM_FONT_SIZE`] scaled by the window's current [`UiScale`], so the cell size
+    /// grows with it and the canvas's existing viewport reconciliation — the same code
+    /// path a window resize takes — recomputes rows/cols and pushes them to the remote
+    /// PTY. The grid therefore *reflows* to fewer, larger cells rather than stretching.
     fn render_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::active(cx);
         // The terminal viewport is a recessed editor-like surface (spec: "input/editor/
@@ -2276,11 +2329,22 @@ impl SshSession {
         let cursor = self.screen.cursor_position();
         let (cursor_row, cursor_col) = cursor;
 
+        // App zoom (GitHub #4), read off the window rather than pushed in: the rem size
+        // the shell set is already the single source of truth for "what does 150% mean",
+        // and the grid is re-rendered from scratch every frame, so a zoom change lands
+        // here on the very next frame with nothing to keep in sync. Same idiom the table
+        // and modal geometry use (`sid_ui::UiScale::from_rem_size`).
+        let scale = UiScale::from_rem_size(window.rem_size());
+        // The cell font, scaled. Whole pixels — a fractional font size shapes to
+        // fractional advances, and the block-element quads are cell-snapped.
+        let font_size = scale.scale_px(TERM_FONT_SIZE);
+
         let cache_valid = self.shaped_cache.as_ref().is_some_and(|c| {
             c.generation == self.grid_generation
                 && c.cursor == cursor
                 && c.fg == default_fg
                 && c.bg == default_bg
+                && c.scale == scale
         });
         if !cache_valid {
             let base_font = font(MONO);
@@ -2291,7 +2355,7 @@ impl SshSession {
             let text_system = window.text_system().clone();
             let em = text_system.shape_line(
                 "M".into(),
-                TERM_FONT_SIZE,
+                font_size,
                 &[TextRun {
                     len: 1,
                     font: base_font.clone(),
@@ -2319,7 +2383,7 @@ impl SshSession {
                         row,
                         col,
                         &base_font,
-                        TERM_FONT_SIZE,
+                        font_size,
                         default_fg,
                         default_bg,
                         &ansi,
@@ -2331,6 +2395,7 @@ impl SshSession {
                 cursor,
                 fg: default_fg,
                 bg: default_bg,
+                scale,
                 rows,
                 quads,
                 cell_width: em.width,
@@ -2362,8 +2427,7 @@ impl SshSession {
                         // Reconcile the pane's real pixel size against the PTY's rows/cols —
                         // deferred, since we're mid-paint of this very entity and cannot
                         // `update` it from inside its own prepaint closure.
-                        let cols = ((bounds.size.width / cell_width).floor() as u16).max(1);
-                        let rows = ((bounds.size.height / line_height).floor() as u16).max(1);
+                        let (rows, cols) = grid_size(bounds.size, cell_width, line_height);
                         if (rows, cols) != current_size {
                             let weak = weak.clone();
                             cx.defer(move |cx| {
@@ -2470,8 +2534,8 @@ impl SshSession {
                         .bg(rgba(0x000000a8))
                         .child(
                             div()
-                                .w(px(640.))
-                                .h(px(480.))
+                                .w(scaled(640.))
+                                .h(scaled(480.))
                                 .flex()
                                 .flex_col()
                                 .bg(rgb(surface))
@@ -2636,7 +2700,7 @@ fn message_pane(text: &str, cx: &App) -> impl IntoElement {
             // the text a definite width — and therefore a wrap width — to lay out inside.
             div()
                 .min_w(px(0.))
-                .max_w(px(720.))
+                .max_w(scaled(720.))
                 .text_center()
                 .child(text.to_string()),
         )
