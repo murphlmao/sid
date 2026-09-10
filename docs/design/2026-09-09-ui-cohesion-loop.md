@@ -245,3 +245,12 @@ commits; do not invent one).
   `sid-cap.sh` verified from main against the upgraded renderer (Workspaces capture).
   Note for Murphy: while probing the Lua `hyprctl eval` API the harness agent ran an
   untargeted `hl.dsp.window.close()` on the live session; it confirmed nothing closed.
+- 2026-09-09: `icon-glyphs` branch (not merged): the `gpui-kit-assets` 0.6.1 bump made all
+  1830 Lucide SVGs available, so `sid_ui::Icon` now resolves through the full catalog
+  instead of `gpui-component`'s 86-icon compatibility subset. `Trash`/`Rename` draw a real
+  bin/pencil instead of their `circle-x`/`replace` stand-ins; new `Run`/`Export` icons on
+  the Database tab and `Docker`/`Kubernetes`/`Interfaces` icons on three of the Network
+  tab's five segments (`Ports`/`Services` stay label-only, deliberately). `main.rs`'s
+  `with_assets(..)` had to move from `Assets` to `AllAssets` for any of this to actually
+  render. Gate green (fmt/clippy/tests); SSH right-click menu still shows no icons for
+  rename/delete — that's `ssh_home.rs`'s `PopupMenuItem` list, out of this branch's scope.

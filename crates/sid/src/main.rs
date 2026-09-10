@@ -85,9 +85,11 @@ fn main() {
     preflight.mark_launch_attempt();
 
     gpui_platform::application()
-        // Bundled icon/font assets `gpui-component`'s widgets reference (e.g. `Table`
-        // column sort chevrons) — required by W5's SQL editor + results table.
-        .with_assets(gpui_kit_assets::Assets)
+        // The complete Lucide catalog (1830 SVGs), not `gpui_kit_assets::Assets`'s
+        // 86-icon compatibility subset: `sid_ui::Icon` (icon.rs) resolves through the
+        // full set now, so the running app needs the same source the registry's own
+        // test loads bytes from, or a bundle-bump-honest icon renders as nothing.
+        .with_assets(gpui_kit_assets::AllAssets)
         .run(move |cx| {
             ui::init(cx);
             gpui_component::init(cx);

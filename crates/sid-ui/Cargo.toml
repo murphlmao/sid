@@ -14,14 +14,12 @@ repository.workspace = true
 # `sid-core`/`sid-store`/any domain crate — it knows colors and pixels, nothing else.
 gpui.workspace = true
 gpui-component.workspace = true
+# The icon registry (`icon.rs`) resolves every `Icon` variant through the complete
+# Lucide catalog rather than `gpui-component`'s 86-icon compatibility subset, so it
+# needs the assets crate itself, not just `gpui-component`'s re-export of its trait.
+gpui-kit-assets.workspace = true
 # `input::words` — sid's word-boundary rule (ctrl-backspace / ctrl-shift-arrow), stated
 # over UAX#29 segments rather than over `char`s, so a run of CJK, an accented cluster or
 # a ZWJ emoji sequence is one unit instead of several. Same crate the library's own
 # `InputState` uses, so the two cannot disagree about where a word ends.
 unicode-segmentation.workspace = true
-
-[dev-dependencies]
-# The icon registry's "every named icon really exists in the bundle" test loads the
-# embedded SVGs directly (`AssetSource::load`), so a typo or an upstream icon removal
-# fails the build instead of rendering an invisible glyph at runtime.
-gpui-kit-assets.workspace = true

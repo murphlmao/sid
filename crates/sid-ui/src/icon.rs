@@ -22,20 +22,25 @@
 //! ratchet, pinned by a test that would fail the day a bundle bump shipped one.
 //!
 //! The `gpui-kit-assets` 0.6.1 bump shipped **all** of them — the bundle is 1830 SVGs,
-//! the whole Lucide set — so the ratchet fired and has been retired. What it was
-//! protecting is now a to-do rather than a constraint: [`Icon::Trash`] can stop drawing
-//! `circle-x`, [`Icon::Rename`] can stop drawing `replace`, and the Database Run/Export
-//! controls plus Network's Docker/Kubernetes/Interfaces sub-views can all have the glyph
-//! they actually wanted. Each is a design decision about an existing screen, not a
-//! registry chore, so none of them was made as part of the dependency bump.
+//! the whole Lucide set — so the ratchet fired and has been retired, and all seven have
+//! been drawn for real: [`Icon::Trash`] is a bin, [`Icon::Rename`] is a pencil, and the
+//! Database tab's Run/Export controls ([`Icon::Run`], [`Icon::Export`]) plus Network's
+//! Docker/Kubernetes/Interfaces sub-views ([`Icon::Docker`], [`Icon::Kubernetes`],
+//! [`Icon::Interfaces`]) all draw the glyph they actually wanted. That also means
+//! [`Icon::name`] now resolves through `gpui_kit_assets::IconName` — the complete
+//! catalog — rather than `gpui_component`'s old 86-icon compatibility subset, so a
+//! future entry just needs a name from the full 1830.
 //!
 //! The rule this file follows: a substitution is allowed only when the stand-in reads
-//! as the *same act* at 14px (`redo` for [`Icon::Refresh`] — a curved arrow is a re-run).
+//! as the *same act* at 14px (`redo` for [`Icon::Refresh`] — a curved arrow is a re-run,
+//! and it is still a substitution: the 0.6.1 bundle does ship a literal `refresh-cw` now,
+//! but swapping a 19-call-site glyph is a design decision of its own, not made here).
 //! Where nothing in the bundle does, there is no registry entry, and the call site uses
 //! a word instead of a glyph.
 
 use gpui::{App, IntoElement, RenderOnce, SharedString, Window};
-use gpui_component::{IconName, IconNamed as _, Sizable as _, Size};
+use gpui_component::{Sizable as _, Size};
+use gpui_kit_assets::IconName;
 
 /// A named icon from the bundled Lucide set.
 ///
@@ -56,28 +61,22 @@ pub enum Icon {
     Close,
     /// Destroy: delete a saved item.
     ///
-    /// **A known substitution.** Lucide has `trash`/`trash-2`, but neither is in the
-    /// 86-icon `gpui-component-assets` 0.5.1 bundle, and the entry that *looks* like the
-    /// obvious candidate — `delete` — is Lucide's **backspace key**: a pointed-left
-    /// rectangle with an X in it (`M20 5H9l-7 7 7 7h11…`), which reads as "erase a
-    /// character", not as "destroy this". It was the mapping here until the System-tab
-    /// migration; `circle-x` is the least-wrong bundled stand-in — an unambiguous
-    /// destroy mark, monochrome, `currentColor`, legible at 14px. It shares its asset
-    /// with [`Icon::Error`] on purpose: the *names* say what a call site means, and two
-    /// meanings sharing one glyph is better than one meaning drawn as a keyboard key.
-    /// Revisit if a future bundle ships a bin.
+    /// Draws Lucide's `trash` — a real bin. Until the 0.6.1 bundle this drew `circle-x`:
+    /// the 86-icon `gpui-component-assets` 0.5.1 set had no `trash`/`trash-2`, and the
+    /// entry that *looked* like the obvious candidate — `delete` — is Lucide's
+    /// **backspace key** (a pointed-left rectangle with an X in it), which reads as
+    /// "erase a character", not "destroy this". See
+    /// [`tests::destroy_is_not_drawn_as_a_keyboard_key`], still pinned against that one.
     Trash,
     /// Copy to clipboard.
     Copy,
     /// Rename in place.
     ///
-    /// **A known substitution**, and the second one this name has had. The bundle ships
-    /// no pencil, so this was `case-sensitive` — which is not an edit glyph at all: it
-    /// is the *find toolbar's* case-sensitivity toggle, drawn as "Aa". Next to a host
-    /// alias it read as a typography control, and at 14px mostly as noise. Lucide's
-    /// `replace` (a rounded square with an arrow curving into a second one) is the
-    /// least-wrong bundled stand-in: it says "put a different one of these here", which
-    /// is what a rename is. It is still not a pencil — the 0.6 bundle now ships one.
+    /// Draws Lucide's `pencil` — a real pencil, shipped for the first time in the 0.6.1
+    /// bundle. It had two prior stand-ins: `case-sensitive` (the find toolbar's "Aa"
+    /// toggle, which next to a host alias read as a typography control) and then
+    /// `replace` (a rounded square with an arrow curving into a second one — closer, but
+    /// still "put a different one of these here" rather than "edit this").
     Rename,
     /// Confirmed / selected.
     Check,
@@ -157,6 +156,16 @@ pub enum Icon {
     Asterisk,
     /// A date.
     Calendar,
+    /// Execute a query — the Database tab's primary action.
+    Run,
+    /// Save results out of sid — the Database tab's export control.
+    Export,
+    /// A Docker container.
+    Docker,
+    /// A Kubernetes cluster / pod set.
+    Kubernetes,
+    /// Network interfaces / adapters.
+    Interfaces,
 }
 
 impl Icon {
@@ -207,6 +216,11 @@ impl Icon {
         Icon::Bell,
         Icon::Asterisk,
         Icon::Calendar,
+        Icon::Run,
+        Icon::Export,
+        Icon::Docker,
+        Icon::Kubernetes,
+        Icon::Interfaces,
     ];
 
     /// The bundled asset this icon draws. Going through the library's own `IconName`
@@ -218,9 +232,9 @@ impl Icon {
             Icon::Add => IconName::Plus,
             Icon::Remove => IconName::Minus,
             Icon::Close => IconName::Close,
-            Icon::Trash => IconName::CircleX,
+            Icon::Trash => IconName::Trash,
             Icon::Copy => IconName::Copy,
-            Icon::Rename => IconName::Replace,
+            Icon::Rename => IconName::Pencil,
             Icon::Check => IconName::Check,
             Icon::Warning => IconName::TriangleAlert,
             Icon::Info => IconName::Info,
@@ -258,6 +272,11 @@ impl Icon {
             Icon::Bell => IconName::Bell,
             Icon::Asterisk => IconName::Asterisk,
             Icon::Calendar => IconName::Calendar,
+            Icon::Run => IconName::Play,
+            Icon::Export => IconName::Download,
+            Icon::Docker => IconName::Container,
+            Icon::Kubernetes => IconName::Boxes,
+            Icon::Interfaces => IconName::Network,
         }
     }
 
@@ -298,9 +317,12 @@ mod tests {
 
     #[test]
     fn every_named_icon_exists_in_the_bundle() {
-        // Loads the real embedded bytes: this is what catches a path typo or an icon
-        // dropped by an upstream bump, at build time instead of at render time.
-        let assets = gpui_kit_assets::Assets;
+        // `AllAssets`, not `Assets`: the latter is `gpui_kit_assets`'s 86-icon
+        // compatibility subset, which is missing exactly the glyphs this registry now
+        // relies on (`trash`, `pencil`, `play`, ...). `main.rs`'s `with_assets(..)` has
+        // to register the same source this test loads bytes from, or a name that
+        // resolves here still renders as nothing at runtime.
+        let assets = gpui_kit_assets::AllAssets;
         for &icon in Icon::ALL {
             let path = icon.path();
             let bytes = assets
@@ -319,8 +341,9 @@ mod tests {
     fn all_lists_every_variant_exactly_once() {
         // `ALL` is hand-maintained and has to stay in step with the enum. This asserts
         // on the *variants*, not on their resolved paths: the path-based version was a
-        // proxy that also forbade two names deliberately sharing one asset, which is a
-        // real and documented situation (see `Icon::Trash`) rather than a mistake.
+        // proxy that would also forbid two names deliberately sharing one asset — not
+        // currently the case, but a legitimate future state (two meanings, one glyph),
+        // so this test does not rule it out.
         let variants: HashSet<_> = Icon::ALL.iter().copied().collect();
         assert_eq!(
             variants.len(),
@@ -330,11 +353,13 @@ mod tests {
     }
 
     #[test]
-    fn rename_is_no_longer_the_case_sensitivity_toggle() {
-        // `case-sensitive` is the find toolbar's "Aa" button. Beside a host alias it
-        // read as a typography control; pinned so a future edit cannot drift back.
+    fn rename_draws_a_real_pencil() {
+        // `case-sensitive` is the find toolbar's "Aa" button, and `replace` was the
+        // second stand-in before the 0.6.1 bundle shipped an actual pencil. Pinned so a
+        // future edit cannot drift back to either.
         assert_ne!(Icon::Rename.path(), IconName::CaseSensitive.path());
-        assert_eq!(Icon::Rename.path(), IconName::Replace.path());
+        assert_ne!(Icon::Rename.path(), IconName::Replace.path());
+        assert_eq!(Icon::Rename.path(), IconName::Pencil.path());
     }
 
     #[test]
