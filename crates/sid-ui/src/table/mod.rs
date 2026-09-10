@@ -102,9 +102,33 @@ pub use header::{next_sort, sortable_th};
 use gpui::{
     App, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas, div,
 };
+use gpui_component::Size;
 use gpui_component::table::{DataTable, TableDelegate, TableState};
 
 use crate::scale::UiScale;
+
+/// How many rows a table body paints, given the data it has and the rows its viewport
+/// has room for.
+///
+/// sid's answer is `data_rows`, always: a table stops at its data, and the floor below
+/// the last row is the panel's own plain surface, with no separators and no zebra. The
+/// library's answer, whenever striping is on, is `data_rows.max(viewport_rows)` — it
+/// fills the leftover with ruled, striped **fake** rows down to the panel floor
+/// (`table/state.rs`'s `calculate_extra_rows_needed`), which is why the Network tab's
+/// PORTS panel showed 26 rows of chrome under 10 rows of data at the 2026-09-10 gate.
+/// Rows that hold nothing, are not hoverable and cannot be clicked read as data that
+/// failed to load.
+///
+/// `viewport_rows` is deliberately not consulted: it is the *only* thing that could
+/// buy a row past the data, and it may not. It stays in the signature because the
+/// comparison is what [`FillTable`] wires — striping is the single lever the library
+/// exposes over the fill (with it off, `render_rows_count` is exactly `rows_count`), so
+/// the element hands `stripe` on only when the data already reaches the floor and the
+/// fill therefore has nothing to paint.
+pub fn rows_to_paint(data_rows: usize, viewport_rows: usize) -> usize {
+    let _ = viewport_rows;
+    data_rows
+}
 
 /// A [`TableDelegate`] that sizes its columns with [`FillColumns`] and can therefore be
 /// rendered by [`FillTable`].
@@ -173,15 +197,43 @@ fn settle(window: &mut Window) {
     window.on_next_frame(|window, _| window.refresh());
 }
 
+/// The rows the table's body has room for, from the same measurement the library uses
+/// to decide how many fake rows to paint (`state.rs`: the vertical scroll handle's base
+/// bounds, divided by the row height). Zero until the body has been laid out once —
+/// which is also when the library's own fill is zero, so the two agree on frame one.
+///
+/// The row height is `Size::default()`'s because [`FillTable`] exposes no size knob; a
+/// table that grew one would have to read the same source the library does.
+fn viewport_rows<D: FillTableDelegate>(state: &Entity<TableState<D>>, cx: &App) -> usize {
+    let height = state
+        .read(cx)
+        .vertical_scroll_handle
+        .0
+        .borrow()
+        .base_handle
+        .bounds()
+        .size
+        .height;
+    let row_height = f32::from(Size::default().table_row_height());
+    (f32::from(height) / row_height).floor().max(0.) as usize
+}
+
 impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // The phantom-row gate. See [`rows_to_paint`]: the library ties its striped
+        // fake-row fill to the same flag as the zebra, so the zebra is only asked for
+        // when the data already reaches the floor and the fill has nothing to add.
+        let viewport = viewport_rows(&self.state, cx);
+        let data = self.state.read(cx).delegate().rows_count(cx);
+        let stripe = self.stripe && rows_to_paint(data, viewport) >= viewport;
+
         let measured = self.state.clone();
         div()
             .relative()
             .size_full()
             .child(
                 DataTable::new(&self.state)
-                    .stripe(self.stripe)
+                    .stripe(stripe)
                     .bordered(self.bordered),
             )
             .child(
@@ -211,5 +263,28 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
                 .absolute()
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fewer_rows_than_the_viewport_paints_only_the_data() {
+        // Network's PORTS panel at the 2026-09-10 gate: 10 rows of data under 26 rows
+        // of ruled, striped chrome. A table stops at its data; the floor below the
+        // last row is the panel's own surface.
+        assert_eq!(rows_to_paint(10, 36), 10);
+        assert_eq!(rows_to_paint(0, 36), 0);
+        assert_eq!(rows_to_paint(35, 36), 35);
+    }
+
+    #[test]
+    fn a_table_that_reaches_the_floor_paints_every_row_it_has() {
+        // The other side: nothing is clipped, and a full table has no leftover for the
+        // library to fill, which is where its zebra is still worth having.
+        assert_eq!(rows_to_paint(500, 36), 500);
+        assert_eq!(rows_to_paint(36, 36), 36);
     }
 }
