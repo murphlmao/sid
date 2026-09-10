@@ -235,3 +235,15 @@ commits; do not invent one).
   tests (one retired icon-ratchet test), clippy clean; captures of SSH, Database, Network,
   gallery, 150% zoom and a real ctrl+= chord all match. Lockfile grew by the gpui-pre
   family, wgpu, accesskit and platform crates; 86 old entries dropped.
+- 2026-09-09: System tab, two defects (`system-tab` branch). Command column: 20 of 31 rows
+  at 1272px were showing a bare `—` because another user's/kernel processes' cmdline is
+  unreadable; `sid-sysinfo::processes::resolve_cmd` now falls back to the process name at
+  the mapping layer (`ProcessInfo::cmd_is_fallback` carries the fact), and the Command cell
+  renders that fallback in `muted` ink versus `fg` for a real argv, same Mono size either
+  way. Meter cards: re-verified by capture rather than re-built — `overview_cluster` already
+  puts CPU/Memory/Swap on a `StatCluster`/`Card` with a `SYSTEM` header, summary line and a
+  labelled `16 cores` per-core strip, matching the Database panel's `Elevation::Surface`
+  chrome exactly (same helper, not just the same look). Captures at 1272x900, 1920x1080
+  (cosmos + cosmos-light) and 2560x1400 confirm both: no dash-only Command cells for named
+  processes, fallback ink visibly dimmer, meters framed, table fills the width, nothing
+  clipped.
