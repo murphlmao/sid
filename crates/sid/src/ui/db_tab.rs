@@ -1743,6 +1743,43 @@ impl AppState {
         )
     }
 
+    /// The Database tab's one line for the app-wide status bar: the selected
+    /// connection's display name and the very dot its own row is drawing, or `None`
+    /// when nothing is selected.
+    ///
+    /// Goes through [`connection_dot`] rather than re-deriving the state, so the strip
+    /// at the foot of the window and the row in the panel cannot disagree — one fact,
+    /// one decision, two places that render it.
+    pub(crate) fn db_status(&self) -> Option<(String, ConnectionState)> {
+        let id = self.db.active_id.as_deref()?;
+        let state = connection_dot(
+            self.db.client.is_some() && self.db.client_for.as_deref() == Some(id),
+            // The selected row *is* the active one, so the busy/failed states — which
+            // belong to the current selection and nothing else — apply here by
+            // construction.
+            true,
+            self.db.running || self.db.schema_loading,
+            self.db.schema_error.is_some(),
+        );
+        if self.browse_mode() {
+            return Some((STORE_BROWSE_LABEL.to_string(), state));
+        }
+        let name = self
+            .db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id)
+            .map(|a| {
+                if a.item.name.is_empty() {
+                    a.item.id.clone()
+                } else {
+                    a.item.name.clone()
+                }
+            })
+            .unwrap_or_else(|| id.to_string());
+        Some((name, state))
+    }
+
     /// The store table currently loaded in browse mode, if any.
     ///
     /// Browse mode reuses `last_sql` to hold the **table name** — which is exactly what

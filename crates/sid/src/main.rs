@@ -101,8 +101,9 @@ fn main() {
             // persisted `Settings.secret_keyring_enabled` toggle (see
             // `app::open_secrets`; round-D §A dropped the encrypted-file backend from
             // the chain). The status text (which backend is live, plus any warning) is
-            // echoed to stderr for headless debugging, and shown in-app only when
-            // degraded (the tab strip's warning badge — see `app::AppState::new`).
+            // echoed to stderr for headless debugging, and shown in-app as the status
+            // bar's leftmost item — in words, in either state (see
+            // `app::AppState::status_bar`).
             let (secrets, secrets_degraded, secrets_status) = app::open_secrets(&store);
             eprintln!("sid: {secrets_status}");
             // Install the persisted theme as the process-wide palette global before
