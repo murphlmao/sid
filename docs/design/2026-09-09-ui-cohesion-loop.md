@@ -145,18 +145,20 @@ Every item is gated by before/after captures in all four themes and a
       added to `Row` (opt-in `tab_index`), `SegmentedControl` segments (+ `tab_index` builder so a
       strip sorts with its form), `StatusItem`; Button/IconButton already had every state
       through the library ring mapped to `accent`. Gallery gained a FOCUS band.
-- [ ] **Security: the config editor's focus trap scope.** Flagged by the background commit
-      review of 2aa4d36 (`focus-trap-scope-leaks-credential`, `config_editor.rs`): the trap
-      wraps the whole editor overlay, so with the sudo-unlock prompt open, Tab from the
-      password field can land in the file body and a re-typed password would be saved into a
-      root-owned config. Fix: while the prompt is open the trap targets the unlock panel only
-      and the editor body is not a tab stop; clear the password field on close. Assigned to the
-      focus-followups branch 2026-09-09.
-- [ ] **Focus follow-ups**: the Settings rail item hand-rolls the same ring (`settings_tab.rs`)
-      and should call `focus_ring`; `chrome_tab` in `app.rs` has hover only (no pressed, no
-      ring, not a tab stop); the config editor's save/close are hand-rolled `div().id(..)`
-      without `tab_index`, so Tab cannot reach Save there; consider `.focus_visible()` (ring
-      only on keyboard focus) if a mouse-click ring reads as noise.
+- [x] **Security: the config editor's focus trap scope.** Flagged by the background commit
+      review of 2aa4d36 (`focus-trap-scope-leaks-credential`); fixed 2026-09-09 in 3df08d0.
+      Root cause: the backdrop trap stayed registered while the sudo prompt also registered
+      one, so which trap answered came down to `HashMap` iteration order. Now `trap_owner
+      (prompt_open)` gives the one registration to the unlock panel while it is open and the
+      backdrop otherwise (unit-tested), and `close_unlock_prompt` scrubs the typed password on
+      every close path (cancel, success, fatal, panicked task). Capture: three Tabs from the
+      password field over `/etc/sudoers` return to the field; Save/close/body unreachable.
+- [x] **Focus follow-ups**: done 2026-09-09. Settings rail item uses `focus_ring`; `chrome_tab`
+      (top tabs + session strip) has pressed, ring and a tab stop (Tab walks SSH → Database →
+      Network → Workspaces …; the active tab's underline no longer reads as a false ring);
+      config editor save/close are `Button`/`IconButton` with `tab_index` (the builders were
+      added to Button/IconButton). `.focus_visible()` not adopted; revisit only if a click
+      ring reads as noise.
 - [x] **Empty states.** Already covered: `ssh_home.rs::home_empty_state` renders the icon +
       headline + "add connection" action for zero hosts (landed July, 762aea9), and the
       no-match case centres inside the connections panel with the add row above it (verified in
@@ -213,11 +215,9 @@ Every item is gated by before/after captures in all four themes and a
 - [x] `scripts/lib/sid-app.sh` extracted (92 lines shared); `sid-shot.sh` now verifies the
       sid window sits on its headless output before `grim` and checks the PNG dimensions
       afterwards, refusing with a one-line reason otherwise. Merged 2026-09-09.
-- [ ] `sid-shot.sh` cannot capture at all on Murphy's Hyprland (Lua parser rejects
-      `hyprctl keyword` and legacy two-arg `dispatch`, exit 0); it now fails safely. Either
-      port its placement to `hyprctl eval`/new-syntax `dispatch` around workspace 4, or
-      delete it and make `sid-cap.sh` the only harness. Low priority: `sid-cap.sh` is what
-      the loop uses.
+- [x] `sid-shot.sh`: decided 2026-09-09 to keep it as the fail-safe fallback for machines
+      without sway (it refuses rather than mis-captures on Murphy's Lua-parsed Hyprland);
+      `sid-cap.sh` is the harness. Revisit only if someone needs live-session captures here.
 - [x] `docs/HANDOFF.md` rewritten from the current tree 2026-09-09 (219 lines; verified 51
       suites / 1580 tests; per-tab shipped/gaps table; today's round indexed; landmines carried
       forward plus today's).
