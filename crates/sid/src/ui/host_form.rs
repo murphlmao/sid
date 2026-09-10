@@ -657,13 +657,17 @@ impl HostForm {
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                             this.set_key_path(path.clone(), window, cx);
                         }));
-                    // The chosen key is the accented one: with three or four chips on a
-                    // line, "which of these is in the field above" has to be answerable
-                    // without reading the path.
+                    // Which key is chosen still has to be answerable without reading
+                    // the path, but an accent fill was the loudest mark in the whole
+                    // form for a fact this quiet — a selected key, not an action to
+                    // take. Neutral solid (the default fill, one rung above the card)
+                    // with an accent hairline says "this one" without shouting;
+                    // unselected drops to a neutral outline instead of matching that
+                    // fill, so the chosen chip is still the only filled one.
                     let chosen = candidate.path.display().to_string() == current;
                     chips = chips.child(match chosen {
-                        true => chip.primary(),
-                        false => chip,
+                        true => chip.border_color(rgb(theme.accent)),
+                        false => chip.ghost(),
                     });
                 }
                 chips.into_any_element()
