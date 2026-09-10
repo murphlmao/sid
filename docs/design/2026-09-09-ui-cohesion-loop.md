@@ -21,10 +21,8 @@ read as one application". The gaps below are visible in today's captures.
 
 ## 0. Prerequisites (Murphy, once)
 
-- [ ] `sudo pacman -S sway wtype` — enables `scripts/sid-cap.sh`, the lock-proof headless
-      capture and input harness. Without it the loop can only use `sid-shot.sh`, which
-      captures the live Hyprland session and today returned the wrong window for two of
-      seven shots. Self-verification of visual work depends on this.
+- [x] `sudo pacman -S sway wtype` — installed by Murphy 2026-09-09 19:34; `scripts/sid-cap.sh`
+      has been the loop's capture harness since.
 - [ ] Optional: a GitHub token with `workflow` scope so `docs/ci/github-actions-ci.yml`
       can move to `.github/workflows/` (blocked since July).
 
@@ -159,9 +157,10 @@ Every item is gated by before/after captures in all four themes and a
       ring, not a tab stop); the config editor's save/close are hand-rolled `div().id(..)`
       without `tab_index`, so Tab cannot reach Save there; consider `.focus_visible()` (ring
       only on keyboard focus) if a mouse-click ring reads as noise.
-- [ ] **Empty states.** Database and Workspaces have the icon + headline + action pattern.
-      SSH home has none for zero hosts, and the quick-connect field is the only thing on
-      screen. Add the same pattern.
+- [x] **Empty states.** Already covered: `ssh_home.rs::home_empty_state` renders the icon +
+      headline + "add connection" action for zero hosts (landed July, 762aea9), and the
+      no-match case centres inside the connections panel with the add row above it (verified in
+      the SSH pass captures). Item was stale when written.
 - [x] **cosmos-light pass.** Done 2026-09-09, measured not eyeballed: `warning` 2.94→4.70,
       `success` 3.73→4.88, `muted` 4.05→5.47 against `surface`; zero call-site changes (every
       consumer reads the token; `bridge::contrast_ink` flipped the solid warning badge's label
@@ -219,7 +218,9 @@ Every item is gated by before/after captures in all four themes and a
       port its placement to `hyprctl eval`/new-syntax `dispatch` around workspace 4, or
       delete it and make `sid-cap.sh` the only harness. Low priority: `sid-cap.sh` is what
       the loop uses.
-- [ ] Rewrite `docs/HANDOFF.md` from the current tree. It still describes July 6.
+- [x] `docs/HANDOFF.md` rewritten from the current tree 2026-09-09 (219 lines; verified 51
+      suites / 1580 tests; per-tab shipped/gaps table; today's round indexed; landmines carried
+      forward plus today's).
 - [ ] CI: `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml` (blocked on token scope).
 
 ## Deliberately not on the list
