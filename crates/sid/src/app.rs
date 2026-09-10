@@ -295,6 +295,10 @@ impl AppState {
     /// via [`Self::apply_seed_lists`] here means this constructor doesn't immediately
     /// re-issue the same hosts/workspaces reads `seed_if_empty` just did (perf audit
     /// finding #7).
+    // ponytail: 8 args; `window` joined the list only because `InputState::new` needs
+    // one where the old hand-rolled field didn't — a config struct is not worth it for
+    // one composition-root constructor called from exactly one place.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Store,
         seed_lists: SeedLists,
@@ -506,7 +510,7 @@ impl AppState {
             .unwrap_or_default();
         let workspace = self.active_workspace();
         let degraded = self.secrets_degraded;
-        let form = cx.new(|cx| HostForm::new_add(cx, workspace, default_scope, degraded));
+        let form = cx.new(|cx| HostForm::new_add(window, cx, workspace, default_scope, degraded));
         self.open_form(form, window, cx);
     }
 
@@ -524,7 +528,7 @@ impl AppState {
     ) {
         let workspace = self.active_workspace();
         let degraded = self.secrets_degraded;
-        let form = cx.new(|cx| HostForm::new_edit(cx, host, origin, workspace, degraded));
+        let form = cx.new(|cx| HostForm::new_edit(window, cx, host, origin, workspace, degraded));
         self.open_form(form, window, cx);
     }
 
@@ -633,8 +637,14 @@ impl AppState {
     ) {
         let label: SharedString = format!("{}@{}", host.user, host.host).into();
         let known_hosts_path = data_dir().join("known_hosts");
-        let session =
-            SshSession::open(host, secret, known_hosts_path, self.file_browser_side, window, cx);
+        let session = SshSession::open(
+            host,
+            secret,
+            known_hosts_path,
+            self.file_browser_side,
+            window,
+            cx,
+        );
         let dock_toggle = cx.subscribe(&session, Self::on_session_event);
         self.ssh_sessions.push(SshTab {
             label,
