@@ -299,3 +299,20 @@ commits; do not invent one).
   `with_assets(..)` had to move from `Assets` to `AllAssets` for any of this to actually
   render. Gate green (fmt/clippy/tests); SSH right-click menu still shows no icons for
   rename/delete — that's `ssh_home.rs`'s `PopupMenuItem` list, out of this branch's scope.
+- 2026-09-09: SSH-home + top-chrome cohesion pass on `ssh-chrome`. The scope chips are one
+  `SegmentedControl` (`ScopeChip` keeps the per-item origin badge); the six tabs gained icons
+  and collapse to icon-only with tooltips below 900 *design* px (`TabChrome::for_window`,
+  tested against the 150%-zoom case), so nothing clips at 700px on any tab. The session strip
+  is a real tab bar on the same `chrome_tab` box as the chrome above it — `StatusDot`, the
+  saved **alias** rather than `user@host`, a close `IconButton` that fades in on hover, `+`
+  tooltipped with its chord — and it still shrinks/scrolls with many sessions. SSH home is
+  one `Card::panel` whose header is the toolbar row
+  (`[CONNECTIONS · n] [quick-connect] [add connection] [connect]`, one height); the dot legend
+  moved to the panel footer as Meta text. The right-click menu has icons —
+  `PopupMenuItem::icon` **does** exist in gpui-component 0.6.1 — closing the icon pass's
+  leftover. New `sid_ui::Tipped::tip` (tooltips on non-button elements) and `Icon::Database`.
+  Deliberately not done: `CardGrid`'s `MIN_COL`/`MAX_COL` are unchanged. Letting two cards
+  grow to fill a 2560px row makes them 1200px full-bleed rows, which is what the grid module
+  was written to stop; the void is now bounded by the panel and left empty on purpose, since
+  the store holds no second per-host fact to put there. Gate: fmt, clippy, 51 suites green;
+  eight captures at 1920/700/2560/150%/cosmos-light incl. a live session tab and the card menu.
