@@ -40,7 +40,6 @@ use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::db_registry::DbRegistry;
-use crate::ui::TextInput;
 use crate::ui::db_conn_form::{
     DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
 };
@@ -48,8 +47,9 @@ use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
 use sid_ui::{
     Badge, Button, ButtonSize, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState,
-    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row as UiRow, ScopeChip,
-    StatusDot, StyledExt as _, Theme, Toolbar, Typography as _, h_flex, sortable_th, theme, v_flex,
+    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List, Row as UiRow,
+    ScopeChip, StatusDot, StyledExt as _, TextInput, Theme, Toolbar, Typography as _, h_flex,
+    sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -170,7 +170,7 @@ pub struct DbTabState {
     /// The results grid's filter box (inc-3). Lazily built beside `sql` by
     /// `ensure_query_widgets`; its text is pushed into [`ResultDelegate::set_query`]
     /// by `apply_result_filter`.
-    result_filter: Option<Entity<TextInput>>,
+    result_filter: Option<Entity<InputState>>,
     /// Keeps the filter box's `cx.observe` alive. [`TextInput`] has no change
     /// callback, so an observation of its `cx.notify()` is the wiring — the same
     /// pattern `systems_tab`/`network_tab` use for theirs.
@@ -261,7 +261,7 @@ pub struct DbTabState {
 struct RenameState {
     id: String,
     origin: Scope,
-    input: Entity<TextInput>,
+    input: Entity<InputState>,
 }
 
 /// An in-progress inline folder edit — same shape/lifecycle as [`RenameState`], committed
@@ -270,7 +270,7 @@ struct RenameState {
 struct FolderEditState {
     id: String,
     origin: Scope,
-    input: Entity<TextInput>,
+    input: Entity<InputState>,
 }
 
 /// The `view` popover's contents (D2) — the column a long cell came from, and its
@@ -1449,7 +1449,7 @@ impl AppState {
         // the `cx.notify()` it makes on every edit is the wiring — see
         // `network_tab.rs`'s "Filtering" doc section for why this pattern rather than
         // a callback.
-        let filter = cx.new(|cx| TextInput::new(cx, "filter results…"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter results…"));
         self.db._result_filter_sub = Some(cx.observe(&filter, |this: &mut Self, _filter, cx| {
             this.apply_result_filter(cx);
         }));
@@ -1482,7 +1482,7 @@ impl AppState {
             .db
             .result_filter
             .as_ref()
-            .map(|f| f.read(cx).content().to_string())
+            .map(|f| f.read(cx).value().to_string())
             .unwrap_or_default();
         if let Some(results) = self.db.results.clone() {
             results.update(cx, |state, cx| {
@@ -1680,7 +1680,12 @@ impl AppState {
                                     .flex_1()
                                     .min_w_0()
                                     .max_w(px(280.))
-                                    .children(self.db.result_filter.clone()),
+                                    .children(
+                                        self.db
+                                            .result_filter
+                                            .clone()
+                                            .map(|f| TextInput::new(&f)),
+                                    ),
                             ),
                     )
                     .when_some(count_label, |bar, label| bar.count_label(label))
@@ -2730,7 +2735,7 @@ impl AppState {
                         _ => {}
                     }
                 }))
-                .child(input)
+                .child(TextInput::new(&input))
                 .into_any_element()
         } else {
             let name_id = conn.id.clone();
@@ -2781,7 +2786,7 @@ impl AppState {
                         _ => {}
                     }
                 }))
-                .child(input)
+                .child(TextInput::new(&input))
                 .into_any_element()
         } else {
             // The DSN, which is why it is mono and why it clamps: `postgres://user@host:
@@ -2918,11 +2923,11 @@ impl AppState {
             current_name.to_string()
         };
         let input = cx.new(|cx| {
-            let mut t = TextInput::new(cx, "name");
-            t.set_content(seed, cx);
-            t
+            let mut state = InputState::new(window, cx).placeholder("name");
+            state.set_value(seed, window, cx);
+            state
         });
-        TextInput::focus(&input, window, cx);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.db.renaming = Some(RenameState {
             id: id.to_string(),
             origin: origin.clone(),
@@ -2938,7 +2943,7 @@ impl AppState {
         let Some(state) = &self.db.renaming else {
             return;
         };
-        let new_name = state.input.read(cx).content().trim().to_string();
+        let new_name = state.input.read(cx).value().trim().to_string();
         if new_name.is_empty() {
             self.error = Some("name must not be empty".to_string());
             cx.notify();
@@ -2971,13 +2976,13 @@ impl AppState {
     ) {
         self.db.renaming = None;
         let input = cx.new(|cx| {
-            let mut t = TextInput::new(cx, "folder (blank = none)");
+            let mut state = InputState::new(window, cx).placeholder("folder (blank = none)");
             if let Some(f) = current {
-                t.set_content(f.to_string(), cx);
+                state.set_value(f.to_string(), window, cx);
             }
-            t
+            state
         });
-        TextInput::focus(&input, window, cx);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.db.folder_editing = Some(FolderEditState {
             id: id.to_string(),
             origin: origin.clone(),
@@ -2993,7 +2998,7 @@ impl AppState {
         let Some(state) = &self.db.folder_editing else {
             return;
         };
-        let raw = state.input.read(cx).content().trim().to_string();
+        let raw = state.input.read(cx).value().trim().to_string();
         let folder = (!raw.is_empty()).then_some(raw);
         let FolderEditState { id, origin, .. } =
             self.db.folder_editing.take().expect("checked above");
