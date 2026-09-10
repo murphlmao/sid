@@ -1676,16 +1676,9 @@ impl AppState {
                                 // Capped, not filling: a 1200px-wide filter field is
                                 // as wrong as the ribbon table it sits above used to
                                 // be (`systems_tab`'s toolbar makes the same call).
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .max_w(px(280.))
-                                    .children(
-                                        self.db
-                                            .result_filter
-                                            .clone()
-                                            .map(|f| TextInput::new(&f)),
-                                    ),
+                                div().flex_1().min_w_0().max_w(px(280.)).children(
+                                    self.db.result_filter.clone().map(|f| TextInput::new(&f)),
+                                ),
                             ),
                     )
                     .when_some(count_label, |bar, label| bar.count_label(label))
@@ -3069,8 +3062,9 @@ impl AppState {
         let workspace = self.active_workspace();
         let registry = self.db.registry.clone();
         let degraded = self.secrets_degraded;
-        let form =
-            cx.new(|cx| DbConnForm::new_add(cx, registry, workspace, default_scope, degraded));
+        let form = cx.new(|cx| {
+            DbConnForm::new_add(window, cx, registry, workspace, default_scope, degraded)
+        });
         self.open_db_form(form, window, cx);
     }
 
@@ -3086,8 +3080,9 @@ impl AppState {
         let workspace = self.active_workspace();
         let registry = self.db.registry.clone();
         let degraded = self.secrets_degraded;
-        let form =
-            cx.new(|cx| DbConnForm::new_edit(cx, registry, conn, origin, workspace, degraded));
+        let form = cx.new(|cx| {
+            DbConnForm::new_edit(window, cx, registry, conn, origin, workspace, degraded)
+        });
         self.open_db_form(form, window, cx);
     }
 
