@@ -456,3 +456,27 @@ commits; do not invent one).
   fmt, clippy, 51 suites green. Captures at 900x700 (Workspaces, Network → Ports, Database,
   and Workspaces in cosmos-light): every long path/address ellipsizes inside its box, nothing
   overflows or pushes a sibling off the right edge.
+- 2026-09-09: light-theme pass over `cosmos-light` on `light-pass` (not merged). Every screen
+  captured through the headless harness in `cosmos-light` (six tabs, the schema-loaded
+  Database, the Add-host modal over the scrim, the card context menu, the command palette,
+  Settings → Keyboard, System → Config files, and `SID_GALLERY=1` at 2000x2400), then measured
+  rather than eyeballed: `warning` was **2.94:1** on `surface`, `success` **3.73:1** and
+  `muted` **4.05:1** — the palette had carried cosmos's *pale* status hues onto an off-white
+  canvas, where a pale hue is a smear. Fixed at the token level, three values in
+  `cosmos_light()`: `warning` `0xb08030` → `0x8a5f1a` (4.70:1 on `surface`), `success`
+  `0x408090` → `0x246e7c` (4.88:1), `muted` `0x707082` → `0x5c5c6e` (5.47:1, matching cosmos's
+  own 5.42:1). No call site changed: badge/toast/dot/meter all read the token, so the soft
+  wash, the outline hairline and the dot follow it, and `bridge::contrast_ink` — which derives
+  a filled swatch's label from the *fill's* brightness, not the tone's name — flips the solid
+  warning badge to a light label on its own, exactly the case it was written for. Dark palettes
+  byte-identical; the bridge mapping is unchanged (checked void and dusk on SSH and Database).
+  New guard `theme.rs::the_light_palettes_inks_clear_aa_on_every_surface_they_land_on` sweeps
+  every ink against `bg`/`surface`/`well` at 4.5:1 (`faint` exempt — it is the
+  decorative/disabled tone; `selection` exempt as a bed — a row's ink is `fg`). Gate: fmt,
+  clippy, 51 suites, `hygiene.rs` green. Left open, wrong file for this branch: `app.rs`'s
+  `gpu_status_badge` hard-codes `rgb(0x1a1a1a)` as the label on a `warning` fill — with the
+  deeper amber that pill is now 2.7:1 and it should be `bridge::contrast_ink(t, warning)`
+  (which also retires one of the two raw-hex exemptions in `system.md`). Also seen, not a light
+  bug: a `PopupMenu` is `popover` = `surface` over a `surface` panel in *all four* palettes, so
+  only its hairline separates it; and the modal scrim is typed out as `rgba(0x000000a8)` at
+  five call sites instead of the `bridge::SCRIM` that exists for it.
