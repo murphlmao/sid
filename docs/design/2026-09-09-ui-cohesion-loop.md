@@ -175,6 +175,13 @@ Every item is gated by before/after captures in all four themes and a
       the hairline separates them; needs a derived raised-surface mapping in `bridge.rs` for all
       four themes); the modal scrim is typed as `rgba(0x000000a8)` at five call sites instead of
       `bridge::SCRIM`.
+- [ ] **Library boundary.** Final-gate check on 2026-09-10 found 15 `gpui_component::` imports
+      across nine `crates/sid` modules (`table::{Column, ColumnSort, TableDelegate,
+      TableState, state::render_cell}`, `menu::{ContextMenuExt, PopupMenu, PopupMenuItem}`,
+      `input::{Editor, EditorState, InputEvent, InputState, Position}`, `Root`,
+      `tooltip::Tooltip`). `sid-ui` re-exports them from one facade module; tab modules import
+      from `sid_ui`; a hygiene ratchet bans `gpui_component::` under `crates/sid/src` except
+      `main.rs` (the composition root is the one place that knows both sides).
 - [ ] **Final gate.** Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
