@@ -585,3 +585,19 @@ per CLAUDE.md. Agent briefs must state which decision is being extracted and nam
   badge capture — no `SID_GPU=software`-style preflight override exists in `sid-gpu`/`main.rs`
   (only `SID_GPU_SKIP_PREFLIGHT`, which skips the check rather than forcing the degraded
   path), so `gpu_status_badge` was verified by its existing bridge test instead of a capture.
+- 2026-09-10: library boundary closed (`lib-facade` branch). RED:
+  `tests/hygiene.rs`'s `the_rendering_library_is_named_only_in_sid_ui_and_the_composition_root`
+  found the 15 sites across nine `crates/sid` modules the checklist named. GREEN:
+  `sid_ui::component` re-exports `Root`, `menu::{ContextMenuExt, PopupMenu, PopupMenuItem}`,
+  `table::{Column, ColumnSort, TableDelegate, TableState}` and
+  `input::{Editor, EditorState, InputEvent, InputState, Position}`; all nine modules import
+  from it instead. `table::state::render_cell` dropped from the facade — it turned out to be a
+  private upstream module only ever *named* in two doc comments, never actually imported, so
+  the two mentions became prose instead of a (nonexistent) re-export. `session.rs`'s two
+  `tooltip::Tooltip` call sites became `sid_ui::Tipped::tip(...)` rather than a tooltip
+  re-export, since a wrapper already covered them. Gate: fmt, clippy
+  (`--workspace --all-targets -D warnings`), full `cargo test --workspace` green. Capture:
+  `lf-db.png` (Database tab) — connections panel, schema panel, SQL editor, results and the
+  `secrets in memory` status all render as before. Merged main mid-task (light follow-ups:
+  `bridge::SCRIM`, `raised_surface`) — one import-list conflict in `session.rs`, resolved as
+  the union; re-gated clean after.
