@@ -73,7 +73,9 @@ pub use elevation::Elevation;
 pub use empty_state::EmptyState;
 pub use grid::{CardGrid, CardPaint, GridCard};
 pub use icon::Icon;
-pub use input::{FIELD_MIN_W, FieldWidth, SearchInput, TextInput, is_field_submit, on_submit};
+pub use input::{
+    FIELD_MIN_W, FieldWidth, InputState, SearchInput, TextInput, is_field_submit, on_submit,
+};
 pub use kbd::Kbd;
 pub use list::{List, Row, RowPaint};
 pub use meter::{Meter, MeterTone, StatCluster};

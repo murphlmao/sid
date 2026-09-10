@@ -27,19 +27,17 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, SharedString, Window, actions, div, prelude::*, rgb,
+    SharedString, Window, actions, div, prelude::*, rgb,
 };
 use sid_core::db::{ConnField, ConnFieldKind, DbKind};
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{DbConnection, DefaultScope, Scope};
 
-use super::TextInput;
-use super::text_input::next_focus_index;
 use crate::db_registry::DbRegistry;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    Button, Elevation, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
-    Typography as _, h_flex, v_flex,
+    Button, Elevation, InputState, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _,
+    TextInput, Toast, Typography as _, h_flex, v_flex,
 };
 
 actions!(
@@ -99,7 +97,7 @@ pub(crate) struct Submission {
 
 /// One collected engine field's live widget.
 enum FieldWidget {
-    Text(Entity<TextInput>),
+    Text(Entity<InputState>),
     /// A segmented pill control — used for both `Choice` and `Bool` fields (a `Bool`
     /// is just a two-option choice, so it reuses this rather than a fourth variant).
     Choice {
@@ -112,7 +110,7 @@ enum FieldWidget {
 pub struct DbConnForm {
     mode: FormMode,
     registry: Rc<DbRegistry>,
-    name: Entity<TextInput>,
+    name: Entity<InputState>,
     kind: DbKind,
     fields: Vec<(ConnField, FieldWidget)>,
     /// The selected save target; `None` = nothing preselected (the `Ask` default).
@@ -133,6 +131,7 @@ impl DbConnForm {
     /// (Postgres). `default_scope` drives the `save to:` preselection. See
     /// `host_form::HostForm::new_add` for `secrets_degraded`.
     pub fn new_add(
+        window: &mut Window,
         cx: &mut Context<Self>,
         registry: Rc<DbRegistry>,
         workspace: Option<(Scope, SharedString)>,
@@ -141,6 +140,7 @@ impl DbConnForm {
     ) -> Self {
         let workspace_active = workspace.is_some();
         let mut form = Self::new_inner(
+            window,
             cx,
             registry,
             workspace,
@@ -158,6 +158,7 @@ impl DbConnForm {
     /// descriptor's `dsn_to_field_values` (best-effort — a stored secret is never read
     /// back, so the password field always starts empty; see `field_row`).
     pub fn new_edit(
+        window: &mut Window,
         cx: &mut Context<Self>,
         registry: Rc<DbRegistry>,
         original: DbConnection,
@@ -171,6 +172,7 @@ impl DbConnForm {
             .map(|d| d.dsn_to_field_values(&original.dsn))
             .unwrap_or_default();
         let mut form = Self::new_inner(
+            window,
             cx,
             registry,
             workspace,
@@ -187,7 +189,11 @@ impl DbConnForm {
         form
     }
 
+    // ponytail: 8 args; `window` joined the list only because `InputState::new` needs
+    // one where the old hand-rolled field didn't — mirrors `AppState::new`'s own note.
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
+        window: &mut Window,
         cx: &mut Context<Self>,
         registry: Rc<DbRegistry>,
         workspace: Option<(Scope, SharedString)>,
@@ -197,13 +203,13 @@ impl DbConnForm {
         secrets_degraded: bool,
     ) -> Self {
         let name = cx.new(|cx| {
-            let mut input = TextInput::new(cx, "name — a short label");
+            let mut input = InputState::new(window, cx).placeholder("name — a short label");
             if let Some(v) = name_prefill {
-                input.set_content(v.to_string(), cx);
+                input.set_value(v.to_string(), window, cx);
             }
             input
         });
-        let fields = Self::build_fields(&registry, kind, cx, field_prefill);
+        let fields = Self::build_fields(&registry, kind, window, cx, field_prefill);
         Self {
             mode: FormMode::Add,
             registry,
@@ -225,6 +231,7 @@ impl DbConnForm {
     fn build_fields(
         registry: &DbRegistry,
         kind: DbKind,
+        window: &mut Window,
         cx: &mut Context<Self>,
         prefill: Option<&BTreeMap<String, String>>,
     ) -> Vec<(ConnField, FieldWidget)> {
@@ -239,9 +246,11 @@ impl DbConnForm {
                     .and_then(|p| p.get(&field.key).cloned())
                     .or_else(|| field.default.clone());
                 let widget = match &field.kind {
-                    ConnFieldKind::Password => FieldWidget::Text(
-                        cx.new(|cx| TextInput::new_masked(cx, field.label.clone())),
-                    ),
+                    ConnFieldKind::Password => FieldWidget::Text(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .masked(true)
+                            .placeholder(field.label.clone())
+                    })),
                     ConnFieldKind::Choice { options } => {
                         let selected = value
                             .as_deref()
@@ -259,9 +268,10 @@ impl DbConnForm {
                     }
                     ConnFieldKind::Text | ConnFieldKind::Port | ConnFieldKind::Path => {
                         FieldWidget::Text(cx.new(|cx| {
-                            let mut input = TextInput::new(cx, field.label.clone());
+                            let mut input =
+                                InputState::new(window, cx).placeholder(field.label.clone());
                             if let Some(v) = &value {
-                                input.set_content(v.clone(), cx);
+                                input.set_value(v.clone(), window, cx);
                             }
                             input
                         }))
@@ -274,7 +284,7 @@ impl DbConnForm {
 
     /// Focus the name field — the first editable field in both modes.
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
-        TextInput::focus(&self.name, window, cx);
+        self.name.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.
@@ -286,63 +296,13 @@ impl DbConnForm {
     /// Switch the engine (add mode only) and rebuild the field list from scratch —
     /// entered values for the old engine's fields don't carry over, since a different
     /// engine's fields have no defined mapping from them.
-    fn set_kind(&mut self, kind: DbKind, cx: &mut Context<Self>) {
+    fn set_kind(&mut self, kind: DbKind, window: &mut Window, cx: &mut Context<Self>) {
         if self.kind == kind || !matches!(self.mode, FormMode::Add) {
             return;
         }
         self.kind = kind;
-        self.fields = Self::build_fields(&self.registry, kind, cx, None);
+        self.fields = Self::build_fields(&self.registry, kind, window, cx, None);
         cx.notify();
-    }
-
-    /// The text fields currently on screen, in render order: the name field, then
-    /// each `FieldWidget::Text` the current engine's descriptor rendered. Tracks
-    /// `set_kind`'s field-list rebuild automatically since it reads `self.fields`
-    /// fresh each call. `Choice`/`Bool` pill rows, the engine selector, the save-to
-    /// picker, and the buttons aren't text inputs and are excluded from v1's cycle.
-    fn focusable_fields(&self) -> Vec<Entity<TextInput>> {
-        let mut fields = Vec::with_capacity(self.fields.len() + 1);
-        fields.push(self.name.clone());
-        for (_, widget) in &self.fields {
-            if let FieldWidget::Text(input) = widget {
-                fields.push(input.clone());
-            }
-        }
-        fields
-    }
-
-    /// Move focus to the next (or, `backwards`, previous) currently-rendered text
-    /// field, wrapping around at either end. Mirrors `HostForm::cycle_focus`.
-    fn cycle_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let fields = self.focusable_fields();
-        if fields.is_empty() {
-            return;
-        }
-        let current = fields
-            .iter()
-            .position(|field| field.read(cx).focus_handle(cx).is_focused(window));
-        let target = match current {
-            Some(ix) => next_focus_index(ix, fields.len(), backwards),
-            None if backwards => fields.len() - 1,
-            None => 0,
-        };
-        TextInput::focus(&fields[target], window, cx);
-    }
-
-    /// Intercept Tab/Shift+Tab before it can reach the focused field's IME/text-
-    /// insertion path. Mirrors `HostForm::handle_key_down`.
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key != "tab" {
-            return;
-        }
-        let backwards = event.keystroke.modifiers.shift;
-        cx.stop_propagation();
-        self.cycle_focus(backwards, window, cx);
     }
 
     /// The concrete layer a save would write into. Edits always target their origin;
@@ -367,7 +327,8 @@ impl DbConnForm {
                 return None;
             };
             let input = input.read(cx);
-            (!input.is_empty()).then(|| input.content().to_string())
+            let value = input.value();
+            (!value.is_empty()).then(|| value.to_string())
         })
     }
 
@@ -378,7 +339,7 @@ impl DbConnForm {
             .iter()
             .map(|(field, widget)| {
                 let value = match widget {
-                    FieldWidget::Text(input) => input.read(cx).content().to_string(),
+                    FieldWidget::Text(input) => input.read(cx).value().to_string(),
                     FieldWidget::Choice { options, selected } => {
                         options.get(*selected).cloned().unwrap_or_default()
                     }
@@ -391,7 +352,7 @@ impl DbConnForm {
     /// Validate and emit [`DbConnFormEvent::Submit`]; on a validation miss, show the
     /// message and stay open.
     fn submit(&mut self, cx: &mut Context<Self>) {
-        let name = match validate_name(self.name.read(cx).content()) {
+        let name = match validate_name(&self.name.read(cx).value()) {
             Ok(name) => name,
             Err(msg) => {
                 self.error = Some(msg.into());
@@ -463,13 +424,14 @@ impl DbConnForm {
     fn field(
         &self,
         label: &'static str,
-        input: &Entity<TextInput>,
+        input: &Entity<InputState>,
+        tab_index: isize,
         cx: &App,
     ) -> impl IntoElement + use<> {
         v_flex()
             .gap_1()
             .child(Self::field_label(label, cx))
-            .child(input.clone())
+            .child(TextInput::new(input).tab_index(tab_index))
     }
 
     /// The engine row in edit mode: static text in an input-shaped recess, so it reads
@@ -515,9 +477,9 @@ impl DbConnForm {
                     SegmentedControl::new("db-form-kind")
                         .segments(kinds.iter().map(|k| k.label()))
                         .selected(selected)
-                        .on_select(cx.listener(move |this, ev: &SegmentSelect, _window, cx| {
+                        .on_select(cx.listener(move |this, ev: &SegmentSelect, window, cx| {
                             if let Some(&kind) = by_index.get(ev.index) {
-                                this.set_kind(kind, cx);
+                                this.set_kind(kind, window, cx);
                             }
                         })),
                 ),
@@ -539,7 +501,10 @@ impl DbConnForm {
             FieldWidget::Text(input) => v_flex()
                 .gap_1()
                 .child(Self::field_label(label, cx))
-                .child(input.clone())
+                // The name field is tab_index 1; descriptor fields follow it in render
+                // order (2, 3, …) regardless of widget kind, so a `Choice`/`Bool` field
+                // between two text fields doesn't renumber anything after it.
+                .child(TextInput::new(input).tab_index(ix as isize + 2))
                 // Framed rather than captioned: what this says is that the value will
                 // not survive the session, which is a consequence, not a placeholder.
                 .when_some(password_hint, |el, hint| el.child(Toast::info(hint)))
@@ -693,14 +658,13 @@ impl Render for DbConnForm {
                 cx.emit(DbConnFormEvent::Cancel);
             }))
             .on_action(cx.listener(|this, _: &DbFormSubmit, _window, cx| this.submit(cx)))
-            .on_key_down(cx.listener(Self::handle_key_down))
             .child(
                 Modal::new("db-conn-form", title)
                     .submit_hint("saves")
                     .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                         cx.emit(DbConnFormEvent::Cancel);
                     }))
-                    .child(self.field("name", &self.name, cx))
+                    .child(self.field("name", &self.name, 1, cx))
                     .child(match &self.mode {
                         FormMode::Add => self.kind_selector(cx).into_any_element(),
                         FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),

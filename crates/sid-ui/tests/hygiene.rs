@@ -269,17 +269,11 @@ fn defines_the_type_scale(file: &Path) -> bool {
 /// build on an entry whose file is already clean, so a landing sweep forces its own
 /// line to be deleted rather than letting the exemption outlive the debt. Wave 1
 /// (`feat(sid-ui): semantic type scale`) swept `sid-ui`, `app.rs`, `systems_tab.rs`,
-/// `settings_tab.rs` and `config_editor.rs`; everything below is wave 2.
-const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[
-    // Every tab and chrome file held during the wave-1/wave-2 sweeps is now clean and
-    // has deleted its own entry, as the ratchet below requires. One file remains, and
-    // it is not blocked by anyone — only by its own nature:
-    (
-        "sid/src/ui/text_input.rs",
-        "wave 2 — a custom Element that measures its own line height from the style, so \
-         it needs the resolved pixels rather than a role",
-    ),
-];
+/// `settings_tab.rs` and `config_editor.rs`; wave 2 swept every remaining tab/chrome
+/// file. The one holdout, `sid/src/ui/text_input.rs` (a custom `Element` that measured
+/// its own line height from the style), is gone — deleted along with the whole
+/// hand-rolled widget when its call sites moved to `sid_ui::TextInput` (#3).
+const TYPE_SCALE_SWEEP_PENDING: &[(&str, &str)] = &[];
 
 /// Whether `file` is excused, and why.
 fn sweep_pending(file: &Path) -> Option<&'static str> {

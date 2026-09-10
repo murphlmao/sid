@@ -46,14 +46,13 @@ use sid_store::{DbConnection, Host, Scope, ViewFilters, WorkspaceId, WorkspaceMe
 
 use crate::app::{AppState, Tab};
 use crate::git_registry;
-use crate::ui::TextInput;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, List, Row, Segment,
-    SegmentSelect, SegmentedControl, StyledExt as _, Toolbar, TypeRole, Typography as _, h_flex,
-    scaled, sortable_th,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List, Row,
+    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Toolbar, TypeRole,
+    Typography as _, h_flex, scaled, sortable_th,
 };
 
 /// Recent-commits cap for the Log sub-tab, per the plan.
@@ -272,7 +271,7 @@ impl DetailSubTab {
 /// touches the filesystem), mirrors `db_tab::RenameState`'s shape.
 struct RenameState {
     id: WorkspaceId,
-    input: Entity<TextInput>,
+    input: Entity<InputState>,
 }
 
 // ---- Umbrella fleet table (gpui-component `TableDelegate`) -------------------------
@@ -735,7 +734,7 @@ pub struct WorkspacesTabState {
 
     // ---- `+ add` inline path input ---------------------------------------------------
     add_open: bool,
-    add_input: Option<Entity<TextInput>>,
+    add_input: Option<Entity<InputState>>,
     add_error: Option<String>,
 
     // ---- row-level interaction state ------------------------------------------------
@@ -753,10 +752,9 @@ pub struct WorkspacesTabState {
 }
 
 impl WorkspacesTabState {
-    /// `TextInput::new` needs no `window` (unlike the fleet's `TableState`), so the
-    /// add-path input is built eagerly here — same as `ssh_home::HomeTabState::new`'s
-    /// quick-connect box.
-    pub(crate) fn new(cx: &mut Context<AppState>) -> Self {
+    /// The add-path input is built eagerly here (needs `window`, like the fleet's
+    /// `TableState`) — same as `ssh_home::HomeTabState::new`'s quick-connect box.
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<AppState>) -> Self {
         Self {
             list: Vec::new(),
             loaded: false,
@@ -777,7 +775,9 @@ impl WorkspacesTabState {
             fleet: None,
             fleet_generation: 0,
             add_open: false,
-            add_input: Some(cx.new(|cx| TextInput::new(cx, "~/path/to/workspace"))),
+            add_input: Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("~/path/to/workspace")),
+            ),
             add_error: None,
             renaming: None,
             unregister_arm: ConfirmArm::new(),
@@ -1199,16 +1199,16 @@ impl AppState {
         self.workspaces.add_open = true;
         self.workspaces.add_error = None;
         if let Some(input) = self.workspaces.add_input.clone() {
-            TextInput::focus(&input, window, cx);
+            input.update(cx, |state, cx| state.focus(window, cx));
         }
         cx.notify();
     }
 
-    fn cancel_add_workspace(&mut self, cx: &mut Context<Self>) {
+    fn cancel_add_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.workspaces.add_open = false;
         self.workspaces.add_error = None;
         if let Some(input) = self.workspaces.add_input.clone() {
-            input.update(cx, |i, cx| i.reset(cx));
+            input.update(cx, |i, cx| i.set_value("", window, cx));
         }
         cx.notify();
     }
@@ -1216,12 +1216,12 @@ impl AppState {
     /// Enter (or the "add" affordance): tilde-expand, validate it's a directory,
     /// register, then rebuild the scope switcher at RUNTIME — this closes the
     /// `reload_scopes` startup-only caveat the BUILD ADDENDUM calls out.
-    fn submit_add_workspace(&mut self, cx: &mut Context<Self>) {
+    fn submit_add_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self
             .workspaces
             .add_input
             .as_ref()
-            .map(|i| i.read(cx).content().to_string())
+            .map(|i| i.read(cx).value().to_string())
             .unwrap_or_default();
         let expanded = expand_tilde(raw.trim(), &home_dir());
         if let Err(e) = validate_workspace_path(&expanded, &|p| Path::new(p).is_dir()) {
@@ -1234,7 +1234,7 @@ impl AppState {
                 self.workspaces.add_open = false;
                 self.workspaces.add_error = None;
                 if let Some(input) = self.workspaces.add_input.clone() {
-                    input.update(cx, |i, cx| i.reset(cx));
+                    input.update(cx, |i, cx| i.set_value("", window, cx));
                 }
                 self.reload_scopes_runtime(cx);
                 self.refresh_workspaces(cx);
@@ -1253,11 +1253,11 @@ impl AppState {
     ) {
         self.workspaces.unregister_arm.disarm();
         let input = cx.new(|cx| {
-            let mut t = TextInput::new(cx, "name");
-            t.set_content(current_name, cx);
-            t
+            let mut state = InputState::new(window, cx).placeholder("name");
+            state.set_value(current_name, window, cx);
+            state
         });
-        TextInput::focus(&input, window, cx);
+        input.update(cx, |state, cx| state.focus(window, cx));
         self.workspaces.renaming = Some(RenameState { id, input });
         cx.notify();
     }
@@ -1268,7 +1268,7 @@ impl AppState {
         let Some(state) = &self.workspaces.renaming else {
             return;
         };
-        let new_name = state.input.read(cx).content().trim().to_string();
+        let new_name = state.input.read(cx).value().trim().to_string();
         if new_name.is_empty() {
             self.error = Some("workspace name must not be empty".to_string());
             cx.notify();
@@ -1466,26 +1466,26 @@ impl AppState {
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                         match ev.keystroke.key.as_str() {
                             "enter" => {
                                 cx.stop_propagation();
-                                this.submit_add_workspace(cx);
+                                this.submit_add_workspace(window, cx);
                             }
                             "escape" => {
                                 cx.stop_propagation();
-                                this.cancel_add_workspace(cx);
+                                this.cancel_add_workspace(window, cx);
                             }
                             _ => {}
                         }
                     }))
-                    .children(input.map(|i| div().flex_1().min_w(px(0.)).child(i)))
+                    .children(input.map(|i| div().flex_1().min_w(px(0.)).child(TextInput::new(&i))))
                     .child(
                         Button::new("ws-add-submit", "add")
                             .primary()
                             .small()
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.submit_add_workspace(cx);
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.submit_add_workspace(window, cx);
                             })),
                     ),
             )
@@ -1567,7 +1567,7 @@ impl AppState {
                         _ => {}
                     }
                 }))
-                .child(input)
+                .child(TextInput::new(&input))
                 .into_any_element()
         } else {
             let name_id = meta.id.clone();

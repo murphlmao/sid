@@ -40,8 +40,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use gpui_component::tooltip::Tooltip;
 
 use crate::ssh_connect::connect_params;
-use crate::ui::{TextInput, is_field_submit};
-use sid_ui::{Row, StyledExt as _, Typography as _, UiScale, scaled, theme, v_flex};
+use crate::ui::is_field_submit;
+use sid_ui::{
+    InputState, Row, StyledExt as _, TextInput, Typography as _, UiScale, scaled, theme, v_flex,
+};
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
 /// installed via `fc-list`); gpui falls back to a proportional font if the family is missing
@@ -365,7 +367,7 @@ pub struct SshSession {
     show_hidden: bool,
     /// The "go to path" toolbar field (P5.3) — navigates the whole remote filesystem, not
     /// just child directories.
-    goto_input: Entity<TextInput>,
+    goto_input: Entity<InputState>,
     /// `view`'s open preview, if any (P5.3).
     preview: Option<Preview>,
     /// Which side of the terminal the file sidebar renders on (ssh-v3). Initialized from
@@ -393,6 +395,7 @@ impl SshSession {
         secret: Result<Option<Vec<u8>>, String>,
         known_hosts_path: PathBuf,
         dock_side: PanelSide,
+        window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
@@ -415,7 +418,7 @@ impl SshSession {
                 sidebar_width_pref: None,
                 sidebar_drag: None,
                 show_hidden: true,
-                goto_input: cx.new(|cx| TextInput::new(cx, "/path/to/go")),
+                goto_input: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/go")),
                 preview: None,
                 dock_side,
             };
@@ -797,7 +800,7 @@ impl SshSession {
     /// Read the "go to path" field and navigate there. A bare (non-absolute) entry is rooted
     /// (`etc` -> `/etc`) — the field navigates the filesystem, not the current directory.
     fn goto_submit(&mut self, cx: &mut Context<Self>) {
-        let target = self.goto_input.read(cx).content().trim().to_string();
+        let target = self.goto_input.read(cx).value().trim().to_string();
         if target.is_empty() {
             return;
         }
@@ -1083,6 +1086,11 @@ struct EntryRowPlan {
     /// What the name column is left with once every fixed-width slot has taken its share.
     /// Never negative — a row narrower than its own furniture reports zero.
     name_width: Pixels,
+    /// The zoom this plan's arithmetic ran at. [`SshSession::entry_row`] scales the same
+    /// `row_metrics` constants by it when it draws the glyph/size/mtime/action slots, so
+    /// the rendered row can never disagree with the widths this plan budgeted against —
+    /// the same reason `ShapedGridCache` (this module) keys its own cache on `scale`.
+    scale: UiScale,
 }
 
 /// Decide an entry row's columns by arithmetic rather than by hope.
@@ -1098,25 +1106,34 @@ struct EntryRowPlan {
 ///
 /// One plan governs the whole list (it takes no per-row input), so every row agrees on
 /// where its columns start.
-fn plan_entry_row(row_width: Pixels) -> EntryRowPlan {
+fn plan_entry_row(row_width: Pixels, scale: UiScale) -> EntryRowPlan {
     use row_metrics as m;
+
+    // Every `row_metrics` constant is authored at 100% zoom, exactly like a `ColumnWidth`
+    // floor (`sid_ui::table::column_width`); `row_width` is real, already-zoomed pixels —
+    // it comes from `sidebar_width`, itself scaled the same way. So the furniture has to
+    // be scaled up to that same currency before it is subtracted from `row_width`, or a
+    // `MonoMeta` string that grew with the zoom keeps landing in a 100%-sized box, and the
+    // name floor stops meaning sixteen *readable* characters.
+    let at = |length: Pixels| scale.scale_px(length);
 
     // Furniture that is present no matter what: the box's padding, the leading glyph, the
     // action cluster, and the two slot gaps that bracket the content.
-    let base = m::PAD_X * 2. + m::GLYPH + m::ACTIONS + m::SLOT_GAP * 2.;
+    let base = at(m::PAD_X) * 2. + at(m::GLYPH) + at(m::ACTIONS) + at(m::SLOT_GAP) * 2.;
 
     for (show_size, show_mtime) in [(true, true), (true, false), (false, false)] {
         let meta = match (show_size, show_mtime) {
-            (true, true) => m::SIZE + m::CLUSTER_GAP + m::MTIME + m::SLOT_GAP,
-            (true, false) => m::SIZE + m::SLOT_GAP,
+            (true, true) => at(m::SIZE) + at(m::CLUSTER_GAP) + at(m::MTIME) + at(m::SLOT_GAP),
+            (true, false) => at(m::SIZE) + at(m::SLOT_GAP),
             _ => Pixels::ZERO,
         };
         let name_width = row_width - base - meta;
-        if name_width >= m::NAME_MIN {
+        if name_width >= at(m::NAME_MIN) {
             return EntryRowPlan {
                 show_size,
                 show_mtime,
                 name_width,
+                scale,
             };
         }
     }
@@ -1127,6 +1144,7 @@ fn plan_entry_row(row_width: Pixels) -> EntryRowPlan {
         show_size: false,
         show_mtime: false,
         name_width: (row_width - base).max(Pixels::ZERO),
+        scale,
     }
 }
 
@@ -1155,8 +1173,17 @@ fn plan_entry_row(row_width: Pixels) -> EntryRowPlan {
 /// `viewport_px` is the whole split (both panes plus the divider);
 /// [`sidebar_metrics::DIVIDER`] is reserved off the top, since the strip is a sibling of
 /// both panes rather than part of either.
-fn sidebar_width(viewport_px: Pixels, preferred: Option<Pixels>) -> Pixels {
+fn sidebar_width(viewport_px: Pixels, preferred: Option<Pixels>, scale: UiScale) -> Pixels {
     use sidebar_metrics as s;
+
+    // `MIN`/`MAX`/`TERMINAL_MIN` are authored at 100% zoom; `viewport_px` and `preferred`
+    // are both real, already-zoomed pixels (the window's measured size and the user's
+    // dragged width, in the same window-coordinate currency) — the same hop
+    // `sid_ui::modal::panel_geometry` makes for a panel's width against its viewport.
+    // `RATIO` is a fraction of the split and stays as authored.
+    let min = scale.scale_px(s::MIN);
+    let max = scale.scale_px(s::MAX);
+    let terminal_min = scale.scale_px(s::TERMINAL_MIN);
 
     let usable = viewport_px - s::DIVIDER;
     if usable <= Pixels::ZERO {
@@ -1164,19 +1191,19 @@ fn sidebar_width(viewport_px: Pixels, preferred: Option<Pixels>) -> Pixels {
     }
 
     // Rule 3: not enough room for both floors — split in proportion to them. At exactly
-    // `MIN + TERMINAL_MIN` this yields `MIN`, which is what makes the changeover
+    // `min + terminal_min` this yields `min`, which is what makes the changeover
     // continuous with the clamp below.
-    if usable < s::MIN + s::TERMINAL_MIN {
-        let share = f32::from(s::MIN) / f32::from(s::MIN + s::TERMINAL_MIN);
+    if usable < min + terminal_min {
+        let share = f32::from(min) / f32::from(min + terminal_min);
         return usable * share;
     }
 
     // Rule 2, bounded by rule 1: the sidebar's own band, with the terminal's floor as a
-    // hard ceiling on top of it. `usable - TERMINAL_MIN >= MIN` in this branch, so the
+    // hard ceiling on top of it. `usable - terminal_min >= min` in this branch, so the
     // effective ceiling can never fall below the floor.
     let desired = preferred.unwrap_or(viewport_px * s::RATIO);
-    let ceiling = (usable - s::TERMINAL_MIN).min(s::MAX);
-    desired.max(s::MIN).min(ceiling)
+    let ceiling = (usable - terminal_min).min(max);
+    desired.max(min).min(ceiling)
 }
 
 /// Where a divider drag puts the sidebar's edge, before [`sidebar_width`] clamps it:
@@ -1345,7 +1372,7 @@ mod entry_row_space_tests {
     /// guaranteed to be at least, so it is the one the name column has to survive.
     #[test]
     fn at_the_sidebar_floor_the_name_column_stays_readable() {
-        let plan = plan_entry_row(sidebar_metrics::MIN);
+        let plan = plan_entry_row(sidebar_metrics::MIN, UiScale::DEFAULT);
         assert!(
             plan.name_width >= row_metrics::NAME_MIN,
             "name got {:?}, floor is {:?}",
@@ -1357,7 +1384,7 @@ mod entry_row_space_tests {
     #[test]
     fn mtime_is_the_first_column_to_yield() {
         // At a typical default width something has to give, and the date goes first.
-        let plan = plan_entry_row(DEFAULT_AT_1600);
+        let plan = plan_entry_row(DEFAULT_AT_1600, UiScale::DEFAULT);
         assert!(!plan.show_mtime, "the date should have yielded");
         assert!(
             plan.show_size,
@@ -1371,10 +1398,10 @@ mod entry_row_space_tests {
     /// *visible* trade rather than a cosmetic one.
     #[test]
     fn the_orientation_columns_return_inside_the_clamp_band() {
-        assert!(!plan_entry_row(px(317.)).show_size);
-        assert!(plan_entry_row(px(318.)).show_size);
-        assert!(!plan_entry_row(px(405.)).show_mtime);
-        assert!(plan_entry_row(px(406.)).show_mtime);
+        assert!(!plan_entry_row(px(317.), UiScale::DEFAULT).show_size);
+        assert!(plan_entry_row(px(318.), UiScale::DEFAULT).show_size);
+        assert!(!plan_entry_row(px(405.), UiScale::DEFAULT).show_mtime);
+        assert!(plan_entry_row(px(406.), UiScale::DEFAULT).show_mtime);
         for w in [px(318.), px(406.)] {
             assert!(
                 w > sidebar_metrics::MIN && w < sidebar_metrics::MAX,
@@ -1383,11 +1410,45 @@ mod entry_row_space_tests {
         }
     }
 
+    /// The whole invariant this module exists for: scale every declared width by the same
+    /// factor as the row it is compared against, and the *decision* cannot move. A 1.5×
+    /// row at 150% must choose exactly the columns the base row chose at 100% — if it
+    /// doesn't, some `row_metrics` constant escaped [`plan_entry_row`]'s `at(..)` hop.
+    #[test]
+    fn zooming_in_does_not_move_the_column_decision_for_a_proportionally_wider_row() {
+        let at150 = UiScale::from_percent(150);
+        for base_width in [
+            px(280.),
+            px(317.),
+            px(318.),
+            px(400.),
+            px(405.),
+            px(406.),
+            px(600.),
+        ] {
+            let at_100 = plan_entry_row(base_width, UiScale::DEFAULT);
+            let at_150 = plan_entry_row(base_width * 1.5, at150);
+            assert_eq!(
+                (at_150.show_size, at_150.show_mtime),
+                (at_100.show_size, at_100.show_mtime),
+                "{base_width:?} at 100% vs {:?} at 150%",
+                base_width * 1.5
+            );
+            // The name column scales right along with everything else.
+            let want_name = f32::from(at_100.name_width) * 1.5;
+            assert!(
+                (f32::from(at_150.name_width) - want_name).abs() < 0.05,
+                "name width: got {:?}, want ~{want_name}",
+                at_150.name_width
+            );
+        }
+    }
+
     #[test]
     fn size_yields_next_rather_than_the_name_dropping_below_its_floor() {
         // 280px: wide enough to seat a floor-width name *or* a name plus the size column,
         // but not both. The name is what must survive that choice.
-        let plan = plan_entry_row(px(280.));
+        let plan = plan_entry_row(px(280.), UiScale::DEFAULT);
         assert!(!plan.show_size, "size should have yielded too");
         assert!(!plan.show_mtime);
         assert!(
@@ -1399,7 +1460,7 @@ mod entry_row_space_tests {
 
     #[test]
     fn a_wide_row_affords_every_column() {
-        let plan = plan_entry_row(px(600.));
+        let plan = plan_entry_row(px(600.), UiScale::DEFAULT);
         assert!(plan.show_size);
         assert!(plan.show_mtime);
         assert!(plan.name_width >= row_metrics::NAME_MIN);
@@ -1407,7 +1468,7 @@ mod entry_row_space_tests {
 
     #[test]
     fn a_row_narrower_than_its_own_furniture_never_reports_a_negative_name() {
-        let plan = plan_entry_row(px(40.));
+        let plan = plan_entry_row(px(40.), UiScale::DEFAULT);
         assert_eq!(plan.name_width, Pixels::ZERO);
         assert!(!plan.show_size);
         assert!(!plan.show_mtime);
@@ -1420,7 +1481,7 @@ mod entry_row_space_tests {
         let mut seen_size = false;
         let mut seen_mtime = false;
         for w in (100..800).step_by(10) {
-            let plan = plan_entry_row(px(w as f32));
+            let plan = plan_entry_row(px(w as f32), UiScale::DEFAULT);
             if plan.show_size {
                 seen_size = true;
             } else {
@@ -1450,32 +1511,33 @@ mod sidebar_width_tests {
     /// arithmetic is really about. Floored at zero: a viewport too small to seat even
     /// the divider has no terminal, not a negative one.
     fn terminal_width(viewport: f32, preferred: Option<Pixels>) -> Pixels {
-        (px(viewport) - sidebar_width(px(viewport), preferred) - s::DIVIDER).max(Pixels::ZERO)
+        (px(viewport) - sidebar_width(px(viewport), preferred, UiScale::DEFAULT) - s::DIVIDER)
+            .max(Pixels::ZERO)
     }
 
     #[test]
     fn the_default_is_a_proportion_of_the_split() {
         // The middle of the band: 25% of 1600 is 400, which is neither floor nor ceiling.
-        assert_eq!(sidebar_width(px(1600.), None), px(400.));
+        assert_eq!(sidebar_width(px(1600.), None, UiScale::DEFAULT), px(400.));
     }
 
     #[test]
     fn a_narrow_window_clamps_up_to_the_content_floor() {
         // 25% of 900 is 225 — narrower than a file list can say anything useful in.
-        assert_eq!(sidebar_width(px(900.), None), s::MIN);
+        assert_eq!(sidebar_width(px(900.), None, UiScale::DEFAULT), s::MIN);
     }
 
     #[test]
     fn a_wide_window_clamps_down_to_the_ceiling() {
         // 25% of a 4K-ish window is 640px of file list, which is just stolen terminal.
-        assert_eq!(sidebar_width(px(2560.), None), s::MAX);
+        assert_eq!(sidebar_width(px(2560.), None, UiScale::DEFAULT), s::MAX);
     }
 
     #[test]
     fn the_terminal_floor_outranks_a_dragged_width() {
         // Dragged to the ceiling, then the window shrinks to 800: honoring 480 would
         // leave the terminal 314px. It gets its floor and the sidebar yields.
-        let w = sidebar_width(px(800.), Some(s::MAX));
+        let w = sidebar_width(px(800.), Some(s::MAX), UiScale::DEFAULT);
         assert!(w < s::MAX, "the sidebar should have yielded, got {w:?}");
         assert_eq!(terminal_width(800., Some(s::MAX)), s::TERMINAL_MIN);
     }
@@ -1485,13 +1547,13 @@ mod sidebar_width_tests {
         // The same stored preference, read at two window sizes: squeezed at 800,
         // returned whole at 1600. Nothing clamps the *stored* value.
         let pref = Some(px(440.));
-        assert!(sidebar_width(px(800.), pref) < px(440.));
-        assert_eq!(sidebar_width(px(1600.), pref), px(440.));
+        assert!(sidebar_width(px(800.), pref, UiScale::DEFAULT) < px(440.));
+        assert_eq!(sidebar_width(px(1600.), pref, UiScale::DEFAULT), px(440.));
     }
 
     #[test]
     fn below_both_floors_the_panes_shrink_together_rather_than_one_starving() {
-        let sidebar = sidebar_width(px(500.), None);
+        let sidebar = sidebar_width(px(500.), None, UiScale::DEFAULT);
         let terminal = terminal_width(500., None);
         assert!(
             sidebar < s::MIN,
@@ -1514,8 +1576,8 @@ mod sidebar_width_tests {
         // proportional rule below it and the clamped rule above it must agree there,
         // or the sidebar would snap as the window crossed that width.
         let boundary = f32::from(s::MIN + s::TERMINAL_MIN + s::DIVIDER);
-        assert_eq!(sidebar_width(px(boundary), None), s::MIN);
-        let just_below = sidebar_width(px(boundary - 1.), None);
+        assert_eq!(sidebar_width(px(boundary), None, UiScale::DEFAULT), s::MIN);
+        let just_below = sidebar_width(px(boundary - 1.), None, UiScale::DEFAULT);
         assert!(
             f32::from(s::MIN - just_below) < 1.,
             "a 1px narrower window moved the sidebar {:?}",
@@ -1526,7 +1588,7 @@ mod sidebar_width_tests {
     #[test]
     fn a_degenerate_viewport_never_returns_a_negative_width() {
         for viewport in [0., 1., 6., 6.5] {
-            let w = sidebar_width(px(viewport), None);
+            let w = sidebar_width(px(viewport), None, UiScale::DEFAULT);
             assert!(
                 w >= Pixels::ZERO && w <= px(viewport),
                 "viewport {viewport} gave {w:?}"
@@ -1543,7 +1605,7 @@ mod sidebar_width_tests {
             let mut last_sidebar = Pixels::ZERO;
             let mut last_terminal = Pixels::ZERO;
             for v in (0..3000).step_by(10) {
-                let sidebar = sidebar_width(px(v as f32), pref);
+                let sidebar = sidebar_width(px(v as f32), pref, UiScale::DEFAULT);
                 let terminal = terminal_width(v as f32, pref);
                 assert!(
                     sidebar >= last_sidebar - px(0.01),
@@ -1562,7 +1624,7 @@ mod sidebar_width_tests {
     #[test]
     fn the_sidebar_never_takes_the_whole_split() {
         for v in (0..3000).step_by(7) {
-            let sidebar = sidebar_width(px(v as f32), Some(px(9000.)));
+            let sidebar = sidebar_width(px(v as f32), Some(px(9000.)), UiScale::DEFAULT);
             assert!(
                 sidebar <= px(v as f32),
                 "at {v}px the sidebar claimed {sidebar:?}"
@@ -1589,7 +1651,7 @@ mod sidebar_width_tests {
         // the pointer does, the width it produces is inside [MIN, MAX].
         for dx in (-2000..2000).step_by(37) {
             let raw = dragged_width(px(320.), px(dx as f32), PanelSide::Left);
-            let w = sidebar_width(px(1920.), Some(raw));
+            let w = sidebar_width(px(1920.), Some(raw), UiScale::DEFAULT);
             assert!(
                 (s::MIN..=s::MAX).contains(&w),
                 "dx {dx} produced {raw:?} -> {w:?}"
@@ -1781,10 +1843,14 @@ impl SshSession {
     /// reading it here — not from a measured canvas — is what keeps the sidebar, the
     /// entry-row plan and the breadcrumb budget all agreeing within a single frame.
     fn render_split(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = sidebar_width(window.viewport_size().width, self.sidebar_width_pref);
+        // Read once here, same idiom as `sid_ui::table::FillTable`'s canvas probe and
+        // modal geometry (`sid_ui::UiScale::from_rem_size`): the window already carries
+        // the zoom, so there is nothing to cache and nothing that can drift.
+        let scale = UiScale::from_rem_size(window.rem_size());
+        let width = sidebar_width(window.viewport_size().width, self.sidebar_width_pref, scale);
         let collapsed = self.sidebar_collapsed;
         let dragging = self.sidebar_drag.is_some();
-        let sidebar = self.file_sidebar(width, cx).into_any_element();
+        let sidebar = self.file_sidebar(width, scale, cx).into_any_element();
         let divider = (!collapsed).then(|| self.split_divider(width, cx).into_any_element());
         let terminal = div()
             .flex_1()
@@ -1856,7 +1922,12 @@ impl SshSession {
     /// `width` is the live one from [`sidebar_width`], and it is what the entry-row plan
     /// and the breadcrumb budget are computed from — both are pure functions of a width,
     /// so a resize re-plans the list on the same frame it re-sizes the panel.
-    fn file_sidebar(&self, width: Pixels, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn file_sidebar(
+        &self,
+        width: Pixels,
+        scale: UiScale,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         let (bg, border, muted) = (t.bg, t.border, t.muted);
         if self.sidebar_collapsed {
@@ -1882,7 +1953,7 @@ impl SshSession {
 
         let visible = self.visible_entries();
         let count = visible.len();
-        let plan = plan_entry_row(width);
+        let plan = plan_entry_row(width, scale);
         let edge = match self.dock_side {
             PanelSide::Left => div().border_r_1(),
             PanelSide::Right => div().border_l_1(),
@@ -2054,17 +2125,12 @@ impl SshSession {
                     .gap_1()
                     .px_1()
                     .py_1()
-                    // `v_flex`, not a plain `div`: a `TextInput` sizes itself entirely in
-                    // percentages, and a `display: block` parent doesn't resolve them —
-                    // the field collapsed to its own padding and border, a ~20px stub
-                    // that swallowed clicks aimed at the field you could see. A flex
-                    // column stretches it to a real width on the cross axis, which is
-                    // exactly why the stacked form fields never had this bug.
-                    //
-                    // Enter submits, same as clicking `Go`. `TextInput` claims neither
-                    // Enter nor Escape, so the wrapper can take it — the technique
-                    // `db_tab`'s inline rename rows use for the same shape (one field,
-                    // one button beside it).
+                    // Enter submits, same as clicking `Go`. `sid_ui::TextInput` declares
+                    // its own width and the library's single-line `Input` propagates an
+                    // unhandled Enter (see `sid_ui::input`'s module doc), so this ancestor
+                    // `on_key_down` still gets first look — the technique `db_tab`'s
+                    // inline rename rows use for the same shape (one field, one button
+                    // beside it).
                     .child(
                         v_flex()
                             .id("session-goto-field")
@@ -2076,7 +2142,7 @@ impl SshSession {
                                     session.goto_submit(cx);
                                 }
                             }))
-                            .child(self.goto_input.clone()),
+                            .child(TextInput::new(&self.goto_input)),
                     )
                     .child(go),
             )
@@ -2276,7 +2342,7 @@ impl SshSession {
             .text_body(&t)
             .leading(
                 div()
-                    .w(row_metrics::GLYPH)
+                    .w(plan.scale.scale_px(row_metrics::GLYPH))
                     .text_color(rgb(muted))
                     .child(glyph),
             )
@@ -2294,14 +2360,14 @@ impl SshSession {
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
             )
             .when(plan.show_size, |row| {
-                row.meta(meta_column(size, row_metrics::SIZE))
+                row.meta(meta_column(size, plan.scale.scale_px(row_metrics::SIZE)))
             })
             .when(plan.show_mtime, |row| {
-                row.meta(meta_column(mtime, row_metrics::MTIME))
+                row.meta(meta_column(mtime, plan.scale.scale_px(row_metrics::MTIME)))
             })
             .action(
                 div()
-                    .w(row_metrics::ACTIONS)
+                    .w(plan.scale.scale_px(row_metrics::ACTIONS))
                     .flex()
                     .flex_row()
                     .justify_end()

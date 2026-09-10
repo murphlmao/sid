@@ -18,19 +18,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Global, KeyDownEvent,
-    PathPromptOptions, SharedString, Window, actions, div, prelude::*, rgb,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
+    PathPromptOptions, SharedString, Window, actions, div, prelude::*, px, rgb,
 };
 use sid_core::keys::{IdentityScan as _, KeyCandidate, PreferredAuth, preferred, preferred_auth};
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
-use super::TextInput;
-use super::text_input::next_focus_index;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    Button, Elevation, Icon, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
-    Typography as _, caveat_line, h_flex, v_flex,
+    Button, Elevation, Icon, InputState, Modal, Row, SegmentSelect, SegmentedControl,
+    StyledExt as _, TextInput, Toast, Typography as _, caveat_line, h_flex, v_flex,
 };
 
 actions!(
@@ -196,13 +194,13 @@ pub struct Submission {
 /// The host add/edit form.
 pub struct HostForm {
     mode: FormMode,
-    alias: Entity<TextInput>,
-    user: Entity<TextInput>,
-    host: Entity<TextInput>,
-    port: Entity<TextInput>,
-    key_path: Entity<TextInput>,
-    passphrase: Entity<TextInput>,
-    password: Entity<TextInput>,
+    alias: Entity<InputState>,
+    user: Entity<InputState>,
+    host: Entity<InputState>,
+    port: Entity<InputState>,
+    key_path: Entity<InputState>,
+    passphrase: Entity<InputState>,
+    password: Entity<InputState>,
     auth: AuthChoice,
     /// The selected save target; `None` = nothing preselected (the `Ask` default).
     save_to: Option<SaveTarget>,
@@ -228,6 +226,7 @@ impl HostForm {
     /// A prefill queued by [`queue_add_prefill`] (quick-connect's "add the thing you just
     /// typed") fills the fields and attaches its follow-up.
     pub fn new_add(
+        window: &mut Window,
         cx: &mut Context<Self>,
         workspace: Option<(Scope, SharedString)>,
         default_scope: DefaultScope,
@@ -244,7 +243,7 @@ impl HostForm {
             auth: AuthMethod::Agent,
             folder: None,
         });
-        let mut form = Self::new_inner(cx, workspace, seed.as_ref(), secrets_degraded);
+        let mut form = Self::new_inner(window, cx, workspace, seed.as_ref(), secrets_degraded);
         form.save_to = preselect(default_scope, workspace_active);
         form.after_save = prefill.and_then(|p| p.after_save);
         // Issue #2's root cause, fixed where a record is *born*: `AuthMethod::Agent` is
@@ -264,13 +263,14 @@ impl HostForm {
     /// The alias is locked (rename is out of scope for P3.2). See [`Self::new_add`] for
     /// `secrets_degraded`.
     pub fn new_edit(
+        window: &mut Window,
         cx: &mut Context<Self>,
         original: Host,
         origin: Scope,
         workspace: Option<(Scope, SharedString)>,
         secrets_degraded: bool,
     ) -> Self {
-        let mut form = Self::new_inner(cx, workspace, Some(&original), secrets_degraded);
+        let mut form = Self::new_inner(window, cx, workspace, Some(&original), secrets_degraded);
         form.save_to = Some(match &origin {
             Scope::Global => SaveTarget::Global,
             Scope::Workspace(_) => SaveTarget::Workspace,
@@ -280,24 +280,32 @@ impl HostForm {
     }
 
     fn new_inner(
+        window: &mut Window,
         cx: &mut Context<Self>,
         workspace: Option<(Scope, SharedString)>,
         prefill: Option<&Host>,
         secrets_degraded: bool,
     ) -> Self {
-        let mk = |cx: &mut Context<Self>, placeholder: &str, value: Option<String>| {
+        let mk = |window: &mut Window,
+                  cx: &mut Context<Self>,
+                  placeholder: &str,
+                  value: Option<String>| {
             let placeholder = placeholder.to_string();
             cx.new(|cx| {
-                let mut input = TextInput::new(cx, placeholder);
+                let mut input = InputState::new(window, cx).placeholder(placeholder);
                 if let Some(v) = value {
-                    input.set_content(v, cx);
+                    input.set_value(v, window, cx);
                 }
                 input
             })
         };
-        let mk_masked = |cx: &mut Context<Self>, placeholder: &str| {
+        let mk_masked = |window: &mut Window, cx: &mut Context<Self>, placeholder: &str| {
             let placeholder = placeholder.to_string();
-            cx.new(|cx| TextInput::new_masked(cx, placeholder))
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder(placeholder)
+            })
         };
 
         // A stored secret is never read back into the UI: an empty masked field on an
@@ -338,13 +346,20 @@ impl HostForm {
 
         Self {
             alias: mk(
+                window,
                 cx,
                 "alias — unique short name",
                 prefill.map(|h| h.alias.clone()),
             ),
-            user: mk(cx, "user", prefill.map(|h| h.user.clone())),
-            host: mk(cx, "hostname or address", prefill.map(|h| h.host.clone())),
+            user: mk(window, cx, "user", prefill.map(|h| h.user.clone())),
+            host: mk(
+                window,
+                cx,
+                "hostname or address",
+                prefill.map(|h| h.host.clone()),
+            ),
             port: mk(
+                window,
                 cx,
                 "port",
                 Some(
@@ -353,9 +368,9 @@ impl HostForm {
                         .unwrap_or_else(|| "22".into()),
                 ),
             ),
-            key_path: mk(cx, "~/.ssh/id_ed25519", key_path_value),
-            passphrase: mk_masked(cx, passphrase_hint),
-            password: mk_masked(cx, password_hint),
+            key_path: mk(window, cx, "~/.ssh/id_ed25519", key_path_value),
+            passphrase: mk_masked(window, cx, passphrase_hint),
+            password: mk_masked(window, cx, password_hint),
             auth,
             save_to: None,
             workspace,
@@ -374,7 +389,7 @@ impl HostForm {
             FormMode::Add => &self.alias,
             FormMode::Edit { .. } => &self.user,
         };
-        TextInput::focus(target, window, cx);
+        target.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.
@@ -385,82 +400,26 @@ impl HostForm {
 
     /// Switch the auth segment, clearing secret fields that no longer apply so stale
     /// secret text never lingers in memory or leaks across methods.
-    fn set_auth(&mut self, choice: AuthChoice, cx: &mut Context<Self>) {
+    fn set_auth(&mut self, choice: AuthChoice, window: &mut Window, cx: &mut Context<Self>) {
         if self.auth == choice {
             return;
         }
         self.auth = choice;
         match choice {
             AuthChoice::Agent => {
-                self.password.update(cx, |i, cx| i.reset(cx));
-                self.passphrase.update(cx, |i, cx| i.reset(cx));
+                self.password
+                    .update(cx, |i, cx| i.set_value("", window, cx));
+                self.passphrase
+                    .update(cx, |i, cx| i.set_value("", window, cx));
             }
-            AuthChoice::Key => self.password.update(cx, |i, cx| i.reset(cx)),
-            AuthChoice::Password => self.passphrase.update(cx, |i, cx| i.reset(cx)),
+            AuthChoice::Key => self
+                .password
+                .update(cx, |i, cx| i.set_value("", window, cx)),
+            AuthChoice::Password => self
+                .passphrase
+                .update(cx, |i, cx| i.set_value("", window, cx)),
         }
         cx.notify();
-    }
-
-    /// The text fields currently on screen, in render order. Tracks the auth-method
-    /// switch (`set_auth`) and the add-vs-edit alias row so Tab/Shift+Tab only ever
-    /// visits what's actually rendered. Segmented selectors, the save-to picker, and
-    /// the buttons are not text inputs and are excluded from v1's cycle.
-    fn focusable_fields(&self) -> Vec<Entity<TextInput>> {
-        let mut fields = Vec::with_capacity(6);
-        if matches!(self.mode, FormMode::Add) {
-            fields.push(self.alias.clone());
-        }
-        fields.push(self.user.clone());
-        fields.push(self.host.clone());
-        fields.push(self.port.clone());
-        match self.auth {
-            AuthChoice::Agent => {}
-            AuthChoice::Key => {
-                fields.push(self.key_path.clone());
-                fields.push(self.passphrase.clone());
-            }
-            AuthChoice::Password => fields.push(self.password.clone()),
-        }
-        fields
-    }
-
-    /// Move focus to the next (or, `backwards`, previous) currently-rendered text
-    /// field, wrapping around at either end. Called from the Tab/Shift+Tab key
-    /// handler below; a field with no focus (e.g. the form container itself right
-    /// after opening) lands on the first field going forward, or the last going
-    /// backward, rather than skipping one.
-    fn cycle_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let fields = self.focusable_fields();
-        if fields.is_empty() {
-            return;
-        }
-        let current = fields
-            .iter()
-            .position(|field| field.read(cx).focus_handle(cx).is_focused(window));
-        let target = match current {
-            Some(ix) => next_focus_index(ix, fields.len(), backwards),
-            None if backwards => fields.len() - 1,
-            None => 0,
-        };
-        TextInput::focus(&fields[target], window, cx);
-    }
-
-    /// Intercept Tab/Shift+Tab on the bubble phase before it can reach the focused
-    /// field's IME/text-insertion path — `stop_propagation` here is what keeps a
-    /// literal tab character from ever landing in the input (see `TextInput`'s doc
-    /// comment on why typed content only ever arrives via the input-method protocol).
-    fn handle_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key != "tab" {
-            return;
-        }
-        let backwards = event.keystroke.modifiers.shift;
-        cx.stop_propagation();
-        self.cycle_focus(backwards, window, cx);
     }
 
     /// The concrete layer a save would write into. Edits always target their origin;
@@ -483,14 +442,15 @@ impl HostForm {
             AuthChoice::Key => &self.passphrase,
         };
         let input = field.read(cx);
-        (!input.is_empty()).then(|| input.content().to_string())
+        let value = input.value();
+        (!value.is_empty()).then(|| value.to_string())
     }
 
     /// Point the key-path field at `path` — the picker's and the file dialog's one write
     /// into the form.
-    fn set_key_path(&mut self, path: String, cx: &mut Context<Self>) {
+    fn set_key_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         self.key_path
-            .update(cx, |input, cx| input.set_content(path, cx));
+            .update(cx, |input, cx| input.set_value(path, window, cx));
         self.error = None;
         cx.notify();
     }
@@ -502,19 +462,19 @@ impl HostForm {
     /// A dialog is not guaranteed to exist (on Linux it is a desktop portal, which a bare
     /// compositor may not run), so a failure is answered with the fallback that always
     /// works rather than with the portal's error: the field above takes a typed path.
-    fn browse_for_key(&mut self, cx: &mut Context<Self>) {
+    fn browse_for_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Use this key".into()),
         });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let chosen = picked.await;
-            this.update(cx, |form, cx| match chosen {
+            this.update_in(cx, |form, window, cx| match chosen {
                 Ok(Ok(Some(paths))) => {
                     if let Some(path) = paths.first() {
-                        form.set_key_path(path.display().to_string(), cx);
+                        form.set_key_path(path.display().to_string(), window, cx);
                     }
                 }
                 // Dismissed. Nothing to say.
@@ -534,16 +494,16 @@ impl HostForm {
     /// message and stay open.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let alias = match &self.mode {
-            FormMode::Add => self.alias.read(cx).content().to_string(),
+            FormMode::Add => self.alias.read(cx).value().to_string(),
             FormMode::Edit { original, .. } => original.alias.clone(),
         };
         let input = FormInput {
             alias,
-            user: self.user.read(cx).content().to_string(),
-            host: self.host.read(cx).content().to_string(),
-            port: self.port.read(cx).content().to_string(),
+            user: self.user.read(cx).value().to_string(),
+            host: self.host.read(cx).value().to_string(),
+            port: self.port.read(cx).value().to_string(),
             auth: self.auth,
-            key_path: self.key_path.read(cx).content().to_string(),
+            key_path: self.key_path.read(cx).value().to_string(),
         };
         let host = match validate(&input) {
             Ok(host) => host,
@@ -595,13 +555,14 @@ impl HostForm {
     fn field(
         &self,
         label: &'static str,
-        input: &Entity<TextInput>,
+        input: &Entity<InputState>,
+        tab_index: isize,
         cx: &App,
     ) -> impl IntoElement + use<> {
         v_flex()
             .gap_1()
             .child(Self::field_label(label, cx))
-            .child(input.clone())
+            .child(TextInput::new(input).tab_index(tab_index))
     }
 
     /// The alias row in edit mode: static text in an input-shaped recess, so it reads as
@@ -632,8 +593,8 @@ impl HostForm {
                 SegmentedControl::new("host-form-auth")
                     .segments(AUTH_SEGMENTS.map(|(label, _)| label))
                     .selected(auth_index(self.auth))
-                    .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
-                        this.set_auth(auth_at(ev.index), cx);
+                    .on_select(cx.listener(|this, ev: &SegmentSelect, window, cx| {
+                        this.set_auth(auth_at(ev.index), window, cx);
                     })),
             ),
         )
@@ -655,15 +616,15 @@ impl HostForm {
     /// text field.
     fn key_picker(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = theme::active(cx).clone();
-        let current = self.key_path.read(cx).content().trim().to_string();
+        let current = self.key_path.read(cx).value().trim().to_string();
         let dir = self.identities.dir.display().to_string();
 
         let browse = Button::new("host-form-key-browse", "browse…")
             .small()
             .icon(Icon::Folder)
             .tooltip("pick a key file this scan didn't find")
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                this.browse_for_key(cx);
+            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                this.browse_for_key(window, cx);
             }));
 
         let found = match self.identities.keys.is_empty() {
@@ -677,8 +638,8 @@ impl HostForm {
                     let chip = Button::new(("host-form-key", index), candidate.name.clone())
                         .small()
                         .tooltip(path.clone())
-                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                            this.set_key_path(path.clone(), cx);
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                            this.set_key_path(path.clone(), window, cx);
                         }));
                     // The chosen key is the accented one: with three or four chips on a
                     // line, "which of these is in the field above" has to be answerable
@@ -856,7 +817,6 @@ impl Render for HostForm {
                 cx.emit(HostFormEvent::Cancel);
             }))
             .on_action(cx.listener(|this, _: &FormSubmit, window, cx| this.submit(window, cx)))
-            .on_key_down(cx.listener(Self::handle_key_down))
             .child(
                 Modal::new("host-form", title)
                     .submit_hint("saves")
@@ -864,23 +824,28 @@ impl Render for HostForm {
                         cx.emit(HostFormEvent::Cancel);
                     }))
                     .child(match &self.mode {
-                        FormMode::Add => self.field("alias", &self.alias, cx).into_any_element(),
+                        FormMode::Add => self.field("alias", &self.alias, 1, cx).into_any_element(),
                         FormMode::Edit { original, .. } => {
                             self.locked_alias(&original.alias, cx).into_any_element()
                         }
                     })
-                    .child(self.field("user", &self.user, cx))
-                    .child(self.field("host", &self.host, cx))
-                    .child(self.field("port", &self.port, cx))
+                    .child(self.field("user", &self.user, 2, cx))
+                    .child(self.field("host", &self.host, 3, cx))
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Self::field_label("port", cx))
+                            .child(TextInput::new(&self.port).fixed(px(90.)).tab_index(4)),
+                    )
                     .child(self.auth_selector(cx))
                     .when(self.auth == AuthChoice::Key, |modal| {
                         modal
-                            .child(self.field("key path", &self.key_path, cx))
+                            .child(self.field("key path", &self.key_path, 5, cx))
                             .child(self.key_picker(cx))
-                            .child(self.field("passphrase", &self.passphrase, cx))
+                            .child(self.field("passphrase", &self.passphrase, 6, cx))
                     })
                     .when(self.auth == AuthChoice::Password, |modal| {
-                        modal.child(self.field("password", &self.password, cx))
+                        modal.child(self.field("password", &self.password, 7, cx))
                     })
                     .child(self.save_to_selector(cx))
                     .when_some(self.error.clone(), |modal, err| {

@@ -61,10 +61,13 @@ use sid_core::privfs::{Access, Passphrase, PrivError, PrivilegedFs};
 use sid_privfs::SudoPrivilegedFs;
 
 use crate::app::AppState;
+use crate::ui::is_field_submit;
 use crate::ui::session::ssh_runtime;
-use crate::ui::{TextInput, is_field_submit};
 use sid_ui::theme;
-use sid_ui::{Button, EmptyState, Icon, StyledExt as _, Typography as _, h_flex, v_flex};
+use sid_ui::{
+    Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _, h_flex,
+    v_flex,
+};
 
 /// Load cap for a config file opened in the editor: 1 MiB — the same value as
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
@@ -109,7 +112,7 @@ enum ConfigEditorBody {
 /// flight. Holds no secret of its own beyond the field's own buffer — the accepted one
 /// moves to [`ConfigEditorState::elevated`].
 struct UnlockPrompt {
-    password: Entity<TextInput>,
+    password: Entity<InputState>,
     error: Option<SharedString>,
     /// True while an elevation attempt is running: disables submit and shows progress.
     busy: bool,
@@ -233,8 +236,12 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let password = cx.new(|cx| TextInput::new_masked(cx, "sudo password"));
-        TextInput::focus(&password, window, cx);
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("sudo password")
+        });
+        password.update(cx, |state, cx| state.focus(window, cx));
         let Some(editor) = self.systems.editor.as_mut() else {
             return;
         };
@@ -279,7 +286,7 @@ impl AppState {
         if prompt.busy {
             return;
         }
-        let typed = prompt.password.read(cx).content().to_string();
+        let typed = prompt.password.read(cx).value().to_string();
         if typed.is_empty() {
             prompt.error = Some("enter your password".into());
             cx.notify();
@@ -321,8 +328,8 @@ impl AppState {
                             // Clear the field: retyping a whole password beats editing a
                             // masked one the user cannot see.
                             let field = prompt.password.clone();
-                            field.update(cx, |input, cx| input.reset(cx));
-                            TextInput::focus(&field, window, cx);
+                            field.update(cx, |input, cx| input.set_value("", window, cx));
+                            field.update(cx, |state, cx| state.focus(window, cx));
                         }
                     }
                     Ok(UnlockOutcome::Fatal(msg)) => {
@@ -849,7 +856,7 @@ fn unlock_prompt_layer(
                         .text_color(rgb(theme.muted))
                         .child(path),
                 )
-                .child(prompt.password.clone())
+                .child(TextInput::new(&prompt.password))
                 .children(error.map(|e| {
                     div()
                         .text_meta(theme)

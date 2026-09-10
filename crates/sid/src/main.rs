@@ -157,6 +157,7 @@ fn main() {
                                 secrets_degraded,
                                 secrets_status,
                                 render_soft_reason,
+                                window,
                                 cx,
                             )
                         })

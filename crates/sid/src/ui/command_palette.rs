@@ -21,8 +21,7 @@ use gpui::{
 
 use crate::app::AppState;
 use crate::keymap::{self, Action};
-use crate::ui::TextInput;
-use sid_ui::{Kbd, StyledExt as _, Typography as _, theme};
+use sid_ui::{InputState, Kbd, StyledExt as _, TextInput, Typography as _, theme};
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
 /// (a dozen actions, plus however many hosts/sessions are around) without the list
@@ -56,12 +55,12 @@ struct PaletteEntry {
 }
 
 /// The palette's open state: `None` on `AppState::palette` means closed. Holds the
-/// query `TextInput` (so `app.rs`/this module can read `.content()` live, same as
+/// query field's state (so `app.rs`/this module can read `.value()` live, same as
 /// `ui::ssh_home`'s quick-connect box) and the current selection index, clamped against
 /// the live filtered list wherever it's read (see [`AppState::palette_entries`]) rather
 /// than being kept in lockstep with every keystroke.
 pub(crate) struct PaletteState {
-    query: Entity<TextInput>,
+    query: Entity<InputState>,
     selection: usize,
 }
 
@@ -75,8 +74,10 @@ impl AppState {
         if self.palette.is_some() {
             self.close_palette(cx);
         } else if !self.blocking_modal_open() {
-            let query = cx.new(|cx| TextInput::new(cx, "Type a command, connection, or tab…"));
-            TextInput::focus(&query, window, cx);
+            let query = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Type a command, connection, or tab…")
+            });
+            query.update(cx, |state, cx| state.focus(window, cx));
             self.palette = Some(PaletteState {
                 query,
                 selection: 0,
@@ -99,7 +100,7 @@ impl AppState {
         let Some(query) = self
             .palette
             .as_ref()
-            .map(|p| p.query.read(cx).content().to_string())
+            .map(|p| p.query.read(cx).value().to_string())
         else {
             return;
         };
@@ -135,7 +136,7 @@ impl AppState {
 
     fn palette_selected_target(&self, cx: &Context<Self>) -> Option<PaletteTarget> {
         let palette = self.palette.as_ref()?;
-        let query = palette.query.read(cx).content().to_string();
+        let query = palette.query.read(cx).value().to_string();
         let entries = self.palette_entries(&query);
         entries
             .get(palette.selection.min(entries.len().saturating_sub(1)))
@@ -210,7 +211,7 @@ impl AppState {
         let t = theme::active(cx).clone();
         let (surface, border) = (t.surface, t.border);
         let palette = self.palette.as_ref()?;
-        let query_text = palette.query.read(cx).content().to_string();
+        let query_text = palette.query.read(cx).value().to_string();
         let entries = self.palette_entries(&query_text);
         let selection = palette.selection.min(entries.len().saturating_sub(1));
         let query_input = palette.query.clone();
@@ -255,7 +256,7 @@ impl AppState {
                                         .py_2()
                                         .border_b_1()
                                         .border_color(rgb(border))
-                                        .child(query_input),
+                                        .child(TextInput::new(&query_input)),
                                 )
                                 .child(
                                     div()

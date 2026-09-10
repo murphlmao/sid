@@ -94,14 +94,14 @@ use sid_core::sys::{ListeningPort, NetInterface, Pid, Protocol, Signal, SysProvi
 use sid_svcctl::SvcctlProvider;
 use sid_sysinfo::SysinfoProvider;
 
-use super::TextInput;
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, Segment, SegmentSelect,
-    SegmentedControl, StyledExt as _, Toolbar, Typography as _, h_flex, sortable_th, v_flex,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, Segment,
+    SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Toolbar, Typography as _, h_flex,
+    sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -254,7 +254,7 @@ pub struct NetworkTabState {
     /// or the pods fetch.
     kube_error: Option<String>,
     /// The one filter input shared by all five sub-tabs.
-    filter: Option<Entity<TextInput>>,
+    filter: Option<Entity<InputState>>,
     /// Kept alive so the `cx.observe(&filter, ..)` subscription (see module doc)
     /// isn't dropped — mirrors `AppState::_form_subscription`.
     _filter_sub: Option<Subscription>,
@@ -325,7 +325,7 @@ impl NetworkTabState {
     /// principle be active without ever having rendered).
     pub(crate) fn focus_filter(&self, window: &mut Window, cx: &mut App) {
         if let Some(filter) = &self.filter {
-            TextInput::focus(filter, window, cx);
+            filter.update(cx, |state, cx| state.focus(window, cx));
         }
     }
 }
@@ -1318,7 +1318,9 @@ impl AppState {
     /// The shared filter field, capped rather than filling the toolbar row: a 1900px-wide
     /// filter box is as wrong as the 648px table it used to sit above.
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div().max_w(px(320.)).children(self.network.filter.clone())
+        div()
+            .max_w(px(320.))
+            .children(self.network.filter.clone().map(|f| TextInput::new(&f)))
     }
 
     /// The one refresh control, routed to whichever sub-view is showing.
@@ -1353,7 +1355,7 @@ impl AppState {
         self.network
             .filter
             .as_ref()
-            .map(|f| f.read(cx).content().to_string())
+            .map(|f| f.read(cx).value().to_string())
             .unwrap_or_default()
     }
 
@@ -1736,7 +1738,7 @@ impl AppState {
             self.network.kube_pods_table = Some(table);
         }
         if self.network.filter.is_none() {
-            let filter = cx.new(|cx| TextInput::new(cx, "filter"));
+            let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter"));
             // `TextInput` has no change-callback; `cx.observe` fires on every
             // `cx.notify()` it makes while editing, i.e. every keystroke — see the
             // module doc's "Filtering" section.
@@ -1758,7 +1760,7 @@ impl AppState {
             .network
             .filter
             .as_ref()
-            .map(|f| f.read(cx).content().to_string())
+            .map(|f| f.read(cx).value().to_string())
             .unwrap_or_default();
         if let Some(table) = self.network.table.clone() {
             table.update(cx, |state, cx| {
@@ -1861,7 +1863,7 @@ impl AppState {
                                     .network
                                     .filter
                                     .as_ref()
-                                    .map(|f| f.read(cx).content().to_string())
+                                    .map(|f| f.read(cx).value().to_string())
                                     .unwrap_or_default();
                                 this.network.recompute_interfaces(&query);
                             }

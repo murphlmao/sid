@@ -21,8 +21,7 @@ use gpui::{
     SharedString, Window, actions, div, prelude::*,
 };
 
-use super::TextInput;
-use sid_ui::{Button, Modal, Toast};
+use sid_ui::{Button, InputState, Modal, TextInput, Toast};
 
 actions!(
     password_prompt,
@@ -49,16 +48,24 @@ pub struct PasswordPromptModal {
     /// What the prompt is for — e.g. `user@host` or a DB connection's name — shown as
     /// "password for {label}".
     label: SharedString,
-    password: Entity<TextInput>,
+    password: Entity<InputState>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
 }
 
 impl PasswordPromptModal {
-    pub fn new(cx: &mut Context<Self>, label: impl Into<SharedString>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        label: impl Into<SharedString>,
+    ) -> Self {
         Self {
             label: label.into(),
-            password: cx.new(|cx| TextInput::new_masked(cx, "password")),
+            password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("password")
+            }),
             error: None,
             focus_handle: cx.focus_handle(),
         }
@@ -67,11 +74,12 @@ impl PasswordPromptModal {
     /// Move keyboard focus into the password field. Called once, right after the modal
     /// entity is created (see `AppState::open_password_prompt`).
     pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
-        TextInput::focus(&self.password, window, cx);
+        self.password
+            .update(cx, |state, cx| state.focus(window, cx));
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        let password = self.password.read(cx).content().to_string();
+        let password = self.password.read(cx).value().to_string();
         match validate_password(&password) {
             Ok(password) => cx.emit(PasswordPromptEvent::Submit(password)),
             Err(msg) => {
@@ -120,7 +128,7 @@ impl Render for PasswordPromptModal {
                         "no OS keyring — this password is used once and held only \
                          for this session",
                     ))
-                    .child(self.password.clone())
+                    .child(TextInput::new(&self.password))
                     .when_some(self.error.clone(), |modal, err| {
                         modal.child(Toast::danger(err))
                     })
