@@ -41,6 +41,7 @@ use crate::notice::{caveat_line, error_line};
 use crate::radio::Radio;
 use crate::scope_chip::ScopeChip;
 use crate::segmented::SegmentedControl;
+use crate::status_bar::{StatusBar, StatusItem};
 use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
@@ -130,6 +131,10 @@ impl Render for Gallery {
             .bg(rgb(theme.bg))
             .text_body(&theme)
             .child(chrome(&theme))
+            // Directly under the gallery's own chrome, not at the foot of the screen:
+            // this band has to be *in* a 1200px capture, and the gallery is four times
+            // that tall. The strip is drawn where it can be seen, not where it lives.
+            .child(status_band(&theme))
             // The specimen is a full-width band rather than a fifth column: the samples
             // are sentences, and a fifth of 1920px is not a line of text.
             .child(type_specimen(&theme))
@@ -1071,4 +1076,52 @@ fn no_floor_field(theme: &Theme) -> impl IntoElement + use<> {
         .rounded_md()
         .elevation(Elevation::Well, theme)
         .child(div().text_meta(theme).child(""))
+}
+
+/// The status bar band — the app's bottom strip, in both of its states.
+///
+/// Two bars rather than one, because the left group's first item says the *same fact* in
+/// two tones and a specimen that only draws the healthy one proves nothing about the
+/// warning it exists to deliver. Between them they cover every item kind there is: plain
+/// text, a toned word, a word with an [`Icon`], a word with a [`StatusDot`], and a
+/// clickable one (the zoom readout — hover it to see the fill).
+fn status_band(theme: &Theme) -> impl IntoElement + use<> {
+    let healthy = StatusBar::new()
+        .left(StatusItem::new("gallery-sb-a-keyring", "keyring").tone(BadgeTone::Success))
+        .left(StatusItem::new("gallery-sb-a-ssh", "3 ssh sessions"))
+        .left(
+            StatusItem::new("gallery-sb-a-db", "db: analytics-replica").dot(ConnectionState::Live),
+        )
+        .right(StatusItem::new("gallery-sb-a-zoom", "125%").on_click(|_, _, _| {}))
+        .right(StatusItem::new("gallery-sb-a-perf", "18.4 ms"));
+
+    let degraded = StatusBar::new()
+        .left(
+            StatusItem::new("gallery-sb-b-keyring", "secrets in memory")
+                .tone(BadgeTone::Warning)
+                .icon(Icon::Warning)
+                .on_click(|_, _, _| {}),
+        )
+        .left(StatusItem::new("gallery-sb-b-db", "db: staging").dot(ConnectionState::Connecting));
+
+    div().w_full().px_4().pb_4().child(
+        Card::new()
+            .title("status bar")
+            .child(
+                div()
+                    .text_meta(theme)
+                    .child("left: what sid is holding · right: what the view is doing"),
+            )
+            .child(row(theme, "healthy · every item kind", healthy))
+            .child(row(
+                theme,
+                "degraded secrets · nothing else to say",
+                degraded,
+            ))
+            .child(row(
+                theme,
+                "empty — chrome does not come and go with its contents",
+                StatusBar::new(),
+            )),
+    )
 }
