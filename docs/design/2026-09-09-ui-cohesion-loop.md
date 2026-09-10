@@ -148,9 +148,14 @@ Every item is gated by before/after captures in all four themes and a
 
 - [ ] Table frame cost: ~26% of cell builds are discarded by gpui each frame
       (`docs/design/2026-07-27-table-frame-cost.md`).
-- [ ] `scripts/lib/sid-app.sh`: collapse the ~60 duplicated lines between `sid-cap.sh` and
-      `sid-shot.sh`, and make `sid-shot.sh` verify it captured the sid window (today it
-      returned the wrong output twice).
+- [x] `scripts/lib/sid-app.sh` extracted (92 lines shared); `sid-shot.sh` now verifies the
+      sid window sits on its headless output before `grim` and checks the PNG dimensions
+      afterwards, refusing with a one-line reason otherwise. Merged 2026-09-09.
+- [ ] `sid-shot.sh` cannot capture at all on Murphy's Hyprland (Lua parser rejects
+      `hyprctl keyword` and legacy two-arg `dispatch`, exit 0); it now fails safely. Either
+      port its placement to `hyprctl eval`/new-syntax `dispatch` around workspace 4, or
+      delete it and make `sid-cap.sh` the only harness. Low priority: `sid-cap.sh` is what
+      the loop uses.
 - [ ] Rewrite `docs/HANDOFF.md` from the current tree. It still describes July 6.
 - [ ] CI: `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml` (blocked on token scope).
 
@@ -235,3 +240,8 @@ commits; do not invent one).
   tests (one retired icon-ratchet test), clippy clean; captures of SSH, Database, Network,
   gallery, 150% zoom and a real ctrl+= chord all match. Lockfile grew by the gpui-pre
   family, wgpu, accesskit and platform crates; 86 old entries dropped.
+- 2026-09-09: `harness-lib` merged: `scripts/lib/sid-app.sh`, a pywayland namespace-package
+  fix in `sid-cap.sh` (superset of the zoom branch's), `sid-shot.sh` placement verification.
+  `sid-cap.sh` verified from main against the upgraded renderer (Workspaces capture).
+  Note for Murphy: while probing the Lua `hyprctl eval` API the harness agent ran an
+  untargeted `hl.dsp.window.close()` on the live session; it confirmed nothing closed.
