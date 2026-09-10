@@ -163,8 +163,18 @@ Every item is gated by before/after captures in all four themes and a
 - [ ] **Empty states.** Database and Workspaces have the icon + headline + action pattern.
       SSH home has none for zero hosts, and the quick-connect field is the only thing on
       screen. Add the same pattern.
-- [ ] **cosmos-light pass.** Capture every tab in the light theme and fix contrast, borders
-      that vanish, and any token that only works on dark.
+- [x] **cosmos-light pass.** Done 2026-09-09, measured not eyeballed: `warning` 2.94→4.70,
+      `success` 3.73→4.88, `muted` 4.05→5.47 against `surface`; zero call-site changes (every
+      consumer reads the token; `bridge::contrast_ink` flipped the solid warning badge's label
+      by itself). New guard test sweeps every light ink against bg/surface/well at 4.5:1. Dark
+      palettes byte-identical; void and dusk re-checked.
+- [ ] **Light follow-ups** (other files): `app.rs` `gpu_status_badge` still hard-codes
+      `rgb(0x1a1a1a)` on the warning fill (2.7:1 on the deeper amber) → use
+      `bridge::contrast_ink`, which also retires one raw-hex exemption in `system.md`. Not
+      light-specific: a `PopupMenu` is `popover = surface` floating over a `surface` panel (only
+      the hairline separates them; needs a derived raised-surface mapping in `bridge.rs` for all
+      four themes); the modal scrim is typed as `rgba(0x000000a8)` at five call sites instead of
+      `bridge::SCRIM`.
 - [ ] **Final gate.** Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
