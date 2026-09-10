@@ -37,7 +37,7 @@ use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
     BadgeTone, Icon, IconButton, ScopeChip, ScopeOrigin, Segment, SegmentSelect, SegmentedControl,
     StatusBar, StatusDot, StatusItem, StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
-    modal, scaled, theme, toolbar::count_label,
+    bridge::pressed_of, modal, scaled, theme, toolbar::count_label,
 };
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
@@ -145,9 +145,20 @@ impl TabChrome {
 /// tab bar. An active tab is a 2px `accent` underline and the palette's strongest ink;
 /// an inactive one is `muted` on a transparent rule of the same width, so nothing moves
 /// by 2px as the selection travels.
+///
+/// A tab stop at index 0, same as [`SegmentedControl`]'s segments and the scope
+/// switcher beside it: this is a view switcher, not a form, so it sorts in paint order
+/// alongside the other index-0 controls rather than ahead of them. `focus_ring` (all
+/// four edges, transparent at rest) sits under `border_b_2`'s active underline, which
+/// still owns the bottom edge's width and rest colour; `focus()` overrides the colour
+/// on top when Tab reaches the tab, on whichever edges are already drawn. Enter/Space
+/// activation on a focused tab is `gpui::Div`'s own synthesized-click behaviour — any
+/// focusable, click-listening element gets it for free, so callers' existing
+/// `on_click` needs nothing extra.
 fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<Div> {
     div()
         .id(id)
+        .tab_index(0)
         .flex()
         .flex_row()
         .items_center()
@@ -160,12 +171,17 @@ fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<D
         .cursor_pointer()
         .text_body(t)
         .text_color(rgb(if selected { t.fg_strong } else { t.muted }))
+        .focus_ring(t)
         .border_b_2()
         .border_color(match selected {
             true => rgb(t.accent).into(),
             false => transparent_black(),
         })
         .hover(|s| s.bg(rgb(t.selection)))
+        // Every tab acknowledges a press, including the already-active one — same
+        // reasoning as `SegmentedControl`'s re-click: the handler still fires for it,
+        // and a control that doesn't move when pushed reads as dead.
+        .active(|s| s.bg(rgb(pressed_of(t, t.selection))))
 }
 
 /// Map a tab name (case-insensitive) to a [`Tab`] — `ssh|database|network|workspaces|
