@@ -13,7 +13,7 @@
 use gpui::{
     Anchor, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, Pixels,
     SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px, rgb, rgba, transparent_black,
+    prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
@@ -148,17 +148,27 @@ impl TabChrome {
 ///
 /// A tab stop at index 0, same as [`SegmentedControl`]'s segments and the scope
 /// switcher beside it: this is a view switcher, not a form, so it sorts in paint order
-/// alongside the other index-0 controls rather than ahead of them. `focus_ring` (all
-/// four edges, transparent at rest) sits under `border_b_2`'s active underline, which
-/// still owns the bottom edge's width and rest colour; `focus()` overrides the colour
-/// on top when Tab reaches the tab, on whichever edges are already drawn. Enter/Space
+/// alongside the other index-0 controls rather than ahead of them. Enter/Space
 /// activation on a focused tab is `gpui::Div`'s own synthesized-click behaviour — any
 /// focusable, click-listening element gets it for free, so callers' existing
 /// `on_click` needs nothing extra.
+///
+/// `focus_ring` is **not** spelled as `border_b_2` + a shared `border_color` here, the
+/// way [`SegmentedControl`]'s chips do it: `border_color` is one field for all four
+/// edges, and the active-tab underline already owns it, unconditionally, for the sake
+/// of a control that isn't focused at all. Reusing that field for the ring painted the
+/// underline's accent across every edge the instant a merely-*selected*, unfocused tab
+/// rendered — a full box around whichever tab you last clicked, not a ring around
+/// whichever one Tab is on. The two are independent state (selected vs. focused) and
+/// need independent paint: the outer element's own border is the ring alone
+/// (`focus_ring`, invisible until focused, same as every other control); the
+/// underline is a plain absolutely-positioned bottom bar that answers only to
+/// `selected`.
 fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<Div> {
     div()
         .id(id)
         .tab_index(0)
+        .relative()
         .flex()
         .flex_row()
         .items_center()
@@ -172,16 +182,20 @@ fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<D
         .text_body(t)
         .text_color(rgb(if selected { t.fg_strong } else { t.muted }))
         .focus_ring(t)
-        .border_b_2()
-        .border_color(match selected {
-            true => rgb(t.accent).into(),
-            false => transparent_black(),
-        })
         .hover(|s| s.bg(rgb(t.selection)))
         // Every tab acknowledges a press, including the already-active one — same
         // reasoning as `SegmentedControl`'s re-click: the handler still fires for it,
         // and a control that doesn't move when pushed reads as dead.
         .active(|s| s.bg(rgb(pressed_of(t, t.selection))))
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .w_full()
+                .h(px(2.))
+                .when(selected, |el| el.bg(rgb(t.accent))),
+        )
 }
 
 /// Map a tab name (case-insensitive) to a [`Tab`] — `ssh|database|network|workspaces|
