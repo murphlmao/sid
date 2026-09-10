@@ -148,6 +148,13 @@ Every item is gated by before/after captures in all four themes and a
       added to `Row` (opt-in `tab_index`), `SegmentedControl` segments (+ `tab_index` builder so a
       strip sorts with its form), `StatusItem`; Button/IconButton already had every state
       through the library ring mapped to `accent`. Gallery gained a FOCUS band.
+- [ ] **Security: the config editor's focus trap scope.** Flagged by the background commit
+      review of 2aa4d36 (`focus-trap-scope-leaks-credential`, `config_editor.rs`): the trap
+      wraps the whole editor overlay, so with the sudo-unlock prompt open, Tab from the
+      password field can land in the file body and a re-typed password would be saved into a
+      root-owned config. Fix: while the prompt is open the trap targets the unlock panel only
+      and the editor body is not a tab stop; clear the password field on close. Assigned to the
+      focus-followups branch 2026-09-09.
 - [ ] **Focus follow-ups**: the Settings rail item hand-rolls the same ring (`settings_tab.rs`)
       and should call `focus_ring`; `chrome_tab` in `app.rs` has hover only (no pressed, no
       ring, not a tab stop); the config editor's save/close are hand-rolled `div().id(..)`
