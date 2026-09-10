@@ -1608,15 +1608,28 @@ impl AppState {
             // `platform-infrastructure-monorepo` is a 260px word on its own. The
             // control's segments are already `min_w_0` + clamped, so the cap is what
             // makes them actually elide instead of pushing the badge off the bar.
+            //
+            // The cluster gets its own `py_1` — the same 4px the tab chrome gives its
+            // own content by centering a shorter box in the full-height row — because
+            // without it the switcher's track sat flush against the bar's top and
+            // bottom edges instead of floating in it.
             .child(
                 div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
                     .flex_none()
-                    .min_w(px(0.))
-                    .max_w(scaled(360.))
-                    .overflow_hidden()
-                    .child(scope_switcher),
+                    .gap_1()
+                    .py_1()
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .max_w(scaled(360.))
+                            .overflow_hidden()
+                            .child(scope_switcher),
+                    )
+                    .children(self.gpu_status_badge(cx)),
             )
-            .children(self.gpu_status_badge(cx))
     }
 
     /// The app-wide status bar (`sid_ui::StatusBar`): the strip under the active tab
