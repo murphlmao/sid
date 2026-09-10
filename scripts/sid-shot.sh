@@ -18,15 +18,10 @@
 # For lock-proof / fully-detached captures use scripts/sid-cap.sh (a private
 # headless sway compositor; needs `sway` installed).
 #
-# OVERLAP WITH sid-cap.sh (noted 2026-08-09, deliberately NOT refactored): the two
-# scripts independently implement the same six things — repo-root discovery, the
-# hermetic XDG_{DATA,STATE,CONFIG}_HOME temp dir with a `--real` opt-out, `SID_START_TAB`
-# from `--tab`, launch-then-poll-for-the-window, the `--wait` settle, and the
-# cleanup trap with `--keep` — plus both print the PNG path as the last stdout line.
-# Only the compositor half genuinely differs (hyprctl headless output vs a private
-# sway), and sid-cap.sh additionally owns all input injection. A shared
-# `scripts/lib/sid-app.sh` would collapse roughly 60 duplicated lines; it is worth doing
-# the next time either script needs a real change, and is not worth doing blind.
+# Shares repo-root discovery, hermetic XDG setup, launch/poll-for-window, and
+# the cleanup/--keep/print-path plumbing with scripts/sid-cap.sh via
+# scripts/lib/sid-app.sh — see that file for what's shared vs. kept here
+# (the hyprctl headless-output dance and the actual capture).
 #
 # Requires a live Wayland session: hyprctl (Hyprland), grim, jq.
 #
@@ -35,8 +30,8 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/sid-app.sh"
+sid_app_locate_repo
 
 TAB="ssh"
 REAL=0
@@ -111,7 +106,7 @@ RULE_SET=0
 
 cleanup() {
     if [[ -n "$APP_PID" ]] && [[ "$KEEP" -eq 0 ]]; then
-        kill "$APP_PID" >/dev/null 2>&1 || true
+        sid_app_kill_if_set "$APP_PID"
         wait "$APP_PID" 2>/dev/null || true
     fi
     if [[ "$RULE_SET" -eq 1 ]]; then
@@ -120,9 +115,7 @@ cleanup() {
     if [[ -n "$HEADLESS_OUT" ]] && [[ "$KEEP" -eq 0 ]]; then
         hyprctl output remove "$HEADLESS_OUT" >/dev/null 2>&1 || true
     fi
-    if [[ -n "$TMP_XDG" ]] && [[ "$KEEP" -eq 0 ]]; then
-        rm -rf -- "$TMP_XDG"
-    fi
+    sid_app_rm_unless_keep "$KEEP" "$TMP_XDG"
 }
 trap cleanup EXIT
 
@@ -154,13 +147,10 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
-export SID_START_TAB="$TAB"
+sid_app_export_tab "$TAB"
 if [[ "$REAL" -eq 0 ]]; then
     TMP_XDG="$(mktemp -d /tmp/sid-shot-xdg.XXXXXX)"
-    mkdir -p "$TMP_XDG/data" "$TMP_XDG/state" "$TMP_XDG/config"
-    export XDG_DATA_HOME="$TMP_XDG/data"
-    export XDG_STATE_HOME="$TMP_XDG/state"
-    export XDG_CONFIG_HOME="$TMP_XDG/config"
+    sid_app_setup_xdg 0 "$TMP_XDG"
     echo "sid-shot: hermetic run — XDG home = $TMP_XDG" >&2
 else
     echo "sid-shot: --real — using the live environment" >&2
@@ -170,21 +160,22 @@ fi
 APP_PID=$!
 echo "sid-shot: launched pid $APP_PID (tab=$TAB)" >&2
 
+# GEOM is a side-effect output of the detect functions below: the matching
+# `hyprctl clients -j` entry as of the last poll tick.
 GEOM=""
-SECONDS=0
-while [[ $SECONDS -lt $POLL_TIMEOUT ]]; do
-    if ! kill -0 "$APP_PID" 2>/dev/null; then
-        echo "sid-shot: pid $APP_PID exited before its window appeared" >&2
-        exit 1
-    fi
-    GEOM="$(hyprctl clients -j | jq -c --argjson pid "$APP_PID" '[.[] | select(.pid == $pid)][0] // empty')"
-    if [[ -n "$GEOM" ]]; then
-        break
-    fi
-    sleep 0.3
-done
 
-if [[ -z "$GEOM" ]]; then
+sid_shot_detect_pid() {
+    local pid="$1"
+    GEOM="$(hyprctl clients -j | jq -c --argjson pid "$pid" '[.[] | select(.pid == $pid)][0] // empty')"
+    [[ -n "$GEOM" ]]
+}
+
+sid_app_wait_for_window "$APP_PID" "$POLL_TIMEOUT" 0.3 "" sid_shot_detect_pid
+rc=$?
+if [[ $rc -eq 1 ]]; then
+    echo "sid-shot: pid $APP_PID exited before its window appeared" >&2
+    exit 1
+elif [[ $rc -eq 2 ]]; then
     echo "sid-shot: no window for pid $APP_PID appeared within ${POLL_TIMEOUT}s" >&2
     echo "sid-shot: current hyprctl window classes:" >&2
     hyprctl clients -j | jq '.[].class' >&2
@@ -208,6 +199,5 @@ echo "sid-shot: window at ${X},${Y} ${W}x${H} — settling ${WAIT_SECS}s before 
 sleep "$WAIT_SECS"
 
 grim -g "${X},${Y} ${W}x${H}" "$OUT"
-echo "sid-shot: wrote $OUT" >&2
 
-echo "$OUT"
+sid_app_emit_result "sid-shot" "$OUT"
