@@ -11,8 +11,9 @@
 //! are placeholders for later slices.
 
 use gpui::{
-    Anchor, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
-    Window, anchored, canvas, deferred, div, point, prelude::*, px, rgb, rgba,
+    Anchor, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, Pixels,
+    SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, point,
+    prelude::*, px, rgb, rgba, transparent_black,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{
@@ -34,8 +35,9 @@ use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
-    BadgeTone, Icon, ScopeChip, ScopeOrigin, StatusBar, StatusItem, StyledExt as _,
-    Typography as _, UiScale, modal, scaled, theme, toolbar::count_label,
+    BadgeTone, Icon, IconButton, ScopeChip, ScopeOrigin, Segment, SegmentSelect, SegmentedControl,
+    StatusBar, StatusDot, StatusItem, StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
+    modal, scaled, theme, toolbar::count_label,
 };
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
@@ -71,6 +73,99 @@ impl Tab {
             Tab::Settings => "Settings",
         }
     }
+
+    /// The tab's mark. Always drawn — beside the word on a wide window, *instead* of it
+    /// on a narrow one (see [`TabChrome`]), which only works if the glyph is there all
+    /// the time and the eye has already learned it.
+    fn icon(self) -> Icon {
+        match self {
+            Tab::Ssh => Icon::Terminal,
+            Tab::Database => Icon::Database,
+            Tab::Network => Icon::Interfaces,
+            Tab::Workspaces => Icon::Folder,
+            Tab::System => Icon::Dashboard,
+            Tab::Settings => Icon::Settings,
+        }
+    }
+}
+
+/// The height of both tab strips — the top chrome and the SSH session bar under it.
+/// One number, so the two read as the same control at two levels rather than as a bar
+/// and a row of chips.
+const TAB_STRIP_H: f32 = 42.;
+
+/// The narrowest window the six tab *words* fit in, beside the wordmark and the scope
+/// switcher.
+///
+/// Measured off the 1920px capture: the labels are ~540px, the wordmark ~62, the
+/// switcher ~220, the bar's own padding and gaps ~40 — ~860, so 900 is the first round
+/// number with headroom. Below it the words go and the icons stay, which is ~280px of
+/// tabs instead of ~540.
+const LABELLED_TABS_MIN_VIEWPORT: f32 = 900.;
+
+/// Which shape the top bar's tabs take.
+///
+/// The defect: at 700px the six labels ate the bar and the scope chips painted straight
+/// over "System" — the bar has no clip, so an overflowing right-hand group does not get
+/// cut off, it gets drawn on top. Something has to give, and it is the words: an
+/// icon-only tab still says which tab it is (`.tip()` names it on hover), where a
+/// missing tab says nothing at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabChrome {
+    /// Icon + word.
+    Labelled,
+    /// Icon only, named by a tooltip.
+    IconOnly,
+}
+
+impl TabChrome {
+    /// The breakpoint, as a pure function of the window and the zoom.
+    ///
+    /// Both sides are *design* pixels — the same currency the layout is authored in —
+    /// so a 1280px window at 150% zoom (853 design px of room) collapses just like a
+    /// 853px window at 100%. Same rule, and the same reasoning, as Settings'
+    /// `rail_fits`.
+    pub(crate) fn for_window(viewport_width: Pixels, rem_size: Pixels) -> Self {
+        match viewport_width >= scaled(LABELLED_TABS_MIN_VIEWPORT).to_pixels(rem_size) {
+            true => TabChrome::Labelled,
+            false => TabChrome::IconOnly,
+        }
+    }
+
+    /// Whether a tab draws its word.
+    fn shows_label(self) -> bool {
+        matches!(self, TabChrome::Labelled)
+    }
+}
+
+/// One tab of either strip: the box, the height, and the active treatment.
+///
+/// Shared so the SSH session bar cannot drift from the chrome above it — that drift is
+/// exactly what made the session strip read as a row of unfinished chips beside a real
+/// tab bar. An active tab is a 2px `accent` underline and the palette's strongest ink;
+/// an inactive one is `muted` on a transparent rule of the same width, so nothing moves
+/// by 2px as the selection travels.
+fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        // A tab keeps its whole label or it is not a tab: the strip that holds them
+        // scrolls rather than squeezing `Workspaces` down to `Wor…`.
+        .flex_none()
+        .gap_2()
+        .px_3()
+        .h_full()
+        .cursor_pointer()
+        .text_body(t)
+        .text_color(rgb(if selected { t.fg_strong } else { t.muted }))
+        .border_b_2()
+        .border_color(match selected {
+            true => rgb(t.accent).into(),
+            false => transparent_black(),
+        })
+        .hover(|s| s.bg(rgb(t.selection)))
 }
 
 /// Map a tab name (case-insensitive) to a [`Tab`] — `ssh|database|network|workspaces|
@@ -1329,20 +1424,22 @@ impl AppState {
     // ---- rendering helpers --------------------------------------------------
 
     /// The single top chrome bar: `✦ sid` wordmark, the primary tabs, then (right-
-    /// aligned) the scope switcher chips and the software-rendering badge. One bar, not
+    /// aligned) the scope switcher and the software-rendering badge. One bar, not
     /// the previous two stacked ones — a whole row of chrome bought nothing but
     /// vertical clutter, and scope-switching is an occasional act that belongs at the
     /// edge, not on its own strip above everything.
-    fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (surface, border, accent, muted, fg_strong, selection) = (
-            t.surface,
-            t.border,
-            t.accent,
-            t.muted,
-            t.fg_strong,
-            t.selection,
-        );
+    ///
+    /// Two things used to go wrong at the right-hand end. `Global` and the workspace
+    /// name were **two chips**, so a switch between mutually exclusive layers read as
+    /// two unrelated buttons; they are one [`SegmentedControl`] now, the same control
+    /// System and Network use for their sub-views, and the same one the per-item origin
+    /// badge ([`ScopeChip`]) is deliberately *not*. And at 700px the six tab words ran
+    /// under the chips and "System" simply vanished behind `Global`; the tabs collapse
+    /// to their icons below [`LABELLED_TABS_MIN_VIEWPORT`] instead — see [`TabChrome`].
+    fn tab_strip(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx).clone();
+        let (surface, border, accent) = (t.surface, t.border, t.accent);
+        let chrome = TabChrome::for_window(window.viewport_size().width, window.rem_size());
 
         let active = self.active_tab;
         let tabs: Vec<_> = Tab::ALL
@@ -1350,22 +1447,15 @@ impl AppState {
             .enumerate()
             .map(|(ix, &tab)| {
                 let is_active = tab == active;
-                div()
-                    .id(("tab", ix))
-                    .px_3()
-                    .h_full()
-                    .flex()
-                    // A tab keeps its whole label or it is not a tab: the strip that holds
-                    // them scrolls (see below) rather than squeezing `Workspaces` down to
-                    // `Wor…`.
-                    .flex_none()
-                    .items_center()
-                    .text_body(t)
-                    .cursor_pointer()
-                    .text_color(rgb(if is_active { fg_strong } else { muted }))
-                    .border_b_2()
-                    .border_color(rgb(if is_active { accent } else { surface }))
-                    .child(tab.label())
+                chrome_tab(("tab", ix), is_active, &t)
+                    // `flex_none` on the glyph: it is the one part of an icon-only tab
+                    // that may never shrink.
+                    .child(div().flex_none().child(tab.icon().small()))
+                    .when(chrome.shows_label(), |this| this.child(tab.label()))
+                    // Only when the word is gone: a tooltip repeating a label the user
+                    // can already read is noise, and gpui debug-asserts on a second
+                    // `tooltip()` call for the same element anyway.
+                    .when(!chrome.shows_label(), |this| this.tip(tab.label()))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.active_tab = tab;
                         // Mouse-driven tab switches need the same refocus as the
@@ -1381,44 +1471,33 @@ impl AppState {
             .collect();
 
         let current = self.scope.clone();
-        let scope_chips: Vec<_> = self
+        let selected_scope = self
             .scopes
             .iter()
-            .enumerate()
-            .map(|(ix, choice)| {
-                let is_active = choice.scope == current;
+            .position(|choice| choice.scope == current)
+            .unwrap_or(0);
+        let scope_switcher = SegmentedControl::new("scope-switcher")
+            .segments(
+                self.scopes
+                    .iter()
+                    .map(|choice| Segment::new(choice.label.clone())),
+            )
+            .selected(selected_scope)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _win, cx| {
+                let Some(choice) = this.scopes.get(ev.index) else {
+                    return;
+                };
                 let target = choice.scope.clone();
-                div()
-                    .id(("scope", ix))
-                    .px_2()
-                    .py(scaled(3.))
-                    .rounded_md()
-                    // A chip carries a *workspace name*, which the chrome has no say in:
-                    // `platform-infrastructure-monorepo` is a 260px chip. Bounded and
-                    // clamped, so a long name costs an ellipsis instead of the status
-                    // badges to its right (the bar has no clip of its own).
-                    .flex_none()
-                    .max_w(scaled(160.))
-                    .clamp_one_line()
-                    .text_meta(t)
-                    .cursor_pointer()
-                    .bg(rgb(if is_active { selection } else { surface }))
-                    .text_color(rgb(if is_active { fg_strong } else { muted }))
-                    .hover(|s| s.bg(rgb(selection)))
-                    .child(choice.label.clone())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _win, cx| {
-                        this.set_scope(target.clone());
-                        cx.notify();
-                    }))
-            })
-            .collect();
+                this.set_scope(target);
+                cx.notify();
+            }));
 
         div()
             .flex()
             .flex_row()
             .items_center()
             .w_full()
-            .h(scaled(42.))
+            .h(scaled(TAB_STRIP_H))
             // The chrome's height is not negotiable. Without this the strip is an
             // ordinary shrinkable flex item in the window's column, so any tab whose
             // content reports a taller intrinsic height than the window has left
@@ -1439,7 +1518,7 @@ impl AppState {
                 div()
                     .flex_none()
                     .pr_2()
-                    .text_title(t)
+                    .text_title(&t)
                     .text_color(rgb(accent))
                     .child("✦ sid"),
             )
@@ -1474,21 +1553,23 @@ impl AppState {
                     .overflow_x_scroll()
                     .children(tabs),
             )
-            // Chips and badges hold the right edge. The chip row may shrink (its chips are
-            // clamped and it scrolls) but the badge never does — a software-rendering
-            // warning that scrolls out of the window is a warning that was not delivered.
-            // (The secrets warning left this bar entirely: it is a word in the status bar
-            // now, see `status_bar`.)
+            // The switcher and the badge hold the right edge. The badge never shrinks —
+            // a software-rendering warning that scrolls out of the window is a warning
+            // that was not delivered. (The secrets warning left this bar entirely: it
+            // is a word in the status bar now, see `status_bar`.)
+            //
+            // The switcher is capped and clipped, because a segment carries a
+            // *workspace name* the chrome has no say in:
+            // `platform-infrastructure-monorepo` is a 260px word on its own. The
+            // control's segments are already `min_w_0` + clamped, so the cap is what
+            // makes them actually elide instead of pushing the badge off the bar.
             .child(
                 div()
-                    .id("scope-switcher")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
+                    .flex_none()
                     .min_w(px(0.))
-                    .overflow_x_scroll()
-                    .children(scope_chips),
+                    .max_w(scaled(360.))
+                    .overflow_hidden()
+                    .child(scope_switcher),
             )
             .children(self.gpu_status_badge(cx))
     }
@@ -1719,37 +1800,24 @@ impl AppState {
         )
     }
 
-    /// The session tab strip (ssh-v3): `home` (leftmost, always goes Home) ·
-    /// one `● user@host ×` tab per live session (click activates, `×` disconnects +
-    /// closes) · `+` (also goes Home, ready for a new connection).
+    /// The SSH session strip: `home` (leftmost, always goes Home) · one tab per live
+    /// session (its [`StatusDot`], the host's alias, and a close button that appears
+    /// under the pointer) · a `+` [`IconButton`].
+    ///
+    /// It is a **tab bar**, at the same height and with the same active treatment as the
+    /// chrome above it ([`chrome_tab`]) — before this it was a row of 30px rounded chips
+    /// with a hairline box each, a Unicode `●` and a Unicode `×`, which read as an
+    /// unfinished sketch of a tab bar sitting directly under a real one. The one
+    /// deliberate difference is the fill: the chrome bar is `surface`, this sits on the
+    /// canvas `bg`, so the two are legible as *chrome* and *this tab's content* rather
+    /// than as two navigations of equal rank.
     fn session_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (bg, surface, border, muted, fg_strong, selection, success, warning, danger) = (
-            t.bg,
-            t.surface,
-            t.border,
-            t.muted,
-            t.fg_strong,
-            t.selection,
-            t.success,
-            t.warning,
-            t.danger,
-        );
+        let t = theme::active(cx).clone();
         let home_selected = self.active_session.is_none();
-        let home = div()
-            .id("ssh-tab-home")
-            .px_2()
-            .h(scaled(30.))
-            .text_mono_meta(t)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_t_md()
-            .cursor_pointer()
-            .text_color(rgb(if home_selected { fg_strong } else { muted }))
-            .bg(rgb(if home_selected { bg } else { surface }))
-            .border_1()
-            .border_color(rgb(border))
+        // No glyph: every icon in the registry that would fit "home" is already the mark
+        // of one of the six tabs above, and a glyph that means two things is worse than
+        // a word that means one.
+        let home = chrome_tab("ssh-tab-home", home_selected, &t)
             .child("home")
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| this.go_home(window, cx)));
 
@@ -1759,84 +1827,68 @@ impl AppState {
             .enumerate()
             .map(|(ix, tab)| {
                 let selected = self.active_session == Some(ix);
-                let dot_color = match tab.session.read(cx).status() {
-                    SessionStatus::Connected => success,
-                    SessionStatus::Connecting => warning,
-                    SessionStatus::Failed(_) | SessionStatus::Closed => danger,
-                };
-                let dot = div().text_meta(t).text_color(rgb(dot_color)).child("●");
-                div()
-                    .id(("ssh-session-tab", ix))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .h(scaled(30.))
-                    .rounded_t_md()
-                    .bg(rgb(if selected { bg } else { surface }))
-                    .text_color(rgb(if selected { fg_strong } else { muted }))
-                    .border_1()
-                    .border_color(rgb(border))
+                let state =
+                    crate::ui::ssh_home::connection_state(Some(tab.session.read(cx).status()));
+                // The alias when the session came from a saved record, which is the name
+                // the user picked and the one the card on Home shows; the dialled
+                // `user@host` only when there is no record behind it.
+                let label: SharedString = tab
+                    .source
+                    .as_ref()
+                    .map_or_else(|| tab.label.clone(), |(alias, _)| alias.clone().into());
+                // A group per tab, so the close button can appear for *this* tab under
+                // the pointer without a second piece of state anywhere.
+                let group = SharedString::from(format!("ssh-session-tab-{ix}"));
+                chrome_tab(("ssh-session-tab", ix), selected, &t)
+                    .group(group.clone())
                     .child(
                         div()
-                            .id(("ssh-session-tab-label", ix))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_1()
-                            .text_mono_meta(t)
-                            // The role would paint every tab `muted`; the strip's own
-                            // selected/resting ink has to land after it.
-                            .text_color(rgb(if selected { fg_strong } else { muted }))
-                            .cursor_pointer()
-                            .child(dot)
-                            // A session tab is only ever as wide as a name you can read:
-                            // an unclamped label (`deploy@prod-eu-west-1-application-
-                            // server-01.internal.acme-api.example.com`) grew one tab to
-                            // 570px and pushed the strip's own `×`/`+` off the window.
-                            // `min_w(0)` drops the text's content-sized minimum so the
-                            // cap can actually bite, and the clamp cuts it with a real `…`.
+                            .flex_none()
+                            .child(StatusDot::new(("ssh-session-dot", ix), state)),
+                    )
+                    // A session tab is only ever as wide as a name you can read: an
+                    // unclamped label (`deploy@prod-eu-west-1-application-server-01
+                    // .internal.acme-api.example.com`) grew one tab to 570px and pushed
+                    // the strip's own controls off the window. `min_w(0)` drops the
+                    // text's content-sized minimum so the cap can bite, and the clamp
+                    // cuts it with a real `…`.
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .max_w(scaled(200.))
+                            .clamp_one_line()
+                            .child(label),
+                    )
+                    .child(
+                        // Present in the layout at all times so nothing reflows when the
+                        // pointer arrives — only its opacity changes. The active tab
+                        // keeps it lit, because the tab you are on is the one you close.
+                        div()
+                            .flex_none()
+                            .opacity(if selected { 1. } else { 0. })
+                            .group_hover(group, |s| s.opacity(1.))
                             .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .max_w(scaled(240.))
-                                    .clamp_one_line()
-                                    .child(tab.label.clone()),
-                            )
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                                this.activate_session(ix, window, cx);
-                            })),
+                                IconButton::new(
+                                    ("ssh-session-tab-close", ix),
+                                    Icon::Close,
+                                    "Close this session (Ctrl+W)",
+                                )
+                                .small()
+                                .on_click(cx.listener(
+                                    move |this, _ev: &ClickEvent, window, cx| {
+                                        this.close_session(ix, window, cx);
+                                    },
+                                )),
+                            ),
                     )
-                    .child(
-                        div()
-                            .id(("ssh-session-tab-close", ix))
-                            .px_1()
-                            .rounded_md()
-                            .text_meta(t)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgb(selection)).text_color(rgb(danger)))
-                            .child("×")
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                                this.close_session(ix, window, cx);
-                            })),
-                    )
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                        this.activate_session(ix, window, cx);
+                    }))
             })
             .collect();
 
-        let add = div()
-            .id("ssh-tab-add")
-            .w(scaled(30.))
-            .h(scaled(30.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_t_md()
-            .cursor_pointer()
-            .text_body(t)
-            .text_color(rgb(muted))
-            .hover(|s| s.bg(rgb(selection)))
-            .child("+")
+        let add = IconButton::new("ssh-tab-add", Icon::Add, "New SSH session (Ctrl+T)")
+            .small()
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                 // Already on Home: `new_session`/`go_home` would be a no-op with no
                 // visible effect (this *was* the "tab-strip + does nothing" bug) — the
@@ -1854,16 +1906,36 @@ impl AppState {
         div()
             .flex()
             .flex_row()
-            .items_end()
-            .gap_1()
+            .items_center()
+            .w_full()
+            .h(scaled(TAB_STRIP_H))
+            .flex_shrink_0()
             .px_2()
-            .pt_1()
-            .bg(rgb(surface))
-            .border_b_1()
-            .border_color(rgb(border))
+            .gap_1()
+            .bg(rgb(t.bg))
+            .hairline_b(&t)
             .child(home)
-            .children(tabs)
-            .child(add)
+            // The elastic member, same arrangement as the chrome strip above with one
+            // difference: it shrinks but does not *grow*. The session tabs are what
+            // gives on a narrow window and they stay reachable by scrolling while they
+            // give — but `+` belongs immediately after the last tab, the way a browser
+            // draws it, not stranded against the far edge of the window.
+            .child(
+                div()
+                    .id("ssh-session-strip")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .gap_1()
+                    .flex_shrink(1.)
+                    .min_w(px(0.))
+                    .overflow_x_scroll()
+                    .children(tabs),
+            )
+            .child(div().flex_none().child(add))
+            // Everything to the right of `+` is empty strip.
+            .child(div().flex_1())
     }
 
     /// A session tab's view: a `← close tab` strip showing `user@host · status` above
@@ -2007,7 +2079,7 @@ impl Render for AppState {
             .text_color(rgb(fg))
             .track_focus(&self.root_focus)
             .capture_key_down(cx.listener(Self::handle_root_key_down))
-            .child(self.tab_strip(cx))
+            .child(self.tab_strip(window, cx))
             // `min_h(0)` is the other half of pinning the chrome. A flex item's automatic
             // minimum height is its content's intrinsic height, and gpui's `flex_1` sets a
             // `0%` basis — a percentage that is indefinite during the intrinsic pass, so it
@@ -2600,6 +2672,52 @@ mod tests {
         assert_eq!(Tab::ALL.len(), 6);
         assert_eq!(Tab::ALL[5], Tab::Settings);
         assert_eq!(Tab::Settings.label(), "Settings");
+    }
+
+    #[test]
+    fn every_tab_has_its_own_mark() {
+        // The whole premise of the narrow-window bar: with the words gone, the glyph is
+        // the only thing telling one tab from another. Two tabs sharing an icon would
+        // make the collapsed bar unreadable in a way the wide one never shows.
+        let icons: std::collections::HashSet<_> = Tab::ALL.iter().map(|t| t.icon()).collect();
+        assert_eq!(icons.len(), Tab::ALL.len(), "two tabs share a glyph");
+    }
+
+    #[test]
+    fn a_narrow_window_drops_the_tab_words_and_keeps_the_tabs() {
+        // The defect: at 700px the six labels ran under the scope chips and "System"
+        // vanished behind `Global`. Nothing may clip, so the words go first.
+        let rem = px(16.);
+        assert_eq!(TabChrome::for_window(px(1920.), rem), TabChrome::Labelled);
+        assert_eq!(
+            TabChrome::for_window(px(LABELLED_TABS_MIN_VIEWPORT), rem),
+            TabChrome::Labelled,
+            "the breakpoint itself"
+        );
+        assert_eq!(TabChrome::for_window(px(700.), rem), TabChrome::IconOnly);
+        assert_eq!(TabChrome::for_window(px(620.), rem), TabChrome::IconOnly);
+    }
+
+    #[test]
+    fn the_tab_breakpoint_is_measured_in_design_pixels_not_device_ones() {
+        // At 150% a 1280px window has only ~853 design px of bar — less than the six
+        // words plus the wordmark and the scope switcher — so it must collapse even
+        // though 1280 > 900. Same rule as Settings' `rail_fits`.
+        assert_eq!(
+            TabChrome::for_window(px(1280.), px(16. * 1.5)),
+            TabChrome::IconOnly
+        );
+        assert_eq!(
+            TabChrome::for_window(px(1280.), px(16.)),
+            TabChrome::Labelled,
+            "the same window at 100% keeps its words"
+        );
+    }
+
+    #[test]
+    fn only_the_labelled_chrome_draws_a_word() {
+        assert!(TabChrome::Labelled.shows_label());
+        assert!(!TabChrome::IconOnly.shows_label());
     }
 
     #[test]
