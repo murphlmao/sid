@@ -974,7 +974,10 @@ impl AppState {
             .w(scaled(300.))
             .min_w(px(0.))
             .overflow_hidden()
-            .child(TextInput::new(&self.ssh_home.search))
+            // `.small()` — same as the network/database panel filters — so this field
+            // is 24px, not the 32px default that was inflating the whole CONNECTIONS
+            // header to 49px against every other panel's 41px.
+            .child(TextInput::new(&self.ssh_home.search).small())
     }
 
     /// The screen's primary action: open what the box names.
