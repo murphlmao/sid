@@ -154,16 +154,17 @@ Every item is gated by before/after captures in all four themes and a
 - [x] #2 as decided above (merged 2026-09-09; follow-up: `app.rs:221-224`/`566` doc comments still describe the retired ephemeral-dial case).
 - [x] #4 as decided above (merged 2026-09-09; live-verified: `stty size` 56x113 at 100%,
       35x75 at 150% over the docker sshd fixture; `SID_UI_SCALE` env override for captures).
-- [ ] #4 follow-up: the SFTP sidebar's own pixel arithmetic (`sidebar_metrics::MIN/MAX/
-      TERMINAL_MIN`, `plan_entry_row`'s 318/406px thresholds) is still authored at 100% against
-      an already-zoomed viewport, so size/date columns truncate at 150%. Same fix class as
-      table columns and modal geometry: scale the declarations, thread `UiScale` through
-      `sidebar_width`/`plan_entry_row`.
+- [x] #4 follow-up done 2026-09-09: `sidebar_width` and `plan_entry_row` take a `UiScale`
+      read off `window.rem_size()`; thresholds scale before comparing; pinned by
+      `zooming_in_does_not_move_the_column_decision_for_a_proportionally_wider_row`. Live
+      150% capture over sshd not done (agent lost to the rate limit); unit-tested only.
 
 ## 4. Backlog carried from the July resume doc
 
 - [ ] Table frame cost: ~26% of cell builds are discarded by gpui each frame
-      (`docs/design/2026-07-27-table-frame-cost.md`).
+      (`docs/design/2026-07-27-table-frame-cost.md`). Started 2026-09-09 and dropped when the
+      org spend limit hit; re-verify against gpui-pre 0.3.4 / `DataTable` before optimising.
+      Lowest priority on this list: perf, not cohesion.
 - [x] `scripts/lib/sid-app.sh` extracted (92 lines shared); `sid-shot.sh` now verifies the
       sid window sits on its headless output before `grim` and checks the PNG dimensions
       afterwards, refusing with a one-line reason otherwise. Merged 2026-09-09.
@@ -299,3 +300,9 @@ commits; do not invent one).
   `with_assets(..)` had to move from `Assets` to `AllAssets` for any of this to actually
   render. Gate green (fmt/clippy/tests); SSH right-click menu still shows no icons for
   rename/delete — that's `ssh_home.rs`'s `PopupMenuItem` list, out of this branch's scope.
+- 2026-09-09 20:38: all five agents (text-input retirement, SFTP sidebar zoom, table frame
+  cost, Kbd chrome, SSH/chrome pass) were killed by the org's monthly spend limit (HTTP 429).
+  Resumed 21:51 when the limit reset: sidebar zoom gated by the orchestrator and merged
+  (c7d31de); text-input, Kbd and SSH/chrome agents resumed with their context; table frame
+  cost dropped (see §4). While they were down, the sidebar agent had also been caught editing
+  main's worktree instead of its own; its changes were moved and main restored.
