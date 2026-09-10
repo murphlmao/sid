@@ -135,6 +135,20 @@ impl NetSubTab {
         }
     }
 
+    /// This sub-view's segmented-control glyph, where the 0.6.1 bundle has an honest
+    /// one. `Ports` and `Services` stay label-only: nothing in Lucide reads as "a
+    /// listening TCP port" or "a systemd unit" without borrowing a meaning that already
+    /// belongs to something else in sid (a plug is physical hardware; a cog is the
+    /// Settings tab).
+    fn icon(self) -> Option<Icon> {
+        match self {
+            NetSubTab::Ports | NetSubTab::Services => None,
+            NetSubTab::Interfaces => Some(Icon::Interfaces),
+            NetSubTab::Docker => Some(Icon::Docker),
+            NetSubTab::Kubernetes => Some(Icon::Kubernetes),
+        }
+    }
+
     /// The sub-view at `ix`, for the segmented control's callback. Out-of-range keeps
     /// the current view rather than guessing — the control clamps its own index, so this
     /// only fires if the two lists ever disagree.
@@ -1274,9 +1288,10 @@ impl AppState {
     /// one, so the strip read as four raised chips with one dent in it. The component
     /// inverts that structurally (recessed track, transparent unselected, one filled chip).
     ///
-    /// No segment icons: the bundled Lucide set has no honest glyph for a container
-    /// runtime, a cluster or a network adapter, and three wrong pictures next to two right
-    /// ones is worse than five words.
+    /// Segment icons: Interfaces/Docker/Kubernetes now draw the glyph the 0.6.1 bundle
+    /// finally shipped (`network`/`container`/`boxes` — see `Icon`'s module doc and
+    /// `NetSubTab::icon`). Ports and Services stay label-only rather than getting a
+    /// borrowed, slightly-wrong picture.
     fn network_sub_view_strip(
         &self,
         active: NetSubTab,
@@ -1287,7 +1302,10 @@ impl AppState {
             .position(|&tab| tab == active)
             .unwrap_or(0);
         SegmentedControl::new("net-subview")
-            .segments(NetSubTab::ALL.iter().map(|&tab| Segment::new(tab.label())))
+            .segments(NetSubTab::ALL.iter().map(|&tab| match tab.icon() {
+                Some(icon) => Segment::new(tab.label()).icon(icon),
+                None => Segment::new(tab.label()),
+            }))
             .selected(selected)
             .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
                 if let Some(tab) = NetSubTab::at(ev.index) {

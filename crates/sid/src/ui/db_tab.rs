@@ -1689,9 +1689,12 @@ impl AppState {
                     .action(
                         // Browse mode's Run re-reads the table already on screen, so it
                         // is labelled for what it does. Same id, same slot, same size —
-                        // only the word and the tooltip change.
+                        // only the word, tooltip and leading icon change (`play` for a
+                        // fresh run, the same `redo` `network_refresh_button` uses for a
+                        // re-read).
                         Button::new("db-run", if browse { "Reload" } else { "Run" })
                             .primary()
+                            .icon(if browse { Icon::Refresh } else { Icon::Run })
                             .size(QUERY_ACTION_SIZE)
                             .loading(self.db.running)
                             .disabled(browse && self.browse_table().is_none())
@@ -2116,6 +2119,7 @@ impl AppState {
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let button = Button::new("db-export-open", "Export")
+            .icon(Icon::Export)
             .size(QUERY_ACTION_SIZE)
             .tooltip("export the results now on screen")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
