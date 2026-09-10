@@ -617,7 +617,6 @@ impl AppState {
             sections.push(section.into_any_element());
         }
 
-        let t = theme::active(cx).clone();
         // The one panel this screen has, in the vocabulary Database and Settings already
         // speak: `surface` fill, hairline, uppercase `CONNECTIONS · n` header, and the
         // controls anchored to that header rather than floating on the canvas above it.
@@ -646,6 +645,17 @@ impl AppState {
 
         v_flex().flex_1().min_h(px(0.)).p_3().child(
             panel
+                // The dot vocabulary, directly under the header it explains — not
+                // ~800px away in a footer under the last row of cards. A legend is
+                // not a control, so it gets one Meta-role row, left-aligned, and
+                // nothing else competes with it for that line.
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .px_3()
+                        .pt_2()
+                        .child(StatusLegend::new("ssh-home-legend")),
+                )
                 // What the box has to say back: the inline `add … as a connection`
                 // row, and the note left by an Enter that named nothing. Both are
                 // answers to what was just typed, so they sit directly under the
@@ -703,20 +713,6 @@ impl AppState {
                         // `right_click_target`'s doc comment on why this can't be
                         // attached per-card.
                         .context_menu(self.grid_context_menu(cx)),
-                )
-                // The dot vocabulary, in the panel's footer. It used to be the middle
-                // third of the toolbar row, which spent the screen's most valuable
-                // strip on documentation: a legend is not a control and never
-                // changes, so it belongs at the foot of the thing it explains, under
-                // a hairline, in the same Meta ink as every other count and hint.
-                .child(
-                    h_flex()
-                        .flex_none()
-                        .justify_end()
-                        .px_3()
-                        .py(scaled(6.))
-                        .hairline_t(&t)
-                        .child(StatusLegend::new("ssh-home-legend")),
                 ),
         )
     }
