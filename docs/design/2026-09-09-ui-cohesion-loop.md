@@ -87,15 +87,25 @@ Every item is gated by before/after captures in all four themes and a
       percent when ≠100% (click resets), last-frame ms under `SID_PERF`. Terminal pane
       reflows by test (`a_shorter_pane_reflows_to_fewer_rows_and_the_same_columns`).
       `sid-cap.sh` gained `--scroll`.
-- [ ] **One panel vocabulary.** Today Database uses bordered, rounded, headed panels; SSH
-      home floats cards on the bare background; Workspaces uses a hairline sidebar; System
-      has an unframed meter strip. Pick the Database treatment (surface fill, hairline
-      border, uppercase label header with count and actions) and apply it to every region on
-      every tab.
-- [ ] **One toolbar contract.** Every tab's top row becomes `[label · count] [filter]
-      [secondary actions] [primary action]` at one height. Today SSH has a legend strip and
-      an add button, Database has a status string plus filter plus three buttons, Workspaces
-      has count plus refresh plus add. Same order, same height, same gaps everywhere.
+- [x] **One panel vocabulary.** Done 2026-09-09 across all six tabs: every region is a
+      `Card::panel` (`surface`, hairline, uppercase Label header `NAME · count`, header
+      actions). SSH home (connections), Database (connections/schema/history + `QUERY ·
+      <connection>` + `RESULTS · n rows · ms` + `QUERY PLAN`), Network (one `sub_view_panel`
+      for the five sub-views), Workspaces (`WORKSPACES · n` sidebar, OVERVIEW/BRANCHES/STATUS/
+      LOG/REPOS detail panels), System (`SYSTEM` cluster), Settings (rail + panels).
+- [x] **One toolbar contract.** Done 2026-09-09: the panel header IS the toolbar row,
+      `[label · count] [filter] [secondary] [primary]` at one height; loose status strings
+      ("no connection selected") left the toolbars. Two real bugs surfaced and fixed on the
+      way: Network's fetch error had no render at all; Workspaces' unregister was a labelled
+      button with an empty label (36px box beside a 24px square).
+- [ ] **Panel/toolbar follow-ups** (from the data-tabs pass): `sid_ui::Toolbar` is now unused
+      on the tabs because `Card::panel`'s header does its job with a different box (`py_2` vs
+      `py(6.)`); unify the two or delete `Toolbar`. `db_tab.rs` and `network_tab.rs` keep
+      file-private `error_line`/`caveat_line` copies of `sid_ui::notice`'s; swap after a wrap
+      check. The Database `diagram` button wants an icon (`git-fork`/`workflow` in Lucide). A
+      panel header's title is the only shrinkable slot, so at 700px the results filter sits at
+      its 160px floor and `RESULTS` would truncate below that; decide whether filters may
+      shrink further or move to a second row.
 - [x] **Wide-window layouts: Settings.** Done 2026-09-09: 220px section rail (Appearance ·
       Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
       to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
@@ -127,10 +137,11 @@ Every item is gated by before/after captures in all four themes and a
 - [x] **System tab.** Done 2026-09-09: meters were already on a framed `StatCluster`/`Card`
       (verified by capture); the Command column now falls back to the process name in
       `muted` ink (`ProcessInfo::cmd_is_fallback`, decided in `sid-sysinfo`).
-- [ ] **Icon-only buttons.** File and gear on SSH cards, diagram and delete on Database
-      connections, git and close on Workspaces rows: same size, same hit area, tooltip
-      present on every one (the July plan made tooltips type-required; verify no call site
-      bypasses it).
+- [x] **Icon-only buttons.** Done 2026-09-09 for SSH (cards + right-click menu icons),
+      Database, Network, Workspaces: every `IconButton` is `.small()` (one 24px square) with a
+      tooltip (type-required by the 3-arg constructor); `Tipped::tip` covers non-button
+      elements. System's pin/kill controls were not re-audited in this pass; check them in the
+      cosmos-light sweep.
 - [ ] **Interaction states.** Hover, pressed, focused, disabled on every control, and a
       visible focus ring for keyboard navigation (this is a keyboard-first app with no
       visible focus indication in any capture). The gallery has a `BUTTON STATES` section;
