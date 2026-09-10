@@ -48,6 +48,7 @@ use gpui_component::{
 
 use crate::bridge::{contrast_ink, hover_of, mix, pressed_of};
 use crate::icon::Icon;
+use crate::scale::scaled;
 use crate::styled::h_flex;
 use crate::theme::{self, Theme};
 use crate::typography::{TypeRole, Typography};
@@ -110,12 +111,22 @@ impl ButtonSize {
         }
     }
 
-    /// The square edge of an [`IconButton`] at this size.
+    /// The square edge of an [`IconButton`] at this size, in logical pixels at 100%
+    /// zoom. [`ButtonSize::edge`] is what gets applied.
     fn square(self) -> gpui::Pixels {
         match self {
             ButtonSize::Sm => px(24.),
             ButtonSize::Md => px(32.),
         }
+    }
+
+    /// The square edge as a zoomable length.
+    ///
+    /// The glyph inside an icon button already scales — `gpui-component`'s `Size::Small`
+    /// is `size_3p5()`, i.e. rems — so an absolute box here would clip its own icon the
+    /// moment a user zoomed in.
+    fn edge(self) -> gpui::Rems {
+        scaled(f32::from(self.square()))
     }
 
     /// The label's place on the type scale. Set on the label child rather than
@@ -572,7 +583,7 @@ impl RenderOnce for IconButton {
         let paint = self.variant.paint(state, &theme);
         let size = self.size;
         let interactive = state.is_interactive();
-        let edge = size.square();
+        let edge = size.edge();
 
         let button = shell(cx, self.id, &paint, size, interactive)
             .w(edge)
@@ -628,12 +639,28 @@ fn shell(
             ButtonCustomVariant::new(cx)
                 .color(colour(paint.fill))
                 .foreground(rgb(paint.ink).into())
-                .border(colour(paint.border))
                 .hover(colour(paint.hover_fill))
                 .active(colour(paint.pressed_fill))
                 // Design law: depth is borders + surface shifts, never shadows.
                 .shadow(false),
         )
+        // Two things gpui-component 0.6 does to a `Custom` variant that sid does not
+        // want, both undone here through the instance style — `Button::render` calls
+        // `refine_style(&instance_style)` last, so this wins for the rest state:
+        //
+        // 1. **The rest fill is drawn at 20% alpha.** 0.6's `bg_color` returns
+        //    `colors.color.mix_oklab(theme.transparent, 0.2)`, and `mix_oklab`'s factor
+        //    weights *self*, so the result carries `color.a * 0.2`. 0.5.1 returned
+        //    `colors.color` untouched. Hover and pressed are unaffected (they read
+        //    `colors.hover`/`colors.active` straight), so only the rest state is
+        //    restored here.
+        // 2. **A custom variant no longer gets a border box.** 0.6 gates the four
+        //    `border_*_1()` calls behind `variant.is_default() || outline`; 0.5.1 drew
+        //    them for every variant. Without the width, sid's border token has nothing
+        //    to colour, and every button also loses 2px on each axis.
+        .border_1()
+        .border_color(colour(paint.border))
+        .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
         .with_size(size.component())
         .tab_stop(interactive)
         .when(interactive, |this| this.cursor_pointer())

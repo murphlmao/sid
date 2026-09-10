@@ -88,8 +88,8 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, Meter, Segment, SegmentSelect,
-    SegmentedControl, StatCluster, StyledExt as _, Toolbar, Typography as _, h_flex, sortable_th,
-    v_flex,
+    SegmentedControl, StatCluster, StyledExt as _, Toolbar, Typography as _, h_flex, scaled,
+    sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -438,8 +438,8 @@ impl TableDelegate for ProcessesDelegate {
         self.processes.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        self.columns.column(col_ix)
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
     }
 
     fn perform_sort(
@@ -670,7 +670,7 @@ impl AppState {
                 Toolbar::new()
                     // Capped rather than filling the row: a 1900px-wide filter field is
                     // as wrong as the 652px table it used to sit above.
-                    .filter(div().max_w(px(320.)).children(filter))
+                    .filter(div().max_w(scaled(320.)).children(filter))
                     .count_label(count_label)
                     .action(
                         Button::new("systems-refresh", "refresh")

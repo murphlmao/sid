@@ -22,7 +22,7 @@
 //!   colours, spacing and elements, and nothing about hosts, queries or sockets.
 //!
 //! The `sid` binary's tab modules import from here and, over the migration, stop naming
-//! `gpui_component` at all — which leaves the eventual gpui-component 0.5.2 / git-`gpui`
+//! `gpui_component` at all — which left the gpui-component 0.6 / `gpui-pre` 0.3
 //! move with exactly one blast radius.
 //!
 //! # House rules this crate enforces
@@ -52,6 +52,7 @@ pub mod meter;
 pub mod modal;
 pub mod notice;
 pub mod radio;
+pub mod scale;
 pub mod scope_chip;
 pub mod segmented;
 pub mod status_dot;
@@ -77,6 +78,7 @@ pub use meter::{Meter, MeterTone, StatCluster};
 pub use modal::{Modal, PanelGeometry};
 pub use notice::{InlineNotice, NoticeTone, caveat_line, error_line};
 pub use radio::{Radio, RadioPaint, radio_paint};
+pub use scale::{UiScale, scaled};
 pub use scope_chip::{ScopeChip, ScopeOrigin};
 pub use segmented::{Segment, SegmentSelect, SegmentedControl};
 pub use status_dot::{ConnectionState, StatusDot, StatusLegend};

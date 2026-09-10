@@ -11,7 +11,7 @@
 //! are placeholders for later slices.
 
 use gpui::{
-    ClickEvent, Context, Corner, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
+    Anchor, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, SharedString, Subscription,
     Window, anchored, canvas, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use sid_secrets::{SecretId, SecretStore};
@@ -33,7 +33,9 @@ use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
-use sid_ui::{ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, modal, theme};
+use sid_ui::{
+    ScopeChip, ScopeOrigin, StyledExt as _, Typography as _, UiScale, modal, scaled, theme,
+};
 
 // `pub(crate)` (not private): `ui::systems_tab`'s periodic refresh loop needs to read
 // `AppState::active_tab` (via the `active_tab()` accessor below) to stop refreshing the
@@ -92,6 +94,21 @@ fn tab_from_env() -> Option<Tab> {
     std::env::var("SID_START_TAB")
         .ok()
         .and_then(|v| tab_from_str(&v))
+}
+
+/// The zoom the app opens at (GitHub #4): the persisted `Settings.ui_scale_percent`,
+/// unless `SID_UI_SCALE` overrides it *for this run only* — the capture harness's hook
+/// for shooting the UI at 150% against a hermetic store, same convention as
+/// `SID_START_TAB` and `SID_THEME` (read at startup, never written back).
+///
+/// Total on both inputs: an unparseable override is ignored rather than fatal, and
+/// `UiScale::from_percent` snaps and clamps whatever survives, so neither a hand-edited
+/// store row nor `SID_UI_SCALE=nonsense` can open the window at 0%.
+fn startup_scale(persisted: u16, env: Option<&str>) -> UiScale {
+    let percent = env
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .unwrap_or(persisted);
+    UiScale::from_percent(percent)
 }
 
 /// One entry in the scope switcher.
@@ -157,6 +174,13 @@ pub struct AppState {
     /// this side; the file panel's `⇄ dock` control (any open session) flips + persists
     /// it and fans the update out to every live session — see `on_session_event`.
     pub(crate) file_browser_side: PanelSide,
+    /// App zoom, cached from `Settings.ui_scale_percent` at startup (GitHub #4).
+    ///
+    /// One factor for the whole UI. `render` pushes it to `Window::set_rem_size`, which
+    /// is what every rem-authored length in gpui and `sid-ui` resolves against; the two
+    /// subsystems that do their own pixel arithmetic (table columns, the terminal's cell
+    /// grid) read the same number back off the window rather than caching a copy.
+    pub(crate) ui_scale: UiScale,
     /// The SSH tab's Home-state view-local UI state (tree collapse/search/inline
     /// rename+folder-edit) — lives in its own module (`ui::ssh_home`), same shape as
     /// `db`/`network` below.
@@ -290,6 +314,14 @@ impl AppState {
             .settings()
             .map(|s| s.file_browser_side)
             .unwrap_or_default();
+        // Same read, same fallback — plus the `SID_UI_SCALE` per-run override. See
+        // `startup_scale`; `render` is what actually puts the number on the window.
+        let ui_scale = startup_scale(
+            store
+                .settings()
+                .map_or(UiScale::default().percent(), |s| s.ui_scale_percent),
+            std::env::var("SID_UI_SCALE").ok().as_deref(),
+        );
         // Also reads (and caches) `Settings` — see `SettingsTabState`'s doc comment for
         // why the Settings screen keeps its own snapshot rather than re-reading
         // `store.settings()` from `render`.
@@ -313,6 +345,7 @@ impl AppState {
             ssh_sessions: Vec::new(),
             active_session: None,
             file_browser_side,
+            ui_scale,
             ssh_home: HomeTabState::new(cx),
             db,
             network,
@@ -626,7 +659,7 @@ impl AppState {
     /// the session being left has nothing to hand focus off to.
     pub(crate) fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.active_session = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -645,7 +678,8 @@ impl AppState {
     ) {
         if let Some(tab) = self.ssh_sessions.get(ix) {
             self.active_session = Some(ix);
-            window.focus(&tab.session.read(cx).terminal_focus_handle());
+            let handle = tab.session.read(cx).terminal_focus_handle();
+            window.focus(&handle, cx);
             cx.notify();
         }
     }
@@ -673,14 +707,15 @@ impl AppState {
     /// live session, else `root_focus` — see that field's doc comment for why this
     /// matters (a stale focus target silently kills all further keyboard dispatch).
     /// Called by every path that mutates either field.
-    fn refocus_stable_target(&self, window: &mut Window, cx: &Context<Self>) {
+    fn refocus_stable_target(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab == Tab::Ssh
             && let Some(ix) = self.active_session
             && let Some(tab) = self.ssh_sessions.get(ix)
         {
-            window.focus(&tab.session.read(cx).terminal_focus_handle());
+            let handle = tab.session.read(cx).terminal_focus_handle();
+            window.focus(&handle, cx);
         } else {
-            window.focus(&self.root_focus);
+            window.focus(&self.root_focus, cx);
         }
     }
 
@@ -719,8 +754,39 @@ impl AppState {
         cx.notify();
     }
 
+    /// Set the app zoom, persist it, and make every surface agree about it.
+    ///
+    /// Modelled on `toggle_dock_side` above: one global preference, written through to
+    /// `Settings`, then repainted.
+    ///
+    /// There is no fan-out to the live sessions, and that is deliberate. `render` below
+    /// pushes the new rem size onto the window; gpui rebuilds the whole element tree
+    /// every frame, so each session's `render_grid` reads the new zoom straight off
+    /// `window.rem_size()` on the very next one, reshapes its grid at the scaled cell
+    /// size, and its existing viewport reconciliation resizes the remote PTY — the same
+    /// path a window resize takes. A pushed copy would be a second channel saying the
+    /// same thing, with the failure mode of disagreeing with the window.
+    ///
+    /// A no-op at the ends of the ladder: `zoom_in` at 200% returns 200%, and a store
+    /// write for a keystroke that changed nothing would be a redb commit per key repeat.
+    pub(crate) fn set_ui_scale(&mut self, scale: UiScale, cx: &mut Context<Self>) {
+        if scale == self.ui_scale {
+            return;
+        }
+        self.ui_scale = scale;
+        if let Ok(mut settings) = self.store.settings() {
+            settings.ui_scale_percent = scale.percent();
+            let _ = self.store.set_settings(&settings);
+        }
+        // `refresh_windows`, not just `notify`: the rem size is a *window* property, so
+        // every view in the tree has to lay out again — the same hammer the theme switch
+        // uses for the same reason.
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     fn open_form(&mut self, form: Entity<HostForm>, window: &mut Window, cx: &mut Context<Self>) {
-        form.read(cx).focus_first(window, cx);
+        form.update(cx, |it, cx| it.focus_first(window, cx));
         // `subscribe_in` (not `subscribe`) so `on_form_event` gets a `&mut Window` —
         // needed to refocus `root_focus` on close (see that field's doc comment: a
         // form dismissed via Escape leaves its now-dropped field's `FocusHandle` as
@@ -734,7 +800,7 @@ impl AppState {
     fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
         self._form_subscription = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -780,7 +846,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let modal = cx.new(|cx| PasswordPromptModal::new(cx, label));
-        modal.read(cx).focus_first(window, cx);
+        modal.update(cx, |it, cx| it.focus_first(window, cx));
         self._password_prompt_subscription =
             Some(cx.subscribe_in(&modal, window, Self::on_password_prompt_event));
         self.password_prompt = Some(modal);
@@ -792,7 +858,7 @@ impl AppState {
         self.password_prompt = None;
         self._password_prompt_subscription = None;
         self.pending_secret_prompt = None;
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -1116,6 +1182,9 @@ impl AppState {
                 self.close_palette(cx);
                 cx.notify();
             }
+            Action::ZoomIn => self.set_ui_scale(self.ui_scale.zoom_in(), cx),
+            Action::ZoomOut => self.set_ui_scale(self.ui_scale.zoom_out(), cx),
+            Action::ZoomReset => self.set_ui_scale(self.ui_scale.reset(), cx),
             Action::FocusFilter => {
                 // Tabs with a filter input claim this; the rest have nothing to focus
                 // yet and it stays a no-op there. SSH Home's quick-connect box doubles
@@ -1213,7 +1282,7 @@ impl AppState {
                         .bg(rgba(0x000000a8))
                         .child(
                             div()
-                                .w(px(420.))
+                                .w(scaled(420.))
                                 .flex()
                                 .flex_col()
                                 .bg(rgb(surface))
@@ -1322,14 +1391,14 @@ impl AppState {
                 div()
                     .id(("scope", ix))
                     .px_2()
-                    .py(px(3.))
+                    .py(scaled(3.))
                     .rounded_md()
                     // A chip carries a *workspace name*, which the chrome has no say in:
                     // `platform-infrastructure-monorepo` is a 260px chip. Bounded and
                     // clamped, so a long name costs an ellipsis instead of the status
                     // badges to its right (the bar has no clip of its own).
                     .flex_none()
-                    .max_w(px(160.))
+                    .max_w(scaled(160.))
                     .clamp_one_line()
                     .text_meta(t)
                     .cursor_pointer()
@@ -1349,7 +1418,7 @@ impl AppState {
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(42.))
+            .h(scaled(42.))
             // The chrome's height is not negotiable. Without this the strip is an
             // ordinary shrinkable flex item in the window's column, so any tab whose
             // content reports a taller intrinsic height than the window has left
@@ -1429,7 +1498,7 @@ impl AppState {
     /// healthy keyring renders nothing at all, here or anywhere else). Replaces the old
     /// persistent "secrets: …" status line: nothing takes up permanent screen space
     /// unless something is actually degraded. Click toggles a small popover — anchored
-    /// at the badge's own flow position (`Corner::TopRight`, same trigger-attached
+    /// at the badge's own flow position (`Anchor::TopRight`, same trigger-attached
     /// pattern as `db_tab`'s export menu), not a full-viewport modal — showing the full
     /// `secret_status_message` text (backend, warning, recommendation).
     fn secret_status_badge(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
@@ -1441,7 +1510,7 @@ impl AppState {
         let badge = div()
             .id("secret-status-badge")
             .px_2()
-            .py(px(2.))
+            .py(scaled(2.))
             .rounded_full()
             .text_meta(t)
             .cursor_pointer()
@@ -1455,7 +1524,7 @@ impl AppState {
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.secret_badge_open = !this.secret_badge_open;
                 // Mutually exclusive with the GPU popover: both `anchored()` to
-                // `Corner::TopRight` with the same window snap-margin and the same
+                // `Anchor::TopRight` with the same window snap-margin and the same
                 // `with_priority(2)`, so open together they occupy the identical spot
                 // and the later-drawn GPU one wins. `secrets_degraded` and
                 // `render_soft_reason` are independent — a VM with no keyring daemon
@@ -1468,14 +1537,14 @@ impl AppState {
         let popover = self.secret_badge_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Corner::TopRight)
+                    .anchor(Anchor::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()
                             .id("secret-status-popover")
                             .occlude()
                             .mt_1()
-                            .max_w(px(360.))
+                            .max_w(scaled(360.))
                             .p_3()
                             .rounded_md()
                             .border_1()
@@ -1513,7 +1582,7 @@ impl AppState {
         let badge = div()
             .id("gpu-status-badge")
             .px_2()
-            .py(px(2.))
+            .py(scaled(2.))
             .rounded_full()
             .text_meta(t)
             .cursor_pointer()
@@ -1537,14 +1606,14 @@ impl AppState {
         let popover = self.gpu_badge_open.then(|| {
             deferred(
                 anchored()
-                    .anchor(Corner::TopRight)
+                    .anchor(Anchor::TopRight)
                     .snap_to_window_with_margin(px(8.))
                     .child(
                         div()
                             .id("gpu-status-popover")
                             .occlude()
                             .mt_1()
-                            .max_w(px(360.))
+                            .max_w(scaled(360.))
                             .p_3()
                             .rounded_md()
                             .border_1()
@@ -1649,7 +1718,7 @@ impl AppState {
         let home = div()
             .id("ssh-tab-home")
             .px_2()
-            .h(px(30.))
+            .h(scaled(30.))
             .text_mono_meta(t)
             .flex()
             .items_center()
@@ -1682,7 +1751,7 @@ impl AppState {
                     .items_center()
                     .gap_2()
                     .px_2()
-                    .h(px(30.))
+                    .h(scaled(30.))
                     .rounded_t_md()
                     .bg(rgb(if selected { bg } else { surface }))
                     .text_color(rgb(if selected { fg_strong } else { muted }))
@@ -1710,7 +1779,7 @@ impl AppState {
                             .child(
                                 div()
                                     .min_w(px(0.))
-                                    .max_w(px(240.))
+                                    .max_w(scaled(240.))
                                     .clamp_one_line()
                                     .child(tab.label.clone()),
                             )
@@ -1736,8 +1805,8 @@ impl AppState {
 
         let add = div()
             .id("ssh-tab-add")
-            .w(px(30.))
-            .h(px(30.))
+            .w(scaled(30.))
+            .h(scaled(30.))
             .flex()
             .items_center()
             .justify_center()
@@ -1899,6 +1968,13 @@ impl Render for AppState {
         // `handle_root_key_down`'s doc comment for why that ordering is load-bearing.
         let palette_overlay = self.palette_overlay(window, cx);
         let cheat_sheet_overlay = self.cheat_sheet_overlay(window, cx);
+
+        // THE lever. Everything authored in rems — gpui's own `.p_2()`/`.gap_1()`/
+        // `.h_8()`/`.rounded_md()` shorthands, `sid-ui`'s type scale, every `px(..)`
+        // length — resolves against this, so one assignment per frame scales the entire
+        // UI. Set in `render` rather than once at startup so it survives a window
+        // recreation and cannot drift from `self.ui_scale`.
+        window.set_rem_size(self.ui_scale.rem_size());
 
         let t = theme::active(cx);
         let (bg, fg) = (t.bg, t.fg);
@@ -2287,6 +2363,29 @@ mod tests {
 
     fn ws(id: &str) -> Scope {
         Scope::Workspace(WorkspaceId(id.to_string()))
+    }
+
+    // ---- startup zoom (GitHub #4) ------------------------------------------------
+
+    #[test]
+    fn the_app_opens_at_the_persisted_zoom() {
+        assert_eq!(startup_scale(150, None).percent(), 150);
+        assert_eq!(startup_scale(100, None), UiScale::DEFAULT);
+        // A store row nobody's build wrote still opens a usable window.
+        assert_eq!(startup_scale(0, None).percent(), 50);
+        assert_eq!(startup_scale(140, None).percent(), 150);
+    }
+
+    #[test]
+    fn sid_ui_scale_overrides_the_persisted_zoom_for_one_run() {
+        assert_eq!(startup_scale(100, Some("150")).percent(), 150);
+        assert_eq!(startup_scale(150, Some("100")), UiScale::DEFAULT);
+        assert_eq!(startup_scale(100, Some(" 200 ")).percent(), 200);
+        // Junk (or an empty var) is ignored, not fatal — the persisted value stands.
+        assert_eq!(startup_scale(125, Some("huge")).percent(), 125);
+        assert_eq!(startup_scale(125, Some("")).percent(), 125);
+        // …and an override past the ladder clamps like any other percent.
+        assert_eq!(startup_scale(100, Some("9000")).percent(), 200);
     }
 
     #[test]

@@ -55,7 +55,7 @@ use gpui::{
     AnyElement, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, SharedString, Subscription,
     Window, actions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Editor, EditorState, InputEvent};
 
 use sid_core::privfs::{Access, Passphrase, PrivError, PrivilegedFs};
 use sid_privfs::SudoPrivilegedFs;
@@ -99,7 +99,7 @@ enum ConfigEditorBody {
     /// it is editable is not stored here — it is derived by [`editor_mode`] from the
     /// access probe plus the held secret, so the two can never disagree.
     Editor {
-        input: Entity<InputState>,
+        input: Entity<EditorState>,
         _input_sub: Subscription,
         dirty: bool,
     },
@@ -234,7 +234,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let password = cx.new(|cx| TextInput::new_masked(cx, "sudo password"));
-        password.read(cx).focus(window);
+        TextInput::focus(&password, window, cx);
         let Some(editor) = self.systems.editor.as_mut() else {
             return;
         };
@@ -260,7 +260,7 @@ impl AppState {
                 let input = input.clone();
                 input.update(cx, |state, cx| state.focus(window, cx));
             }
-            _ => window.focus(&self.root_focus),
+            _ => window.focus(&self.root_focus, cx),
         }
         cx.notify();
     }
@@ -322,7 +322,7 @@ impl AppState {
                             // masked one the user cannot see.
                             let field = prompt.password.clone();
                             field.update(cx, |input, cx| input.reset(cx));
-                            field.read(cx).focus(window);
+                            TextInput::focus(&field, window, cx);
                         }
                     }
                     Ok(UnlockOutcome::Fatal(msg)) => {
@@ -349,7 +349,7 @@ impl AppState {
         // The dangling-focus bug: refocus `root_focus` so keyboard dispatch doesn't die
         // the instant this modal's tree stops rendering — same fix `db_tab.rs`'s
         // `close_db_form` applies.
-        window.focus(&self.root_focus);
+        window.focus(&self.root_focus, cx);
         cx.notify();
     }
 
@@ -357,7 +357,7 @@ impl AppState {
     /// `open_config_editor` (mirrors `ui::db_tab`'s `on_sql_event`).
     fn on_config_editor_input_event(
         &mut self,
-        _input: &Entity<InputState>,
+        _input: &Entity<EditorState>,
         event: &InputEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -527,7 +527,7 @@ impl AppState {
                     // *first* line and the modal shows one line of an eleven-line
                     // `/etc/fstab` inside an otherwise empty pane. The SQL editor never
                     // hit this because it sits in a fixed-height 140px box.
-                    .child(Input::new(input).disabled(!can_edit).h_full())
+                    .child(Editor::new(input).disabled(!can_edit).h_full())
                     .into_any_element(),
             ),
         };
@@ -755,8 +755,7 @@ fn build_editor_body(
     cx: &mut Context<AppState>,
 ) -> ConfigEditorBody {
     let input = cx.new(|cx| {
-        InputState::new(window, cx)
-            .code_editor("")
+        EditorState::new(window, cx)
             .line_number(true)
             .default_value(text)
     });

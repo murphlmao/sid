@@ -85,6 +85,15 @@ use crate::typography::Typography as _;
 /// a small but usable field.
 pub const FIELD_MIN_W: Pixels = px(160.);
 
+/// An authored field width as a zoomable length.
+///
+/// A field's *content* is text on the type scale, which rides `rem_size`; an absolute
+/// `min_width` beside it would stop being a floor and start being a clamp the moment the
+/// user zoomed in.
+fn zoomable(width: Pixels) -> gpui::Rems {
+    crate::scale::scaled(f32::from(width))
+}
+
 /// How a field claims horizontal space.
 ///
 /// Every variant is *definite* — see [`FieldWidth::floor`]. There is deliberately no
@@ -128,9 +137,9 @@ impl FieldWidth {
     /// [`Grow`]: FieldWidth::Grow
     pub fn declare<S: Styled>(self, element: S) -> S {
         match self {
-            FieldWidth::Fill => element.w_full().min_w(FIELD_MIN_W),
-            FieldWidth::Grow => element.flex_1().min_w(FIELD_MIN_W),
-            FieldWidth::Fixed(width) => element.w(width).flex_none(),
+            FieldWidth::Fill => element.w_full().min_w(zoomable(FIELD_MIN_W)),
+            FieldWidth::Grow => element.flex_1().min_w(zoomable(FIELD_MIN_W)),
+            FieldWidth::Fixed(width) => element.w(zoomable(width)).flex_none(),
         }
     }
 }
@@ -161,7 +170,13 @@ pub fn field(
 /// the DB tab spends on "run this query"; a field that treated it as a submit would take
 /// it away.
 pub fn is_field_submit(event: &InputEvent) -> bool {
-    matches!(event, InputEvent::PressEnter { secondary: false })
+    matches!(
+        event,
+        InputEvent::PressEnter {
+            secondary: false,
+            ..
+        }
+    )
 }
 
 /// Run `handler` when `field` is submitted with a plain Enter.
@@ -427,8 +442,8 @@ fn wrapper(width: FieldWidth, style: StyleRefinement) -> Div {
         // handlers for them only in multi-line mode, so in a single-line field the
         // keystroke is matched, dispatched, handled by nobody and swallowed. Taking them
         // here turns Tab back into what it means in a form.
-        .on_action(|_: &IndentInline, window: &mut Window, _cx: &mut App| window.focus_next())
-        .on_action(|_: &OutdentInline, window: &mut Window, _cx: &mut App| window.focus_prev());
+        .on_action(|_: &IndentInline, window: &mut Window, _cx: &mut App| window.focus_next(_cx))
+        .on_action(|_: &OutdentInline, window: &mut Window, _cx: &mut App| window.focus_prev(_cx));
     // Applied last, so a `.mt_2()` typed at the call site wins over the wrapper's box —
     // the same contract `Button` and `Card` offer.
     wrapper.style().refine(&style);
@@ -438,7 +453,7 @@ fn wrapper(width: FieldWidth, style: StyleRefinement) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AbsoluteLength, DefiniteLength, Length};
+    use gpui::{DefiniteLength, Length};
 
     /// Read back a `Div`'s refined style — the same trick `styled.rs` uses to assert on
     /// a helper without standing up a renderer.
@@ -449,10 +464,17 @@ mod tests {
     /// The pixel value of a length that is *definite*, or `None` for `auto`, a
     /// percentage, or nothing at all. A percentage is deliberately not a number here:
     /// the whole bug was treating one as if it were.
+    /// A declared width in logical pixels **at 100% zoom**.
+    ///
+    /// Field widths are emitted as rems so they ride app zoom (see [`zoomable`]), which
+    /// is still a *definite* length — the regression these tests guard is a field that
+    /// resolves to "whatever the parent says", and a rem is never that. Resolving at the
+    /// base rem size is what makes the assertions readable as the authored numbers.
     fn definite_px(length: Option<Length>) -> Option<f32> {
+        let base = crate::scale::UiScale::DEFAULT.rem_size();
         match length {
-            Some(Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(p)))) => {
-                Some(f32::from(p))
+            Some(Length::Definite(DefiniteLength::Absolute(abs))) => {
+                Some(f32::from(abs.to_pixels(base)))
             }
             _ => None,
         }
@@ -551,10 +573,12 @@ mod tests {
         // Enter chord would quietly take ctrl-Enter away from the screen around it —
         // which is what the DB tab runs a query with.
         assert!(is_field_submit(&InputEvent::PressEnter {
-            secondary: false
+            secondary: false,
+            shift: false
         }));
         assert!(!is_field_submit(&InputEvent::PressEnter {
-            secondary: true
+            secondary: true,
+            shift: false
         }));
     }
 

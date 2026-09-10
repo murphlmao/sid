@@ -24,4 +24,4 @@ unicode-segmentation.workspace = true
 # The icon registry's "every named icon really exists in the bundle" test loads the
 # embedded SVGs directly (`AssetSource::load`), so a typo or an upstream icon removal
 # fails the build instead of rendering an invisible glyph at runtime.
-gpui-component-assets.workspace = true
+gpui-kit-assets.workspace = true

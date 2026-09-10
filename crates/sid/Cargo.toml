@@ -7,11 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# App-shell spike. gpui is published on crates.io since Oct 2025; the pin lives in
+# App-shell. The `gpui-pre` 0.3 pre-release line; the pin lives in
 # `[workspace.dependencies]` so `sid` and `sid-ui` can never drift. Pre-1.0: expect
-# breaking changes between 0.2.x and later. Linux default features pull in
-# font-kit + wayland + x11 automatically.
+# breaking changes between minors. On this line `gpui` is the framework only — the
+# Linux windowing/rendering backends live in `gpui_platform` below, whose features
+# have to be named explicitly.
 gpui.workspace = true
+# The renderer's platform half (windowing + blade backends), split out of `gpui` in the
+# 0.3 pre-release line. Only the binary needs it: it owns the `application()` entry point
+# and the GPU pre-flight probe.
+gpui_platform.workspace = true
 # The component crate (2026-07-26 UI overhaul): semantic tokens, the cosmos ->
 # `gpui_component::ThemeColor` bridge, and every shared widget. A frontend crate, so it
 # may name gpui/gpui-component; it depends on no domain crate.
@@ -72,13 +77,13 @@ unicode-segmentation = "1"
 # back to the entity via channels.
 tokio.workspace = true
 # Widget library for the Database tab (Plan Wave 2, W1): SQL editor (tree-sitter
-# highlighting) + results table. GPUI-0.2.2-compatible; validated against dbflux/pgui
+# highlighting) + results table. Tracks the `gpui-pre` line pinned above; validated
 # precedent. `crates/sid` names it directly (the rendering surface) — DB drivers
 # themselves stay behind `sid_db`/`sid_core::db`, never named here.
 gpui-component.workspace = true
 # Bundled icon/font assets `gpui-component`'s widgets reference (sort-chevron icons on
-# `Table` columns, etc.) — wired in via `Application::new().with_assets(..)`.
-gpui-component-assets.workspace = true
+# `DataTable` columns, etc.) — wired in via `gpui_platform::application().with_assets(..)`.
+gpui-kit-assets.workspace = true
 
 [dev-dependencies]
 # `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`

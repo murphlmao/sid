@@ -2,7 +2,7 @@
 //!
 //! Entry point: GPU pre-flight first (gpui's GPU-context init failure is an
 //! uncatchable panic, so it's probed in a subprocess and self-healed *before*
-//! `Application::new()` — see `sid_gpu`), then open the global store (seeding a
+//! `gpui_platform::application()` — see `sid_gpu`), then open the global store (seeding a
 //! demo set on first run) and the secret backend, then open the window over the
 //! single [`app::AppState`] entity.
 
@@ -20,7 +20,7 @@ mod keymap;
 mod ssh_connect;
 mod ui;
 
-use gpui::{AnyView, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{AnyView, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
 use sid_core::gpu::{GpuPreflight as _, RenderPath};
 
 fn main() {
@@ -56,7 +56,7 @@ fn main() {
                 // guarantees no surviving threads (its subprocess I/O is
                 // file+poll, threadless) — which is edition 2024's soundness
                 // condition for `set_var`. The pins must be exported before
-                // `Application::new()` below: the renderer reads them during
+                // `gpui_platform::application()` below: the renderer reads them during
                 // platform init.
                 unsafe { std::env::set_var(key, value) };
             }
@@ -78,16 +78,16 @@ fn main() {
     };
 
     // If this marker survives to the next startup, GPU bring-up below died —
-    // either the context panic in `Application::new()` or the renderer/surface
+    // either the context panic in `gpui_platform::application()` or the renderer/surface
     // failure inside `cx.open_window()`. `ensure_renderable` then distrusts its
     // cached verdict and re-probes, so a machine that breaks *without* a
     // driver-fingerprint change still self-heals on the following launch.
     preflight.mark_launch_attempt();
 
-    Application::new()
+    gpui_platform::application()
         // Bundled icon/font assets `gpui-component`'s widgets reference (e.g. `Table`
         // column sort chevrons) — required by W5's SQL editor + results table.
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(gpui_kit_assets::Assets)
         .run(move |cx| {
             ui::init(cx);
             gpui_component::init(cx);
@@ -162,7 +162,7 @@ fn main() {
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
             );
-            // Only NOW is the marker's job done. `Application::new()` above proves
+            // Only NOW is the marker's job done. `application()` above proves
             // the GPU *context* only (gpui wayland/client.rs `BladeContext::new()`);
             // the renderer and its Vulkan surface are built in here —
             // `BladeRenderer::new(gpu_context, &raw_window, config)?` in gpui's
@@ -185,8 +185,8 @@ fn main() {
 
 /// `sid --gpu-probe`: the crash-test child `sid_gpu`'s pre-flight spawns.
 ///
-/// Constructing `Application` eagerly initializes the platform GPU context
-/// (gpui-0.2.2 `src/platform.rs` `current_platform` → Wayland/X11 client →
+/// Constructing the `Application` eagerly initializes the platform GPU context
+/// (`gpui_platform::current_platform` → Wayland/X11 client →
 /// `BladeContext::new().expect(..)`) — on a broken machine that is an
 /// uncatchable panic, i.e. a nonzero exit, which is exactly the signal the
 /// parent wants. On a healthy one, blade's `Adapter: "..."` log line lands on
@@ -196,7 +196,7 @@ fn run_gpu_probe() -> ! {
     env_logger::Builder::new()
         .parse_filters("warn,blade_graphics=info")
         .init();
-    let _app = Application::new();
+    let _app = gpui_platform::application();
     std::process::exit(0);
 }
 

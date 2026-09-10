@@ -52,6 +52,13 @@ pub enum Action {
     /// shared filter `TextInput` only (`app::dispatch_action`); a no-op everywhere else
     /// until later tabs grow their own filter input.
     FocusFilter,
+    /// Zoom the whole UI in one rung — chrome, tables, forms and the SSH terminal's
+    /// cell grid together (`sid_ui::UiScale`).
+    ZoomIn,
+    /// Zoom the whole UI out one rung.
+    ZoomOut,
+    /// Return the UI to 100%.
+    ZoomReset,
 }
 
 impl Action {
@@ -77,6 +84,9 @@ impl Action {
             Action::Settings => "Settings",
             Action::CheatSheet => "Keyboard Shortcuts",
             Action::FocusFilter => "Find / Filter",
+            Action::ZoomIn => "Zoom In",
+            Action::ZoomOut => "Zoom Out",
+            Action::ZoomReset => "Reset Zoom",
         }
     }
 
@@ -108,6 +118,9 @@ impl Action {
             Action::Settings => "settings",
             Action::CheatSheet => "cheat_sheet",
             Action::FocusFilter => "focus_filter",
+            Action::ZoomIn => "zoom_in",
+            Action::ZoomOut => "zoom_out",
+            Action::ZoomReset => "zoom_reset",
         }
     }
 
@@ -137,6 +150,9 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::Settings,
     Action::CheatSheet,
     Action::FocusFilter,
+    Action::ZoomIn,
+    Action::ZoomOut,
+    Action::ZoomReset,
 ];
 
 /// Whether the keyboard focus is currently inside a live SSH terminal pane — the one
@@ -320,6 +336,29 @@ pub fn default_bindings() -> Vec<Binding> {
             Action::FocusFilter,
         ),
         binding(chord("/", true, None), NormalOnly, Action::FocusFilter),
+        // Zoom (GitHub #4). `Global`, i.e. claimed even inside a focused terminal, and
+        // that is the deliberate part.
+        //
+        // The terminal WOULD otherwise eat all four: `key_to_bytes`'s Ctrl branch only
+        // fires for ASCII letters, so `-`/`=`/`0`/`+` fall through to its `key_char`
+        // arm and get written to the PTY as literal characters. That is not a control
+        // code being preserved — xkb's Ctrl transformation leaves these keysyms
+        // untouched (it maps `@`..`~`, space, `2`-`8`, `/` and nothing else), so there
+        // is no `Ctrl+-` byte for a shell to receive and nothing is being taken away
+        // from readline. Every terminal emulator sid is measured against (kitty,
+        // foot, gnome-terminal) binds exactly these four to font zoom for the same
+        // reason. The root handler's `cx.stop_propagation()` is what enforces it.
+        //
+        // `=` and `+` are the same physical key: unshifted xkb resolves it to
+        // `Keysym::equal` -> `"="`, shifted to `Keysym::plus` -> `"+"`, and gpui folds
+        // the shifted character into `Keystroke::key`. Binding both is what makes
+        // "ctrl and the plus key" work whether or not the user reaches for shift, and
+        // is why `"+"` joins `REBINDABLE_KEYS`. Symbol chords are shift-agnostic
+        // (`shift: None`) for that same folding reason -- see `shift_for`.
+        binding(chord("=", true, None), Global, Action::ZoomIn),
+        binding(chord("+", true, None), Global, Action::ZoomIn),
+        binding(chord("-", true, None), Global, Action::ZoomOut),
+        binding(chord("0", true, Some(false)), Global, Action::ZoomReset),
     ];
 
     for (n, digit) in [(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5"), (6, "6")] {
@@ -444,7 +483,7 @@ pub const REBINDABLE_KEYS: &[&str] = &[
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", //
     "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", //
     "tab", "pageup", "pagedown", "home", "end", //
-    ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`", "?",
+    ",", ".", "/", ";", "'", "[", "]", "\\", "-", "=", "`", "?", "+",
 ];
 
 /// Intern `key` into the [`REBINDABLE_KEYS`] allowlist, case-insensitively. `None` means
@@ -1236,6 +1275,73 @@ mod tests {
             },
             key: k.to_string(),
             key_char: None,
+        }
+    }
+
+    // ---- zoom (GitHub #4) ----------------------------------------------------------
+
+    #[test]
+    fn zoom_resolves_inside_a_focused_terminal_as_well_as_outside_it() {
+        // The precedence decision, stated as a test. These are `Global`, so the root
+        // handler claims them and `cx.stop_propagation()` keeps them out of the PTY.
+        // Were they `NormalOnly`, `resolve` would return `None` in a focused terminal
+        // and `key_to_bytes` would write a literal `-` into the shell instead.
+        let b = default_bindings();
+        for focus in [FocusContext::Normal, FocusContext::Terminal] {
+            assert_eq!(
+                resolve(&ctrl("-"), focus, &b),
+                Some(Action::ZoomOut),
+                "{focus:?}"
+            );
+            assert_eq!(
+                resolve(&ctrl("="), focus, &b),
+                Some(Action::ZoomIn),
+                "{focus:?}"
+            );
+            assert_eq!(
+                resolve(&ctrl("0"), focus, &b),
+                Some(Action::ZoomReset),
+                "{focus:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_shifted_half_of_the_plus_key_zooms_in_too() {
+        // `Ctrl` plus the key labelled `+` reaches gpui as `key: "+"` when shift is held
+        // and `key: "="` when it is not — xkb folds the shifted character in. A user
+        // pressing "ctrl and plus" means one thing either way.
+        let b = default_bindings();
+        assert_eq!(
+            resolve(&ctrl_shift("+"), FocusContext::Normal, &b),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            resolve(&ctrl("+"), FocusContext::Normal, &b),
+            Some(Action::ZoomIn)
+        );
+    }
+
+    #[test]
+    fn zoom_reset_does_not_steal_a_bare_zero_or_a_tab_accelerator() {
+        // `Ctrl+0` sits beside `Ctrl+1..6`; a bare `0` is a character someone is typing.
+        let b = default_bindings();
+        assert_eq!(resolve(&key("0"), FocusContext::Normal, &b), None);
+        assert_eq!(
+            resolve(&ctrl("1"), FocusContext::Normal, &b),
+            Some(Action::PrimaryTab(1))
+        );
+    }
+
+    #[test]
+    fn every_zoom_action_is_bound_out_of_the_box() {
+        let b = default_bindings();
+        for action in [Action::ZoomIn, Action::ZoomOut, Action::ZoomReset] {
+            assert!(
+                primary_shortcut(action, &b).is_some(),
+                "{} ships unbound",
+                action.label()
+            );
         }
     }
 

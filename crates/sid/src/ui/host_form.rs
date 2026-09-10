@@ -14,10 +14,14 @@
 //! paths (validation, the attributive add-guard, and the keyring lifecycle) are
 //! unit-tested without gpui; rendering is observation-gated.
 
+use std::path::PathBuf;
+use std::rc::Rc;
+
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    SharedString, Window, actions, div, prelude::*, rgb,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Global, KeyDownEvent,
+    PathPromptOptions, SharedString, Window, actions, div, prelude::*, rgb,
 };
+use sid_core::keys::{IdentityScan as _, KeyCandidate, PreferredAuth, preferred, preferred_auth};
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{AuthMethod, DefaultScope, Host, Scope};
 
@@ -25,8 +29,8 @@ use super::TextInput;
 use super::text_input::next_focus_index;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    Button, Elevation, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
-    Typography as _, h_flex, v_flex,
+    Button, Elevation, Icon, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _, Toast,
+    Typography as _, caveat_line, h_flex, v_flex,
 };
 
 actions!(
@@ -58,6 +62,98 @@ pub enum SaveTarget {
     Workspace,
     /// The machine-global redb store.
     Global,
+}
+
+// ---- opening an add form with something already in it (issue #2) --------------------
+
+/// What an add form should open holding, plus what to do once it has been saved.
+///
+/// Quick-connect's *"that host isn't saved — add it"* path: everything the user already
+/// typed into the filter box goes straight into the fields, so the form is a
+/// confirmation rather than a re-type.
+pub(crate) struct AddPrefill {
+    /// The record's proposed name.
+    pub alias: String,
+    /// The login.
+    pub user: String,
+    /// The hostname or address.
+    pub host: String,
+    /// The port.
+    pub port: u16,
+    /// Run once the owner has had its chance to write the record — see [`AfterSave`].
+    pub after_save: Option<AfterSave>,
+}
+
+/// The follow-up an opener attaches to a prefilled add: the submitted host and the layer
+/// it was aimed at.
+///
+/// A closure rather than a flag on [`Submission`], so the form stays as ignorant of the
+/// store as it has always been (see this module's opening comment). Only the opener knows
+/// what a saved record is *for* — quick-connect uses this to dial the connection it just
+/// talked the user into saving. It runs on the turn of the effect loop *after* the submit
+/// event, so by the time it fires the record is either written or refused; it is expected
+/// to re-check the store rather than assume.
+pub(crate) type AfterSave = Rc<dyn Fn(&Host, &Scope, &mut Window, &mut App)>;
+
+/// A one-shot handoff for the next [`HostForm::new_add`].
+///
+/// **Why a global and not a parameter.** Every add-connection entry point funnels through
+/// `AppState::open_add_form`, which builds the form and owns both it and its event
+/// subscription — all three private to `app.rs`, which is outside this change's blast
+/// radius. A gpui `Global` is the framework's own answer to exactly this shape: one value,
+/// set at one call site and consumed at another, on the single main thread, with no
+/// second owner and no lifetime to thread through.
+///
+/// It is **taken**, not read, so a prefill can never bleed into a later form: a plain
+/// `+ add connection` click that follows a cancelled quick-connect add opens empty.
+/// Collapse this into an `open_add_form(prefill)` parameter once `app.rs` is free.
+#[derive(Default)]
+struct PendingAdd(Option<AddPrefill>);
+
+impl Global for PendingAdd {}
+
+/// Queue `prefill` for the next add form that opens.
+pub(crate) fn queue_add_prefill(cx: &mut App, prefill: AddPrefill) {
+    cx.set_global(PendingAdd(Some(prefill)));
+}
+
+/// Take whatever was queued, leaving nothing behind for the form after this one.
+fn take_add_prefill(cx: &mut App) -> Option<AddPrefill> {
+    cx.has_global::<PendingAdd>()
+        .then(|| cx.global_mut::<PendingAdd>().0.take())
+        .flatten()
+}
+
+/// What this machine can authenticate with, as the form needs it: the keys on disk, where
+/// they were found, and whether an agent is actually there.
+struct MachineIdentities {
+    dir: PathBuf,
+    keys: Vec<KeyCandidate>,
+    agent: bool,
+}
+
+/// Ask the machine what it has. The one place in this crate that names a concrete
+/// [`sid_core::keys::IdentityScan`] implementation — composition-root work, done here
+/// because `app.rs` (which constructs this form) is out of reach; move the call there and
+/// pass the result in when it is not.
+///
+/// Every failure collapses to "nothing found", because there is nothing else the form
+/// could usefully do with one: no `$HOME`, no `~/.ssh`, and an unreadable `~/.ssh` all
+/// produce the same screen — a picker that says where it looked and a field to type a
+/// path into.
+fn scan_identities() -> MachineIdentities {
+    let Ok(local) = sid_ssh::keyscan::LocalIdentities::from_env() else {
+        return MachineIdentities {
+            dir: PathBuf::new(),
+            keys: Vec::new(),
+            agent: false,
+        };
+    };
+    MachineIdentities {
+        dir: local.key_dir(),
+        keys: local.keys().unwrap_or_default(),
+        agent: local.agent_available(),
+    }
 }
 
 /// Add a new host, or edit an existing one in place.
@@ -114,6 +210,12 @@ pub struct HostForm {
     /// `workspace` save target and names it in messages.
     workspace: Option<(Scope, SharedString)>,
     error: Option<SharedString>,
+    /// What this machine can authenticate with (issue #2) — the key picker's contents,
+    /// and the fact that decides whether agent auth is a sane default at all.
+    identities: MachineIdentities,
+    /// The opener's follow-up, if it asked for one. Kept (not taken) across a failed
+    /// submit so a corrected re-save still runs it.
+    after_save: Option<AfterSave>,
     focus_handle: FocusHandle,
 }
 
@@ -123,6 +225,8 @@ impl HostForm {
     /// `AppState::secrets_degraded` (round-D §A.5) — memory-only backend swaps the
     /// password field's helper copy to say so, since it means a password entered here
     /// won't outlive this session.
+    /// A prefill queued by [`queue_add_prefill`] (quick-connect's "add the thing you just
+    /// typed") fills the fields and attaches its follow-up.
     pub fn new_add(
         cx: &mut Context<Self>,
         workspace: Option<(Scope, SharedString)>,
@@ -130,8 +234,29 @@ impl HostForm {
         secrets_degraded: bool,
     ) -> Self {
         let workspace_active = workspace.is_some();
-        let mut form = Self::new_inner(cx, workspace, None, secrets_degraded);
+        let prefill = take_add_prefill(cx);
+        let seed = prefill.as_ref().map(|p| Host {
+            alias: p.alias.clone(),
+            user: p.user.clone(),
+            host: p.host.clone(),
+            port: p.port,
+            secret_ref: None,
+            auth: AuthMethod::Agent,
+            folder: None,
+        });
+        let mut form = Self::new_inner(cx, workspace, seed.as_ref(), secrets_degraded);
         form.save_to = preselect(default_scope, workspace_active);
+        form.after_save = prefill.and_then(|p| p.after_save);
+        // Issue #2's root cause, fixed where a record is *born*: `AuthMethod::Agent` is
+        // the `#[default]`, so on a machine with no agent — the normal case for a
+        // desktop launch, which inherits no `SSH_AUTH_SOCK` — every host sid has ever
+        // added was created pointing at something that was never there, and only said so
+        // at connect time. With a key already on disk, the key is the honest default.
+        if preferred_auth(form.identities.agent, !form.identities.keys.is_empty())
+            == PreferredAuth::Key
+        {
+            form.auth = AuthChoice::Key;
+        }
         form
     }
 
@@ -201,6 +326,16 @@ impl HostForm {
             Some(AuthMethod::Key { path }) => (AuthChoice::Key, Some(path.clone())),
         };
 
+        // Issue #2, second half: *"the default key path be fine"*. A record that already
+        // names a key keeps it; everything else opens with the conventional one this
+        // machine actually has (`id_ed25519`, then `id_rsa`, then whatever else the scan
+        // turned up — `sid_core::keys::preferred`). Filling it in even for an agent- or
+        // password-auth record is deliberate: switching the segment to `key` then costs
+        // nothing, which is exactly the move a failed agent connect asks for.
+        let identities = scan_identities();
+        let key_path_value = key_path_value
+            .or_else(|| preferred(&identities.keys).map(|c| c.path.display().to_string()));
+
         Self {
             alias: mk(
                 cx,
@@ -226,18 +361,20 @@ impl HostForm {
             workspace,
             mode: FormMode::Add,
             error: None,
+            identities,
+            after_save: None,
             focus_handle: cx.focus_handle(),
         }
     }
 
     /// Focus the first editable field: alias when adding, user when editing (the alias
     /// is locked in edit mode).
-    pub fn focus_first(&self, window: &mut Window, cx: &App) {
+    pub fn focus_first(&self, window: &mut Window, cx: &mut App) {
         let target = match &self.mode {
             FormMode::Add => &self.alias,
             FormMode::Edit { .. } => &self.user,
         };
-        target.read(cx).focus(window);
+        TextInput::focus(target, window, cx);
     }
 
     /// Surface an owner-side failure (guard/secret/store) in the form's error line.
@@ -305,7 +442,7 @@ impl HostForm {
             None if backwards => fields.len() - 1,
             None => 0,
         };
-        fields[target].read(cx).focus(window);
+        TextInput::focus(&fields[target], window, cx);
     }
 
     /// Intercept Tab/Shift+Tab on the bubble phase before it can reach the focused
@@ -349,9 +486,53 @@ impl HostForm {
         (!input.is_empty()).then(|| input.content().to_string())
     }
 
+    /// Point the key-path field at `path` — the picker's and the file dialog's one write
+    /// into the form.
+    fn set_key_path(&mut self, path: String, cx: &mut Context<Self>) {
+        self.key_path
+            .update(cx, |input, cx| input.set_content(path, cx));
+        self.error = None;
+        cx.notify();
+    }
+
+    /// Open the platform file dialog on a key the scan did not turn up — issue #2's
+    /// *"let the user select a key if we can't find any despite them saying a key
+    /// exists"*.
+    ///
+    /// A dialog is not guaranteed to exist (on Linux it is a desktop portal, which a bare
+    /// compositor may not run), so a failure is answered with the fallback that always
+    /// works rather than with the portal's error: the field above takes a typed path.
+    fn browse_for_key(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use this key".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let chosen = picked.await;
+            this.update(cx, |form, cx| match chosen {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.first() {
+                        form.set_key_path(path.display().to_string(), cx);
+                    }
+                }
+                // Dismissed. Nothing to say.
+                Ok(Ok(None)) => {}
+                _ => form.set_error(
+                    "no file picker is available here — type the key's path into the \
+                     field above",
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Validate and emit [`HostFormEvent::Submit`]; on a validation miss, show the
     /// message and stay open.
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let alias = match &self.mode {
             FormMode::Add => self.alias.read(cx).content().to_string(),
             FormMode::Edit { original, .. } => original.alias.clone(),
@@ -383,12 +564,22 @@ impl HostForm {
             FormMode::Edit { original, .. } => Some(original.clone()),
         };
         self.error = None;
+        let saved = host.clone();
+        let layer = target.clone();
         cx.emit(HostFormEvent::Submit(Box::new(Submission {
             host,
             target,
             old,
             secret,
         })));
+        // The opener's follow-up, one turn of the effect loop later. `Window::defer`
+        // queues behind the `Emit` above, so the owner has already run the add-mode
+        // guard, staged the secret and written (or refused) the record by the time this
+        // fires — and it survives this form being dropped by that same handler, which a
+        // subscription on this entity would not.
+        if let Some(after_save) = self.after_save.clone() {
+            window.defer(cx, move |window, cx| after_save(&saved, &layer, window, cx));
+        }
         cx.notify();
     }
 
@@ -446,6 +637,78 @@ impl HostForm {
                     })),
             ),
         )
+    }
+
+    /// The key picker: every private key this machine actually has, as a chip that fills
+    /// the path field, plus a way to reach one the scan never saw.
+    ///
+    /// Issue #2 asked for two things here and they are different requests. *"Autoscan for
+    /// a key"* is the common case and is already answered above the picker — the path
+    /// field opens filled in. This is the other one: *"let the user select a key if we
+    /// can't find any despite them saying a key exists"*. So the row is present whether
+    /// or not the scan found anything, and when it found nothing it says **where** it
+    /// looked — a picker that just renders empty leaves the user unable to tell a broken
+    /// scan from an empty `~/.ssh`.
+    ///
+    /// Nothing here reads a key. The chips are file names off the port's candidates (see
+    /// `sid_core::keys`' privacy invariant), and clicking one only writes a path into a
+    /// text field.
+    fn key_picker(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let theme = theme::active(cx).clone();
+        let current = self.key_path.read(cx).content().trim().to_string();
+        let dir = self.identities.dir.display().to_string();
+
+        let browse = Button::new("host-form-key-browse", "browse…")
+            .small()
+            .icon(Icon::Folder)
+            .tooltip("pick a key file this scan didn't find")
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.browse_for_key(cx);
+            }));
+
+        let found = match self.identities.keys.is_empty() {
+            true => div()
+                .child(caveat_line(format!("no keys found in {dir}")))
+                .into_any_element(),
+            false => {
+                let mut chips = h_flex().gap_1().flex_wrap();
+                for (index, candidate) in self.identities.keys.iter().enumerate() {
+                    let path = candidate.path.display().to_string();
+                    let chip = Button::new(("host-form-key", index), candidate.name.clone())
+                        .small()
+                        .tooltip(path.clone())
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            this.set_key_path(path.clone(), cx);
+                        }));
+                    // The chosen key is the accented one: with three or four chips on a
+                    // line, "which of these is in the field above" has to be answerable
+                    // without reading the path.
+                    let chosen = candidate.path.display().to_string() == current;
+                    chips = chips.child(match chosen {
+                        true => chip.primary(),
+                        false => chip,
+                    });
+                }
+                chips.into_any_element()
+            }
+        };
+
+        v_flex()
+            .gap_1()
+            .child(Self::field_label(
+                match self.identities.keys.is_empty() {
+                    true => "keys on this machine".to_string(),
+                    false => format!("keys in {dir}"),
+                },
+                cx,
+            ))
+            .child(found)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(browse)
+                    .child(div().text_meta(&theme).child("or type a path above")),
+            )
     }
 
     fn save_to_selector(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -592,7 +855,7 @@ impl Render for HostForm {
             .on_action(cx.listener(|_this, _: &FormCancel, _window, cx| {
                 cx.emit(HostFormEvent::Cancel);
             }))
-            .on_action(cx.listener(|this, _: &FormSubmit, _window, cx| this.submit(cx)))
+            .on_action(cx.listener(|this, _: &FormSubmit, window, cx| this.submit(window, cx)))
             .on_key_down(cx.listener(Self::handle_key_down))
             .child(
                 Modal::new("host-form", title)
@@ -613,6 +876,7 @@ impl Render for HostForm {
                     .when(self.auth == AuthChoice::Key, |modal| {
                         modal
                             .child(self.field("key path", &self.key_path, cx))
+                            .child(self.key_picker(cx))
                             .child(self.field("passphrase", &self.passphrase, cx))
                     })
                     .when(self.auth == AuthChoice::Password, |modal| {
@@ -628,7 +892,7 @@ impl Render for HostForm {
                         }),
                     ))
                     .footer(Button::new("host-form-save", "Save").primary().on_click(
-                        cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx)),
+                        cx.listener(|this, _ev: &ClickEvent, window, cx| this.submit(window, cx)),
                     )),
             )
     }

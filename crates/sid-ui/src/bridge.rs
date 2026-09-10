@@ -243,8 +243,8 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.info_foreground = hex(ink_on_info);
     colors.info_hover = hex(hover_of(t, info));
     colors.info_active = hex(pressed_of(t, info));
-    colors.bullish = hex(t.success);
-    colors.bearish = hex(t.danger);
+    colors.chart_bullish = hex(t.success);
+    colors.chart_bearish = hex(t.danger);
 
     // -- interaction ----------------------------------------------------
     // NOT sid's accent: this is the menu/list-item hover background.
@@ -308,7 +308,6 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.group_box_foreground = hex(t.fg);
     colors.group_box_title_foreground = hex(t.muted);
     colors.accordion = hex(t.surface);
-    colors.accordion_hover = hex(t.selection);
     colors.description_list_label = hex(t.surface);
     colors.description_list_label_foreground = hex(t.muted);
 

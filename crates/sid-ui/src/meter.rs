@@ -33,10 +33,11 @@
 
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative, rgb,
+    prelude::FluentBuilder as _, relative, rgb,
 };
 
 use crate::card::Card;
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
 use crate::typography::Typography;
@@ -290,7 +291,7 @@ impl RenderOnce for Meter {
 fn track(theme: &Theme) -> gpui::Div {
     div()
         .w_full()
-        .h(px(BAR_HEIGHT))
+        .h(scaled(BAR_HEIGHT))
         .rounded_sm()
         .bg(rgb(theme.border))
 }
@@ -301,8 +302,8 @@ fn segment_bar(theme: &Theme, fraction: f32) -> impl IntoElement + use<> {
     let height = bar_fraction(fraction);
     let fill = MeterTone::of(fraction).color(theme);
     v_flex()
-        .w(px(SEGMENT_WIDTH))
-        .h(px(SEGMENT_HEIGHT))
+        .w(scaled(SEGMENT_WIDTH))
+        .h(scaled(SEGMENT_HEIGHT))
         .justify_end()
         .rounded_sm()
         .bg(rgb(theme.border))

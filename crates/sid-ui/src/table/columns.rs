@@ -14,6 +14,7 @@ use gpui::px;
 use gpui_component::table::{Column, ColumnSort};
 
 use super::column_width::{ColumnWidth, resolve_widths};
+use crate::scale::UiScale;
 
 /// What the columns do **not** get out of the measured width, in logical pixels.
 ///
@@ -99,13 +100,21 @@ impl FillColumns {
         &self.columns[ix]
     }
 
-    /// Resize the columns to a measured viewport width, in logical pixels.
+    /// Resize the columns to a measured viewport width, in logical pixels, at the app
+    /// zoom currently in force.
     ///
     /// Returns whether anything actually moved — the caller uses that to decide whether
     /// the table needs a `TableState::refresh`, so that a steady viewport costs nothing
     /// after the frame it settles on.
-    pub fn sync(&mut self, viewport: f32) -> bool {
-        let resolved = resolve_widths(&self.declared, viewport - self.chrome);
+    ///
+    /// The `viewport` is a *real* measurement and is already zoomed; the declarations are
+    /// authored at 100% and are not. So the floors and the chrome reserve get scaled and
+    /// the viewport does not — get that backwards and zooming in truncates every cell
+    /// while the table keeps its original column widths. See [`ColumnWidth::scaled`].
+    pub fn sync(&mut self, viewport: f32, scale: UiScale) -> bool {
+        let declared: Vec<ColumnWidth> = self.declared.iter().map(|d| d.scaled(scale)).collect();
+        let chrome = f32::from(scale.scale_px(px(self.chrome)));
+        let resolved = resolve_widths(&declared, viewport - chrome);
         let mut changed = false;
         for (column, width) in self.columns.iter_mut().zip(resolved) {
             if (f32::from(column.width) - width).abs() >= REDRAW_EPSILON {
@@ -185,7 +194,7 @@ mod tests {
     #[test]
     fn sync_writes_resolved_widths_into_the_columns() {
         let mut cols = processes();
-        cols.sync(2000.);
+        cols.sync(2000., UiScale::DEFAULT);
         // The five non-growers hold their declared 432px; Name takes the rest.
         let name = 220. + (2000. - TABLE_CHROME - 652.);
         assert_eq!(widths(&cols), vec![70., 90., 80., name, 120., 72.]);
@@ -201,7 +210,7 @@ mod tests {
         // do. See `TABLE_CHROME`. Verified by capture at 2000x1200.
         let mut cols = processes();
         for viewport in [900., 1440., 2000., 3440.] {
-            cols.sync(viewport);
+            cols.sync(viewport, UiScale::DEFAULT);
             let total: f32 = widths(&cols).iter().sum();
             assert!(
                 total < viewport - REAL_CHROME,
@@ -218,7 +227,7 @@ mod tests {
         // dead space is back.
         let mut cols = processes();
         for viewport in [900., 1440., 2000., 3440.] {
-            cols.sync(viewport);
+            cols.sync(viewport, UiScale::DEFAULT);
             let total: f32 = widths(&cols).iter().sum();
             assert!(
                 (total - (viewport - TABLE_CHROME)).abs() < 0.01,
@@ -232,37 +241,37 @@ mod tests {
         // The declared widths are whatever the delegate typed; the first real viewport
         // is nearly always a different answer, and the table has to be told.
         let mut cols = processes();
-        assert!(cols.sync(2000.));
+        assert!(cols.sync(2000., UiScale::DEFAULT));
     }
 
     #[test]
     fn sync_reports_no_change_at_an_unchanged_viewport() {
         // This is what keeps the measure-and-refresh loop from running every frame.
         let mut cols = processes();
-        cols.sync(2000.);
-        assert!(!cols.sync(2000.));
-        assert!(!cols.sync(2000.));
+        cols.sync(2000., UiScale::DEFAULT);
+        assert!(!cols.sync(2000., UiScale::DEFAULT));
+        assert!(!cols.sync(2000., UiScale::DEFAULT));
     }
 
     #[test]
     fn sync_reports_a_change_when_the_viewport_changes() {
         let mut cols = processes();
-        cols.sync(2000.);
-        assert!(cols.sync(1200.));
-        assert!(cols.sync(2000.));
+        cols.sync(2000., UiScale::DEFAULT);
+        assert!(cols.sync(1200., UiScale::DEFAULT));
+        assert!(cols.sync(2000., UiScale::DEFAULT));
     }
 
     #[test]
     fn sync_ignores_a_sub_pixel_viewport_wobble() {
         let mut cols = processes();
-        cols.sync(2000.);
-        assert!(!cols.sync(2000.2));
+        cols.sync(2000., UiScale::DEFAULT);
+        assert!(!cols.sync(2000.2, UiScale::DEFAULT));
     }
 
     #[test]
     fn a_custom_chrome_reserve_is_honoured() {
         let mut cols = processes().chrome(0.);
-        cols.sync(2000.);
+        cols.sync(2000., UiScale::DEFAULT);
         let total: f32 = widths(&cols).iter().sum();
         assert!((total - 2000.).abs() < 0.01, "{total}");
     }

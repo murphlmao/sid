@@ -12,13 +12,13 @@
 //! Run with `cargo run --example db_widgets_spike -p sid` (needs a Wayland/X11 display).
 
 use gpui::{
-    App, Application, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Bounds, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme, Theme, ThemeMode,
-    input::{Input, InputState},
-    table::{Column, Table, TableDelegate, TableState},
+    input::{Editor, EditorState},
+    table::{Column, DataTable, TableDelegate, TableState},
 };
 
 /// A handful of static rows — enough to prove the table paints a header, striped rows,
@@ -66,8 +66,8 @@ impl TableDelegate for SpikeDelegate {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
     fn render_td(
@@ -84,7 +84,7 @@ impl TableDelegate for SpikeDelegate {
 /// The spike view: a SQL code editor (tree-sitter highlighting) above a static results
 /// table — the pairing W5 wires to a real connection + `query_paged` call.
 struct SpikeView {
-    sql: Entity<InputState>,
+    sql: Entity<EditorState>,
     table: Entity<TableState<SpikeDelegate>>,
 }
 
@@ -99,10 +99,9 @@ impl SpikeView {
         // (incremental) edit path and was not re-tested here (no input-injection tool in
         // this sandbox). Single-line text renders correctly, as does the highlighting.
         let sql = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor("sql")
+            EditorState::new(window, cx)
+                .language("sql")
                 .line_number(true)
-                .rows(8)
                 .default_value("select id, name, email\nfrom users\nwhere id = 1;\n")
         });
         let table = cx.new(|cx| TableState::new(SpikeDelegate::new(), window, cx));
@@ -137,20 +136,20 @@ impl Render for SpikeView {
                     .border_1()
                     .border_color(rgb(0x2c2c30))
                     .bg(cx.theme().background)
-                    .child(Input::new(&self.sql)),
+                    .child(Editor::new(&self.sql)),
             )
             .child(
                 div()
                     .h(px(220.))
                     .w_full()
-                    .child(Table::new(&self.table).stripe(true)),
+                    .child(DataTable::new(&self.table).stripe(true)),
             )
     }
 }
 
 fn main() {
-    Application::new()
-        .with_assets(gpui_component_assets::Assets)
+    gpui_platform::application()
+        .with_assets(gpui_kit_assets::Assets)
         .run(|cx| {
             gpui_component::init(cx);
             let bounds = Bounds::centered(None, size(px(720.), px(560.)), cx);

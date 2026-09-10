@@ -14,14 +14,20 @@
 //! **No emoji, ever** — enforced for the whole workspace by `tests/hygiene.rs`. Lucide
 //! is monochrome line art, which is the house rule already.
 //!
-//! # What the bundle does not have
+//! # The bundle is now all of Lucide
 //!
-//! `gpui-component-assets` 0.5.1 ships **84** SVGs, not all of Lucide, and six glyphs
-//! sid's screens actually want are simply not among them. They are listed in
-//! [`UNBUNDLED`] with the control that wants each one, and pinned by a test that fails
-//! the day a bundle bump ships one — because the alternative to naming a gap is
-//! shipping a picture that means something else, which is how the destroy affordance
-//! spent a migration drawn as a **backspace key** (see [`Icon::Trash`]).
+//! `gpui-component-assets` 0.5.1 shipped **86** SVGs, a Lucide subset, and seven glyphs
+//! sid's screens wanted were simply not among them (`play`, `download`, `trash`,
+//! `pencil`, `container`, `boxes`, `network`). They were tracked in an `UNBUNDLED`
+//! ratchet, pinned by a test that would fail the day a bundle bump shipped one.
+//!
+//! The `gpui-kit-assets` 0.6.1 bump shipped **all** of them — the bundle is 1830 SVGs,
+//! the whole Lucide set — so the ratchet fired and has been retired. What it was
+//! protecting is now a to-do rather than a constraint: [`Icon::Trash`] can stop drawing
+//! `circle-x`, [`Icon::Rename`] can stop drawing `replace`, and the Database Run/Export
+//! controls plus Network's Docker/Kubernetes/Interfaces sub-views can all have the glyph
+//! they actually wanted. Each is a design decision about an existing screen, not a
+//! registry chore, so none of them was made as part of the dependency bump.
 //!
 //! The rule this file follows: a substitution is allowed only when the stand-in reads
 //! as the *same act* at 14px (`redo` for [`Icon::Refresh`] — a curved arrow is a re-run).
@@ -71,7 +77,7 @@ pub enum Icon {
     /// alias it read as a typography control, and at 14px mostly as noise. Lucide's
     /// `replace` (a rounded square with an arrow curving into a second one) is the
     /// least-wrong bundled stand-in: it says "put a different one of these here", which
-    /// is what a rename is. It is still not a pencil; see [`UNBUNDLED`].
+    /// is what a rename is. It is still not a pencil — the 0.6 bundle now ships one.
     Rename,
     /// Confirmed / selected.
     Check,
@@ -152,41 +158,6 @@ pub enum Icon {
     /// A date.
     Calendar,
 }
-
-/// Glyphs sid's screens want that the bundle does not contain, and what asked for each.
-///
-/// Each entry is a Lucide icon name (`play` -> `icons/play.svg`) that is **absent** from
-/// `gpui-component-assets` 0.5.1. `the_named_gaps_are_still_gaps` asserts the absence, so
-/// a bundle bump that ships one fails the build and prompts a registry entry — the list
-/// only shrinks, the same ratchet `tests/hygiene.rs` uses for the type scale.
-///
-/// This is deliberately a *list of gaps* rather than a list of approximations. Every one
-/// of these had a plausible-looking stand-in in the bundle and every stand-in meant
-/// something else:
-///
-/// - `play` -> `chevron-right` is a disclosure triangle, not a transport control;
-///   `arrow-right` is navigation. A Run button says "Run".
-/// - `download` -> `arrow-down` is already [`Icon::ArrowDown`] (demote) and would make
-///   "export" and "move this row down" the same picture in one toolbar.
-/// - `trash` -> the bundle's `delete` is the **backspace key** (see [`Icon::Trash`]).
-/// - `container` / `boxes` / `network` -> nothing in the bundle draws a container, a
-///   cluster or a NIC. `building-2`, `frame`, `map` and `gallery-vertical-end` are the
-///   nearest shapes and none of them is about a machine.
-pub const UNBUNDLED: &[(&str, &str)] = &[
-    ("play", "run / execute — the Database tab's Run button"),
-    ("download", "export — the Database tab's Export menu"),
-    ("trash", "destroy — Icon::Trash draws circle-x instead"),
-    ("pencil", "rename — Icon::Rename draws `replace` instead"),
-    (
-        "container",
-        "a container runtime — Network's Docker sub-view",
-    ),
-    ("boxes", "a cluster — Network's Kubernetes sub-view"),
-    (
-        "network",
-        "a network adapter — Network's Interfaces sub-view",
-    ),
-];
 
 impl Icon {
     /// Every registered icon — the test sweep, and a future gallery's source list.
@@ -329,7 +300,7 @@ mod tests {
     fn every_named_icon_exists_in_the_bundle() {
         // Loads the real embedded bytes: this is what catches a path typo or an icon
         // dropped by an upstream bump, at build time instead of at render time.
-        let assets = gpui_component_assets::Assets;
+        let assets = gpui_kit_assets::Assets;
         for &icon in Icon::ALL {
             let path = icon.path();
             let bytes = assets
@@ -356,34 +327,6 @@ mod tests {
             Icon::ALL.len(),
             "duplicate entry in Icon::ALL"
         );
-    }
-
-    #[test]
-    fn the_named_gaps_are_still_gaps() {
-        // The ratchet. `UNBUNDLED` is a promise that these seven glyphs do not exist to
-        // be used — if a bundle bump ships one, the honest answer changes from "the
-        // Run button says Run" to "the Run button gets a play triangle", and this test
-        // is what forces that conversation instead of letting the list rot.
-        let bundled: Vec<String> = gpui_component_assets::Assets
-            .list("icons/")
-            .expect("the bundle lists its icons")
-            .into_iter()
-            .map(|p| p.to_string())
-            .collect();
-        assert!(
-            bundled.len() > 50,
-            "the bundle listing came back nearly empty ({}) — this test would pass \
-             vacuously",
-            bundled.len()
-        );
-        for (name, wanted_by) in UNBUNDLED {
-            let path = format!("icons/{name}.svg");
-            assert!(
-                !bundled.contains(&path),
-                "the bundle now ships {path} ({wanted_by}) — give it an Icon entry and \
-                 delete its UNBUNDLED line"
-            );
-        }
     }
 
     #[test]

@@ -46,14 +46,25 @@
 //! an emphasis, and sid already spends colour on meaning. `MEDIUM` (500) is the whole
 //! emphasis budget, and it is spent on [`Title`] and [`Label`] only.
 //!
-//! # `px`, not `rems`
+//! # Authored in px, emitted in rems
 //!
-//! `gpui`'s `text_xs()`/`text_sm()` are `rems(0.75)`/`rems(0.875)` against a 16px
-//! `rem_size` sid never changes, so they were always 12px and 14px in disguise. Naming
-//! the pixels removes a layer of indirection nothing was using, and matches how the
-//! rest of the design system measures (`px_3`, `h(px(42.))`, the terminal's 14px cell).
-//! `gpui` pixels are *logical* — the compositor scale factor is applied below this
-//! layer — so a px scale is still HiDPI-correct.
+//! The ladder is *stated* in pixels — [`TypeRole::size`] returns 12/14/16 and that is
+//! the number this module is about. What reaches `gpui` is [`TypeRole::length`], the
+//! same measurement expressed in rems.
+//!
+//! This module used to say "px, not rems", on the grounds that `gpui`'s
+//! `text_xs()`/`text_sm()` are `rems(0.75)`/`rems(0.875)` against a 16px `rem_size` sid
+//! never changed — so they were 12px and 14px in disguise and the indirection bought
+//! nothing. App zoom (GitHub #4) retired that premise: `rem_size` is now the one lever
+//! the whole UI scales by, because `gpui`'s spacing shorthands (`.p_2()`, `.gap_1()`,
+//! `.h_8()`, `.rounded_md()`) are themselves rems and move with it. Text measured in
+//! absolute pixels would have been the one thing that *didn't* — the type scale and the
+//! spacing scale would desynchronize the moment a user pressed `ctrl +`.
+//!
+//! So the currency changed and the ladder did not: [`crate::scale::scaled`] converts an
+//! authored pixel into rems at the base rem size, which is exactly the identity at 100%
+//! zoom. `gpui` pixels are *logical* — the compositor scale factor is applied below this
+//! layer — so the scale is still HiDPI-correct, and app zoom is a second factor on top.
 //!
 //! [`Title`]: TypeRole::Title
 //! [`Body`]: TypeRole::Body
@@ -62,7 +73,9 @@
 //! [`Mono`]: TypeRole::Mono
 //! [`MonoMeta`]: TypeRole::MonoMeta
 
-use gpui::{FontWeight, Pixels, Styled, px, rgb};
+use gpui::{FontWeight, Pixels, Rems, Styled, px, rgb};
+
+use crate::scale::scaled;
 
 use crate::theme::Theme;
 
@@ -86,8 +99,12 @@ const META_PX: f32 = 12.;
 /// What a role decides: everything about a run of text except the words.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TypeSpec {
-    /// Font size, in logical pixels.
+    /// Font size, in logical pixels **at 100% zoom** — the number the ladder is about.
+    /// What is handed to `gpui` is [`TypeSpec::length`]; see the module docs.
     pub size: Pixels,
+    /// The same font size in rems, which is the form `gpui` resolves against the
+    /// window's rem size — i.e. the form that carries app zoom.
+    pub length: Rems,
     /// Font weight — only `NORMAL` or `MEDIUM` ever appear.
     pub weight: FontWeight,
     /// `Some(UI_MONO)` for the monospace roles, `None` for the proportional ones.
@@ -131,13 +148,25 @@ pub const ALL_TYPE_ROLES: &[TypeRole] = &[
 ];
 
 impl TypeRole {
-    /// This role's font size. One of exactly three values.
+    /// This role's font size in logical pixels at 100% zoom. One of exactly three values.
+    ///
+    /// The ladder as authored. To *apply* a size, use [`TypeRole::length`] (or, better,
+    /// [`Typography`]) — an absolute pixel would sit out app zoom while every gpui
+    /// spacing shorthand around it scaled.
     pub const fn size(self) -> Pixels {
         match self {
             TypeRole::Title => px(TITLE_PX),
             TypeRole::Body | TypeRole::Mono => px(BODY_PX),
             TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => px(META_PX),
         }
+    }
+
+    /// This role's font size as a zoomable length — [`TypeRole::size`] in rems.
+    ///
+    /// Exactly the authored pixel count at the base rem size, and 1.5x that at 150%
+    /// zoom. This is what [`Typography::text_role`] emits.
+    pub fn length(self) -> Rems {
+        scaled(f32::from(self.size()))
     }
 
     /// This role's font weight. `MEDIUM` is the entire emphasis budget.
@@ -173,9 +202,10 @@ impl TypeRole {
     }
 
     /// The whole decision, as one value — the pure function the renderer applies.
-    pub const fn spec(self, theme: &Theme) -> TypeSpec {
+    pub fn spec(self, theme: &Theme) -> TypeSpec {
         TypeSpec {
             size: self.size(),
+            length: self.length(),
             weight: self.weight(),
             family: self.family(),
             ink: self.ink(theme),
@@ -204,7 +234,7 @@ pub trait Typography: Styled + Sized {
     /// Apply `role`'s complete spec: size, weight, family, ink.
     fn text_role(self, role: TypeRole, theme: &Theme) -> Self {
         let spec = role.spec(theme);
-        let sized = self.text_size(spec.size).font_weight(spec.weight);
+        let sized = self.text_size(spec.length).font_weight(spec.weight);
         let familied = match spec.family {
             Some(family) => sized.font_family(family),
             None => sized,
@@ -385,6 +415,7 @@ mod tests {
             TypeRole::MonoMeta.spec(&t),
             TypeSpec {
                 size: px(12.),
+                length: crate::scale::scaled(12.),
                 weight: FontWeight::NORMAL,
                 family: Some(UI_MONO),
                 ink: t.muted,
@@ -396,22 +427,19 @@ mod tests {
     fn applying_a_role_sets_size_weight_family_and_ink() {
         let t = cosmos();
         let s = style_of(div().text_mono_meta(&t));
-        let text = s.text.clone().unwrap_or_default();
-        assert_eq!(text.font_size, Some(px(12.).into()));
+        let text = s.text.clone();
+        assert_eq!(text.font_size, Some(TypeRole::MonoMeta.length().into()));
         assert_eq!(text.font_weight, Some(FontWeight::NORMAL));
-        assert_eq!(text.font_family.as_deref().map(|f| &**f), Some(UI_MONO));
+        assert_eq!(text.font_family.as_deref(), Some(UI_MONO));
         assert_eq!(text.color, Some(Hsla::from(rgb(t.muted))));
     }
 
     #[test]
     fn a_proportional_role_leaves_the_family_alone() {
         let t = cosmos();
-        let text = style_of(div().text_title(&t))
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(div().text_title(&t)).text.clone();
         assert_eq!(text.font_family, None, "only the mono roles set a family");
-        assert_eq!(text.font_size, Some(px(16.).into()));
+        assert_eq!(text.font_size, Some(TypeRole::Title.length().into()));
         assert_eq!(text.font_weight, Some(FontWeight::MEDIUM));
         assert_eq!(text.color, Some(Hsla::from(rgb(t.fg_strong))));
     }
@@ -421,10 +449,7 @@ mod tests {
         // The cascade bug this fixes: `text_xs()` set a size and nothing else, so a hint
         // inside a bold header inherited the bold. A role is absolute.
         let t = cosmos();
-        let text = style_of(div().text_meta(&t))
-            .text
-            .clone()
-            .unwrap_or_default();
+        let text = style_of(div().text_meta(&t)).text.clone();
         assert_eq!(
             text.font_weight,
             Some(FontWeight::NORMAL),
@@ -451,8 +476,8 @@ mod tests {
                 .iter()
                 .find(|r| r.name() == name)
                 .expect("named role");
-            let text = style.text.clone().unwrap_or_default();
-            assert_eq!(text.font_size, Some(role.size().into()), "{name} size");
+            let text = style.text.clone();
+            assert_eq!(text.font_size, Some(role.length().into()), "{name} size");
             assert_eq!(text.font_weight, Some(role.weight()), "{name} weight");
             assert_eq!(
                 text.color,
@@ -460,6 +485,45 @@ mod tests {
                 "{name} ink"
             );
         }
+    }
+
+    #[test]
+    fn a_roles_emitted_length_is_its_authored_pixel_size_when_unzoomed() {
+        // The no-op property for the currency change: moving the ladder from absolute
+        // pixels to rems must not move a single glyph at 100% zoom.
+        for &role in ALL_TYPE_ROLES {
+            assert_eq!(
+                role.length()
+                    .to_pixels(crate::scale::UiScale::DEFAULT.rem_size()),
+                role.size(),
+                "{}: {:?} != {:?} at 100%",
+                role.name(),
+                role.length(),
+                role.size()
+            );
+        }
+    }
+
+    #[test]
+    fn the_whole_ladder_moves_with_the_rem_size() {
+        // The reason for the change: text has to scale with the spacing around it. If a
+        // role ever went back to an absolute pixel this is the test that notices.
+        let zoomed = crate::scale::UiScale::from_percent(150).rem_size();
+        assert_eq!(TypeRole::Title.length().to_pixels(zoomed), px(24.));
+        assert_eq!(TypeRole::Body.length().to_pixels(zoomed), px(21.));
+        assert_eq!(TypeRole::Meta.length().to_pixels(zoomed), px(18.));
+    }
+
+    #[test]
+    fn applying_a_role_emits_the_zoomable_length_not_the_authored_pixel() {
+        // A `px(..)` here would render 14px at every zoom level while its padding grew.
+        let t = cosmos();
+        let text = style_of(div().text_body(&t)).text.clone();
+        assert_eq!(
+            text.font_size,
+            Some(gpui::AbsoluteLength::Rems(TypeRole::Body.length())),
+            "the scale emits rems, so it rides `Window::set_rem_size`"
+        );
     }
 
     #[test]

@@ -96,6 +96,27 @@ impl ColumnWidth {
         }
     }
 
+    /// This declaration at `scale` — every px floor multiplied by the app zoom.
+    ///
+    /// Column widths are the one part of the design system `Window::set_rem_size` cannot
+    /// reach: they are resolved here, in Rust, against a viewport measured in real
+    /// pixels, and written back to `gpui-component`'s `Column.width` as `Pixels`. So the
+    /// floors have to be scaled explicitly, or zooming in grows the text inside a cell
+    /// while the cell stays put and truncates it.
+    ///
+    /// Weights are ratios and are left alone.
+    pub fn scaled(self, scale: crate::scale::UiScale) -> Self {
+        let at = |length: f32| f32::from(scale.scale_px(gpui::px(length)));
+        match self {
+            Self::Fixed(width) => Self::Fixed(at(width)),
+            Self::Min(width) => Self::Min(at(width)),
+            Self::Grow { weight, min } => Self::Grow {
+                weight,
+                min: at(min),
+            },
+        }
+    }
+
     /// The narrowest this column may ever render.
     pub const fn floor(self) -> f32 {
         match self {
@@ -383,6 +404,89 @@ mod tests {
                     "{viewport}px, column {i}: {got} < floor {}",
                     spec.floor()
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+    use crate::scale::UiScale;
+
+    #[test]
+    fn a_declaration_is_untouched_when_the_ui_is_unzoomed() {
+        // Introducing the scale hop must not move a single existing table.
+        for spec in [
+            ColumnWidth::Fixed(96.0),
+            ColumnWidth::Min(120.0),
+            ColumnWidth::grow(),
+            ColumnWidth::grow().weight(3.0).min_width(220.0),
+        ] {
+            assert_eq!(spec.scaled(UiScale::DEFAULT), spec, "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn every_kind_of_floor_grows_with_the_zoom() {
+        let at150 = UiScale::from_percent(150);
+        assert_eq!(
+            ColumnWidth::Fixed(96.0).scaled(at150),
+            ColumnWidth::Fixed(144.0)
+        );
+        assert_eq!(
+            ColumnWidth::Min(120.0).scaled(at150),
+            ColumnWidth::Min(180.0)
+        );
+        assert_eq!(
+            ColumnWidth::grow().min_width(64.0).scaled(at150).floor(),
+            96.0
+        );
+    }
+
+    #[test]
+    fn a_weight_is_a_ratio_and_does_not_scale() {
+        // Scaling the weights too would be a no-op on the layout (they are normalised
+        // against their own sum) and a lie about what they mean.
+        let scaled = ColumnWidth::grow()
+            .weight(3.0)
+            .scaled(UiScale::from_percent(200));
+        assert_eq!(
+            scaled,
+            ColumnWidth::Grow {
+                weight: 3.0,
+                min: 128.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_floor_never_scales_away_to_nothing() {
+        // A column floored at 1px is a hairline separator column; at 50% it must still
+        // be a pixel wide, not zero.
+        assert_eq!(
+            ColumnWidth::Fixed(1.0)
+                .scaled(UiScale::from_percent(50))
+                .floor(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn zooming_in_never_narrows_a_column_floor() {
+        for spec in [
+            ColumnWidth::Fixed(37.0),
+            ColumnWidth::Min(64.0),
+            ColumnWidth::grow(),
+        ] {
+            let mut previous = 0.0_f32;
+            for &rung in crate::scale::LADDER {
+                let floor = spec.scaled(UiScale::from_percent(rung)).floor();
+                assert!(
+                    floor >= previous,
+                    "{spec:?} at {rung}%: {floor} < {previous}"
+                );
+                previous = floor;
             }
         }
     }
