@@ -188,6 +188,19 @@ fn commit_age(now_secs: i64, then_secs: i64) -> String {
     }
 }
 
+/// The row's scope-items summary in words — replaces the `{n}h · {n}c` shorthand a
+/// glance could mistake for a hash fragment. Pure (both counts are parameters), with
+/// its own singular/plural agreement so "1 hosts" never ships.
+fn scope_counts_label(hosts_n: usize, conns_n: usize) -> String {
+    let host_word = if hosts_n == 1 { "host" } else { "hosts" };
+    let conn_word = if conns_n == 1 {
+        "connection"
+    } else {
+        "connections"
+    };
+    format!("{hosts_n} {host_word} · {conns_n} {conn_word}")
+}
+
 /// Wall-clock "now" in Unix seconds, for [`commit_age`] call sites in `render`.
 /// Reading the clock is not store/filesystem I/O — every other relative-time label in
 /// the app (and everywhere else) does this in render.
@@ -1528,11 +1541,12 @@ impl AppState {
                     "loading git status…".into(),
                     muted,
                 ),
-                Some(Fetch::Done(Err(GitPanelError::NotARepo))) => (
-                    Badge::new("no git").into_any_element(),
-                    "not a git repo".into(),
-                    muted,
-                ),
+                // The `no git` chip already says this — the metadata line used to repeat
+                // "not a git repo" underneath it, one fact rendered twice. Empty here,
+                // not a second copy.
+                Some(Fetch::Done(Err(GitPanelError::NotARepo))) => {
+                    (Badge::new("no git").into_any_element(), "".into(), muted)
+                }
                 Some(Fetch::Done(Err(GitPanelError::Other(e)))) => (
                     Badge::new("error")
                         .tone(BadgeTone::Danger)
@@ -1689,7 +1703,7 @@ impl AppState {
                         div()
                             .flex_none()
                             .text_meta(t)
-                            .child(format!("{hosts_n}h · {conns_n}c")),
+                            .child(scope_counts_label(hosts_n, conns_n)),
                     ),
             )
             .action(rename_btn)
@@ -1770,42 +1784,51 @@ impl AppState {
             // would put two accent fills on one screen for the same verb, so this pane
             // states the situation and points at the one control that exists.
             let nothing_registered = self.workspaces.list.is_empty();
-            return div()
+            // Framed like Database's RESULTS empty state — a `Card::panel` around it,
+            // not bare `div`s — so the right two-thirds reads as a panel with nothing
+            // in it yet, not as the app failing to render one.
+            return Card::panel("workspace")
                 .flex_1()
+                .min_h_0()
                 .child(
-                    EmptyState::new(if nothing_registered {
-                        "no workspaces yet"
-                    } else {
-                        "select a workspace"
-                    })
-                    .guidance(if nothing_registered {
-                        "register one on the left to see its branches, status, log and \
-                         scope items here"
-                    } else {
-                        "pick one on the left to see its branches, status, log and \
-                         scope items — or register another"
-                    })
-                    .icon(Icon::Folder)
-                    .when(!nothing_registered, |empty| {
-                        empty.action(
-                            Button::new("ws-detail-add", "add workspace")
-                                .primary()
-                                .icon(Icon::Add)
-                                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                    this.open_add_workspace(window, cx);
-                                })),
-                        )
-                    }),
+                    div().flex_1().min_h(px(0.)).w_full().child(
+                        EmptyState::new(if nothing_registered {
+                            "no workspaces yet"
+                        } else {
+                            "select a workspace"
+                        })
+                        .guidance(if nothing_registered {
+                            "register one on the left to see its branches, status, log and \
+                             scope items here"
+                        } else {
+                            "pick one on the left to see its branches, status, log and \
+                             scope items — or register another"
+                        })
+                        .icon(Icon::Folder)
+                        .when(!nothing_registered, |empty| {
+                            empty.action(
+                                Button::new("ws-detail-add", "add workspace")
+                                    .primary()
+                                    .icon(Icon::Add)
+                                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                        this.open_add_workspace(window, cx);
+                                    })),
+                            )
+                        }),
+                    ),
                 )
                 .into_any_element();
         };
         let Some(meta) = self.workspaces.list.iter().find(|m| m.id == id).cloned() else {
-            return div()
+            return Card::panel("detail")
                 .flex_1()
+                .min_h_0()
                 .child(
-                    EmptyState::new("workspace no longer registered")
-                        .guidance("it was unregistered while it was open")
-                        .icon(Icon::Warning),
+                    div().flex_1().min_h(px(0.)).w_full().child(
+                        EmptyState::new("workspace no longer registered")
+                            .guidance("it was unregistered while it was open")
+                            .icon(Icon::Warning),
+                    ),
                 )
                 .into_any_element();
         };
@@ -2321,6 +2344,13 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn scope_counts_label_agrees_in_number() {
+        assert_eq!(scope_counts_label(3, 0), "3 hosts · 0 connections");
+        assert_eq!(scope_counts_label(1, 1), "1 host · 1 connection");
+        assert_eq!(scope_counts_label(0, 2), "0 hosts · 2 connections");
     }
 
     /// Read back a cell's refined style — enough to assert what a helper decided, without
