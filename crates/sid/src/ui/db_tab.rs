@@ -1077,6 +1077,15 @@ fn group_connections(
     rows
 }
 
+/// How many rows [`AppState::connection_panel`] actually renders: every saved
+/// connection plus the store-browse row, which is always present and is not one of
+/// `saved` (it isn't a `DbConnection` the user configured — see
+/// [`AppState::store_browse_row`]'s doc comment). The header used to show `saved`
+/// alone, one short of the rows underneath it.
+fn connections_count(saved: usize) -> usize {
+    saved + 1
+}
+
 /// The state mark one connection row shows, from the four facts the tab knows about it.
 ///
 /// A saved connection is not a session, so "live" here means what it can mean: sid is
@@ -2394,7 +2403,7 @@ impl AppState {
     /// `render_connection_row`) needs no focus of its own.
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let count = self.db.connections.len();
+        let count = connections_count(self.db.connections.len());
         let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
         // The store row is always present and always first — it is not a connection the
         // user configured, so it cannot be grouped into a folder, sorted among them, or
@@ -4032,6 +4041,21 @@ fn write_csv_export(conn_label: &str, csv: &str) -> Result<PathBuf, String> {
     let path = next_csv_export_path(&dir, conn_label);
     fs::write(&path, csv).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod connections_count_tests {
+    use super::*;
+
+    /// The gate defect: the header showed `self.db.connections.len()` while the panel
+    /// always renders one more row than that (the store-browse row, pinned above the
+    /// list — see `connections_count`'s doc comment). The header count must equal what
+    /// the panel actually draws: `saved` connection rows plus that one row.
+    #[test]
+    fn the_header_count_equals_rows_rendered_saved_plus_the_store_row() {
+        assert_eq!(connections_count(0), 1, "just the store row");
+        assert_eq!(connections_count(3), 4, "3 saved rows + the store row");
+    }
 }
 
 #[cfg(test)]
