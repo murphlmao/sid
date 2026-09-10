@@ -42,6 +42,7 @@ pub mod button;
 pub mod card;
 pub mod elevation;
 pub mod empty_state;
+pub mod focus;
 pub mod gallery;
 pub mod grid;
 pub mod icon;

@@ -32,6 +32,31 @@
 //!   `AppState::root_focus`"*), which is the only place that still has a live handle to
 //!   restore to: by the time the panel is gone, its fields' handles are gone with it, and
 //!   a stale focus target silently kills all further keyboard dispatch.
+//!
+//! # What the panel *does* own: the focus trap
+//!
+//! Tab used to walk straight out of a modal and onto a background field the scrim was
+//! covering — SSH home's quick-connect box, Database's result filter. The panel now
+//! carries two things that close that, and both are here rather than at the four call
+//! sites because a modal that traps focus only when its author remembered to ask is not
+//! a modal:
+//!
+//! - [`gpui::InteractiveElement::tab_group`], so the panel's stops sort as one contiguous
+//!   run instead of interleaving with the background's by paint order. That is all a tab
+//!   group does — it renumbers, it does not contain (`gpui-pre-0.3.4/src/tab_stop.rs`).
+//! - `gpui-component`'s `focus_trap`, which registers the panel with the manager
+//!   `gpui_component::Root`'s Tab/Shift-Tab handlers consult: they step focus and keep
+//!   stepping while it sits outside the innermost registered trap, so the run wraps at
+//!   both ends. Fields reach the same logic through [`crate::focus`], because the
+//!   library binds Tab inside an input's own key context and it never reaches the Root.
+//!
+//! The trap needs a focus handle that outlives a frame, and `Modal` is a `RenderOnce`
+//! element with no lifecycle to hang one on — so it keeps it in gpui's element state
+//! ([`gpui::Window::use_keyed_state`], keyed off the caller's `id`), which is the same
+//! trick `gpui-component`'s own `Button` uses for its focus handle. The state dies with
+//! the last frame that rendered the modal, the weak handle in the trap manager stops
+//! upgrading, and the registration cleans itself up — closing a modal needs no
+//! teardown call.
 //! - **Dismiss on scrim click.** [`overlay`] does not install one. Every modal sid has
 //!   holds typed input, and losing a half-filled host form to a stray click on the
 //!   background is worse than needing Esc. The dismiss affordance is the header's close
@@ -52,11 +77,12 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, InteractiveElement as _, IntoElement, ParentElement, Pixels,
-    Refineable as _, RenderOnce, SharedString, Size, StatefulInteractiveElement as _,
+    AnyElement, App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, ParentElement,
+    Pixels, Refineable as _, RenderOnce, SharedString, Size, StatefulInteractiveElement as _,
     StyleRefinement, Styled, Window, anchored, deferred, div, point, prelude::FluentBuilder as _,
     px, rgba,
 };
+use gpui_component::FocusTrapElement as _;
 
 use crate::bridge::SCRIM;
 use crate::button::{ButtonSize, IconButton};
@@ -278,6 +304,14 @@ impl RenderOnce for Modal {
         let geometry = panel_geometry(self.width, window.viewport_size(), scale);
         let body_id = SharedString::from(format!("{}-body", self.id));
         let dismiss_id = SharedString::from(format!("{}-dismiss", self.id));
+        let trap_id = SharedString::from(format!("{}-trap", self.id));
+        // Element state, not a field: the handle has to be the *same* handle next frame
+        // or the trap re-registers under a new identity every paint and the manager
+        // never finds the one that contains focus.
+        let trap: FocusHandle = window
+            .use_keyed_state(trap_id.clone(), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
         let hint = self
             .submit_verb
             .filter(|_| shows_key_hint(geometry.width, scale));
@@ -355,7 +389,10 @@ impl RenderOnce for Modal {
                 )
             });
         panel.style().refine(&self.style);
-        panel
+
+        // See the module docs. `tab_group` groups the panel's stops; `focus_trap` is what
+        // makes Tab wrap at the ends of that group instead of walking out of the modal.
+        panel.tab_group().focus_trap(trap_id, &trap)
     }
 }
 

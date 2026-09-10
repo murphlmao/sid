@@ -14,6 +14,9 @@ repository.workspace = true
 # `sid-core`/`sid-store`/any domain crate — it knows colors and pixels, nothing else.
 gpui.workspace = true
 gpui-component.workspace = true
+# `focus.rs` only — `active_focus_trap`, which `gpui-component` uses in its own `Root`
+# but does not re-export.
+gpui-base.workspace = true
 # The icon registry (`icon.rs`) resolves every `Icon` variant through the complete
 # Lucide catalog rather than `gpui-component`'s 86-icon compatibility subset, so it
 # needs the assets crate itself, not just `gpui-component`'s re-export of its trait.

@@ -7930,6 +7930,7 @@ dependencies = [
 name = "sid-ui"
 version = "0.0.1"
 dependencies = [
+ "gpui-base",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pre",

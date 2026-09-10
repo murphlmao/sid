@@ -357,3 +357,36 @@ commits; do not invent one).
   was written to stop; the void is now bounded by the panel and left empty on purpose, since
   the store holds no second per-host fact to put there. Gate: fmt, clippy, 51 suites green;
   eight captures at 1920/700/2560/150%/cosmos-light incl. a live session tab and the card menu.
+- 2026-09-09: interaction states + modal focus trap on `focus-states` (not merged). One
+  helper, `sid_ui::StyledExt::focus_ring`, is now the only spelling of a keyboard focus
+  ring: an `accent` hairline over a transparent rest border, so the ring costs no layout
+  when it appears. `Button`/`IconButton` already had every state (hover, pressed,
+  disabled, and a ring `gpui-component` paints from `ThemeColor::ring`, which the bridge
+  already maps to `accent`); the gaps were elsewhere. `SegmentedControl` segments gained a
+  pressed fill, the ring and a tab stop — plus `SegmentedControl::tab_index`, without
+  which every strip sorted ahead of the numbered fields of the form it sits in.
+  `list::Row` gained a pressed fill and an **opt-in** `Row::tab_index` (a 400-row process
+  table must not enrol every row); wired at the two `save to:` pickers, which were the one
+  control in either form Tab could not reach. A clickable `StatusItem` gained pressed, the
+  ring and a stop. The gallery has a `FOCUS` band — the tab-stop route, not a specimen,
+  since focus is the one state a still image cannot draw twice. Not touched, by scope:
+  the Settings rail item (`settings_tab.rs` hand-rolls the same ring — should move onto the
+  helper), `app.rs`'s `chrome_tab` (hover only; not a tab stop), and the config editor's
+  hand-rolled save/close divs (still unreachable by keyboard).
+- 2026-09-09: modal focus trap, same branch, closing the §3 follow-up from #3.
+  `gpui-pre` 0.3.4's `tab_group` only **renumbers** (`tab_stop.rs`: `next()` walks straight
+  out of a group), but `gpui-component` 0.6.1 already ships the missing half —
+  `FocusTrapElement::focus_trap` plus `Root`'s trap-aware Tab/Shift-Tab handlers. `Modal`
+  now does both: `tab_group()` so its stops sort as one run, and `focus_trap` so the run
+  wraps at both ends, with the trap's `FocusHandle` kept in gpui element state
+  (`use_keyed_state`, the same trick the library's own `Button` uses) since `Modal` is a
+  `RenderOnce` with no lifecycle. All three `Modal` call sites inherit it unchanged. Two
+  places needed more: `sid_ui::TextInput` re-binds the library's `tab`/`shift-tab` indent
+  actions and so never reaches the `Root` action — it now routes through
+  `sid_ui::focus::{next,prev}` — and the config editor is not a `Modal`, so it registers
+  its own trap on the backdrop (its sudo-unlock field is single-line, and Tab in it used to
+  leave). A/B capture proves it: 25 Tabs from the open Add-host form land on `Save` with
+  the trap and on the background `vps-1` card's SFTP button without it. Gate: fmt, clippy,
+  51 suites / 1577 tests green. `gpui-base` 0.6.1 is now a named workspace dep (already in
+  the lock as gpui-component's own) for `active_focus_trap`, which the styled crate does
+  not re-export.

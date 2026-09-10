@@ -52,8 +52,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, SharedString, Subscription,
-    Window, actions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
+    AnyElement, ClickEvent, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, SharedString,
+    Subscription, Window, actions, anchored, deferred, div, point, prelude::*, px, rgb, rgba,
 };
 use gpui_component::input::{Editor, EditorState, InputEvent};
 
@@ -63,6 +63,7 @@ use sid_privfs::SudoPrivilegedFs;
 use crate::app::AppState;
 use crate::ui::is_field_submit;
 use crate::ui::session::ssh_runtime;
+use sid_ui::focus::FocusTrapElement as _;
 use sid_ui::theme;
 use sid_ui::{
     Button, EmptyState, Icon, InputState, StyledExt as _, TextInput, Typography as _, h_flex,
@@ -609,6 +610,20 @@ impl AppState {
 
         let can_save = can_save(mode, dirty, saving);
         let save_label = if saving { "saving…" } else { "save" };
+        // The focus trap. This overlay is the one modal in sid that is not a
+        // `sid_ui::Modal` (it is a full-viewport editor, not a 460px panel), so it does
+        // not inherit the trap `Modal` owns — and it has a real way out: the unlock
+        // prompt's sudo-password field is single-line, so Tab in it moves focus, and
+        // without a trap it moved to whatever the tab under the scrim painted. Trapping
+        // the *backdrop* rather than the unlock panel keeps it to one registration:
+        // nesting two traps leaves which one wins to `HashMap` iteration order.
+        //
+        // The handle lives in element state for the same reason `Modal`'s does — see
+        // that module — and dies with the last frame that renders this overlay.
+        let trap: FocusHandle = window
+            .use_keyed_state("config-editor-trap", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
 
         Some(
             deferred(
@@ -626,6 +641,8 @@ impl AppState {
                         .on_action(cx.listener(|this, _: &ConfigEditorCancel, window, cx| {
                             this.dismiss_config_editor_layer(window, cx);
                         }))
+                        .tab_group()
+                        .focus_trap("config-editor-trap", &trap)
                         .child(
                             div()
                                 .w(viewport.width * 0.88)

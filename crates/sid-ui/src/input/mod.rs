@@ -38,8 +38,10 @@
 //! installs handlers for them only in *multi-line* mode — so in a single-line field the
 //! keystroke is matched, dispatched, handled by nobody, and swallowed: Tab moves focus
 //! nowhere. [`TextInput`] is single-line by construction and takes those two actions on
-//! its own wrapper, turning them back into [`Window::focus_next`] /
-//! [`Window::focus_prev`]. Give the fields of one form increasing
+//! its own wrapper, turning them back into [`crate::focus::next`] /
+//! [`crate::focus::prev`] (traversal that respects an open modal's focus trap — see that
+//! module for why it is not `Window::focus_next` directly). Give the fields of one form
+//! increasing
 //! [`TextInput::tab_index`]es, or they all sit at 0 alongside every button in the window
 //! and the order Tab visits them in is whatever the frame happened to build. Verified in
 //! the gallery: with the fields at 1..4, Tab walks them; with everything at 0 it leaves
@@ -77,6 +79,7 @@ use gpui_component::{
 pub use gpui_component::input::InputState;
 
 use crate::button::ButtonSize;
+use crate::focus;
 use crate::icon::Icon;
 use crate::theme::{self, Theme};
 use crate::typography::Typography as _;
@@ -447,8 +450,11 @@ fn wrapper(width: FieldWidth, style: StyleRefinement) -> Div {
         // handlers for them only in multi-line mode, so in a single-line field the
         // keystroke is matched, dispatched, handled by nobody and swallowed. Taking them
         // here turns Tab back into what it means in a form.
-        .on_action(|_: &IndentInline, window: &mut Window, _cx: &mut App| window.focus_next(_cx))
-        .on_action(|_: &OutdentInline, window: &mut Window, _cx: &mut App| window.focus_prev(_cx));
+        // ...and through `crate::focus`, not straight into `Window::focus_next`: this is
+        // the one Tab path in the app that never reaches `gpui_component::Root`, so it is
+        // the one that used to walk out of an open modal onto a field the scrim covers.
+        .on_action(|_: &IndentInline, window: &mut Window, cx: &mut App| focus::next(window, cx))
+        .on_action(|_: &OutdentInline, window: &mut Window, cx: &mut App| focus::prev(window, cx));
     // Applied last, so a `.mt_2()` typed at the call site wins over the wrapper's box —
     // the same contract `Button` and `Card` offer.
     wrapper.style().refine(&style);

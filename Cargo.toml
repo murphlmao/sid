@@ -115,6 +115,11 @@ zeroize = "1"
 gpui = { package = "gpui-pre", version = "0.3" }
 gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { version = "0.6.1", features = ["tree-sitter-languages"] }
+# The unstyled half of gpui-component, which the 0.6 split carved out. Already in the
+# lock as gpui-component's own dependency; named here for the one API the styled crate
+# does not re-export — `active_focus_trap`, the query behind `gpui_component::Root`'s
+# Tab handler and behind `sid_ui::focus`, which has to ask the same question.
+gpui-base = "0.6.1"
 # The icon/asset crate was renamed `gpui-component-assets` -> `gpui-kit-assets` in 0.6.
 gpui-kit-assets = "0.6.1"
 # Grapheme and word segmentation (UAX#29). Single-sourced for the same reason as the
