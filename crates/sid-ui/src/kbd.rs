@@ -5,11 +5,16 @@
 //! engageable content in the app, so the eye is dragged to it and, after 16 of them,
 //! learns to ignore red everywhere. Keybindings are *orientation*: a muted chip.
 //!
-//! The chip itself is `gpui_component::kbd::Kbd`, which already draws the right box and
-//! — more usefully — carries the platform key-name table (`Esc`, `Page Down`, `⌘` on
-//! macOS). What it needs is a `gpui::Keystroke`, and sid's keymap hands out display
-//! strings like `Ctrl+K`. [`chips`] is that seam: normalise, parse, and fall back to
-//! rendering the text verbatim rather than dropping a binding the parser did not know.
+//! The box is sid's own: `surface` fill, hairline `border`, `rounded_sm`, Meta-role
+//! text — the same treatment `Badge`'s neutral tone uses. `gpui_component::kbd::Kbd`
+//! drew the box before the 0.6.1 upgrade, but its `RenderOnce` paints through the
+//! library's own (unconfigured) theme rather than sid's tokens, so the chip resolved to
+//! bare text with no visible chrome. Its `format()` table is still worth keeping —
+//! platform-aware key names (`Esc`, `Page Down`, `⌘` on macOS) sid would otherwise have
+//! to reimplement — so this module uses that pure function and draws the box itself.
+//! sid's keymap hands out display strings like `Ctrl+K`; [`chips`] is the seam that
+//! normalises, parses, and falls back to rendering the text verbatim rather than
+//! dropping a binding the parser did not know.
 
 use gpui::{
     App, IntoElement, Keystroke, ParentElement, RenderOnce, SharedString, Styled, Window, div, rgb,
@@ -17,7 +22,7 @@ use gpui::{
 use gpui_component::kbd::Kbd as ComponentKbd;
 
 use crate::styled::h_flex;
-use crate::theme;
+use crate::theme::{self, Theme};
 use crate::typography::Typography;
 
 /// One chip's worth of a keybinding spec.
@@ -87,31 +92,35 @@ impl Kbd {
     }
 }
 
+/// The chip chrome shared by a parsed stroke and an unparsed literal — `surface` fill,
+/// hairline `border`, small radius, Meta-role text — so the two are indistinguishable
+/// side by side, same as before the 0.6.1 upgrade broke the library's own box.
+fn chip(theme: &Theme, text: SharedString) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px_1()
+        .py_0p5()
+        .min_w_5()
+        .text_center()
+        .text_meta(theme)
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(theme.border))
+        .bg(rgb(theme.surface))
+        .child(text)
+}
+
 impl RenderOnce for Kbd {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme::active(cx).clone();
         h_flex()
             .gap_1()
-            .children(chips(&self.spec).into_iter().map(|chip| {
-                match chip {
-                    Chip::Stroke(stroke) => ComponentKbd::new(stroke).into_any_element(),
-                    // The same box the library draws, minus the parsing — `bg` fill and
-                    // all, so a parsed and an unparsed chip sitting side by side are
-                    // indistinguishable.
-                    Chip::Literal(text) => div()
-                        .flex_none()
-                        .px_1()
-                        .py_0p5()
-                        .min_w_5()
-                        .text_center()
-                        .text_meta(&theme)
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(theme.border))
-                        .bg(rgb(theme.bg))
-                        .child(text)
-                        .into_any_element(),
-                }
+            .children(chips(&self.spec).into_iter().map(|c| {
+                let text: SharedString = match c {
+                    Chip::Stroke(stroke) => ComponentKbd::format(&stroke).into(),
+                    Chip::Literal(text) => text,
+                };
+                chip(&theme, text)
             }))
     }
 }

@@ -306,3 +306,14 @@ commits; do not invent one).
   (c7d31de); text-input, Kbd and SSH/chrome agents resumed with their context; table frame
   cost dropped (see §4). While they were down, the sidebar agent had also been caught editing
   main's worktree instead of its own; its changes were moved and main restored.
+- 2026-09-09: `kbd-chrome` branch (not merged): `sid_ui::Kbd` lost its box in the 0.6.1
+  upgrade because `gpui_component::kbd::Kbd::render()` paints through the library's own
+  (unconfigured) theme rather than sid's tokens, so every chip in Settings → Keyboard,
+  the command palette and the modal cheat sheet resolved to bare text. `kbd.rs` now draws
+  the chip itself — `surface` fill, hairline `border`, `rounded_sm`, Meta-role text, same
+  as `Badge`'s neutral tone — for both a parsed `Chip::Stroke` (still formatted through
+  the library's pure, theme-free `Kbd::format()` for the platform key-name table) and an
+  unparsed `Chip::Literal`, so the two are indistinguishable side by side again. Public
+  API unchanged; no call site moved. Gate green (fmt/clippy/full workspace test suite,
+  hygiene.rs included). Gallery's `kbd` card gained a bare single-key example (`Escape`)
+  alongside the existing two-key/modifier-heavy/sequence/unparseable ones.

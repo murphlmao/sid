@@ -363,9 +363,10 @@ fn chips(theme: &Theme) -> Vec<gpui::AnyElement> {
             .title("kbd")
             .child(row(
                 theme,
-                "display syntax · gpui syntax · chord · unparseable",
+                "single key · two-key chord · modifier-heavy chord · sequence · unparseable",
                 h_flex()
                     .gap_3()
+                    .child(Kbd::new("Escape"))
                     .child(Kbd::new("Ctrl+K"))
                     .child(Kbd::new("ctrl-shift-t"))
                     .child(Kbd::new("ctrl-k ctrl-s"))
