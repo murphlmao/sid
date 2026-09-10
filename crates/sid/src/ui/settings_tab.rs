@@ -725,7 +725,15 @@ impl AppState {
                 .rounded_md()
                 .bg(rgb(color))
                 .border_1()
-                .border_color(rgb(chrome.border))
+                // `chrome.border` (the row's own hairline) is a token step from
+                // `selection`/`well` by design — right for separating panels, too
+                // close to read as a ring once a near-black `bg`/`surface` swatch
+                // (void: 0x000000/0x0a0a0a) sits on the `selection`-filled active
+                // row (0x161616): a 1px, 12-of-255 step disappears at that size.
+                // `faint` is a token step further from both row fills in every
+                // built-in, dark or light, so the ring reads without a per-palette
+                // branch.
+                .border_color(rgb(chrome.faint))
         };
 
         div()
