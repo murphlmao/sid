@@ -46,10 +46,10 @@ use crate::ui::db_conn_form::{
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
 use sid_ui::{
-    Badge, Button, ButtonSize, ColumnWidth, ConfirmButton, ConnectionState, Elevation, EmptyState,
-    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List, Row as UiRow,
-    ScopeChip, StatusDot, StyledExt as _, TextInput, Theme, Toolbar, Typography as _, h_flex,
-    sortable_th, theme, v_flex,
+    Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, Elevation,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List,
+    Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput, Theme, Typography as _, h_flex,
+    scaled, sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -66,7 +66,7 @@ const PAGE_SIZE: u32 = 100;
 /// The bug this const exists to make unrepeatable: `Run` was written as
 /// `Button::new(..).primary()` with no size, so it took [`ButtonSize`]'s default `Md`
 /// — a 32px box with a body-rung label — while `Export` and `next page`, sitting in
-/// the same [`Toolbar`] action slot two lines below, were written `.small()` and came
+/// the same panel-header action slot two lines below, were written `.small()` and came
 /// out at 24px with a meta-rung label. Three buttons in one cluster, two heights,
 /// because the size was retyped per call site instead of declared once.
 ///
@@ -1161,30 +1161,6 @@ fn where_filter_scaffold(table: &str, column: &str) -> String {
 
 // ---- shared chrome ------------------------------------------------------------------
 
-/// The header strip of one left-rail panel: an uppercase section label with its count,
-/// and whatever controls the caller adds, right-aligned.
-///
-/// Not [`sid_ui::Card`]: a card's body is a fixed `v_flex`, and all three panels here need
-/// a `flex_1` scrolling list under the header. What the card *does* own — the label's
-/// wording and type — comes from `sid_ui::card::header_text` and [`TypeRole::Label`], so
-/// the three headers cannot drift apart.
-fn panel_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
-    h_flex()
-        .justify_between()
-        .gap_1()
-        .px_2()
-        .py_1()
-        .flex_none()
-        .hairline_b(theme)
-        .child(
-            div()
-                .min_w(px(0.))
-                .clamp_one_line()
-                .text_label(theme)
-                .child(sid_ui::card::header_text(title, count)),
-        )
-}
-
 /// An inline failure notice: the registry's error glyph, then the message.
 ///
 /// The same shape `systems_tab.rs` uses (that copy is file-private, so this is a second
@@ -1517,28 +1493,32 @@ impl AppState {
     fn query_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let browse = self.browse_mode();
-        let active_label: SharedString = match &self.db.active_id {
+        // The active connection names the QUERY panel — `QUERY · demo sqlite` — rather
+        // than floating beside the results filter as a loose status string. With nothing
+        // selected the panel is just `QUERY` and the results area's empty state says
+        // "no connection selected", which is where a sentence belongs.
+        let active_label: Option<String> = match &self.db.active_id {
             // Browse mode has no `DbConnection` behind its id, so the generic lookup
             // would fall through to printing the raw `__sid_store__` sentinel.
-            Some(_) if browse => match self.browse_table() {
-                Some(table) => format!("{STORE_BROWSE_LABEL} · {table}").into(),
-                None => format!("{STORE_BROWSE_LABEL} · pick a table").into(),
-            },
-            Some(id) => self
-                .db
-                .connections
-                .iter()
-                .find(|a| &a.item.id == id)
-                .map(|a| {
-                    if a.item.name.is_empty() {
-                        a.item.id.clone()
-                    } else {
-                        a.item.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| id.clone())
-                .into(),
-            None => "no connection selected".into(),
+            Some(_) if browse => Some(match self.browse_table() {
+                Some(table) => format!("{STORE_BROWSE_LABEL} · {table}"),
+                None => format!("{STORE_BROWSE_LABEL} · pick a table"),
+            }),
+            Some(id) => Some(
+                self.db
+                    .connections
+                    .iter()
+                    .find(|a| &a.item.id == id)
+                    .map(|a| {
+                        if a.item.name.is_empty() {
+                            a.item.id.clone()
+                        } else {
+                            a.item.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| id.clone()),
+            ),
+            None => None,
         };
 
         // How much of the fetched page the filter is letting through, and whether a
@@ -1556,36 +1536,27 @@ impl AppState {
             .unwrap_or((0, 0, false));
         let is_filtered = shown != total;
 
-        // The successful-run summary reads as the toolbar's count (`"340 rows · 12 ms"`,
-        // the shape `Toolbar::count_label` exists for); only a *failure* still needs its
-        // own line below the editor, where it can be as long as the driver made it.
-        // Under a filter the count grows a numerator — `"12 of 340 rows"` — because a
-        // grid showing 12 rows over a label saying 340 is a grid that looks broken.
-        let (count_label, error_text): (Option<SharedString>, Option<String>) =
-            match &self.db.status {
-                QueryStatus::Idle => (None, None),
-                QueryStatus::Err(e) => (None, Some(e.clone())),
-                QueryStatus::Ok { duration_ms, .. } => {
-                    // While a plan is up the grid is not on screen, so counting *its*
-                    // rows would report on something invisible — and "0 rows" beside a
-                    // plan that ran fine reads as a failure. Count the plan instead.
-                    let label = match &self.db.plan {
-                        Some(plan) => format!(
-                            "{} · {duration_ms} ms",
-                            sid_ui::toolbar::count_label(plan.lines.len(), "plan line")
-                        ),
-                        None => {
-                            let rows = sid_ui::toolbar::count_label(total, "row");
-                            if is_filtered {
-                                format!("{shown} of {rows} · {duration_ms} ms")
-                            } else {
-                                format!("{rows} · {duration_ms} ms")
-                            }
-                        }
-                    };
-                    (Some(label.into()), None)
-                }
-            };
+        // The successful-run summary is the results panel's count — `RESULTS · 340 rows ·
+        // 12 ms`, the `[label · count]` half of the toolbar contract; only a *failure*
+        // still needs its own line under the editor, where it can be as long as the
+        // driver made it. Under a filter the count grows a numerator — `"12 of 340 rows"`
+        // — because a grid showing 12 rows over a label saying 340 looks broken.
+        // A plan is not counted here: while one is up the grid is off screen and the plan
+        // panel carries its own line count.
+        let (results_summary, error_text): (Option<String>, Option<String>) = match &self.db.status
+        {
+            QueryStatus::Idle => (None, None),
+            QueryStatus::Err(e) => (None, Some(e.clone())),
+            QueryStatus::Ok { duration_ms, .. } => {
+                let rows = sid_ui::toolbar::count_label(total, "row");
+                let label = if is_filtered {
+                    format!("{shown} of {rows} · {duration_ms} ms")
+                } else {
+                    format!("{rows} · {duration_ms} ms")
+                };
+                (Some(label), None)
+            }
+        };
         let has_more = matches!(&self.db.status, QueryStatus::Ok { has_more: true, .. });
         // The documented limitation of a client-side page view, surfaced where the
         // user can act on it rather than only in `visible_rows`'s doc comment.
@@ -1607,40 +1578,122 @@ impl AppState {
         // the structural half of "read-only": with no `Input` there is no text for
         // `run_query` to reach, so the store cannot be written to through this surface
         // even if a future edit forgot the guard in `run_query`.
-        let sql_editor: Option<AnyElement> = if browse {
-            Some(
-                v_flex()
-                    .h(px(140.))
-                    .justify_center()
-                    .gap_1p5()
-                    .p_3()
-                    .rounded_md()
-                    .elevation(Elevation::Well, &t)
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .text_body(&t)
-                            .child(Icon::Info.small())
-                            .child("browsing sid's own configuration store — read-only"),
-                    )
-                    .child(div().text_meta(&t).child(
-                        "redb is a key-value store, not a SQL engine: pick a table on the \
-                         left to list its rows. Nothing here can write to the store.",
-                    ))
-                    .into_any_element(),
-            )
+        let sql_editor: AnyElement = if browse {
+            v_flex()
+                .h(scaled(140.))
+                .justify_center()
+                .gap_1p5()
+                .p_3()
+                .rounded_md()
+                .elevation(Elevation::Well, &t)
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .text_body(&t)
+                        .child(Icon::Info.small())
+                        .child("browsing sid's own configuration store — read-only"),
+                )
+                .child(div().text_meta(&t).child(
+                    "redb is a key-value store, not a SQL engine: pick a table on the \
+                     left to list its rows. Nothing here can write to the store.",
+                ))
+                .into_any_element()
         } else {
-            self.db.sql.clone().map(|sql| {
-                div()
-                    .h(px(140.))
-                    .rounded_md()
-                    .elevation(Elevation::Well, &t)
-                    .child(Editor::new(&sql))
-                    .into_any_element()
-            })
+            div()
+                .h(scaled(140.))
+                .rounded_md()
+                .elevation(Elevation::Well, &t)
+                .children(self.db.sql.clone().map(|sql| Editor::new(&sql)))
+                .into_any_element()
         };
 
         let notice = self.db.notice.clone().map(|n| div().text_meta(&t).child(n));
+
+        // The QUERY panel: the statement, the two controls that act on it, and — when a
+        // run fails — the driver's message under the editor it came from. Header actions
+        // in the toolbar order: no filter here, so `[label] [secondary] [primary]`.
+        let query_panel = Card::panel(match &active_label {
+            Some(name) => format!("query · {name}"),
+            None => "query".to_string(),
+        })
+        .flex_none()
+        .action(self.explain_button(cx))
+        .action(
+            // Browse mode's Run re-reads the table already on screen, so it is labelled
+            // for what it does. Same id, same slot, same size — only the word, tooltip
+            // and leading icon change (`play` for a fresh run, the same `redo`
+            // `network_refresh_button` uses for a re-read).
+            Button::new("db-run", if browse { "Reload" } else { "Run" })
+                .primary()
+                .icon(if browse { Icon::Refresh } else { Icon::Run })
+                .size(QUERY_ACTION_SIZE)
+                .loading(self.db.running)
+                .disabled(browse && self.browse_table().is_none())
+                .tooltip(if browse {
+                    "re-read this table from the store"
+                } else {
+                    "run the query (Ctrl-Enter)"
+                })
+                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                    this.run_query(window, cx);
+                })),
+        )
+        .child(
+            // A panel's body carries no padding of its own (a scrolling list has to
+            // reach its edges), so a body that is *not* a list states its own.
+            v_flex()
+                .p_3()
+                .gap_2()
+                .child(sql_editor)
+                .children(error_text.map(|e| error_line(&t, e))),
+        );
+
+        // A plan takes the whole results slot while it is up, as its own panel rather
+        // than a second frame inside one: same chrome, different header and one close
+        // action. The grid keeps its page, sort and filter underneath, so closing the
+        // plan is a genuine "back", not a re-render from scratch.
+        let results_panel: AnyElement = match self.db.plan.take() {
+            Some(plan) => {
+                let element = self.plan_panel(&plan, cx);
+                self.db.plan = Some(plan);
+                element
+            }
+            None => Card::panel(match &results_summary {
+                Some(summary) => format!("results · {summary}"),
+                None => "results".to_string(),
+            })
+            .flex_1()
+            .min_h_0()
+            .action(
+                // Capped, not filling: a 1200px-wide filter field is as wrong as the
+                // ribbon table it sits above used to be. Sized off the same rung as the
+                // buttons beside it, so the header row is one height.
+                // `FieldWidth`'s own 160px floor, not the 280px cap this field used to
+                // carry: a panel header's actions are `flex_none`, so every pixel the
+                // filter takes comes out of the title beside it, and this pane is only
+                // ~390px wide at a 700px window. Sized off the same rung as the buttons
+                // beside it, so the header row is one height.
+                div().children(
+                    self.db
+                        .result_filter
+                        .clone()
+                        .map(|f| TextInput::new(&f).small().fixed(px(160.))),
+                ),
+            )
+            .when_some(next_page, Card::action)
+            // Far right, after the rest (Murphy: "download as csv should be on the far
+            // right") — the generic export control (Task 1).
+            .action(self.export_control(cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .children(caveat.map(|c| div().px_3().child(caveat_line(&t, c))))
+                    .children(notice.map(|n| div().px_3().child(n)))
+                    .child(self.results_area(cx)),
+            )
+            .into_any_element(),
+        };
 
         let editor_and_results = v_flex()
             .flex_1()
@@ -1648,72 +1701,8 @@ impl AppState {
             // grid pushes the pane wider than the window instead of scrolling inside it.
             .min_w(px(0.))
             .gap_2()
-            .child(
-                Toolbar::new()
-                    // The connection label and the results filter share the toolbar's
-                    // left slot: the filter narrows what the count beside it counts,
-                    // so the two belong on the same line, and a second toolbar strip
-                    // just for a search box would be more chrome than content.
-                    .filter(
-                        h_flex()
-                            .gap_3()
-                            // Meta, not mono, even though it often holds a connection
-                            // name: this slot is just as often the sentence "no
-                            // connection selected", and a sentence in the data face
-                            // reads as a value the user is supposed to act on.
-                            // Capped as well as `flex_none` — a long name would
-                            // otherwise walk the filter field and the count off the
-                            // toolbar rather than clipping.
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(260.))
-                                    .clamp_one_line()
-                                    .text_meta(&t)
-                                    .child(active_label),
-                            )
-                            .child(
-                                // Capped, not filling: a 1200px-wide filter field is
-                                // as wrong as the ribbon table it sits above used to
-                                // be (`systems_tab`'s toolbar makes the same call).
-                                div().flex_1().min_w_0().max_w(px(280.)).children(
-                                    self.db.result_filter.clone().map(|f| TextInput::new(&f)),
-                                ),
-                            ),
-                    )
-                    .when_some(count_label, |bar, label| bar.count_label(label))
-                    .when_some(next_page, |bar, button| bar.action(button))
-                    .action(self.explain_button(cx))
-                    .action(
-                        // Browse mode's Run re-reads the table already on screen, so it
-                        // is labelled for what it does. Same id, same slot, same size —
-                        // only the word, tooltip and leading icon change (`play` for a
-                        // fresh run, the same `redo` `network_refresh_button` uses for a
-                        // re-read).
-                        Button::new("db-run", if browse { "Reload" } else { "Run" })
-                            .primary()
-                            .icon(if browse { Icon::Refresh } else { Icon::Run })
-                            .size(QUERY_ACTION_SIZE)
-                            .loading(self.db.running)
-                            .disabled(browse && self.browse_table().is_none())
-                            .tooltip(if browse {
-                                "re-read this table from the store"
-                            } else {
-                                "run the query (Ctrl-Enter)"
-                            })
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.run_query(window, cx);
-                            })),
-                    )
-                    // Far right, after Run (Murphy: "download as csv should be on the
-                    // far right") — the generic export control (Task 1).
-                    .action(self.export_control(cx)),
-            )
-            .children(sql_editor)
-            .children(error_text.map(|e| error_line(&t, e)))
-            .children(caveat.map(|c| caveat_line(&t, c)))
-            .children(notice)
-            .child(self.results_area(cx));
+            .child(query_panel)
+            .child(results_panel);
 
         // Deliberately not `h_flex`: that centres its children on the cross axis, and
         // this row's children must *stretch* to it. A content-height query column gives
@@ -1954,43 +1943,16 @@ impl AppState {
             }))
     }
 
-    /// The plan pane — what [`Self::results_area`] shows instead of the grid while a
-    /// plan is up.
+    /// The plan panel — what [`Self::query_pane`] puts in the results slot while a plan
+    /// is up. Same panel chrome as the grid it replaces: only the header and the one
+    /// close action differ.
     ///
-    /// Monospace, one line per plan row, in a scrolling well. Monospace and
+    /// Monospace, one line per plan row, in a scrolling body. Monospace and
     /// *unprocessed*: a Postgres plan's leading spaces are its tree structure (see
     /// [`plan_lines`]), and a proportional face would misalign the columns SQLite's
     /// `EXPLAIN QUERY PLAN` puts in its `detail` strings.
-    fn plan_pane(&self, plan: &PlanView, cx: &mut Context<Self>) -> AnyElement {
+    fn plan_panel(&self, plan: &PlanView, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx).clone();
-        let header = h_flex()
-            .justify_between()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .flex_none()
-            .hairline_b(&t)
-            .child(
-                div()
-                    .text_label(&t)
-                    .child(sid_ui::card::header_text("QUERY PLAN", None)),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    // The keyword is the SQL the engine was actually asked (`EXPLAIN` /
-                    // `EXPLAIN QUERY PLAN`), so it takes the family the plan body does.
-                    .child(div().text_mono_meta(&t).child(plan.keyword.clone()))
-                    .child(
-                        IconButton::new("db-plan-close", Icon::Close, "back to the results")
-                            .small()
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.db.plan = None;
-                                cx.notify();
-                            })),
-                    ),
-            );
-
         let body: AnyElement = if plan.lines.is_empty() {
             div()
                 .p_3()
@@ -2016,13 +1978,22 @@ impl AppState {
                 .into_any_element()
         };
 
-        v_flex()
+        Card::panel("query plan")
+            .count(plan.lines.len())
             .flex_1()
-            .min_h(px(0.))
+            .min_h_0()
             .w_full()
-            .rounded_md()
-            .elevation(Elevation::Well, &t)
-            .child(header)
+            // The keyword is the SQL the engine was actually asked (`EXPLAIN` /
+            // `EXPLAIN QUERY PLAN`), so it takes the family the plan body does.
+            .action(div().text_mono_meta(&t).child(plan.keyword.clone()))
+            .action(
+                IconButton::new("db-plan-close", Icon::Close, "back to the results")
+                    .small()
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.db.plan = None;
+                        cx.notify();
+                    })),
+            )
             .child(body)
             .into_any_element()
     }
@@ -2033,14 +2004,6 @@ impl AppState {
     /// actually got, so a 2000px window shows 2000px of data instead of a 140px-per-column
     /// ribbon with the rest of the screen black (`sid_ui::table`).
     fn results_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        // A plan takes the whole area while it is up. The grid keeps its page, sort
-        // and filter underneath, so closing the plan is a genuine "back", not a
-        // re-render from scratch.
-        if let Some(plan) = self.db.plan.take() {
-            let element = self.plan_pane(&plan, cx);
-            self.db.plan = Some(plan);
-            return element;
-        }
         if self.db.active_id.is_none() {
             let empty = if self.db.connections.is_empty() {
                 EmptyState::new("no database connections yet")
@@ -2179,7 +2142,7 @@ impl AppState {
             // an origin chip beside its name, and the DSN subtitle under it was already
             // the first thing to truncate. The 20px comes out of a query pane that has
             // ~1700px at the capture width.
-            .w(px(280.))
+            .w(scaled(280.))
             .flex_none()
             .h_full()
             .gap_2()
@@ -2195,16 +2158,6 @@ impl AppState {
     fn schema_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let table_count = self.db.schema.as_ref().map(|s| s.tables.len());
-        let header = panel_header(&t, "SCHEMA", table_count)
-            .child(self.diagram_button(cx))
-            .child(
-                IconButton::new("db-schema-refresh", Icon::Refresh, "reload the schema")
-                    .small()
-                    .loading(self.db.schema_loading)
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.refresh_schema(window, cx);
-                    })),
-            );
 
         let body: AnyElement = if self.db.schema_loading && self.db.schema.is_none() {
             div()
@@ -2240,12 +2193,19 @@ impl AppState {
             }
         };
 
-        v_flex()
+        Card::panel("schema")
+            .when_some(table_count, Card::count)
             .flex_1()
-            .min_h(px(0.))
-            .rounded_md()
-            .elevation(Elevation::Well, &t)
-            .child(header)
+            .min_h_0()
+            .action(self.diagram_button(cx))
+            .action(
+                IconButton::new("db-schema-refresh", Icon::Refresh, "reload the schema")
+                    .small()
+                    .loading(self.db.schema_loading)
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.refresh_schema(window, cx);
+                    })),
+            )
             .child(body)
     }
 
@@ -2418,7 +2378,7 @@ impl AppState {
     fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let entries = self.db.history.clone();
-        let header = panel_header(&t, "HISTORY", Some(entries.len()));
+        let count = entries.len();
 
         let body: AnyElement = if entries.is_empty() {
             div()
@@ -2459,12 +2419,10 @@ impl AppState {
                 .into_any_element()
         };
 
-        v_flex()
-            .h(px(160.))
+        Card::panel("history")
+            .count(count)
+            .h(scaled(160.))
             .flex_none()
-            .rounded_md()
-            .elevation(Elevation::Well, &t)
-            .child(header)
             .child(body)
     }
 
@@ -2480,14 +2438,6 @@ impl AppState {
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
         let count = self.db.connections.len();
-        let header = panel_header(&t, "CONNECTIONS", Some(count)).child(
-            IconButton::new("db-conn-add", Icon::Add, "add a connection")
-                .small()
-                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                    this.open_add_db_form(window, cx);
-                })),
-        );
-
         let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
         // The store row is always present and always first — it is not a connection the
         // user configured, so it cannot be grouped into a folder, sorted among them, or
@@ -2513,14 +2463,16 @@ impl AppState {
             )
             .into_any_element();
 
+        // The focus handle lives on a wrapper rather than on the card: `Card` is a
+        // `RenderOnce` with a style refinement, not an interactive element, so F2's
+        // key handler needs a `div` around it. The wrapper carries the panel's box; the
+        // card fills it.
         let focus_handle = self.db.conn_focus.clone();
-        v_flex()
+        div()
             .id("db-conn-panel")
             .w_full()
-            .h(px(240.))
+            .h(scaled(240.))
             .flex_none()
-            .rounded_md()
-            .elevation(Elevation::Well, &t)
             .when_some(focus_handle, |el, fh| {
                 el.track_focus(&fh).on_key_down(cx.listener(
                     |this, ev: &KeyDownEvent, window, cx| {
@@ -2530,8 +2482,19 @@ impl AppState {
                     },
                 ))
             })
-            .child(header)
-            .child(body)
+            .child(
+                Card::panel("connections")
+                    .count(count)
+                    .size_full()
+                    .action(
+                        IconButton::new("db-conn-add", Icon::Add, "add a connection")
+                            .small()
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.open_add_db_form(window, cx);
+                            })),
+                    )
+                    .child(body),
+            )
     }
 
     /// The always-present "sid store" row (inc-3).

@@ -360,3 +360,28 @@ commits; do not invent one).
   was written to stop; the void is now bounded by the panel and left empty on purpose, since
   the store holds no second per-host fact to put there. Gate: fmt, clippy, 51 suites green;
   eight captures at 1920/700/2560/150%/cosmos-light incl. a live session tab and the card menu.
+- 2026-09-09: panel-vocabulary + toolbar-contract pass over Database, Network and Workspaces
+  on `data-tabs` (not merged). Every region on the three tabs is a `sid_ui::Card::panel` —
+  `surface` fill, hairline, ruled Label header `NAME · count`, actions right-aligned in the
+  header row at one height and one gap rhythm (`p_3`/`gap_2` on all three tabs). Database's
+  local `panel_header()` helper is deleted; its three left panels move `well` → `surface`, and
+  the editor and results become peers of them (`QUERY · <connection>` with Explain/Run,
+  `RESULTS · 340 rows · 12 ms` with the filter, next page and Export, `QUERY PLAN · n` as a
+  sibling panel rather than a frame nested inside the results one). Network keeps the sub-view
+  segmented strip and puts the table in `PORTS · 13` / `SYSTEM SERVICES · 146` /
+  `INTERFACES · 7`, built by one `sub_view_panel()`; Interfaces lost its inner `Card` (two
+  frames for one list). Workspaces' sidebar is `WORKSPACES · n` with refresh and `+ add` in
+  its header, and the detail pane is `OVERVIEW` / `BRANCHES · n` / `STATUS · n` / `LOG · n` /
+  `REPOS · n` under a fixed-height heading strip so the panel starts at the same y for every
+  workspace shape. The loose status strings are gone from every toolbar: `no connection
+  selected` is the results empty state, `error: …` is an `error_line` in the panel body (which
+  is how `network.error` became visible at all — it had no other render), `refreshing…` is the
+  refresh button's spinner, `docker/kubectl not installed` is already the body's empty state.
+  Workspaces' unregister was a `ConfirmButton` with an empty label — a 36px labelled box beside
+  rename's 24px square — and is now an `IconButton` at rest and the `ConfirmButton` word when
+  armed, same id, same two-step. Note for the narrow-window item: a panel header's actions are
+  `flex_none`, so every pixel a filter takes comes out of the title beside it; Database's
+  results filter is at `FieldWidth`'s 160px floor for that reason and `RESULTS` still reads
+  whole at 700px. Gate: fmt, clippy, 51 suites, `hygiene.rs` green. Captures: three tabs ×
+  {1920, cosmos-light, 700x900}, both selected states, all five Network sub-views, the query
+  run and EXPLAIN panels, and a real git repo registered live to reach Branches/Status/Log.
