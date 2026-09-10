@@ -189,7 +189,10 @@ Every item is gated by before/after captures in all four themes and a
       bg), dusk `danger` #d04a4a→#e05070 (4.29→5.00 on bg). Three new guards sweep all four
       palettes: status inks ≥4.5:1 on bg/surface/well, accent/danger ΔE ≥70, well recessed
       relative to bg (void's pure-black bg exempt, documented).
-- [ ] **Gate fixes (tabs)**: Database `CONNECTIONS · n` excludes the always-present store row;
+- [x] **Gate fixes (tabs)**: done 2026-09-10, seven commits, decisions as pure functions with
+      red-first tests (`connections_count`, `port_action`, `ports_without_owner`,
+      `scope_counts_label`, `workspace_option_note`); Network's footer now says `n ports
+      without owner info (needs root)`; captures verified per defect. Original list: Database `CONNECTIONS · n` excludes the always-present store row;
       Database row `delete` is a labelled button beside two icon squares (mirror Workspaces:
       `IconButton` at rest, `ConfirmButton` when armed) and the two row templates place the
       origin chip differently; Network Ports renders a bare `—` in the action column for rows
