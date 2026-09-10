@@ -35,7 +35,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, KeyDownEvent, Keystroke, Pixels, Window, div, prelude::*,
-    px, rgb, transparent_black,
+    px, rgb,
 };
 use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store};
 
@@ -239,13 +239,11 @@ fn nav_item(
         .py_1p5()
         .rounded_md()
         .cursor_pointer()
-        // Always a border, transparent at rest: the focus ring must not resize the row
-        // when it appears.
-        .border_1()
-        .border_color(transparent_black())
+        // The shared focus ring: a transparent hairline at rest, `accent` when focused,
+        // so Tab reaching this row never resizes it. See `StyledExt::focus_ring`.
+        .focus_ring(t)
         .when(active, |this| this.bg(rgb(t.selection)))
         .hover(|s| s.bg(rgb(t.selection)))
-        .focus(|s| s.border_color(rgb(t.accent)))
         .text_body(t)
         .text_color(rgb(if active { t.fg_strong } else { t.muted }))
         .child(
