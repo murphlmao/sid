@@ -108,8 +108,10 @@ Every item is gated by before/after captures in all four themes and a
       `sid-ui/src/kbd.rs` now draws its own chip (surface, hairline, `rounded_sm`, Meta ink) and
       keeps the library only as a key-name formatter. Verified in Settings → Keyboard, the
       command palette, the gallery (capture at 2000x2400 to reach the band) and cosmos-light.
-- [ ] **`InlineNotice` clamps to one line**, so the ~140-char degraded-keyring message in
-      Settings truncates. Let a notice wrap to two lines (or split title/detail like `Toast`).
+- [x] **`InlineNotice` clamps to one line**: fixed 2026-09-09. Body wraps to two lines
+      (`line_clamp(2)`), optional `.detail(..)` second line in Meta/muted; Settings splits the
+      keyring message into sentence + recommendation. Verified at 1920 and 700px and in the
+      gallery.
 - [ ] **Top bar clips at 700px**: "System" disappears behind the scope chips. Either the tabs
       compress to icons below a breakpoint or the scope chips collapse to one; ties into the
       scope-switcher item.
