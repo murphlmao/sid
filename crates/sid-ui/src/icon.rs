@@ -53,6 +53,8 @@ pub enum Icon {
     Refresh,
     /// Filter / find affordance — the leading glyph of a search field.
     Search,
+    /// A stored dataset — the Database tab's mark.
+    Database,
     /// Create.
     Add,
     /// Remove one of something (not a delete).
@@ -173,6 +175,7 @@ impl Icon {
     pub const ALL: &'static [Icon] = &[
         Icon::Refresh,
         Icon::Search,
+        Icon::Database,
         Icon::Add,
         Icon::Remove,
         Icon::Close,
@@ -229,6 +232,7 @@ impl Icon {
         match self {
             Icon::Refresh => IconName::Redo,
             Icon::Search => IconName::Search,
+            Icon::Database => IconName::Database,
             Icon::Add => IconName::Plus,
             Icon::Remove => IconName::Minus,
             Icon::Close => IconName::Close,

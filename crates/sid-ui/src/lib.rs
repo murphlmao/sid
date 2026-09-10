@@ -62,6 +62,7 @@ pub mod table;
 pub mod theme;
 pub mod toast;
 pub mod toolbar;
+pub mod tooltip;
 pub mod typography;
 
 pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
@@ -95,4 +96,5 @@ pub use table::{
 pub use theme::Theme;
 pub use toast::{Toast, ToastPaint, ToastTone};
 pub use toolbar::Toolbar;
+pub use tooltip::Tipped;
 pub use typography::{ALL_TYPE_ROLES, TypeRole, TypeSpec, Typography, UI_MONO};
