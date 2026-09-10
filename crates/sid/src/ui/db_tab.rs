@@ -2481,16 +2481,22 @@ impl AppState {
             .child(
                 v_flex()
                     .gap_1()
+                    // One chip layout with `render_connection_row`: a `flex_1` label
+                    // wrapper so the badge is trailing at the row's right edge on both
+                    // rows, not hugging the label's text on this one and right-anchored
+                    // on the other.
                     .child(
                         h_flex()
-                            .gap_1p5()
+                            .gap_2()
                             .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .clamp_one_line()
-                                    .text_body(&t)
-                                    .text_color(rgb(t.fg))
-                                    .child(STORE_BROWSE_LABEL),
+                                div().flex_1().min_w_0().child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .clamp_one_line()
+                                        .text_body(&t)
+                                        .text_color(rgb(t.fg))
+                                        .child(STORE_BROWSE_LABEL),
+                                ),
                             )
                             .child(Badge::new("read-only")),
                     )
@@ -2652,26 +2658,45 @@ impl AppState {
         };
 
         // Delete: two-click confirm — the first click arms this row, the second deletes
-        // from the row's origin layer (and its secret from the keyring). `ConfirmButton`
-        // renders the arm; the arm itself stays `DbTabState::armed_delete`, which is keyed
-        // by (id, origin) — `ConfirmArm` requires a `Copy` key and this one is not.
-        let delete = {
+        // from the row's origin layer (and its secret from the keyring). The arm itself
+        // stays `DbTabState::armed_delete`, keyed by (id, origin) — `ConfirmArm` requires
+        // a `Copy` key and this one is not.
+        //
+        // Icon at rest, word when armed — mirrors `workspaces_tab`'s unregister control:
+        // a labelled `ConfirmButton` beside the folder/edit icons was a 36px box next to
+        // two 24px squares. Same id and the same press handler either way, so the
+        // two-step behaviour (and `delete_click_executes`) doesn't move.
+        let delete: AnyElement = {
             let id = conn.id.clone();
             let origin = origin.clone();
             let secret_ref = conn.secret_ref.clone();
-            ConfirmButton::new(("db-delete", ix), "delete")
-                .armed(armed)
-                .icon(Icon::Trash)
-                .tooltip("delete this connection and its stored secret")
-                .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                    let key = (id.clone(), origin.clone());
-                    if delete_click_executes(this.db.armed_delete.as_ref(), &key) {
-                        this.delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
-                    } else {
-                        this.db.armed_delete = Some(key);
-                        cx.notify();
-                    }
-                }))
+            let on_press = cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                let key = (id.clone(), origin.clone());
+                if delete_click_executes(this.db.armed_delete.as_ref(), &key) {
+                    this.delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
+                } else {
+                    this.db.armed_delete = Some(key);
+                    cx.notify();
+                }
+            });
+            if armed {
+                ConfirmButton::new(("db-delete", ix), "delete")
+                    .armed(true)
+                    .armed_label("confirm")
+                    .size(ButtonSize::Sm)
+                    .tooltip("delete this connection and its stored secret")
+                    .on_press(on_press)
+                    .into_any_element()
+            } else {
+                IconButton::new(
+                    ("db-delete", ix),
+                    Icon::Trash,
+                    "delete this connection and its stored secret",
+                )
+                .small()
+                .on_click(on_press)
+                .into_any_element()
+            }
         };
 
         // Name area — the live rename `TextInput` in place of the label while this row
