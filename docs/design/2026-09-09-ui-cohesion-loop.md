@@ -268,3 +268,10 @@ commits; do not invent one).
   (cosmos + cosmos-light) and 2560x1400 confirm both: no dash-only Command cells for named
   processes, fallback ink visibly dimmer, meters framed, table fills the width, nothing
   clipped.
+- 2026-09-09: Settings rebuilt as a left section rail (Appearance / Behaviour /
+  Keyboard / Storage) beside a left-aligned, 880px-capped content pane of `surface`
+  panels, collapsing to a `SegmentedControl` below ~900 design px. The three
+  hand-rolled chip strips in Behaviour became `sid_ui::SegmentedControl`, the keyring
+  status became an `InlineNotice` with the restart caveat moved under the control it
+  applies to, and nav items are Tab-reachable via gpui's own tab-stop ring. Branch
+  `settings-layout`, not merged.
