@@ -36,7 +36,6 @@ use gpui::{
 };
 
 use crate::elevation::Elevation;
-use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
 use crate::typography::Typography;
@@ -93,14 +92,20 @@ fn panel_body() -> gpui::Div {
 /// A panel's header: the ruled strip the body scrolls under.
 ///
 /// `flex_none` is the other half of [`panel_body`]'s `flex_1` — a header that could
-/// shrink would give the body a height that changes as the list does.
+/// shrink would give the body a height that changes as the list does. `px_3().py_2()`
+/// is the same box `Toolbar` draws (`toolbar.rs`) — the two used to disagree (`py(6.)`
+/// here, `py_2` there), which is exactly the "different box" a panel's header and a
+/// bare `Toolbar` should never have, since the whole point of this shape is that a
+/// panel's header *is* the toolbar row. `sid_ui::Toolbar` stays a separate type only
+/// because `systems_tab.rs` still renders one outside a `Card::panel`; the box is the
+/// single contract either way.
 fn panel_header() -> gpui::Div {
     h_flex()
         .flex_none()
         .justify_between()
         .gap_3()
         .px_3()
-        .py(scaled(6.))
+        .py_2()
 }
 
 /// A titled container. See the module docs for the two shapes.
