@@ -317,3 +317,17 @@ commits; do not invent one).
   API unchanged; no call site moved. Gate green (fmt/clippy/full workspace test suite,
   hygiene.rs included). Gallery's `kbd` card gained a bare single-key example (`Escape`)
   alongside the existing two-key/modifier-heavy/sequence/unparseable ones.
+- 2026-09-09: `notice-wrap` branch (not merged): `sid_ui::InlineNotice` was clamping its
+  body to one line, so the ~140+ char degraded-keyring message in Settings → Behaviour
+  ellipsized mid-sentence. It now wraps to two lines (`min_w_0` + `line_clamp(2)` in place
+  of the one-line clamp) and takes an optional `.detail(..)` line — Meta role, always
+  `muted` regardless of tone — for a "why" separate from the "what". Settings' behavior
+  section now splits `secret_status_message`'s composed line via a depth-counted paren
+  scan (`split_status_detail`, `settings_tab.rs`) rather than touching `app.rs`, which two
+  other agents had checked out. Gallery's "inline notice" card gained the wrapped-long and
+  message+detail examples. Gate green (fmt/clippy/tests, 51 suites). Captures: 1920x1080
+  and 700x900 Settings → Behaviour both show the full sentence wrapped and the detail line
+  legible with no overflow, though at 700px this sandbox's actual D-Bus probe reason text
+  (much longer than the estimate) still needs the ellipsis on the sentence — the detail
+  line itself stays whole; 2000x1200 gallery capture (scrolled to the "structure" column)
+  confirms all three notice shapes render cleanly in both tones.
