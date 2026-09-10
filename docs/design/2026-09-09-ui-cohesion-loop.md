@@ -174,13 +174,12 @@ Every item is gated by before/after captures in all four themes and a
       the five literals); popovers and tooltips sit on `bridge::raised_surface(t) = mix(surface,
       fg, 0.07)`, which lightens the three dark palettes and darkens cosmos-light (three tests
       observed red against a stub first). Right-click menu verified raised in all four themes.
-- [ ] **Library boundary.** Final-gate check on 2026-09-10 found 15 `gpui_component::` imports
-      across nine `crates/sid` modules (`table::{Column, ColumnSort, TableDelegate,
-      TableState, state::render_cell}`, `menu::{ContextMenuExt, PopupMenu, PopupMenuItem}`,
-      `input::{Editor, EditorState, InputEvent, InputState, Position}`, `Root`,
-      `tooltip::Tooltip`). `sid-ui` re-exports them from one facade module; tab modules import
-      from `sid_ui`; a hygiene ratchet bans `gpui_component::` under `crates/sid/src` except
-      `main.rs` (the composition root is the one place that knows both sides).
+- [x] **Library boundary.** Done 2026-09-10, ratchet first: the hygiene test
+      `the_rendering_library_is_named_only_in_sid_ui_and_the_composition_root` failed on the 15
+      sites, then `sid_ui::component` re-exports `Root`, the menu, table and input types the
+      tabs need and the nine modules import from it; the two `Tooltip` sites in `session.rs`
+      use `sid_ui::Tipped`. Only `main.rs` names `gpui_component::` now. (`table::state::
+      render_cell` was a private upstream module all along; its mentions were prose.)
 - [ ] **Final gate.** Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
