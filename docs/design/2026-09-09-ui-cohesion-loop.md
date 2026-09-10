@@ -99,14 +99,12 @@ Every item is gated by before/after captures in all four themes and a
       ("no connection selected") left the toolbars. Two real bugs surfaced and fixed on the
       way: Network's fetch error had no render at all; Workspaces' unregister was a labelled
       button with an empty label (36px box beside a 24px square).
-- [ ] **Panel/toolbar follow-ups** (from the data-tabs pass): `sid_ui::Toolbar` is now unused
-      on the tabs because `Card::panel`'s header does its job with a different box (`py_2` vs
-      `py(6.)`); unify the two or delete `Toolbar`. `db_tab.rs` and `network_tab.rs` keep
-      file-private `error_line`/`caveat_line` copies of `sid_ui::notice`'s; swap after a wrap
-      check. The Database `diagram` button wants an icon (`git-fork`/`workflow` in Lucide). A
-      panel header's title is the only shrinkable slot, so at 700px the results filter sits at
-      its 160px floor and `RESULTS` would truncate below that; decide whether filters may
-      shrink further or move to a second row.
+- [x] **Panel/toolbar follow-ups**: done 2026-09-09. `Toolbar` stays (System still uses it)
+      and `Card::panel`'s header now shares its exact box (`px_3 py_2`); Database and Network
+      use `sid_ui::error_line`/`caveat_line` (verified with a provoked SQLite syntax error);
+      `Icon::Diagram` (Lucide `workflow`) on the diagram button; panel header actions are
+      `flex_initial` and filters shrink to `PANEL_FILTER_FLOOR` (120px) before the title
+      truncates, verified at 700px on Database and Network.
 - [x] **Wide-window layouts: Settings.** Done 2026-09-09: 220px section rail (Appearance ·
       Behaviour · Keyboard · Storage) + panelled content left-aligned to the gutter; collapses
       to a `SegmentedControl` below ~900 design px; Behaviour's chip strips became
