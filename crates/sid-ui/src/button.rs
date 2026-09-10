@@ -316,6 +316,7 @@ pub struct Button {
     disabled: bool,
     loading: bool,
     full_width: bool,
+    tab_index: isize,
     style: StyleRefinement,
     on_click: Option<ClickHandler>,
 }
@@ -334,6 +335,7 @@ impl Button {
             disabled: false,
             loading: false,
             full_width: false,
+            tab_index: 0,
             style: StyleRefinement::default(),
             on_click: None,
         }
@@ -419,6 +421,16 @@ impl Button {
         self
     }
 
+    /// Where this button sits in the keyboard tab order. Defaults to `0`, same as
+    /// [`crate::SegmentedControl::tab_index`] and [`crate::Row::tab_index`] — right for
+    /// a toolbar button among other index-0 controls. A form with numbered fields, or a
+    /// control that must sort after a sibling at the same index (the config editor's
+    /// Save, after its own text buffer), says otherwise.
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = index;
+        self
+    }
+
     /// The click handler. Not installed at all when the button is disabled or loading,
     /// so "inert" is a structural property rather than a guard inside the callback.
     pub fn on_click(
@@ -449,7 +461,7 @@ impl RenderOnce for Button {
         let size = self.size;
         let interactive = state.is_interactive();
 
-        let button = shell(cx, self.id, &paint, size, interactive)
+        let button = shell(cx, self.id, &paint, size, interactive, self.tab_index)
             .when(self.full_width, |this| this.w_full())
             .child(
                 h_flex()
@@ -500,6 +512,7 @@ pub struct IconButton {
     size: ButtonSize,
     disabled: bool,
     loading: bool,
+    tab_index: isize,
     style: StyleRefinement,
     on_click: Option<ClickHandler>,
 }
@@ -516,6 +529,7 @@ impl IconButton {
             size: ButtonSize::default(),
             disabled: false,
             loading: false,
+            tab_index: 0,
             style: StyleRefinement::default(),
             on_click: None,
         }
@@ -560,6 +574,12 @@ impl IconButton {
         self
     }
 
+    /// Where this button sits in the keyboard tab order. See [`Button::tab_index`].
+    pub fn tab_index(mut self, index: isize) -> Self {
+        self.tab_index = index;
+        self
+    }
+
     /// The click handler. Not installed when disabled or loading.
     pub fn on_click(
         mut self,
@@ -585,7 +605,7 @@ impl RenderOnce for IconButton {
         let interactive = state.is_interactive();
         let edge = size.edge();
 
-        let button = shell(cx, self.id, &paint, size, interactive)
+        let button = shell(cx, self.id, &paint, size, interactive, self.tab_index)
             .w(edge)
             .h(edge)
             .p_0()
@@ -632,6 +652,7 @@ fn shell(
     paint: &ButtonPaint,
     size: ButtonSize,
     interactive: bool,
+    tab_index: isize,
 ) -> ComponentButton {
     let colour = |token: Option<u32>| token.map_or_else(transparent_black, |c| rgb(c).into());
     ComponentButton::new(id)
@@ -662,6 +683,7 @@ fn shell(
         .border_color(colour(paint.border))
         .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
         .with_size(size.component())
+        .tab_index(tab_index)
         .tab_stop(interactive)
         .when(interactive, |this| this.cursor_pointer())
 }

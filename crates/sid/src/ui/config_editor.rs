@@ -254,13 +254,14 @@ impl AppState {
         cx.notify();
     }
 
-    /// Close the unlock prompt. The typed password goes with it — the `TextInput` entity
-    /// is dropped, and nothing copied it anywhere.
+    /// Close the unlock prompt. The typed password goes with it — [`close_unlock_prompt`]
+    /// scrubs the field before the `TextInput` entity drops, and nothing copied it
+    /// anywhere.
     fn close_config_editor_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.systems.editor.as_mut() else {
             return;
         };
-        editor.unlock = None;
+        close_unlock_prompt(editor, window, cx);
         // Hand focus back to whatever the editor shows, so the modal stays keyboard-live
         // — the same dangling-focus care `close_config_editor` takes.
         match &editor.body {
@@ -318,8 +319,8 @@ impl AppState {
                 }
                 match outcome {
                     Ok(UnlockOutcome::Unlocked(text)) => {
+                        close_unlock_prompt(editor, window, cx);
                         editor.elevated = Some(secret);
-                        editor.unlock = None;
                         editor.save_error = None;
                         editor.body = build_editor_body(text, window, cx);
                     }
@@ -327,18 +328,20 @@ impl AppState {
                         if let Some(prompt) = editor.unlock.as_mut() {
                             prompt.error = Some(msg.into());
                             // Clear the field: retyping a whole password beats editing a
-                            // masked one the user cannot see.
+                            // masked one the user cannot see. The prompt stays open here
+                            // (this is the one outcome that doesn't close it), so this is
+                            // an in-place clear rather than `close_unlock_prompt`'s.
                             let field = prompt.password.clone();
                             field.update(cx, |input, cx| input.set_value("", window, cx));
                             field.update(cx, |state, cx| state.focus(window, cx));
                         }
                     }
                     Ok(UnlockOutcome::Fatal(msg)) => {
-                        editor.unlock = None;
+                        close_unlock_prompt(editor, window, cx);
                         editor.body = ConfigEditorBody::Notice(msg);
                     }
                     Err(join_err) => {
-                        editor.unlock = None;
+                        close_unlock_prompt(editor, window, cx);
                         editor.body =
                             ConfigEditorBody::Notice(format!("unlock task panicked: {join_err}"));
                     }
@@ -594,10 +597,9 @@ impl AppState {
             EditorMode::Direct | EditorMode::NeedsRoot { .. } | EditorMode::Sealed => None,
         };
 
-        let unlock_layer = editor
-            .unlock
-            .as_ref()
-            .map(|prompt| unlock_prompt_layer(prompt, &theme, viewport, prompt_path.clone(), cx));
+        let unlock_layer = editor.unlock.as_ref().map(|prompt| {
+            unlock_prompt_layer(prompt, &theme, viewport, prompt_path.clone(), window, cx)
+        });
 
         let save_error_line = save_error.map(|e| {
             div()
@@ -614,157 +616,185 @@ impl AppState {
         // `sid_ui::Modal` (it is a full-viewport editor, not a 460px panel), so it does
         // not inherit the trap `Modal` owns — and it has a real way out: the unlock
         // prompt's sudo-password field is single-line, so Tab in it moves focus, and
-        // without a trap it moved to whatever the tab under the scrim painted. Trapping
-        // the *backdrop* rather than the unlock panel keeps it to one registration:
-        // nesting two traps leaves which one wins to `HashMap` iteration order.
+        // without a trap it moved to whatever the tab under the scrim painted.
         //
-        // The handle lives in element state for the same reason `Modal`'s does — see
-        // that module — and dies with the last frame that renders this overlay.
-        let trap: FocusHandle = window
-            .use_keyed_state("config-editor-trap", cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        // [`trap_owner`] is the one registration this overlay ever holds, and it moves
+        // rather than duplicates: while the unlock prompt is open the trap belongs to
+        // *that panel* (password ↔ cancel ↔ unlock, wrapping), not the backdrop. A
+        // security pass caught the bug in registering both at once: `FocusTrapManager`
+        // (`gpui-base`) keeps every trap in one `HashMap` and `Root::on_action_tab`
+        // (`root.rs`) asks it for "the trap the focused element is inside", so with the
+        // backdrop *also* still trapped — the unlock panel is one of its descendants —
+        // both entries matched and which one answered came down to `HashMap` iteration
+        // order. When the backdrop won, Tab out of the password field rested on the
+        // config file's own body or its Save/close buttons, live behind the scrim, and a
+        // keystroke meant for the password landed in the file instead.
+        //
+        // The fix is to keep exactly one entry in that map at a time, not to referee
+        // between two: `backdrop_trap` is only requested — and so only kept alive; see
+        // `Modal`'s doc comment for why `use_keyed_state`-backed handles die when a frame
+        // stops asking for them — while [`TrapOwner::Backdrop`] holds. The moment the
+        // prompt opens, this frame simply never asks for it again, `FocusTrapManager`
+        // prunes the dropped handle, and the panel's own trap (registered unconditionally
+        // in `unlock_prompt_layer`, which only ever renders while open) is the only one
+        // left to answer `active_focus_trap`. The editor's Save/close/buffer do not need
+        // their own tab stops turned off for this: they are still ordinary tab stops,
+        // just no longer inside the one trap `Root`'s Tab/Shift-Tab handling cycles
+        // within, so it steps past them without ever resting there.
+        let prompt_open = editor.unlock.is_some();
+        let backdrop_trap: Option<FocusHandle> =
+            matches!(trap_owner(prompt_open), TrapOwner::Backdrop).then(|| {
+                window
+                    .use_keyed_state("config-editor-trap", cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone()
+            });
 
-        Some(
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .id("config-editor-backdrop")
-                        .key_context("ConfigEditor")
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(0x000000a8))
-                        .on_action(cx.listener(|this, _: &ConfigEditorCancel, window, cx| {
-                            this.dismiss_config_editor_layer(window, cx);
-                        }))
-                        .tab_group()
-                        .focus_trap("config-editor-trap", &trap)
-                        .child(
-                            div()
-                                .w(viewport.width * 0.88)
-                                .h(viewport.height * 0.86)
-                                .flex()
-                                .flex_col()
-                                .bg(rgb(theme.surface))
-                                .border_1()
-                                .border_color(rgb(theme.border))
-                                .rounded_md()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap_2()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(rgb(theme.border))
-                                        // The title column is the part that gives. A config
-                                        // path is arbitrarily long (`/etc/systemd/system/
-                                        // some-unit.service.d/10-override.conf` is 130
-                                        // characters at Murphy's depth) and gpui measures a
-                                        // text element's min-content width as its *full*
-                                        // string, so without `min_w(0)` this column refuses
-                                        // to shrink and shoves `save`/`close` out through
-                                        // the modal's right border. `flex_1 + min_w(0)` +
-                                        // a clamp on each line makes the path the thing
-                                        // that ellipsises; `flex_none` keeps the buttons
-                                        // out of the negotiation entirely.
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .child(
-                                                    h_flex()
-                                                        .gap_1p5()
-                                                        .text_title(&theme)
-                                                        .child(
-                                                            div()
-                                                                .min_w(px(0.))
-                                                                .clamp_one_line()
-                                                                .child(file_name),
-                                                        )
-                                                        .children(dirty_marker),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .min_w(px(0.))
-                                                        .text_mono_meta(&theme)
-                                                        .clamp_one_line()
-                                                        .child(full_path),
-                                                ),
+        // Built without the trap attached: `focus_trap` returns a different concrete
+        // type (`FocusTrapContainer<_>`, not `Stateful<Div>`), so the two branches of
+        // "attach it, or don't" have to unify through `AnyElement` below rather than
+        // through `Styled`'s usual `when`/`when_some` (which require both branches to
+        // stay the same type).
+        let backdrop = div()
+            .id("config-editor-backdrop")
+            .key_context("ConfigEditor")
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(viewport.width)
+            .h(viewport.height)
+            .bg(rgba(0x000000a8))
+            .on_action(cx.listener(|this, _: &ConfigEditorCancel, window, cx| {
+                this.dismiss_config_editor_layer(window, cx);
+            }))
+            .tab_group()
+            .child(
+                div()
+                    .w(viewport.width * 0.88)
+                    .h(viewport.height * 0.86)
+                    .flex()
+                    .flex_col()
+                    .bg(rgb(theme.surface))
+                    .border_1()
+                    .border_color(rgb(theme.border))
+                    .rounded_md()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(rgb(theme.border))
+                            // The title column is the part that gives. A config
+                            // path is arbitrarily long (`/etc/systemd/system/
+                            // some-unit.service.d/10-override.conf` is 130
+                            // characters at Murphy's depth) and gpui measures a
+                            // text element's min-content width as its *full*
+                            // string, so without `min_w(0)` this column refuses
+                            // to shrink and shoves `save`/`close` out through
+                            // the modal's right border. `flex_1 + min_w(0)` +
+                            // a clamp on each line makes the path the thing
+                            // that ellipsises; `flex_none` keeps the buttons
+                            // out of the negotiation entirely.
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .text_title(&theme)
+                                            .child(
+                                                div()
+                                                    .min_w(px(0.))
+                                                    .clamp_one_line()
+                                                    .child(file_name),
+                                            )
+                                            .children(dirty_marker),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .text_mono_meta(&theme)
+                                            .clamp_one_line()
+                                            .child(full_path),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap_2()
+                                    .when(can_save, |el| {
+                                        el.child(
+                                            // A plain `div().id(..)` — no
+                                            // `tab_index` — is never a tab
+                                            // stop at all (`InteractiveElement`
+                                            // needs one of `tab_index`/
+                                            // `track_focus` to register a
+                                            // focus handle in the first
+                                            // place), which is why Tab inside
+                                            // this trap used to skip Save
+                                            // entirely. `sid_ui::Button` gets
+                                            // the states and the ring for
+                                            // free; `tab_index(1)` — after the
+                                            // editor buffer's own default `0`
+                                            // — is the only thing it does not
+                                            // supply on its own.
+                                            Button::new("config-editor-save", save_label)
+                                                .small()
+                                                .primary()
+                                                .tab_index(1)
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, window, cx| {
+                                                        this.save_config_editor(window, cx);
+                                                    },
+                                                )),
                                         )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_row()
-                                                .flex_none()
-                                                .items_center()
-                                                .gap_2()
-                                                .when(can_save, |el| {
-                                                    el.child(
-                                                        div()
-                                                            .id("config-editor-save")
-                                                            .px_3()
-                                                            .py_1()
-                                                            .rounded_md()
-                                                            .text_body(&theme)
-                                                            .cursor_pointer()
-                                                            .text_color(rgb(theme.accent))
-                                                            .hover(|s| s.bg(rgb(theme.selection)))
-                                                            .child(save_label)
-                                                            .on_click(cx.listener(
-                                                                |this,
-                                                                 _: &ClickEvent,
-                                                                 window,
-                                                                 cx| {
-                                                                    this.save_config_editor(
-                                                                        window, cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                    )
-                                                })
-                                                .child(
-                                                    div()
-                                                        .id("config-editor-close")
-                                                        .px_2()
-                                                        .py_1()
-                                                        .rounded_md()
-                                                        .cursor_pointer()
-                                                        .text_body(&theme)
-                                                        .text_color(rgb(theme.muted))
-                                                        .hover(|s| s.bg(rgb(theme.selection)))
-                                                        .child("close")
-                                                        .on_click(cx.listener(
-                                                            |this, _: &ClickEvent, window, cx| {
-                                                                this.close_config_editor(
-                                                                    window, cx,
-                                                                );
-                                                            },
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                                .children(banner)
-                                .child(body)
-                                .children(save_error_line),
-                        )
-                        // Painted after the card, so it sits above it: the unlock prompt
-                        // is a layer over this modal, not a replacement for it — the
-                        // buffer behind stays exactly where the user left it.
-                        .children(unlock_layer),
-                ),
+                                    })
+                                    .child(
+                                        Button::new("config-editor-close", "close")
+                                            .small()
+                                            .ghost()
+                                            .tab_index(2)
+                                            .on_click(cx.listener(
+                                                |this, _: &ClickEvent, window, cx| {
+                                                    this.close_config_editor(window, cx);
+                                                },
+                                            )),
+                                    ),
+                            ),
+                    )
+                    .children(banner)
+                    .child(body)
+                    .children(save_error_line),
             )
-            .with_priority(1),
-        )
+            // Painted after the card, so it sits above it: the unlock prompt
+            // is a layer over this modal, not a replacement for it — the
+            // buffer behind stays exactly where the user left it.
+            .children(unlock_layer);
+
+        // `backdrop_trap` is `Some` for exactly one of the two owners `trap_owner`
+        // distinguishes (`TrapOwner::Backdrop`) — the other, `unlock_prompt_layer`,
+        // already registered its own trap unconditionally above, since that function
+        // only ever renders while it is the owner.
+        let backdrop: AnyElement = match backdrop_trap {
+            Some(trap) => backdrop
+                .focus_trap("config-editor-trap", &trap)
+                .into_any_element(),
+            None => backdrop.into_any_element(),
+        };
+
+        Some(deferred(anchored().position(point(px(0.), px(0.))).child(backdrop)).with_priority(1))
     }
 }
 
@@ -792,6 +822,26 @@ fn build_editor_body(
     }
 }
 
+/// Close the unlock prompt, scrubbing the typed password first.
+///
+/// Every path that closes the prompt — cancel, a successful unlock, a fatal unlock
+/// error, a panicked unlock task — goes through here rather than a bare `editor.unlock =
+/// None`. The *accepted* secret is a [`Passphrase`], which zeroizes on drop (see the
+/// module doc); the field the user typed into is an ordinary `InputState` with no such
+/// guarantee, so its buffer is overwritten before the entity drops rather than just
+/// deallocated with the old bytes still in it.
+fn close_unlock_prompt(
+    editor: &mut ConfigEditorState,
+    window: &mut Window,
+    cx: &mut Context<AppState>,
+) {
+    if let Some(prompt) = editor.unlock.take() {
+        prompt
+            .password
+            .update(cx, |input, cx| input.set_value("", window, cx));
+    }
+}
+
 /// The "unlock with sudo" affordance. Two call sites — the read-only banner and the
 /// locked body — so it is one control defined once.
 fn unlock_button(id: &'static str, cx: &mut Context<AppState>) -> impl IntoElement + use<> {
@@ -815,11 +865,20 @@ fn unlock_prompt_layer(
     theme: &sid_ui::Theme,
     viewport: gpui::Size<gpui::Pixels>,
     path: SharedString,
+    window: &mut Window,
     cx: &mut Context<AppState>,
 ) -> impl IntoElement + use<> {
     let busy = prompt.busy;
     let error = prompt.error.clone();
     let submit_label = if busy { "unlocking…" } else { "unlock" };
+    // This panel is the *only* focus trap [`config_editor_overlay`] ever registers while
+    // it is on screen (see `trap_owner` there) — unconditional here because this
+    // function itself is only ever called while the prompt is open. Tab cycles password
+    // ↔ cancel ↔ unlock and does not reach the editor behind the scrim.
+    let trap: FocusHandle = window
+        .use_keyed_state("config-editor-unlock-trap", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
 
     div()
         .absolute()
@@ -838,6 +897,8 @@ fn unlock_prompt_layer(
         .child(
             v_flex()
                 .id("config-editor-unlock-prompt")
+                .tab_group()
+                .focus_trap("config-editor-unlock-trap", &trap)
                 .w(px(440.))
                 .gap_3()
                 .p_4()
@@ -926,6 +987,32 @@ pub(crate) enum EditorMode {
     /// Read-only with no unlock offered, because no password would help — a file that
     /// is not there at all.
     Sealed,
+}
+
+/// Which element owns the overlay's one focus trap — see `config_editor_overlay`'s doc
+/// comment on `backdrop_trap` for the vulnerability this decision exists to close.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TrapOwner {
+    /// The whole modal backdrop: Tab cycles across the editor's own controls, same as
+    /// any other screen with nothing else open over it.
+    Backdrop,
+    /// Just the unlock prompt panel: Tab is confined to password/cancel/unlock, and
+    /// never reaches the (possibly root-owned) file body sitting behind the scrim.
+    UnlockPanel,
+}
+
+/// Decide [`TrapOwner`] from whether the unlock prompt is open. The two callers
+/// (`config_editor_overlay`'s `backdrop_trap`, `unlock_prompt_layer`'s own trap) must
+/// never both resolve to "register a trap" for the same overlay at once — that is
+/// exactly the bug this function's tests pin: registering both leaves which one
+/// `FocusTrapManager` answers `active_focus_trap` with down to `HashMap` iteration
+/// order, and a focused password field could lose Tab to the config file behind it.
+pub(crate) fn trap_owner(prompt_open: bool) -> TrapOwner {
+    if prompt_open {
+        TrapOwner::UnlockPanel
+    } else {
+        TrapOwner::Backdrop
+    }
 }
 
 /// Decide the mode. `elevated` is whether an accepted secret is being held for this
@@ -1093,6 +1180,24 @@ mod tests {
         // Nothing needed elevation, so nothing routes through sudo — holding a secret
         // from an earlier file must not silently promote an ordinary save.
         assert_eq!(editor_mode(Access::ReadWrite, true), EditorMode::Direct);
+    }
+
+    // ---- trap_owner: one focus-trap registration, never two -----------------------
+
+    #[test]
+    fn the_backdrop_owns_the_trap_while_no_prompt_is_open() {
+        assert_eq!(trap_owner(false), TrapOwner::Backdrop);
+    }
+
+    #[test]
+    fn the_unlock_panel_takes_the_trap_the_moment_it_opens() {
+        // The vulnerability this pins: if this ever answered `Backdrop` while the
+        // prompt is open, `config_editor_overlay` would register both the backdrop
+        // and the panel as trap containers in the same frame, and which one
+        // `FocusTrapManager` treats as active would depend on `HashMap` iteration
+        // order — the bug that let Tab out of the password field land on the file
+        // body or its Save/close buttons behind the scrim.
+        assert_eq!(trap_owner(true), TrapOwner::UnlockPanel);
     }
 
     // ---- can_save ----------------------------------------------------------------
