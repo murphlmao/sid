@@ -78,10 +78,12 @@ means verifying every screen twice.
 Every item is gated by before/after captures in all four themes and a
 `interface-design:design-review` pass on the touched screen.
 
-- [ ] **App-wide status bar.** sid has no bottom bar. Real ops tools have one: active
-      scope, keyring state (move the top-right `!` badge's detail here), connection counts,
-      the `SID_PERF` readout when enabled. `StatusBar` was in the July checklist and was
-      never built.
+- [x] **App-wide status bar.** Done 2026-09-09: `sid_ui::StatusBar`/`StatusItem`, 26px
+      `surface` strip. Left: keyring state in words (click opens the old popover; the
+      top-right `!` badge is gone), `N ssh sessions`, `db: <name>` with its dot. Right: zoom
+      percent when ≠100% (click resets), last-frame ms under `SID_PERF`. Terminal pane
+      reflows by test (`a_shorter_pane_reflows_to_fewer_rows_and_the_same_columns`).
+      `sid-cap.sh` gained `--scroll`.
 - [ ] **One panel vocabulary.** Today Database uses bordered, rounded, headed panels; SSH
       home floats cards on the bare background; Workspaces uses a hairline sidebar; System
       has an unframed meter strip. Pick the Database treatment (surface fill, hairline
