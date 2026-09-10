@@ -28,16 +28,15 @@ use gpui::{
     IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size,
 };
-use sid_ui::component::{
-    Column, ColumnSort, Editor, EditorState, InputEvent, Position, Root, TableDelegate,
-    TableState,
-};
 use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
     Row, SchemaGraph, SchemaInfo, TableInfo,
 };
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
+use sid_ui::component::{
+    Column, ColumnSort, Editor, EditorState, InputEvent, Position, Root, TableDelegate, TableState,
+};
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::db_registry::DbRegistry;

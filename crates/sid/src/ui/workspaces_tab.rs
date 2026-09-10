@@ -45,7 +45,9 @@ use sid_store::{DbConnection, Host, Scope, ViewFilters, WorkspaceId, WorkspaceMe
 use crate::app::{AppState, Tab};
 use crate::git_registry;
 use crate::ui::session::ssh_runtime;
-use sid_ui::component::{Column, ColumnSort, ContextMenuExt, PopupMenu, PopupMenuItem, TableDelegate, TableState};
+use sid_ui::component::{
+    Column, ColumnSort, ContextMenuExt, PopupMenu, PopupMenuItem, TableDelegate, TableState,
+};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
