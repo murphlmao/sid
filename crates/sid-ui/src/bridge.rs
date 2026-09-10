@@ -85,6 +85,27 @@ pub fn brightness(color: u32) -> f32 {
     (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0
 }
 
+/// WCAG 2.1 relative luminance of a `0xRRGGBB` token, `0.0..=1.0`.
+///
+/// Unlike [`brightness`] (a cheap sort key), this is gamma-corrected — the curve a
+/// reader's eye actually follows, which compresses hard near black. That compression is
+/// exactly why a fixed-percentage mix reads as a clear step on a light palette and as
+/// almost nothing on a near-black one: the same RGB delta is a much smaller share of
+/// the perceptual range down there. [`raised_surface`]'s minimum-step floor is stated in
+/// this space rather than in raw RGB for that reason.
+fn relative_luminance(color: u32) -> f32 {
+    let (r, g, b) = channels(color);
+    let channel = |v: u32| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
 /// Blend `factor` of `toward` into `color` (0.0 = unchanged, 1.0 = `toward`).
 pub fn mix(color: u32, toward: u32, factor: f32) -> u32 {
     let f = factor.clamp(0.0, 1.0);
@@ -161,9 +182,37 @@ pub fn pressed_of(t: &Theme, color: u32) -> u32 {
 /// legibility* rather than toward a fixed light or dark endpoint: the same formula
 /// lightens a dark palette's popover and darkens cosmos-light's without a light/dark
 /// branch. The 7% fraction is small enough to read as "one step", not a new surface.
+///
+/// The 7% mix alone was RED against [`MIN_LUMA_STEP`] on every dark built-in, not just
+/// void: cosmos (~0.0098) and dusk (~0.0105) cleared even less of the floor than
+/// void's ~0.0073 — pinned by
+/// `a_popover_clears_a_minimum_step_above_surface_in_every_palette` before this walked
+/// the mix further. cosmos-light's 7% mix already clears the floor (~0.114), so it
+/// takes the first step and is untouched.
 pub fn raised_surface(t: &Theme) -> u32 {
-    mix(t.surface, t.fg, 0.07)
+    let base = relative_luminance(t.surface);
+    // 7, 8, 9, ..., 100 — the original fraction first (so a palette that already
+    // clears the floor there is bit-for-bit what it always was), then walked toward
+    // `fg` a percentage point at a time until the step is real. `fg` sits at the
+    // opposite end of the palette's brightness from `surface` in every built-in, so
+    // this is monotonic: each step's relative luminance moves further from `base`
+    // than the last, and the loop always terminates (100% mix IS `fg`, whose contrast
+    // hunted `surface` in the first place — see the module docs' contrast law).
+    (7..=100)
+        .map(|pct: i32| mix(t.surface, t.fg, pct as f32 / 100.0))
+        .find(|&candidate| (relative_luminance(candidate) - base).abs() >= MIN_LUMA_STEP)
+        .unwrap_or(t.fg)
 }
+
+/// The smallest relative-luminance step [`raised_surface`] must clear above `surface`.
+///
+/// WCAG relative luminance compresses hard near black, so a flat 7% RGB mix that reads
+/// as a clear step on cosmos-light (surface near white) can move as little as ~0.007 of
+/// relative luma on a near-black surface (void's `0x0a0a0a`) — the popover then sits a
+/// few RGB values from the selected row (`0x161616`) it is supposed to separate from.
+/// 0.06 is small enough that no palette needs a light/dark branch to clear it, and large
+/// enough that a near-black surface's popover reads as a distinct panel.
+const MIN_LUMA_STEP: f32 = 0.06;
 
 /// `0xRRGGBB` as the `#RRGGBB` string the library's config parser accepts.
 fn hex(color: u32) -> Option<SharedString> {
@@ -570,22 +619,9 @@ mod tests {
         }
     }
 
-    /// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`. Local copy of
-    /// `theme.rs`'s test-only helper — small enough that importing it isn't worth a
-    /// `pub(crate)` seam just for two test modules.
+    /// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`.
     fn contrast(a: u32, b: u32) -> f32 {
-        let luminance = |c: u32| {
-            let channel = |shift: u32| {
-                let v = ((c >> shift) & 0xff) as f32 / 255.;
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
-        };
-        let (x, y) = (luminance(a), luminance(b));
+        let (x, y) = (relative_luminance(a), relative_luminance(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
@@ -626,6 +662,26 @@ mod tests {
             brightness(raised_surface(&light)) < brightness(light.surface),
             "cosmos-light's popover should darken"
         );
+    }
+
+    #[test]
+    fn a_popover_clears_a_minimum_step_above_surface_in_every_palette() {
+        // void's `surface` (0x0a0a0a) and the `selection` fill under the row a popover
+        // opens on top of (0x161616) are four RGB values apart. `raised_surface`'s 7%
+        // mix toward `fg` moves only ~0.007 of relative luma there — WCAG relative
+        // luminance compresses hard near black, so the same percentage that reads as a
+        // clear step on cosmos-light is almost nothing this close to 0. Enforce a floor
+        // in that space so every palette gets a visible step, not just the ones where a
+        // flat percentage happened to be enough.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let delta =
+                (relative_luminance(raised_surface(&t)) - relative_luminance(t.surface)).abs();
+            assert!(
+                delta >= MIN_LUMA_STEP,
+                "{}: popover cleared only {delta:.4} relative luma above surface (floor {MIN_LUMA_STEP})",
+                t.name
+            );
+        }
     }
 
     #[test]
