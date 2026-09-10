@@ -537,6 +537,8 @@ impl TableDelegate for ProcessesDelegate {
                 };
                 div()
                     .px_2()
+                    .min_w(px(0.))
+                    .clamp_one_line()
                     .text_mono(&theme)
                     .text_color(rgb(ink))
                     .child(label)
