@@ -202,7 +202,11 @@ Every item is gated by before/after captures in all four themes and a
       (spell it out); SSH quick-connect field is 32px so the panel header is 49px not 41px
       (`.small()`); host/DB forms: the disabled `workspace` radio gives no reason and the
       enabled ring is fainter than the disabled one.
-- [ ] **Nit sweep** (taste calls the gate raised, pick the cheap ones): the accent `connect`
+- [x] **Nit sweep**: done 2026-09-10, eight of nine items (legend under the header; lowercase
+      menu; System inset 12px; Swap says "none configured" once; scope switcher breathing room;
+      popovers clear a 0.06 relative-luma floor above surface, test red on all three dark
+      palettes; swatch rings; neutral key chip with an accent hairline). Skipped on purpose:
+      re-weighting the header vs per-card `connect`. Original list: the accent `connect`
       in the SSH header outranks the per-card connect; the status legend sits 800px from the
       dots it explains; right-click menu Title Case vs lowercase buttons; System panels inset
       16px vs 12px elsewhere; the scope switcher's track is flush to the window's top edge;
