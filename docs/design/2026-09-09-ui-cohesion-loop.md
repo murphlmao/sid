@@ -212,9 +212,33 @@ Every item is gated by before/after captures in all four themes and a
       16px vs 12px elsewhere; the scope switcher's track is flush to the window's top edge;
       theme swatches for bg/surface invisible on the selected row; Swap meter says "none"
       three ways; void popover raise is only 4/255; key chip in the host form is accent-filled.
-- [ ] **Final gate.** Ran 2026-09-10 as a workflow (4 opus reviewers, one per theme, 34 PNGs;
-      8 sonnet refuters, one per screen): 66 raw findings, 41 non-nit, 28 confirmed (12
-      distinct), 1 blocker. Re-run after the two gate-fix branches land. Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
+- [ ] **Round-2 fixes (tabs)**, from the 2026-09-10 second gate: Workspaces row's counts line
+      is right-drifted (a `justify_between` row keeps an empty `flex_1` git label); Workspaces
+      right-click menu is Title Case with no icons (the SSH menu got both); the System process
+      region is the only data region without a `Card::panel` header (its toolbar floats on
+      canvas); Database's `Explain`/`Run`/`Reload`/`Export` and the forms' buttons are Title
+      Case; the two "none selected" empty states weight their CTA differently (Database
+      secondary, Workspaces primary) → both primary; Database connection rows, Ports rows and
+      process rows have no right-click menu (system.md: every actionable row has one);
+      Settings footnotes painted in `faint` (2.65:1 on void) → Meta/`muted`; Settings is the
+      last tab inset 16px; the active theme row's 1px accent border is pixel-identical to the
+      focus ring → `selection` fill instead; disabled save-to option paints its label fainter
+      than its note → label `muted`, note `faint`.
+- [ ] **Round-2 fixes (sid-ui + chrome)**: `raised_surface` mixes toward `fg` and desaturates
+      cosmos's navy into a grey slab → mix toward a lightened `surface` (same luma floor, hue
+      kept); `MeterTone::Calm` fills in `accent`, which on red palettes reads as alarm → calm
+      is a neutral (`muted`/`fg` tint), warning/critical keep their inks; `Row::leading`
+      centres the dot against a variable-height stack → align to the first line; every data
+      table's header paints a stray ~17px empty column at the right (FillTable chrome
+      reserve); the scope switcher's track is still flush with the chrome bar's top/bottom
+      (give the track an explicit height smaller than the bar and centre it).
+- [ ] **Final gate.** Round 1 ran 2026-09-10 (4 opus reviewers, 34 PNGs; 8 sonnet refuters):
+      66 raw, 41 non-nit, 28 confirmed (12 distinct), 1 blocker → fixed. Round 2 ran after the
+      fixes + nit sweep (64 PNGs): all 12 fixes confirmed on cosmos/dusk/cosmos-light, 11 on
+      void; 17 non-nit findings, 11 verified real in 6 clusters (above), 6 unverified because
+      the refuters hit the spend limit (segmented control half-iconned — a recorded decision;
+      Ports selected-row ring vs `selection` fill; the three Settings/chrome items above).
+      Round 3 = a two-theme spot check after the round-2 fixes land. Six tabs × four themes, gallery, `tests/hygiene.rs` green, and no tab
       module naming `gpui_component` directly.
 
 ## 3. Open GitHub issues
