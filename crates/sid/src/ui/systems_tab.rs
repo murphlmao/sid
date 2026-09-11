@@ -718,8 +718,15 @@ impl AppState {
 
         Card::panel("processes")
             .count(proc_count)
-            .flex_1()
-            .min_h_0()
+            // `size_full`, not `flex_1` (what `network_tab.rs`'s `sub_view_panel` uses):
+            // that panel sits directly inside a `v_flex`, where `flex_1` has a flex
+            // context to grow within. This one sits inside the plain `div().flex_1()`
+            // wrapper `systems_tab`'s own render shares between both sub-views — not a
+            // flex container for its single child — so a `flex_1` card here has nothing
+            // to grow against and collapses to its header's height. `size_full` resolves
+            // against the wrapper's own already-definite height instead, the same way
+            // the pre-panel `v_flex().size_full()` did.
+            .size_full()
             .action(
                 // Capped rather than filling the row: a 1900px-wide filter field is
                 // as wrong as the 652px table it used to sit above.
