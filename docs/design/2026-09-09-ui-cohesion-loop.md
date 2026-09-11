@@ -224,7 +224,13 @@ Every item is gated by before/after captures in all four themes and a
       last tab inset 16px; the active theme row's 1px accent border is pixel-identical to the
       focus ring → `selection` fill instead; disabled save-to option paints its label fainter
       than its note → label `muted`, note `faint`.
-- [ ] **Round-2 fixes (sid-ui + chrome)**: `raised_surface` mixes toward `fg` and desaturates
+- [x] **Round-2 fixes (sid-ui + chrome)**: done 2026-09-10, five decisions each red-first:
+      `raised_surface` walks HSL lightness only (saturation test: cosmos 0.24 stayed, was
+      collapsing to 0.07 → popover `#464672` not `#4a4a55`); `MeterTone::Calm` → `muted`;
+      `Row::leading` sits on the first Body line (`leading_slot_height`); `FillColumns`
+      declares columns non-resizable, which removes upstream's header-only resize hairline
+      (the stray column) since `sync` reverted any drag anyway; `SegmentedControl::small()`
+      gives the scope switcher a 24px track centred in the 42px bar. Original list: `raised_surface` mixes toward `fg` and desaturates
       cosmos's navy into a grey slab → mix toward a lightened `surface` (same luma floor, hue
       kept); `MeterTone::Calm` fills in `accent`, which on red palettes reads as alarm → calm
       is a neutral (`muted`/`fg` tint), warning/critical keep their inks; `Row::leading`
