@@ -1587,7 +1587,7 @@ impl AppState {
             // for what it does. Same id, same slot, same size — only the word, tooltip
             // and leading icon change (`play` for a fresh run, the same `redo`
             // `network_refresh_button` uses for a re-read).
-            Button::new("db-run", if browse { "Reload" } else { "Run" })
+            Button::new("db-run", if browse { "reload" } else { "run" })
                 .primary()
                 .icon(if browse { Icon::Refresh } else { Icon::Run })
                 .size(QUERY_ACTION_SIZE)
@@ -1898,7 +1898,7 @@ impl AppState {
                 (None, None) => (true, "no query plan available".into()),
             },
         };
-        Button::new("db-explain", "Explain")
+        Button::new("db-explain", "explain")
             .size(QUERY_ACTION_SIZE)
             .icon(Icon::Info)
             .disabled(disabled || self.db.running)
@@ -2044,7 +2044,7 @@ impl AppState {
     /// full-viewport modal.
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let button = Button::new("db-export-open", "Export")
+        let button = Button::new("db-export-open", "export")
             .icon(Icon::Export)
             .size(QUERY_ACTION_SIZE)
             .tooltip("export the results now on screen")
@@ -5317,5 +5317,111 @@ mod plan_view_tests {
         // A blank line in a plan is a blank line, not a row to skip — dropping it
         // would silently re-flow the tree.
         assert_eq!(plan_lines(&page(&["QUERY PLAN"], &[&[""]])), vec![""]);
+    }
+}
+
+#[cfg(test)]
+mod button_label_case_hygiene_tests {
+    //! Chrome labels are lowercase everywhere (round-2 gate decision): a scanner over
+    //! the three files that decision covers — this one, `host_form.rs`,
+    //! `db_conn_form.rs` — for any `Button::new(id, label)` call whose label literal
+    //! opens with a capital letter. An id is excluded by the one shape a label never
+    //! has: a hyphen (every id in this codebase is kebab-case, e.g. `db-run`).
+    //!
+    //! `include_str!` pulls each file's own source at compile time, which means this
+    //! test module's own text is part of what gets scanned when it runs against
+    //! `db_tab.rs` — `shipping_text` strips every `#[cfg(test)]` block first (the same
+    //! "closing brace at column 0" rule `sid-ui/tests/hygiene.rs` documents) so this
+    //! module never matches against itself.
+
+    /// `src` with every `#[cfg(test)] mod .. { .. }` block removed.
+    fn shipping_text(src: &str) -> String {
+        let mut out = String::new();
+        let mut in_test_module = false;
+        for line in src.lines() {
+            if in_test_module {
+                if line == "}" {
+                    in_test_module = false;
+                }
+                continue;
+            }
+            if line.starts_with("#[cfg(test)]") {
+                in_test_module = true;
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Every quoted string literal inside one `Button::new(` call's argument list,
+    /// found by counting parens from the call's own `(` to its matching `)` — enough
+    /// to walk an `if browse { "Reload" } else { "Run" }` conditional label without
+    /// parsing the language for real.
+    fn button_new_string_literals(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let bytes = src.as_bytes();
+        let needle = "Button::new(";
+        let mut search_from = 0;
+        while let Some(rel) = src[search_from..].find(needle) {
+            let mut i = search_from + rel + needle.len();
+            let mut depth: i32 = 1;
+            let mut in_str = false;
+            let mut lit_start = 0;
+            while i < bytes.len() && depth > 0 {
+                let c = bytes[i] as char;
+                if in_str {
+                    if c == '\\' {
+                        i += 1;
+                    } else if c == '"' {
+                        out.push(src[lit_start..i].to_string());
+                        in_str = false;
+                    }
+                } else {
+                    match c {
+                        '"' => {
+                            in_str = true;
+                            lit_start = i + 1;
+                        }
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            search_from = i;
+        }
+        out
+    }
+
+    fn capitalized_labels(src: &str) -> Vec<String> {
+        button_new_string_literals(&shipping_text(src))
+            .into_iter()
+            // A label never has a hyphen; every element id does (kebab-case).
+            .filter(|s| !s.contains('-'))
+            .filter(|s| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            .collect()
+    }
+
+    #[test]
+    fn button_labels_open_lowercase() {
+        let files: [(&str, &str); 3] = [
+            ("db_tab.rs", include_str!("db_tab.rs")),
+            ("host_form.rs", include_str!("host_form.rs")),
+            ("db_conn_form.rs", include_str!("db_conn_form.rs")),
+        ];
+        let mut offences = Vec::new();
+        for (name, src) in files {
+            for label in capitalized_labels(src) {
+                offences.push(format!("{name}: {label:?}"));
+            }
+        }
+        assert!(
+            offences.is_empty(),
+            "chrome labels are lowercase everywhere — capitalized Button labels found:\n{}",
+            offences.join("\n")
+        );
     }
 }

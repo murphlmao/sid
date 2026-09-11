@@ -891,12 +891,12 @@ impl Render for HostForm {
                     .when_some(self.error.clone(), |modal, err| {
                         modal.child(Toast::danger(err))
                     })
-                    .footer(Button::new("host-form-cancel", "Cancel").ghost().on_click(
+                    .footer(Button::new("host-form-cancel", "cancel").ghost().on_click(
                         cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                             cx.emit(HostFormEvent::Cancel);
                         }),
                     ))
-                    .footer(Button::new("host-form-save", "Save").primary().on_click(
+                    .footer(Button::new("host-form-save", "save").primary().on_click(
                         cx.listener(|this, _ev: &ClickEvent, window, cx| this.submit(window, cx)),
                     )),
             )

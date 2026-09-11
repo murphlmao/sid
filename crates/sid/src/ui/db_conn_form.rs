@@ -698,13 +698,13 @@ impl Render for DbConnForm {
                         modal.child(Toast::danger(err))
                     })
                     .footer(
-                        Button::new("db-form-cancel", "Cancel")
+                        Button::new("db-form-cancel", "cancel")
                             .ghost()
                             .on_click(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                                 cx.emit(DbConnFormEvent::Cancel);
                             })),
                     )
-                    .footer(Button::new("db-form-save", "Save").primary().on_click(
+                    .footer(Button::new("db-form-save", "save").primary().on_click(
                         cx.listener(|this, _ev: &ClickEvent, _window, cx| this.submit(cx)),
                     )),
             )
