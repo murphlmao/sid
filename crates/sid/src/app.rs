@@ -1522,6 +1522,12 @@ impl AppState {
             .position(|choice| choice.scope == current)
             .unwrap_or(0);
         let scope_switcher = SegmentedControl::new("scope-switcher")
+            // The chrome rung (24px), not the content one: see `sid_ui`'s `track_height`.
+            // The switcher is the only filled control in the bar, so it is the only one
+            // whose box is visible, and at the content rung it was 41px of track in a
+            // 42px bar — flush top and bottom, reading as the chrome rather than as a
+            // control inside it.
+            .small()
             .segments(
                 self.scopes
                     .iter()
@@ -1609,10 +1615,11 @@ impl AppState {
             // control's segments are already `min_w_0` + clamped, so the cap is what
             // makes them actually elide instead of pushing the badge off the bar.
             //
-            // The cluster gets its own `py_1` — the same 4px the tab chrome gives its
-            // own content by centering a shorter box in the full-height row — because
-            // without it the switcher's track sat flush against the bar's top and
-            // bottom edges instead of floating in it.
+            // The cluster is centred in the full-height row and the switcher's track
+            // states its own height (the 24px small-control box), so it floats with 9px
+            // of bar above and below it. A `py_1` here was the first attempt and could
+            // not work: at the content rung the track was already taller than the bar's
+            // content box, so the padding had nothing to give.
             .child(
                 div()
                     .flex()
@@ -1620,7 +1627,6 @@ impl AppState {
                     .items_center()
                     .flex_none()
                     .gap_1()
-                    .py_1()
                     .child(
                         div()
                             .min_w(px(0.))

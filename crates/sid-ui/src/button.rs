@@ -113,7 +113,11 @@ impl ButtonSize {
 
     /// The square edge of an [`IconButton`] at this size, in logical pixels at 100%
     /// zoom. [`ButtonSize::edge`] is what gets applied.
-    fn square(self) -> gpui::Pixels {
+    ///
+    /// `pub(crate)` because it is the house's *small control* box, not the icon
+    /// button's alone: [`crate::segmented`] sizes a chrome track off the same number so
+    /// the scope switcher and the icon buttons beside it are one control tall.
+    pub(crate) fn square(self) -> gpui::Pixels {
         match self {
             ButtonSize::Sm => px(24.),
             ButtonSize::Md => px(32.),

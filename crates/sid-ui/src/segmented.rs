@@ -36,11 +36,13 @@ use gpui::{
 };
 
 use crate::bridge::pressed_of;
+use crate::button::ButtonSize;
 use crate::elevation::Elevation;
 use crate::icon::Icon;
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex};
 use crate::theme::{self, Theme};
-use crate::typography::Typography;
+use crate::typography::{TypeRole, Typography};
 
 /// A selection handler, shared so the render path can clone one per segment without
 /// re-boxing it.
@@ -146,6 +148,47 @@ impl<T: Into<SharedString>> From<T> for Segment {
     }
 }
 
+/// How tall a track paints, in logical pixels at 100% zoom.
+///
+/// `Md` is the rung a control *in content* wants, and it is content-sized: a Body chip
+/// is a 23px line box (gpui's default line height is `phi`, so 14px of type is not 14px
+/// of line) plus 8px of chip padding and 2px of border, and the track adds 8 more. 41px.
+///
+/// That is the wrong size for a control in **chrome**. The top bar is 42px tall, so the
+/// scope switcher's recessed track sat flush against the window's top edge and against
+/// the tab underline below it — the one filled thing in the chrome reading as the chrome
+/// — and the `py_1` its wrapper was given had nothing to give, the track being taller
+/// than the bar's content box already. `Sm` is the 24px box every other small control in
+/// sid carries ([`ButtonSize::Sm`]: an `IconButton::small`, a toolbar `Button::small`),
+/// and 24 in 42 floats with 9px above and below.
+fn track_height(size: ButtonSize) -> f32 {
+    match size {
+        ButtonSize::Sm => f32::from(size.square()),
+        ButtonSize::Md => {
+            // `.round()` because gpui rounds a line box to whole pixels itself
+            // (`Style::line_height_in_pixels`), so this is 41 — exactly what the rung
+            // measured before it was stated.
+            (f32::from(TypeRole::Body.size()) * LINE_HEIGHT).round()
+                + CHIP_PADDING
+                + BORDER
+                + TRACK_PADDING
+        }
+    }
+}
+
+/// gpui's default line height as a multiple of the font size (`Style::default()` uses
+/// `phi()`); nothing in sid overrides it.
+const LINE_HEIGHT: f32 = 1.618;
+
+/// A chip's `py_1`, both edges.
+const CHIP_PADDING: f32 = 8.0;
+
+/// A chip's always-present 1px border, both edges.
+const BORDER: f32 = 2.0;
+
+/// The track's `p_1`, both edges.
+const TRACK_PADDING: f32 = 8.0;
+
 /// A row of mutually exclusive sub-view choices. See the module docs.
 #[derive(IntoElement)]
 pub struct SegmentedControl {
@@ -153,6 +196,7 @@ pub struct SegmentedControl {
     segments: Vec<Segment>,
     selected: usize,
     tab_index: isize,
+    size: ButtonSize,
     on_select: Option<SelectHandler>,
 }
 
@@ -165,8 +209,16 @@ impl SegmentedControl {
             segments: Vec::new(),
             selected: 0,
             tab_index: 0,
+            size: ButtonSize::Md,
             on_select: None,
         }
+    }
+
+    /// The chrome rung: a 24px track with the meta label that box carries, so the strip
+    /// floats in a bar instead of filling it. See [`track_height`].
+    pub fn small(mut self) -> Self {
+        self.size = ButtonSize::Sm;
+        self
     }
 
     /// Append one segment.
@@ -220,6 +272,7 @@ impl RenderOnce for SegmentedControl {
         let on_select = self.on_select;
         let base = self.id;
         let tab_index = self.tab_index;
+        let size = self.size;
 
         h_flex()
             .flex_none()
@@ -233,7 +286,13 @@ impl RenderOnce for SegmentedControl {
             // is arbitrary and long, and an unclamped strip pushed it off the screen.
             .max_w_full()
             .gap_1()
-            .p_1()
+            // Stated, not emergent: a track in chrome has to answer to the bar's height
+            // rather than to its own chips. See [`track_height`].
+            .h(scaled(track_height(size)))
+            .map(|this| match size {
+                ButtonSize::Sm => this.p_0p5(),
+                ButtonSize::Md => this.p_1(),
+            })
             .rounded_md()
             .elevation(TRACK, &theme)
             .children(self.segments.into_iter().enumerate().map(|(ix, segment)| {
@@ -249,11 +308,13 @@ impl RenderOnce for SegmentedControl {
                     // segment widened the strip past the window instead of eliding.
                     .min_w_0()
                     .gap_1p5()
-                    .px_3()
-                    .py_1()
+                    .map(|this| match size {
+                        ButtonSize::Sm => this.px_2(),
+                        ButtonSize::Md => this.px_3().py_1(),
+                    })
                     .rounded_md()
                     .cursor_pointer()
-                    .text_body(&theme)
+                    .text_role(size.role(), &theme)
                     // A segment is a control, so it is a tab stop — this is the sub-view
                     // switcher on Network, System and Settings, and a keyboard-first app
                     // that can only change view with the mouse is not one. Index 0 puts
@@ -429,6 +490,29 @@ mod tests {
     fn a_control_with_no_segments_selects_nothing() {
         assert_eq!(resolve_selected(0, 0), None);
         assert_eq!(resolve_selected(7, 0), None);
+    }
+
+    #[test]
+    fn a_chrome_track_floats_in_the_bar_it_sits_in() {
+        // `app.rs`'s TAB_STRIP_H — the top chrome and the SSH session strip.
+        const BAR: f32 = 42.0;
+
+        // The defect: the top bar's scope switcher is the one *filled* thing in the
+        // chrome, and it measured 41px of track in a 42px bar — flush against the
+        // window's top edge and the tab underline below it, so it read as the bar
+        // rather than as a control floating in it. The `py_1` on its wrapper could
+        // never have fixed that: at the content rung the track is already taller than
+        // the bar's content box, so the padding had nothing to give.
+        assert!(
+            (BAR - track_height(ButtonSize::Md)) / 2.0 < 1.0,
+            "the content rung is the one that did not fit"
+        );
+        // The chrome rung is the house's small control, and it floats.
+        let breathing = (BAR - track_height(ButtonSize::Sm)) / 2.0;
+        assert!(
+            breathing >= 8.0,
+            "a chrome track floats with {breathing}px above and below"
+        );
     }
 
     #[test]
