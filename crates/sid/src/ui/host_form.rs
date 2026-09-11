@@ -705,7 +705,13 @@ impl HostForm {
                       selected: bool,
                       theme: &Theme,
                       cx: &mut Context<Self>| {
-            let ink = if enabled { theme.fg } else { theme.faint };
+            // Disabled reads as "a real option, just unavailable" (`muted`, one step
+            // off `fg`) rather than "barely there" (`faint`) — the note underneath it
+            // is the one that fades further, since it is explaining an option that
+            // cannot be taken. The two were swapped: the label was `faint` and the
+            // note (via `text_meta`'s own ink) came out `muted`, more prominent than
+            // the word it was qualifying.
+            let ink = if enabled { theme.fg } else { theme.muted };
             Row::new(id)
                 .selected(selected)
                 // The picker is a required choice inside a modal, so it has to be
@@ -722,7 +728,12 @@ impl HostForm {
                     h_flex()
                         .gap_2()
                         .child(div().text_body(theme).text_color(rgb(ink)).child(title))
-                        .child(div().text_meta(theme).child(note)),
+                        .child(
+                            div()
+                                .text_meta(theme)
+                                .when(!enabled, |el| el.text_color(rgb(theme.faint)))
+                                .child(note),
+                        ),
                 )
                 // A disabled option installs no click handler at all, so `Row` renders
                 // it inert — no pointer, no hover fill, nothing promising it will react.

@@ -555,7 +555,10 @@ impl DbConnForm {
                       selected: bool,
                       theme: &Theme,
                       cx: &mut Context<Self>| {
-            let ink = if enabled { theme.fg } else { theme.faint };
+            // See `host_form::save_to_selector`'s doc comment: disabled reads as
+            // `muted`, one step off `fg`; the note under it is the one that fades to
+            // `faint`. The two were swapped.
+            let ink = if enabled { theme.fg } else { theme.muted };
             Row::new(id)
                 .selected(selected)
                 // Reachable from the keyboard for the same reason as the host form's —
@@ -569,7 +572,12 @@ impl DbConnForm {
                     h_flex()
                         .gap_2()
                         .child(div().text_body(theme).text_color(rgb(ink)).child(title))
-                        .child(div().text_meta(theme).child(note)),
+                        .child(
+                            div()
+                                .text_meta(theme)
+                                .when(!enabled, |el| el.text_color(rgb(theme.faint)))
+                                .child(note),
+                        ),
                 )
                 // A disabled option installs no click handler at all, so `Row` renders
                 // it inert — no pointer, no hover fill.
