@@ -1684,21 +1684,26 @@ impl AppState {
                     .text_mono_meta(t)
                     .child(meta.root.display().to_string()),
             )
+            // Left-aligned, not `justify_between`: that pushed the counts to the far
+            // edge even when `git_label` is empty (a non-git row), because the empty
+            // label still claimed `flex_1` and left the counts nowhere else to sit but
+            // the trailing edge. The label div — and its grow — only renders when
+            // there is a label to show; a bare row just carries the counts at the
+            // start, under the name/path above it.
             .child(
                 h_flex()
-                    .justify_between()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .clamp_one_line()
-                            .text_meta(t)
-                            .text_color(rgb(git_color))
-                            .child(git_label),
-                    )
-                    // `flex_none` on the sibling that must not grow, or the counts push
-                    // the branch name out of a 300px sidebar rather than shrinking it.
+                    .when(!git_label.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .clamp_one_line()
+                                .text_meta(t)
+                                .text_color(rgb(git_color))
+                                .child(git_label),
+                        )
+                    })
                     .child(
                         div()
                             .flex_none()
