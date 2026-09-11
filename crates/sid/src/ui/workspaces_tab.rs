@@ -1738,42 +1738,54 @@ impl AppState {
                 .unregister_arm
                 .is_armed(ws_key(&id), Instant::now());
             let unregister_label = if armed {
-                "Unregister — click again to confirm"
+                "unregister — click again to confirm"
             } else {
-                "Unregister"
+                "unregister"
             };
 
-            menu.item(PopupMenuItem::new("Focus scope").on_click({
-                let this = this.clone();
-                let id = id.clone();
-                move |_ev, _window, cx| {
-                    let id = id.clone();
-                    this.update(cx, |state, cx| state.focus_workspace_scope(id, cx));
-                }
-            }))
-            .item(PopupMenuItem::new("Rename").on_click({
-                let this = this.clone();
-                let id = id.clone();
-                move |_ev, window, cx| {
-                    let id = id.clone();
-                    this.update(cx, |state, cx| {
-                        if let Some(meta) =
-                            state.workspaces.list.iter().find(|m| m.id == id).cloned()
-                        {
-                            state.start_workspace_rename(id, meta.name, window, cx);
+            menu.item(
+                PopupMenuItem::new("focus scope")
+                    .icon(Icon::Folder.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        move |_ev, _window, cx| {
+                            let id = id.clone();
+                            this.update(cx, |state, cx| state.focus_workspace_scope(id, cx));
                         }
-                    });
-                }
-            }))
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("rename")
+                    .icon(Icon::Rename.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        move |_ev, window, cx| {
+                            let id = id.clone();
+                            this.update(cx, |state, cx| {
+                                if let Some(meta) =
+                                    state.workspaces.list.iter().find(|m| m.id == id).cloned()
+                                {
+                                    state.start_workspace_rename(id, meta.name, window, cx);
+                                }
+                            });
+                        }
+                    }),
+            )
             .separator()
-            .item(PopupMenuItem::new(unregister_label).on_click({
-                let this = this.clone();
-                let id = id.clone();
-                move |_ev, _window, cx| {
-                    let id = id.clone();
-                    this.update(cx, |state, cx| state.unregister_workspace(id, cx));
-                }
-            }))
+            .item(
+                PopupMenuItem::new(unregister_label)
+                    .icon(Icon::Trash.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        move |_ev, _window, cx| {
+                            let id = id.clone();
+                            this.update(cx, |state, cx| state.unregister_workspace(id, cx));
+                        }
+                    }),
+            )
         }
     }
 
