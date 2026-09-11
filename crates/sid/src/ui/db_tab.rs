@@ -1988,6 +1988,7 @@ impl AppState {
                     .icon(Icon::Dashboard)
                     .action(
                         Button::new("db-empty-add", "add a connection")
+                            .primary()
                             .icon(Icon::Add)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.open_add_db_form(window, cx);
