@@ -743,3 +743,27 @@ killed agents by id with their context, restart killed workflows from their scri
   and ignored (left on disk). In-flight branches `r2-tabs`/`r2-ui` still sit on the old
   history; their commits get transplanted onto the new `main` at merge time, then the old
   objects are expired locally.
+- 2026-09-10: round-2 gate fixes for `sid-ui` + the top chrome, on `r2-ui`, five commits,
+  each red-first. Popovers raise by walking `surface`'s HSL **lightness** toward `fg`'s
+  instead of mixing the whole colour toward it — cosmos's navy panel used to land on grey
+  `#4a4a55` (saturation 0.24 -> 0.07); it is `#464672` now, same hue, same chroma, and the
+  0.06 relative-luma floor and the 4.5:1 test are untouched (`a_popover_keeps_its_surfaces
+  _hue`, red on the saturation, not on the hue angle — mixing two colours of one hue keeps
+  that hue). `MeterTone::Calm` fills in `muted`, not `accent`: a CPU meter idling at 12%
+  was painting itself the same red as the connect button (`calm_is_not_the_accent_or_
+  danger_ink`). A `Row`'s leading mark centres in a one-Body-line box pinned to the top of
+  the content stack, so it marks the title on two- and three-line rows instead of floating
+  between lines (verified on Database's two templates and the Workspaces sidebar). The
+  stray ~17px header column on every data table was upstream's **resize hairline** on the
+  last column, drawn in the header only, with `TABLE_CHROME` between it and the table's
+  border — and the gesture it advertised could not work, `sync` re-resolving every width
+  from the viewport each frame, so `FillColumns` declares its columns non-resizable and
+  header and body now carry identical borders (measured x=[12,13,1906,1907] on both). The
+  scope switcher takes the house's small rung (`ButtonSize::Sm`, 24px + meta label) and
+  states its track height instead of inheriting 41px from its chips, so it floats with 9px
+  of the 42px bar above and below; `SegmentedControl` gained `small()` and a `track_height`
+  decision, every other strip keeps the content rung at the 41px it already measured. Gate:
+  fmt, clippy `--workspace --all-targets -D warnings`, `cargo test --workspace` green (0
+  failures). Captures: popover, System meters, Database rows, Network header, SSH at 1920
+  and 700x900, plus Settings/Behaviour as a regression check on the shared control. Not
+  done: the gallery has no METER band to re-caption. Left on the branch for review.
