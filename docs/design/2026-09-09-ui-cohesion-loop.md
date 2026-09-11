@@ -738,3 +738,8 @@ killed agents by id with their context, restart killed workflows from their scri
   outline. Gate: fmt, clippy `--workspace --all-targets -D warnings`, `cargo test
   --workspace` all green, zero failures. Captures at default size, void, 700x900 and
   the add-host modal confirm each fix. Left on the branch for review.
+- 2026-09-10 22:12: `main` history rewritten with git-filter-repo (480 commits) to drop two
+  root-level files that should never have been committed; force-pushed. `.serena/` untracked
+  and ignored (left on disk). In-flight branches `r2-tabs`/`r2-ui` still sit on the old
+  history; their commits get transplanted onto the new `main` at merge time, then the old
+  objects are expired locally.
