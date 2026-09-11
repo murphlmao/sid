@@ -655,7 +655,16 @@ impl AppState {
             }))
     }
 
-    /// The Processes sub-view: toolbar, then the fill-width table, then any kill error.
+    /// The Processes sub-view: one `Card::panel` with the filter/refresh in its header
+    /// (the toolbar contract every other tab's panels use, per `network_tab.rs`'s
+    /// `sub_view_panel`), the fill-width table as its body, then any probe or kill error.
+    ///
+    /// The old free-floating `Toolbar` folded a probe error or a "loading…" state into
+    /// the count slot (`format!("error: {e}")`) instead of the plain `· n` every other
+    /// panel header shows — the same "a slot that sometimes holds a count and sometimes
+    /// holds a sentence is not a count" defect `network_tab.rs` already fixed for Ports.
+    /// The probe error now renders as its own line in the body, same shape as the kill
+    /// error already did.
     fn processes_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let filter = self.systems.filter.clone();
         let refreshing = self.systems.refreshing;
@@ -670,36 +679,30 @@ impl AppState {
             .table
             .as_ref()
             .and_then(|t| t.read(cx).delegate().kill_error.clone());
+        let probe_error = self.systems.error.clone();
         let table = self.systems.table.clone();
 
-        let count_label: SharedString = match &self.systems.error {
-            Some(e) => format!("error: {e}").into(),
-            None if refreshing && self.systems.overview.is_none() => "loading…".into(),
-            None => sid_ui::toolbar::count_label(proc_count, "process").into(),
-        };
-
-        v_flex()
-            .size_full()
-            .child(
-                Toolbar::new()
-                    // Capped rather than filling the row: a 1900px-wide filter field is
-                    // as wrong as the 652px table it used to sit above.
-                    .filter(
-                        div()
-                            .max_w(scaled(320.))
-                            .children(filter.map(|f| TextInput::new(&f))),
-                    )
-                    .count_label(count_label)
-                    .action(
-                        Button::new("systems-refresh", "refresh")
-                            .small()
-                            .icon(Icon::Refresh)
-                            .loading(refreshing)
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.refresh_systems(cx);
-                            })),
-                    ),
+        Card::panel("processes")
+            .count(proc_count)
+            .flex_1()
+            .min_h_0()
+            .action(
+                // Capped rather than filling the row: a 1900px-wide filter field is
+                // as wrong as the 652px table it used to sit above.
+                div()
+                    .max_w(scaled(320.))
+                    .children(filter.map(|f| TextInput::new(&f))),
             )
+            .action(
+                Button::new("systems-refresh", "refresh")
+                    .small()
+                    .icon(Icon::Refresh)
+                    .loading(refreshing)
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.refresh_systems(cx);
+                    })),
+            )
+            .children(probe_error.map(|e| error_line(theme, e)))
             .children(table.map(|t| {
                 div()
                     .flex_1()
