@@ -171,7 +171,7 @@ impl RenderOnce for SettingsFrame {
                     .min_w(px(0.))
                     .min_h(px(0.))
                     .overflow_y_scroll()
-                    .p_4()
+                    .p_3()
                     .child(
                         div()
                             .w_full()
@@ -753,8 +753,12 @@ impl AppState {
             } else {
                 chrome.well
             }))
+            // `selection` fill (above) plus the accent dot below are the row's two
+            // active markers; an accent hairline on top of both was a third, and
+            // `accent` means "engage" — spent here on a static row, it stopped
+            // meaning anything. Every row keeps the same hairline `border`.
             .border_1()
-            .border_color(rgb(if active { chrome.accent } else { chrome.border }))
+            .border_color(rgb(chrome.border))
             .child(
                 div()
                     .w(scaled(14.))
@@ -863,7 +867,6 @@ impl AppState {
                     .child(
                         div()
                             .text_meta(chrome)
-                            .text_color(rgb(chrome.faint))
                             .child("changes take effect on restart"),
                     )
                     .child(backend),
@@ -949,7 +952,7 @@ impl AppState {
             .count(rows.len())
             .when_some(reset_all, Card::action)
             .child(div().flex().flex_col().children(rows))
-            .child(div().text_meta(chrome).text_color(rgb(chrome.faint)).child(
+            .child(div().text_meta(chrome).child(
                 "shortcuts carry Ctrl; inside a focused terminal a letter chord \
                          reaches sid as Ctrl+Shift+<key> and the shell keeps the plain one",
             ))
@@ -998,12 +1001,7 @@ impl AppState {
                 }
             });
 
-        let custom_marker = (custom && !capturing).then(|| {
-            div()
-                .text_meta(chrome)
-                .text_color(rgb(chrome.faint))
-                .child("custom")
-        });
+        let custom_marker = (custom && !capturing).then(|| div().text_meta(chrome).child("custom"));
 
         let rebind = if capturing {
             row_button(chrome, ("keymap-cancel", ix), "cancel", chrome.muted)
