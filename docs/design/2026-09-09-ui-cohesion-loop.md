@@ -212,7 +212,11 @@ Every item is gated by before/after captures in all four themes and a
       16px vs 12px elsewhere; the scope switcher's track is flush to the window's top edge;
       theme swatches for bg/surface invisible on the selected row; Swap meter says "none"
       three ways; void popover raise is only 4/255; key chip in the host form is accent-filled.
-- [ ] **Round-2 fixes (tabs)**, from the 2026-09-10 second gate: Workspaces row's counts line
+- [x] **Round-2 fixes (tabs)**: done 2026-09-10, ten commits; the lowercase-label rule is now a
+      hygiene-style test (`button_labels_open_lowercase`, red on eight labels first); Database
+      rows, Ports rows and process rows have right-click menus that reuse the rows' own
+      handlers (kill arms the two-step confirm, never fires directly, verified by capture); the
+      Processes region is a `Card::panel`. Original list: Workspaces row's counts line
       is right-drifted (a `justify_between` row keeps an empty `flex_1` git label); Workspaces
       right-click menu is Title Case with no icons (the SSH menu got both); the System process
       region is the only data region without a `Card::panel` header (its toolbar floats on
