@@ -83,7 +83,7 @@ use super::is_field_submit;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
-use sid_ui::component::{Column, ColumnSort, TableDelegate, TableState};
+use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
@@ -476,6 +476,40 @@ impl TableDelegate for ProcessesDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         sortable_th(col_ix, self.columns.column(col_ix), cx)
+    }
+
+    /// A row's one-item menu: `kill`, danger tone. Arms the same `kill_arm` the inline
+    /// button uses and nothing more — `disarm()` then `press()` guarantees this can only
+    /// ever arm, never fire, even if the row happened to already be armed when the menu
+    /// opened (mirrors `network_tab.rs`'s identical `PortsDelegate::context_menu`). The
+    /// row's own control still needs its own second, explicit click.
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(pid) = self.processes.get(row_ix).map(|p| p.pid) else {
+            return menu;
+        };
+        let this = cx.entity();
+        menu.item(
+            PopupMenuItem::element(|_window, cx| {
+                div()
+                    .text_color(rgb(theme::active(cx).danger))
+                    .child("kill")
+            })
+            .icon(Icon::Trash.el())
+            .on_click(move |_ev, _window, cx| {
+                this.update(cx, |state, cx| {
+                    let delegate = state.delegate_mut();
+                    delegate.kill_arm.disarm();
+                    delegate.kill_arm.press(pid, Instant::now());
+                    cx.notify();
+                });
+            }),
+        )
     }
 
     fn render_td(

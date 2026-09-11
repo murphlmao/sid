@@ -95,7 +95,7 @@ use sid_sysinfo::SysinfoProvider;
 
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-use sid_ui::component::{Column, ColumnSort, TableDelegate, TableState};
+use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
@@ -559,6 +559,43 @@ impl TableDelegate for PortsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         sortable_th(col_ix, self.columns.column(col_ix), cx)
+    }
+
+    /// A row's one-item menu: `kill`, danger tone. Arms the same `kill_arm` the inline
+    /// button uses and nothing more — `disarm()` then `press()` guarantees this can only
+    /// ever arm, never fire, even if the row happened to already be armed when the menu
+    /// opened. The row's own control still needs its own second, explicit click.
+    ///
+    /// A row with no attributable owner (`port_action` is `None`) gets no menu at all —
+    /// the same fact that blanks its inline action cell.
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(Some(PortAction::Kill(pid))) = self.ports.get(row_ix).map(|p| port_action(p.pid))
+        else {
+            return menu;
+        };
+        let this = cx.entity();
+        menu.item(
+            PopupMenuItem::element(|_window, cx| {
+                div()
+                    .text_color(rgb(theme::active(cx).danger))
+                    .child("kill")
+            })
+            .icon(Icon::Trash.el())
+            .on_click(move |_ev, _window, cx| {
+                this.update(cx, |state, cx| {
+                    let delegate = state.delegate_mut();
+                    delegate.kill_arm.disarm();
+                    delegate.kill_arm.press(pid, Instant::now());
+                    cx.notify();
+                });
+            }),
+        )
     }
 
     fn render_td(

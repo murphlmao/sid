@@ -25,8 +25,9 @@ use std::sync::Arc;
 
 use gpui::{
     Anchor, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
-    IntoElement, KeyDownEvent, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions, anchored, deferred, div, point, prelude::*, px, rgb, rgba, size,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, SharedString, Subscription,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, anchored, deferred, div,
+    point, prelude::*, px, rgb, rgba, size,
 };
 use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
@@ -35,7 +36,8 @@ use sid_core::db::{
 use sid_secrets::{SecretId, SecretStore};
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 use sid_ui::component::{
-    Column, ColumnSort, Editor, EditorState, InputEvent, Position, Root, TableDelegate, TableState,
+    Column, ColumnSort, ContextMenuExt, Editor, EditorState, InputEvent, PopupMenu, PopupMenuItem,
+    Position, Root, TableDelegate, TableState,
 };
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
@@ -253,6 +255,11 @@ pub struct DbTabState {
     /// [`AppState::begin_folder_edit`]/[`AppState::commit_folder_edit`]/
     /// [`AppState::cancel_folder_edit`].
     folder_editing: Option<FolderEditState>,
+    /// The connection row a right-click last landed on (id + origin) — read fresh by
+    /// [`AppState::db_conn_context_menu`] at build time, same "reset on capture, set
+    /// on the row's own bubble-phase handler" wiring `workspaces_tab.rs`'s
+    /// `right_click_target` documents. `None` means the click missed every row.
+    right_click_target: Option<(String, Scope)>,
 }
 
 /// An in-progress inline rename (F2 / double-click the name) — the row's identity/origin
@@ -1213,6 +1220,7 @@ impl DbTabState {
             conn_focus: None,
             renaming: None,
             folder_editing: None,
+            right_click_target: None,
         };
         let _ = state.refresh(store, scope, filters);
         state
@@ -1804,6 +1812,32 @@ impl AppState {
                 self.db.last_page = None;
             }
         }
+        cx.notify();
+    }
+
+    /// Select a connection row by id: the row's own click and the right-click menu's
+    /// `open` item both land here, so a menu click behaves exactly like the click it
+    /// stands in for (same focus grab, same schema refresh).
+    fn select_db_connection(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.db.active_id.as_deref() != Some(id.as_str()) {
+            self.reset_for_selection_change(cx);
+        }
+        self.db.active_id = Some(id);
+        // Selecting a row is also this panel's one focus entry point — F2 afterwards
+        // renames whatever just got selected (`begin_rename_active`). But a nested
+        // control's own click fires *before* this row-level one and bubbles up to here:
+        // the name's double-click (`begin_rename`), the folder button
+        // (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`) each grab focus
+        // for their freshly-opened input/form — so only claim panel focus when none of
+        // those started, or this handler would steal it straight back and the inline
+        // editors would open unfocused.
+        let opening_editor = self.db.renaming.is_some()
+            || self.db.folder_editing.is_some()
+            || self.db.form.is_some();
+        if !opening_editor && let Some(fh) = self.db.conn_focus.clone() {
+            window.focus(&fh, cx);
+        }
+        self.refresh_schema(window, cx);
         cx.notify();
     }
 
@@ -2413,6 +2447,16 @@ impl AppState {
         // replacing the whole body.
         let body: AnyElement = List::scrolling("db-conn-body")
             .px_1()
+            // Right-click anywhere in the list defaults to "no row" — see
+            // `ssh_home.rs`'s identical `capture_any_mouse_down` for why the
+            // CAPTURE-phase reset must run before any row's own bubble-phase
+            // `on_secondary_mouse_down` sets a specific target.
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                if ev.button == MouseButton::Right {
+                    this.db.right_click_target = None;
+                    cx.notify();
+                }
+            }))
             .child(self.store_browse_row(cx))
             .when(rows.is_empty(), |list| {
                 list.child(
@@ -2428,6 +2472,7 @@ impl AppState {
                     .enumerate()
                     .map(|(ix, row)| self.connection_panel_row(ix, row, cx)),
             )
+            .context_menu(self.db_conn_context_menu(cx))
             .into_any_element();
 
         // The focus handle lives on a wrapper rather than on the card: `Card` is a
@@ -2672,13 +2717,7 @@ impl AppState {
             let origin = origin.clone();
             let secret_ref = conn.secret_ref.clone();
             let on_press = cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                let key = (id.clone(), origin.clone());
-                if delete_click_executes(this.db.armed_delete.as_ref(), &key) {
-                    this.delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
-                } else {
-                    this.db.armed_delete = Some(key);
-                    cx.notify();
-                }
+                this.press_delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
             });
             if armed {
                 ConfirmButton::new(("db-delete", ix), "delete")
@@ -2789,31 +2828,18 @@ impl AppState {
                 .into_any_element()
         };
 
+        let menu_id = conn.id.clone();
+        let menu_origin = origin.clone();
         UiRow::new(("db-conn", ix))
             .selected(is_active)
             .py_1p5()
             .px_2()
             .leading(StatusDot::new(("db-conn-dot", ix), state))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                if this.db.active_id.as_deref() != Some(click_id.as_str()) {
-                    this.reset_for_selection_change(cx);
-                }
-                this.db.active_id = Some(click_id.clone());
-                // Selecting a row is also this panel's one focus entry point — F2
-                // afterwards renames whatever just got selected (`begin_rename_active`).
-                // But a nested control's own click fires *before* this row-level one and
-                // bubbles up to here: the name's double-click (`begin_rename`), the folder
-                // button (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`)
-                // each grab focus for their freshly-opened input/form — so only claim
-                // panel focus when none of those started, or this handler would steal it
-                // straight back and the inline editors would open unfocused.
-                let opening_editor = this.db.renaming.is_some()
-                    || this.db.folder_editing.is_some()
-                    || this.db.form.is_some();
-                if !opening_editor && let Some(fh) = this.db.conn_focus.clone() {
-                    window.focus(&fh, cx);
-                }
-                this.refresh_schema(window, cx);
+                this.select_db_connection(click_id.clone(), window, cx);
+            }))
+            .on_secondary_mouse_down(cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                this.db.right_click_target = Some((menu_id.clone(), menu_origin.clone()));
                 cx.notify();
             }))
             .child(
@@ -2838,6 +2864,106 @@ impl AppState {
                     ),
             )
             .into_any_element()
+    }
+
+    /// The connections list's single context menu — see `right_click_target`'s doc
+    /// comment (same wiring as `workspaces_tab.rs`'s `workspaces_context_menu`).
+    /// Mirrors `ssh_home.rs`'s row menu (`open`/`rename`/`edit…`/`delete`) and reuses
+    /// the row's own handlers verbatim, including [`Self::press_delete_db_row`] — a
+    /// menu click cannot delete without arming first, same as the button.
+    fn db_conn_context_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+        let this = cx.entity();
+        move |menu, _window, cx| {
+            let Some((id, origin)) = this.read(cx).db.right_click_target.clone() else {
+                return menu;
+            };
+            let Some(conn) = this
+                .read(cx)
+                .db
+                .connections
+                .iter()
+                .find(|a| a.item.id == id && a.origin == origin)
+                .map(|a| a.item.clone())
+            else {
+                return menu;
+            };
+            let display_name: SharedString = if conn.name.is_empty() {
+                conn.id.clone().into()
+            } else {
+                conn.name.clone().into()
+            };
+
+            menu.item(
+                PopupMenuItem::new("open")
+                    .icon(Icon::Database.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        move |_ev, window, cx| {
+                            let id = id.clone();
+                            this.update(cx, |state, cx| {
+                                state.select_db_connection(id, window, cx);
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("rename")
+                    .icon(Icon::Rename.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        let origin = origin.clone();
+                        let display_name = display_name.clone();
+                        move |_ev, window, cx| {
+                            let id = id.clone();
+                            let origin = origin.clone();
+                            let display_name = display_name.clone();
+                            this.update(cx, |state, cx| {
+                                state.begin_rename(&id, &origin, &display_name, window, cx);
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("edit…")
+                    .icon(Icon::Settings.el())
+                    .on_click({
+                        let this = this.clone();
+                        let conn = conn.clone();
+                        let origin = origin.clone();
+                        move |_ev, window, cx| {
+                            let conn = conn.clone();
+                            let origin = origin.clone();
+                            this.update(cx, |state, cx| {
+                                state.open_edit_db_form(conn, origin, window, cx);
+                            });
+                        }
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("delete")
+                    .icon(Icon::Trash.el())
+                    .on_click({
+                        let this = this.clone();
+                        let id = id.clone();
+                        let origin = origin.clone();
+                        let secret_ref = conn.secret_ref.clone();
+                        move |_ev, _window, cx| {
+                            let id = id.clone();
+                            let origin = origin.clone();
+                            let secret_ref = secret_ref.clone();
+                            this.update(cx, |state, cx| {
+                                state.press_delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
+                            });
+                        }
+                    }),
+            )
+        }
     }
 
     /// Folder-header click (folders/grouping) — flip `name` between collapsed/expanded
@@ -3160,6 +3286,26 @@ impl AppState {
     }
 
     // ---- row actions (W4) -------------------------------------------------------------
+
+    /// The row delete control's press, wherever it is pressed from: arms
+    /// `armed_delete` on the first press, executes on the second (`delete_click_executes`).
+    /// Shared by the row's own icon/`ConfirmButton` and the right-click menu's `delete`
+    /// item, so a menu click cannot skip the confirm the button enforces.
+    fn press_delete_db_row(
+        &mut self,
+        id: &str,
+        origin: &Scope,
+        secret_ref: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (id.to_string(), origin.clone());
+        if delete_click_executes(self.db.armed_delete.as_ref(), &key) {
+            self.delete_db_row(id, origin, secret_ref, cx);
+        } else {
+            self.db.armed_delete = Some(key);
+            cx.notify();
+        }
+    }
 
     /// ✕ (second click) Remove the record from **its origin layer**, then its secret
     /// from the keyring.
