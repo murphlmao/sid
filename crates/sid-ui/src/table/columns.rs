@@ -65,8 +65,18 @@ pub struct FillColumns {
 
 impl FillColumns {
     /// Declare the columns, each paired with how it wants to be sized.
+    ///
+    /// Every column comes out **not resizable**, whatever it declared. The width of a
+    /// column here is a function of the viewport ([`FillColumns::sync`] re-resolves all
+    /// of them every frame), so a drag would be reverted before it painted — and
+    /// upstream draws a 1px hairline at the right edge of each resizable column *in the
+    /// header only*, which is the "empty last column" the header used to show past the
+    /// [`TABLE_CHROME`] reserve while no body row drew anything there.
     pub fn new(declared: impl IntoIterator<Item = (Column, ColumnWidth)>) -> Self {
-        let (columns, declared): (Vec<_>, Vec<_>) = declared.into_iter().unzip();
+        let (columns, declared): (Vec<_>, Vec<_>) = declared
+            .into_iter()
+            .map(|(column, width)| (column.resizable(false), width))
+            .unzip();
         Self {
             columns,
             declared,
@@ -189,6 +199,26 @@ mod tests {
         (0..cols.len())
             .map(|ix| f32::from(cols.column(ix).width))
             .collect()
+    }
+
+    #[test]
+    fn a_fill_table_declares_no_resizable_column() {
+        // The stray header column, root cause: upstream paints a 1px hairline at the
+        // right edge of every *resizable* column, in the header only
+        // (`state.rs::render_resize_handle`). On Network that put dividers at x=1889 —
+        // the last column's edge — and x=1906, the table's own border, with the
+        // `TABLE_CHROME` reserve between them reading as a 17px empty column no body
+        // row draws. And the gesture those hairlines advertise cannot work in a fill
+        // table: `sync` recomputes every width from the viewport on the next frame, so
+        // a dragged column snaps back before it paints. A handle that cannot move
+        // anything is chrome, and this is chrome the body does not have.
+        let cols = processes();
+        for ix in 0..cols.len() {
+            assert!(
+                !cols.column(ix).resizable,
+                "column {ix} offers a resize the next sync would revert"
+            );
+        }
     }
 
     #[test]
