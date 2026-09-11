@@ -69,7 +69,7 @@ const SEGMENT_HEIGHT: f32 = 20.0;
 /// battery) wants to say so itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeterTone {
-    /// Nominal. The accent.
+    /// Nominal. The neutral orientation ink — a level, not a signal.
     Calm,
     /// Getting full.
     Caution,
@@ -98,9 +98,16 @@ impl MeterTone {
     }
 
     /// The fill token for this tone.
+    ///
+    /// Only the top two rungs are coloured. `accent` means "engage" (system.md) and in
+    /// three of the four palettes it is a red, so a meter idling at 12% used to paint
+    /// itself the same colour as the connect button and read as an alarm; `muted` is
+    /// the ink sid already orients with, and a bar in it says "this is the level"
+    /// without claiming anything is wrong. The ladder then *earns* its colour: amber
+    /// at 70%, danger at 90%.
     pub fn color(self, theme: &Theme) -> u32 {
         match self {
-            MeterTone::Calm => theme.accent,
+            MeterTone::Calm => theme.muted,
             MeterTone::Caution => theme.warning,
             MeterTone::Critical => theme.danger,
         }
@@ -406,6 +413,7 @@ impl RenderOnce for StatCluster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::brightness;
     use crate::theme::{cosmos, cosmos_light, dusk, void};
 
     fn palettes() -> [Theme; 4] {
@@ -493,9 +501,31 @@ mod tests {
     #[test]
     fn each_tone_maps_to_its_semantic_token_in_every_palette() {
         for t in palettes() {
-            assert_eq!(MeterTone::Calm.color(&t), t.accent, "{}", t.name);
+            assert_eq!(MeterTone::Calm.color(&t), t.muted, "{}", t.name);
             assert_eq!(MeterTone::Caution.color(&t), t.warning, "{}", t.name);
             assert_eq!(MeterTone::Critical.color(&t), t.danger, "{}", t.name);
+        }
+    }
+
+    #[test]
+    fn calm_is_not_the_accent_or_danger_ink() {
+        // `accent` means "engage" (system.md) and on cosmos, void and cosmos-light it
+        // is a *red*: a CPU meter idling at 12% painted in it reads as an alarm at a
+        // glance, which is the one thing a calm meter must not do. A nominal level is
+        // the neutral orientation ink, and the ladder only turns coloured when it has
+        // something to say.
+        for t in palettes() {
+            let calm = MeterTone::Calm.color(&t);
+            assert_ne!(calm, t.accent, "{}: calm is the engage colour", t.name);
+            assert_ne!(calm, t.danger, "{}: calm is the danger colour", t.name);
+            assert_ne!(calm, t.warning, "{}: calm is the warning colour", t.name);
+            // ...and it still has to read as a *filled* bar against its own track.
+            let step = (brightness(calm) - brightness(t.border)).abs();
+            assert!(
+                step > 0.2,
+                "{}: calm fill is {step:.2} from the track it sits in",
+                t.name
+            );
         }
     }
 
