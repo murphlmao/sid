@@ -773,3 +773,40 @@ killed agents by id with their context, restart killed workflows from their scri
   failures). Captures: popover, System meters, Database rows, Network header, SSH at 1920
   and 700x900, plus Settings/Behaviour as a regression check on the shared control. Not
   done: the gallery has no METER band to re-caption. Left on the branch for review.
+- 2026-09-10: round-2 gate fixes (tabs), branch `r2-tabs`, eight commits. Workspaces:
+  the meta line's empty git-label `flex_1` was still claiming the grow on non-git
+  rows, pushing `3 hosts · 0 connections` to the trailing edge — the label div now
+  only renders (and grows) when there is a label; context menu lowercased
+  (`focus scope`/`rename`/`unregister`) with `Folder`/`Rename`/`Trash` icons,
+  mirroring `ssh_home`. System: Processes wrapped in `Card::panel` (filter/refresh in
+  the header, `Toolbar` deleted) like Network's `sub_view_panel` — first capture
+  showed an empty table, because this panel sits inside `systems_tab`'s shared
+  `div().flex_1()` wrapper (not a flex container for its lone child) rather than
+  directly in a `v_flex` the way Network's does; `flex_1` had nothing to grow
+  against and collapsed to the header, fixed with `size_full` (own commit, caught by
+  capture not review). Database/forms: red-first hygiene test in `db_tab.rs` scans
+  `Button::new(id, label)` literals across `db_tab.rs`/`host_form.rs`/
+  `db_conn_form.rs` for a capitalized label (an id is excluded by the one shape a
+  label never has, a hyphen) — caught `Reload`/`Run`/`Explain`/`Export` and both
+  forms' `Cancel`/`Save`, all lowercased; the "no connection selected" empty state's
+  `add a connection` is `.primary()` now, matching Workspaces' `add workspace`.
+  Right-click menus: `db_tab.rs` connection rows get a `PopupMenu`
+  (`open`/`rename`/`edit…`/`delete`) whose `open`/`delete` reuse the row's own
+  `select_db_connection`/`press_delete_db_row` rather than duplicating the logic;
+  Network Ports and System Processes rows get a one-item danger-tone `kill` menu
+  that only arms the existing `ConfirmArm` (`disarm()` then `press()` guarantees it
+  can never fire directly, verified by capture: choosing `kill` from the menu turns
+  the row's own button to `confirm` rather than killing it). Settings: the two
+  footnote sentences and the `custom` keybinding marker were `faint` where
+  `text_meta`'s own `muted` was correct; content pane `p_4` → `p_3` (every other tab
+  is `p_3`); the active theme row triple-marked itself (`selection` fill, accent
+  border, accent dot) — drops the border, keeps fill + dot (the section rail's 2px
+  active bar is a different, intentional mark, left alone). Forms: the save-to
+  selector's disabled option had its label/note inks swapped (`faint` label,
+  `muted`-by-default note); now `muted` label, `faint` note, in both forms. Gate:
+  fmt, clippy `--workspace --all-targets -D warnings`, `cargo test --workspace` —
+  all green, zero failures across every crate. Captures: workspaces (left-aligned
+  counts), workspaces right-click menu, system (populated table), database (primary
+  add button), database right-click menu, network right-click menu (arms, does not
+  kill), settings void (active row has no accent ring), add-host modal (save-to ink).
+  Left on the branch for review — not merged, not pushed.
