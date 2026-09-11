@@ -37,9 +37,28 @@ use gpui::{
 };
 
 use crate::bridge::{hover_of, pressed_of};
+use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
-use crate::typography::Typography;
+use crate::typography::{TypeRole, Typography};
+
+/// gpui's default line height as a multiple of the font size: `Style::default()` sets
+/// `line_height: phi()` (`gpui/src/style.rs`), and nothing in sid overrides it. A Body
+/// line box is therefore 14 * 1.618 ~= 22.7px, not 14.
+const LINE_HEIGHT: f32 = 1.618;
+
+/// The box a [`Row`]'s leading mark is centred in — exactly one Body line tall, at 100%
+/// zoom.
+///
+/// A row's content is a *stack*: an alias over a host, a workspace over a branch and a
+/// dirty count. Centring the mark against that stack put a two-line row's dot between
+/// its lines and a three-line row's dot on line two, so the one element whose whole job
+/// is to mark the title pointed at the subtitle instead. Give the slot the height of the
+/// first line and centre in that, and the offset falls out as half the line minus half
+/// the mark — for any mark, without the row having to know how tall this one is.
+fn leading_slot_height() -> f32 {
+    f32::from(TypeRole::Body.size()) * LINE_HEIGHT
+}
 
 /// A click handler, shared so the builder can move it into gpui's own slot.
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -312,7 +331,18 @@ impl RenderOnce for Row {
                 this.tab_index(index).focus_ring(&theme)
             })
             .when_some(self.leading, |this, leading| {
-                this.child(div().flex_none().child(leading))
+                this.child(
+                    // `self_start` + a one-line-tall box: the mark aligns to the row's
+                    // first line instead of to the middle of its content stack. See
+                    // [`leading_slot_height`].
+                    div()
+                        .flex_none()
+                        .self_start()
+                        .h(scaled(leading_slot_height()))
+                        .flex()
+                        .items_center()
+                        .child(leading),
+                )
             })
             .child(
                 // `min_w(0)` lets the content actually shrink: a flex item's default
@@ -354,6 +384,23 @@ mod tests {
 
     fn palettes() -> [Theme; 4] {
         [cosmos(), void(), dusk(), cosmos_light()]
+    }
+
+    #[test]
+    fn a_leading_mark_sits_on_the_first_line_not_the_middle_of_the_stack() {
+        // The defect: the leading slot centred against the *whole* content stack, so on
+        // a two-line row the dot floated between the lines and on a three-line one it
+        // sat level with line two — marking whatever happened to be in the middle
+        // instead of the title it is there to mark. The slot is one Body line tall and
+        // the mark centres in that, whatever the stack does.
+        let slot = leading_slot_height();
+        assert!(
+            (slot - 22.7).abs() < 0.5,
+            "the leading slot is one Body line, got {slot}"
+        );
+        // Half the line minus half the mark: an 8px StatusDot lands ~7.3px below the
+        // top of the content box — on the title's line, not a line under it.
+        assert!(((slot - 8.0) / 2.0 - 7.3).abs() < 0.5);
     }
 
     #[test]
