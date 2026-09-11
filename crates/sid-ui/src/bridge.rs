@@ -51,7 +51,7 @@
 
 use std::rc::Rc;
 
-use gpui::{App, SharedString, Window};
+use gpui::{App, Hsla, SharedString, Window};
 use gpui_component::{ThemeColor, ThemeConfig, ThemeConfigColors};
 
 use crate::theme::{self, Theme};
@@ -104,6 +104,17 @@ fn relative_luminance(color: u32) -> f32 {
         }
     };
     0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// A token as hue, saturation and lightness, each `0.0..=1.0`, through gpui's own
+/// conversion — the same one the renderer uses, so a colour read here is the colour
+/// that lands on screen.
+///
+/// Hue and saturation are what make a palette's `surface` *that palette's* surface;
+/// lightness is the only one of the three [`raised_surface`] is allowed to move.
+fn hsl(color: u32) -> (f32, f32, f32) {
+    let c: Hsla = gpui::rgb(color).into();
+    (c.h, c.s, c.l)
 }
 
 /// Blend `factor` of `toward` into `color` (0.0 = unchanged, 1.0 = `toward`).
@@ -176,32 +187,47 @@ pub fn pressed_of(t: &Theme, color: u32) -> u32 {
 ///
 /// `Elevation::Overlay` (sid-ui's own modal/card depth ladder) can share `surface`'s
 /// fill for a modal because the scrim underneath does the separating; a popover has no
-/// scrim, so on a `surface`-backed panel only the hairline told them apart. Mixing
-/// `surface` toward `fg` — the reading ink, which sits at the opposite end of the
-/// palette's brightness from `surface` in every built-in — raises it *toward
-/// legibility* rather than toward a fixed light or dark endpoint: the same formula
-/// lightens a dark palette's popover and darkens cosmos-light's without a light/dark
-/// branch. The 7% fraction is small enough to read as "one step", not a new surface.
+/// scrim, so on a `surface`-backed panel only the hairline told them apart.
 ///
-/// The 7% mix alone was RED against [`MIN_LUMA_STEP`] on every dark built-in, not just
-/// void: cosmos (~0.0098) and dusk (~0.0105) cleared even less of the floor than
-/// void's ~0.0073 — pinned by
-/// `a_popover_clears_a_minimum_step_above_surface_in_every_palette` before this walked
-/// the mix further. cosmos-light's 7% mix already clears the floor (~0.114), so it
-/// takes the first step and is untouched.
+/// **Only the lightness moves.** The raise walks `surface`'s HSL L toward `fg`'s —
+/// the reading ink, which sits at the opposite end of the palette's brightness from
+/// `surface` in every built-in — so the same branchless formula still lightens the three
+/// dark palettes and darkens cosmos-light, but the popover comes out as the *same
+/// material lit brighter* rather than as a different one. Mixing the whole colour toward
+/// `fg` dragged the saturation out with it: far enough up to clear [`MIN_LUMA_STEP`],
+/// cosmos's navy `surface` (hsl 240, s 0.24) landed on `#4a4a55` — grey, s 0.07 — and
+/// dusk's warm brown went the same way. Pinned by
+/// `a_popover_keeps_its_surfaces_hue`, which was RED on exactly that.
+///
+/// The floor itself is unchanged and still does the real work: a flat percentage is
+/// almost nothing near black (the 7% mix moved ~0.007 of relative luma on void), so the
+/// step is stated in relative luminance and walked until it is real. cosmos-light's
+/// needs 3% of the way to `fg`, void's 27%, cosmos's 32%.
 pub fn raised_surface(t: &Theme) -> u32 {
     let base = relative_luminance(t.surface);
-    // 7, 8, 9, ..., 100 — the original fraction first (so a palette that already
-    // clears the floor there is bit-for-bit what it always was), then walked toward
-    // `fg` a percentage point at a time until the step is real. `fg` sits at the
-    // opposite end of the palette's brightness from `surface` in every built-in, so
-    // this is monotonic: each step's relative luminance moves further from `base`
-    // than the last, and the loop always terminates (100% mix IS `fg`, whose contrast
-    // hunted `surface` in the first place — see the module docs' contrast law).
-    (7..=100)
-        .map(|pct: i32| mix(t.surface, t.fg, pct as f32 / 100.0))
+    let (_, _, from) = hsl(t.surface);
+    let (_, _, to) = hsl(t.fg);
+    // 1, 2, 3, ..., 100 percent of the way from `surface`'s lightness to `fg`'s. The
+    // walk is monotonic — one endpoint is the surface and the other is the ink whose
+    // contrast hunted it (see the module docs' contrast law) — so each step moves
+    // further from `base` than the last, and the loop always terminates.
+    (1..=100)
+        .map(|pct: i32| with_lightness(t.surface, from + (to - from) * pct as f32 / 100.0))
         .find(|&candidate| (relative_luminance(candidate) - base).abs() >= MIN_LUMA_STEP)
         .unwrap_or(t.fg)
+}
+
+/// `color` at a different lightness, its hue and saturation untouched.
+fn with_lightness(color: u32, l: f32) -> u32 {
+    let (h, s, _) = hsl(color);
+    let rgba = gpui::Rgba::from(Hsla {
+        h,
+        s,
+        l: l.clamp(0.0, 1.0),
+        a: 1.0,
+    });
+    let channel = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
+    (channel(rgba.r) << 16) | (channel(rgba.g) << 8) | channel(rgba.b)
 }
 
 /// The smallest relative-luminance step [`raised_surface`] must clear above `surface`.
@@ -679,6 +705,31 @@ mod tests {
             assert!(
                 delta >= MIN_LUMA_STEP,
                 "{}: popover cleared only {delta:.4} relative luma above surface (floor {MIN_LUMA_STEP})",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_popover_keeps_its_surfaces_hue() {
+        // The defect: raising the popover by mixing `surface` toward `fg` walks the
+        // colour toward a near-neutral ink, so on cosmos the navy panel (hsl 240, s
+        // 0.24) came out grey (#4a4a55, s 0.07) — a different *material* floating over
+        // the panel, not the same one lit brighter. Hue angle alone does not catch it
+        // (mixing two colours of the same hue keeps that hue); what collapses is the
+        // saturation, so both are pinned here.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let (sh, ss, _) = hsl(t.surface);
+            let (ph, ps, _) = hsl(raised_surface(&t));
+            let drift = ((sh - ph).abs() * 360.0).min((1.0 - (sh - ph).abs()) * 360.0);
+            assert!(
+                drift <= 5.0,
+                "{}: popover hue is {drift:.1} degrees off surface's",
+                t.name
+            );
+            assert!(
+                ps >= ss * 0.8,
+                "{}: popover saturation collapsed from {ss:.3} to {ps:.3}",
                 t.name
             );
         }
