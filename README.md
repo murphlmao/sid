@@ -102,6 +102,6 @@ When he passed, I wanted to name something I'd touch every day after him. Creati
 
 <div align="center">
 
-`✦`&nbsp;&nbsp;`·`&nbsp;&nbsp;`★`&nbsp;&nbsp;&nbsp;*for sid, who liked all of the snow, hotdogs, cake, and running into fireworks on the 4th of July for some reason. *&nbsp;&nbsp;&nbsp;`★`&nbsp;&nbsp;`·`&nbsp;&nbsp;`✦`
+✦&nbsp;&nbsp;·&nbsp;&nbsp;★&nbsp;&nbsp;&nbsp;<em>for sid, who liked all of the snow, hotdogs, cake, and running into fireworks on the 4th of July for some reason.</em>&nbsp;&nbsp;&nbsp;★&nbsp;&nbsp;·&nbsp;&nbsp;✦
 
 </div>
