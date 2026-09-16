@@ -72,8 +72,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, SharedString,
-    Subscription, Window, div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, rgb,
 };
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
@@ -83,7 +83,9 @@ use super::is_field_submit;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
 use crate::ui::session::ssh_runtime;
-use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
+use sid_ui::component::{
+    Column, ColumnSort, ContextMenuExt, PopupMenu, PopupMenuItem, TableDelegate, TableState,
+};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
@@ -186,6 +188,12 @@ pub struct SystemsTabState {
     /// Inline error under the pin input (e.g. a nonexistent path) — cleared on the
     /// next successful pin or edit.
     pin_error: Option<String>,
+    /// The config-file lists' single right-click target (a path) — mirrors
+    /// `ssh_home::HomeTabState::right_click_target`'s doc comment on why one
+    /// indirection replaces a `.context_menu()` attached per row. One field covers
+    /// both the pinned and common lists: a path is unique across the two (`common`
+    /// excludes anything already pinned — see [`exclude_pinned`]).
+    config_right_click_target: Option<String>,
     /// The open config-file editor modal, if any — see `super::config_editor`.
     pub(crate) editor: Option<ConfigEditorState>,
 }
@@ -208,6 +216,7 @@ impl SystemsTabState {
             config_loaded: false,
             pin_input: None,
             pin_error: None,
+            config_right_click_target: None,
             editor: None,
         }
     }
@@ -1081,6 +1090,19 @@ impl AppState {
                     .gap_4()
                     .pt_3()
                     .overflow_y_scroll()
+                    // Right-click anywhere in the two lists defaults to "no row" — see
+                    // `ssh_home.rs`'s identical `capture_any_mouse_down` for why the
+                    // CAPTURE-phase reset must run before either row's own bubble-phase
+                    // `on_mouse_down(Right, ..)` sets a specific target.
+                    .capture_any_mouse_down(cx.listener(
+                        |this, ev: &MouseDownEvent, _window, cx| {
+                            if ev.button == MouseButton::Right {
+                                this.systems.config_right_click_target = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .context_menu(self.config_file_context_menu(cx))
                     .child(config_list_card(
                         "pinned",
                         pinned_count,
@@ -1128,6 +1150,7 @@ impl AppState {
         };
         let toggle_path = path.to_string();
         let open_path = PathBuf::from(path.to_string());
+        let menu_path = path.to_string();
 
         h_flex()
             .id(id)
@@ -1137,6 +1160,13 @@ impl AppState {
             .row_padding()
             .cursor_pointer()
             .hover_fill(theme)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                    this.systems.config_right_click_target = Some(menu_path.clone());
+                    cx.notify();
+                }),
+            )
             .child(
                 v_flex()
                     .min_w_0()
@@ -1166,6 +1196,58 @@ impl AppState {
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 this.open_config_editor(open_path.clone(), window, cx);
             }))
+    }
+
+    /// The config-file lists' single context menu — see `config_right_click_target`'s
+    /// doc comment (same wiring as `db_tab.rs`'s `db_conn_context_menu` and
+    /// `ssh_home.rs`'s `grid_context_menu`). `open` and `pin`/`unpin` reuse the row's
+    /// own handlers verbatim: [`Self::open_config_editor`] and the same toggle
+    /// [`Self::config_file_row`]'s `IconButton` runs.
+    fn config_file_context_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+        let this = cx.entity();
+        move |menu, _window, cx| {
+            let Some(path) = this.read(cx).systems.config_right_click_target.clone() else {
+                return menu;
+            };
+            let pinned = this.read(cx).systems.pinned.iter().any(|p| p.path == path);
+
+            let open_path = PathBuf::from(path.clone());
+            let menu = menu.item(PopupMenuItem::new("open").icon(Icon::File.el()).on_click({
+                let this = this.clone();
+                move |_ev, window, cx| {
+                    let open_path = open_path.clone();
+                    this.update(cx, |state, cx| {
+                        state.open_config_editor(open_path, window, cx);
+                    });
+                }
+            }));
+
+            let (label, icon): (&'static str, Icon) = if pinned {
+                ("unpin", Icon::StarOff)
+            } else {
+                ("pin", Icon::Star)
+            };
+            menu.item(PopupMenuItem::new(label).icon(icon.el()).on_click({
+                let this = this.clone();
+                let path = path.clone();
+                move |_ev, _window, cx| {
+                    let path = path.clone();
+                    this.update(cx, |state, cx| {
+                        if pinned {
+                            state.unpin_config_file(path, cx);
+                        } else if let Err(e) = state.store.pin_file(&path) {
+                            state.systems.pin_error = Some(e.to_string());
+                            cx.notify();
+                        } else {
+                            state.refresh_config_files(cx);
+                        }
+                    });
+                }
+            }))
+        }
     }
 }
 
