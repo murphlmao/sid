@@ -1924,11 +1924,20 @@ impl AppState {
                 .child("no hosts or connections in this workspace's own layer")
         });
 
+        // Capped to the reading column (`.interface-design/system.md`'s `max_w(880px)`
+        // rule) and `w_full` rather than left bare: this detail pane spans the whole
+        // window minus the sidebar, and `Row` is `w_full` — so an uncapped row spread
+        // its label and origin badge 1587px apart at 1920px wide (round-3 gate). `w_full`
+        // lets the column fill up to the cap instead of shrinking to its content, and
+        // the containing `v_flex` never centers it, so the column stays anchored to the
+        // panel's left edge exactly like Settings' content gutter.
         Card::section("Scope items").count(count).child(
-            List::stack()
-                .children(host_rows)
-                .children(conn_rows)
-                .children(empty),
+            div().w_full().max_w(scaled(880.)).child(
+                List::stack()
+                    .children(host_rows)
+                    .children(conn_rows)
+                    .children(empty),
+            ),
         )
     }
 
