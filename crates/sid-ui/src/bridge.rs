@@ -27,15 +27,14 @@
 //! - `ThemeColor::selection` is the *text*-selection fill inside an input, not sid's
 //!   row-selection token; it maps to `accent` (the library clamps its alpha, see below).
 //! - `ThemeColor::input` is the `Input`/`Editor` **border** stroke (its own doc comment
-//!   says so) — mapping it to sid's `well` instead of `border` reads as a flush recess,
-//!   not a missing outline, and is a plain [`config_colors`] token swap like the others
-//!   above. `ThemeColor::background` is otherwise unread in sid: every borrowed widget
-//!   sid actually renders (`Table`, `PopupMenu`, `Input`/`Editor`) has its own dedicated
-//!   field, `Root`'s own `.bg()` is always fully occluded by `AppState`'s own full-bleed
-//!   `t.bg` fill, and every other library widget that reads `background`/`input`
-//!   (`Button`, `Select`, `Dialog`, `Badge`, ...) is either unused by sid or, like
-//!   [`crate::Button`], hands the library an explicit colour that bypasses `cx.theme()`
-//!   entirely. Left at `well` for symmetry with `input`, though nothing currently reads it.
+//!   says so) and maps to sid's `border`: the field keeps a hairline. Round 3 briefly
+//!   mapped it to `well` for a "flush recess"; round 4 measured the result at 1.04:1 on
+//!   cosmos-light — an edgeless fill shift — and restored the hairline. The editor's
+//!   *body* recess is [`recess_editor_chrome`]'s job, not this stroke's.
+//!   `ThemeColor::background` maps to `bg` and is otherwise unread in sid: every borrowed
+//!   widget sid actually renders (`Table`, `PopupMenu`, `Input`/`Editor`) has its own
+//!   dedicated field, and `Root`'s own `.bg()` is always fully occluded by `AppState`'s
+//!   full-bleed `t.bg` fill.
 //! - **The SQL/config editor's own body, active line and gutter are not `ThemeColor`
 //!   fields at all.** `Editor`/`Input` read those from `Theme::highlight_theme.style`
 //!   (`HighlightThemeStyle::{editor_background, editor_active_line,
@@ -329,7 +328,7 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     // -- canvas ---------------------------------------------------------
     // NOT `t.bg`: `background` is `Editor`/`Input`'s body colour on a light palette
     // (`Theme::input_background()`), never sid's own canvas — see the module doc.
-    colors.background = hex(t.well);
+    colors.background = hex(t.bg);
     colors.foreground = hex(t.fg);
     colors.border = hex(t.border);
     // `muted` is a BACKGROUND in this library (skeletons, switch tracks).
@@ -380,11 +379,11 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.caret = hex(t.accent);
     // Input text selection. Alpha-clamped to 0.3 upstream — intended.
     colors.selection = hex(t.accent);
-    // NOT `t.border`: `input` is the `Input`/`Editor` border stroke AND the base colour
-    // `Theme::input_background()` mixes toward transparent on a dark palette — see the
-    // module doc. `well` recesses both without a separate hairline (the colour shift
-    // over the card around it *is* the boundary).
-    colors.input = hex(t.well);
+    // The `Input`/`Editor` border stroke keeps the hairline. The editor's *body* recess is
+    // `recess_editor_chrome`'s job (it patches the highlight theme's editor fields);
+    // mapping this stroke to `well` instead made every text field an edgeless fill shift
+    // (1.04:1 on cosmos-light) — round-4 regression.
+    colors.input = hex(t.border);
     colors.link = hex(t.accent);
     colors.link_hover = hex(hover_of(t, t.accent));
     colors.link_active = hex(pressed_of(t, t.accent));
@@ -555,10 +554,6 @@ mod tests {
     fn every_palette_round_trips_its_canvas_tokens() {
         for t in [cosmos(), void(), dusk(), cosmos_light()] {
             let c = bridged(&t);
-            // NOT `c.background == t.bg`: `background` carries the same `well` token as
-            // `input` for symmetry — see `every_palette_recesses_the_input_border_into_well`
-            // and the module doc's mapping-rules bullet on `background`/`input`. sid's own
-            // canvas fill (`AppState`'s outer `div().bg(rgb(t.bg))`) never reads this token.
             assert_eq!(c.foreground, rgb(t.fg).into(), "{}: foreground", t.name);
             assert_eq!(c.border, rgb(t.border).into(), "{}: border", t.name);
             assert_eq!(
@@ -575,15 +570,16 @@ mod tests {
     }
 
     #[test]
-    fn every_palette_recesses_the_input_border_into_well() {
-        // `input` is the `Input`/`Editor` border stroke (`ThemeColor::input`'s own doc
-        // comment) — mapping it away from `border` to `well` is a flush recess, not a
-        // missing outline. `background` is carried along for symmetry even though nothing
-        // in sid currently reads it (see the module doc).
+    fn every_palette_keeps_the_input_hairline_and_the_canvas_token() {
+        // Round-4 regression: mapping `input` (the `Input`/`Editor` border stroke) to `well`
+        // made every text field a flush fill shift with no edge at all — on cosmos-light
+        // `well` on `surface` is 1.04:1. The recess for editors lives in
+        // `recess_editor_chrome`; the field's hairline stays `border`, and `background`
+        // stays the canvas token it always was.
         for t in [cosmos(), void(), dusk(), cosmos_light()] {
             let c = bridged(&t);
-            assert_eq!(c.background, rgb(t.well).into(), "{}: background", t.name);
-            assert_eq!(c.input, rgb(t.well).into(), "{}: input (border)", t.name);
+            assert_eq!(c.input, rgb(t.border).into(), "{}: input (border)", t.name);
+            assert_eq!(c.background, rgb(t.bg).into(), "{}: background", t.name);
         }
     }
 
