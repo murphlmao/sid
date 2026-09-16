@@ -856,3 +856,28 @@ killed agents by id with their context, restart killed workflows from their scri
   selected (`run` and `explain` both dimmed-disabled), Workspaces detail pane (scope
   items capped, label+badge close together). Left on the branch for review — not
   merged, not pushed.
+- 2026-09-16: round-3 descriptor + editor fixes on `r3-theme`, both red-first. Descriptor:
+  `sid-db`'s Postgres/SQLite `ConnField` labels were Title Case (`Host`, `File`) while the
+  form's own labels and the SSH host form are lowercase — a unit test in `descriptor.rs`
+  (`field_labels_and_placeholders_are_lowercase`) pinned every field lowercase, red on the
+  old data, then the fields (and the `require()` error strings that duplicated them)
+  dropped to `host`/`port`/`database`/`user`/`password`/`file path`/`mode`; the form
+  reuses `field.label` as both the visible label and the placeholder, so one change covers
+  both. Editor: the SQL/config editor's body, active line and gutter turned out to read
+  `Theme::highlight_theme.style` (`HighlightThemeStyle::{editor_background,
+  editor_active_line, editor_gutter_background}`), not `ThemeColor::background`/`input` as
+  first suspected (confirmed by a green-diagnostic-colour build: the border went green,
+  the body did not move) — `gpui-component`'s bundled default theme sets those three
+  fields explicitly (`#0a0a0a`/`#171717` dark, `#ffffff`/`#f5f5f5` light, the exact hex the
+  bug named), and `theme_config`'s `highlight: None` (kept, to leave syntax colours alone)
+  means that bundled value survives untouched. `bridge::recess_editor_chrome` now patches
+  those three fields in place on the already-installed `highlight_theme` after
+  `apply_config`, so every other `HighlightThemeStyle` field (the syntax table included)
+  is untouched: body → `well`, active line → `selection`, gutter → `surface`. `input`
+  (the `Input`/`Editor` border stroke) and `background` also moved from `border`/`bg` to
+  `well`, in step with the same recess. Gate: fmt, clippy `--workspace --all-targets -D
+  warnings`, `cargo test --workspace` (one unrelated `sid-privfs` sudo test flaked once
+  under parallel threads, green on every other run) — all green. Captures: database
+  cosmos-light and cosmos (SQL editor band sits in `well`/`selection`/`surface`, no white
+  or `#171717` slab; pixel-sampled to confirm exact token matches), add-connection form
+  (lowercase labels/placeholders throughout).
