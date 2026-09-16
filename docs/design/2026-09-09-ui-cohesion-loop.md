@@ -264,7 +264,14 @@ Every item is gated by before/after captures in all four themes and a
       editor's line band paints an unthemed neutral (`#fff`/`#f5f5f5` on cosmos-light,
       `#171717` on cosmos) instead of `well`/`surface` — a bridge mapping gap for the editor
       background and active-line colours.
-- [ ] **Final gate.** Round 3 (2026-09-16, two themes, review only, 50 PNGs): 13/13 round-2
+- [x] **Final gate: PASSED 2026-09-16.** Round 4 (targeted, cosmos-light + the cosmos editor,
+      23 PNGs): 7/7 round-3 fixes confirmed absent; one regression found and fixed the same
+      hour (the editor recess had remapped the shared `input` stroke to `well`, edgeless
+      fields at 1.04:1 → back to `border`, pinned by
+      `every_palette_keeps_the_input_hairline_and_the_canvas_token`). Main at 58a28e9: 51
+      suites green, hygiene 14/14, only `main.rs` names the rendering library. Remaining
+      taste calls live in the round-3 nits below; next pass is a new loop, not this one.
+      Round 3 (2026-09-16, two themes, review only, 50 PNGs): 13/13 round-2
       fixes confirmed on both; seven new defects (above) and three nits (segmented-control
       casing nav vs controls; sort chevron at the far edge of wide fill columns; the selected
       workspace's name heading sits on canvas above OVERVIEW). Round 1 ran 2026-09-10 (4 opus reviewers, 34 PNGs; 8 sonnet refuters):
