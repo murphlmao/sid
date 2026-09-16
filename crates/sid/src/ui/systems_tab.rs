@@ -88,8 +88,8 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, Segment,
-    SegmentSelect, SegmentedControl, StatCluster, StyledExt as _, TextInput, Toolbar,
-    Typography as _, h_flex, scaled, sortable_th, v_flex,
+    SegmentSelect, SegmentedControl, StatCluster, StyledExt as _, TextInput, Typography as _,
+    h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -985,8 +985,17 @@ impl AppState {
         self.refresh_config_files(cx);
     }
 
-    /// The Config files sub-view: the "pin a file…" toolbar, then the pinned and common
-    /// lists side by side, each in its own bounded [`Card`].
+    /// The Config files sub-view: one `Card::panel` — same shape as [`Self::
+    /// processes_view`] — with the "pin a file…" field and the `+ pin` button in its
+    /// header, then the pinned and common lists side by side, each in its own bounded
+    /// [`Card`], as its body.
+    ///
+    /// This used to be a free-floating `Toolbar` above an unframed two-card row, with
+    /// its own `n files` count beside the toolbar's field — a second count the
+    /// `COMMON · n` card underneath it already gave, and the one thing here that didn't
+    /// match Processes' panel. Folding the toolbar into the panel header fixes both:
+    /// one `CONFIG FILES · n` count, and the two sub-views now share one header
+    /// contract.
     ///
     /// Two columns rather than one, and full-width rather than centred. The old layout
     /// was a `max_w(880px)` column centred beneath a full-width table — it started at
@@ -1024,49 +1033,35 @@ impl AppState {
         let pin_error = self.systems.pin_error.clone().map(|e| error_line(theme, e));
         let pin_input = self.systems.pin_input.clone();
 
-        v_flex()
+        Card::panel("config files")
+            .count(pinned_count + common_count)
+            // See `processes_view`'s comment on why `size_full`, not `flex_1`: this
+            // panel sits in the same plain `div().flex_1()` wrapper.
             .size_full()
-            .child(
-                Toolbar::new()
-                    // Input and submit go in the toolbar's left slot *together*. They are
-                    // one control, and a `pin` button on the far right edge would be the
-                    // same "action a screen-width from the thing it acts on" this whole
-                    // sub-view exists to undo — the toolbar's action slot is for controls
-                    // that act on the lists below, not on the field beside them.
-                    .filter(
-                        h_flex()
-                            .gap_2()
-                            // Enter submits, same as the `pin` button beside it. This was
-                            // documented on `pin_input` but never actually wired, so the
-                            // only way to pin a typed path was the button.
-                            .child(
-                                v_flex()
-                                    .id("cfg-pin-field")
-                                    .flex_1()
-                                    .max_w(px(420.))
-                                    .on_key_down(cx.listener(
-                                        |this, ev: &KeyDownEvent, window, cx| {
-                                            if is_field_submit(&ev.keystroke) {
-                                                cx.stop_propagation();
-                                                this.submit_pin(window, cx);
-                                            }
-                                        },
-                                    ))
-                                    .children(pin_input.map(|i| TextInput::new(&i))),
-                            )
-                            .child(
-                                Button::new("cfg-pin-submit", "pin")
-                                    .small()
-                                    .icon(Icon::Add)
-                                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                        this.submit_pin(window, cx);
-                                    })),
-                            ),
-                    )
-                    .count_label(sid_ui::toolbar::count_label(
-                        pinned_count + common_count,
-                        "file",
-                    )),
+            .action(
+                // Input and submit are one control, together in the header — a `pin`
+                // button on the far right edge would be the same "action a
+                // screen-width from the thing it acts on" this whole sub-view exists
+                // to undo.
+                div()
+                    .id("cfg-pin-field")
+                    .max_w(px(420.))
+                    // Enter submits, same as the `pin` button beside it.
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                        if is_field_submit(&ev.keystroke) {
+                            cx.stop_propagation();
+                            this.submit_pin(window, cx);
+                        }
+                    }))
+                    .children(pin_input.map(|i| TextInput::new(&i).small())),
+            )
+            .action(
+                Button::new("cfg-pin-submit", "pin")
+                    .small()
+                    .icon(Icon::Add)
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.submit_pin(window, cx);
+                    })),
             )
             .children(pin_error)
             .child(
