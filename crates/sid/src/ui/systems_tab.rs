@@ -732,7 +732,7 @@ impl AppState {
                 // as wrong as the 652px table it used to sit above.
                 div()
                     .max_w(scaled(320.))
-                    .children(filter.map(|f| TextInput::new(&f))),
+                    .children(filter.map(|f| TextInput::new(&f).small())),
             )
             .action(
                 Button::new("systems-refresh", "refresh")
