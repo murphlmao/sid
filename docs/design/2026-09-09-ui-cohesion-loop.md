@@ -830,3 +830,25 @@ killed agents by id with their context, restart killed workflows from their scri
   add button), database right-click menu, network right-click menu (arms, does not
   kill), settings void (active row has no accent ring), add-host modal (save-to ink).
   Left on the branch for review — not merged, not pushed.
+- 2026-09-16: round-3 tab fixes (`r3-tabs`, five commits) for the five defects the
+  2026-09-16 spot check found. `systems_tab.rs`: Config files' free-floating toolbar +
+  unframed two-card row now wrap in one `Card::panel` (`CONFIG FILES · n` header
+  holding the pin field and `+ pin` button), which also drops the duplicate `n files`
+  count the toolbar carried alongside `COMMON · n`; the Processes header filter gained
+  the `.small()` every other panel filter already had; config-file rows gained a
+  right-click `PopupMenu` (`open`/`pin`-or-`unpin`, icons) reusing the row's own
+  `open_config_editor`/pin-toggle handlers, wired the same `right_click_target` +
+  `capture_any_mouse_down` way `ssh_home.rs`/`db_tab.rs` already do. `db_tab.rs`: `run`/
+  `reload` now share `explain`'s "nothing selected" gate — extracted as
+  `query_actions_enabled(selected: Option<DbKind>) -> bool`, red-first (test asserted
+  against the not-yet-written function, confirmed the compile-error red, then green).
+  `workspaces_tab.rs`: SCOPE ITEMS rows capped at `max_w(scaled(880.))` (`w_full` so the
+  column still fills up to the cap, never centred) — the label and its type badge no
+  longer spread across the full 1587px detail pane. Gate: fmt, clippy
+  `--workspace --all-targets -D warnings`, `cargo test --workspace` — all green, 543
+  tests in the `sid` bin, zero failures workspace-wide. Captures (sway, 1920x1080):
+  System Processes (small filter), System Config files (one panel, no duplicate
+  count), config-file row right-click menu (`open`/`pin`), Database with no connection
+  selected (`run` and `explain` both dimmed-disabled), Workspaces detail pane (scope
+  items capped, label+badge close together). Left on the branch for review — not
+  merged, not pushed.
