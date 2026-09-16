@@ -26,6 +26,34 @@
 //!   `surface`; only `muted_foreground` is sid's `muted` text token.
 //! - `ThemeColor::selection` is the *text*-selection fill inside an input, not sid's
 //!   row-selection token; it maps to `accent` (the library clamps its alpha, see below).
+//! - `ThemeColor::input` is the `Input`/`Editor` **border** stroke (its own doc comment
+//!   says so) — mapping it to sid's `well` instead of `border` reads as a flush recess,
+//!   not a missing outline, and is a plain [`config_colors`] token swap like the others
+//!   above. `ThemeColor::background` is otherwise unread in sid: every borrowed widget
+//!   sid actually renders (`Table`, `PopupMenu`, `Input`/`Editor`) has its own dedicated
+//!   field, `Root`'s own `.bg()` is always fully occluded by `AppState`'s own full-bleed
+//!   `t.bg` fill, and every other library widget that reads `background`/`input`
+//!   (`Button`, `Select`, `Dialog`, `Badge`, ...) is either unused by sid or, like
+//!   [`crate::Button`], hands the library an explicit colour that bypasses `cx.theme()`
+//!   entirely. Left at `well` for symmetry with `input`, though nothing currently reads it.
+//! - **The SQL/config editor's own body, active line and gutter are not `ThemeColor`
+//!   fields at all.** `Editor`/`Input` read those from `Theme::highlight_theme.style`
+//!   (`HighlightThemeStyle::{editor_background, editor_active_line,
+//!   editor_gutter_background}`) — *not* from `Theme::input_background()`'s
+//!   `background`/`input` fallback, despite that method's own doc comment: the bundled
+//!   default theme (`gpui-component`'s `default-theme.json`, installed by `Theme::change`
+//!   before this bridge ever runs) sets `editor.background` and
+//!   `editor.active_line.background` explicitly (`#0a0a0a`/`#171717` dark,
+//!   `#ffffff`/`#f5f5f5` light — the exact stock values the round-3 bug report named), so
+//!   the `background`/`input`-based fallback never triggers. [`recess_editor_chrome`]
+//!   patches exactly those three fields on the *already-installed* `highlight_theme` in
+//!   place, after `apply_config` above (which never touches `highlight_theme` when
+//!   `theme_config`'s `highlight` is `None` — see below), so every other
+//!   `HighlightThemeStyle` field — the whole syntax-colour table included — survives
+//!   untouched. `editor_background` → `well` (the recess), `editor_active_line` →
+//!   `selection` (system.md: "`selection` fills the active row" — the same row, just
+//!   inside an editor), `editor_gutter_background` → `surface` (a chrome rail, not more
+//!   of the text band).
 //!
 //! Filled swatches (primary/danger/success/warning buttons and badges) get their label
 //! colour from [`contrast_ink`] rather than a fixed token, because no single token is
@@ -299,7 +327,9 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     let ink_on_info = contrast_ink(t, info);
 
     // -- canvas ---------------------------------------------------------
-    colors.background = hex(t.bg);
+    // NOT `t.bg`: `background` is `Editor`/`Input`'s body colour on a light palette
+    // (`Theme::input_background()`), never sid's own canvas — see the module doc.
+    colors.background = hex(t.well);
     colors.foreground = hex(t.fg);
     colors.border = hex(t.border);
     // `muted` is a BACKGROUND in this library (skeletons, switch tracks).
@@ -350,7 +380,11 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.caret = hex(t.accent);
     // Input text selection. Alpha-clamped to 0.3 upstream — intended.
     colors.selection = hex(t.accent);
-    colors.input = hex(t.border);
+    // NOT `t.border`: `input` is the `Input`/`Editor` border stroke AND the base colour
+    // `Theme::input_background()` mixes toward transparent on a dark palette — see the
+    // module doc. `well` recesses both without a separate hairline (the colour shift
+    // over the card around it *is* the boundary).
+    colors.input = hex(t.well);
     colors.link = hex(t.accent);
     colors.link_hover = hex(hover_of(t, t.accent));
     colors.link_active = hex(pressed_of(t, t.accent));
@@ -442,6 +476,29 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
 pub fn apply(t: &Theme, out: &mut gpui_component::Theme) {
     out.apply_config(&Rc::new(theme_config(t)));
     base_colors(t, &mut out.colors);
+    recess_editor_chrome(t, out);
+}
+
+/// Patch the three editor-chrome fields `theme_config`'s `highlight: None` cannot reach.
+///
+/// `editor_background`/`editor_active_line`/`editor_gutter_background` live on
+/// `HighlightThemeStyle`, set only through `ThemeConfig::highlight` — which also carries
+/// the syntax-colour table (`HighlightThemeStyle::syntax`) `theme_config` deliberately
+/// leaves alone (see the module doc). Going through `apply_config`'s `highlight` field
+/// would mean re-supplying that whole table ourselves; mutating the three chrome fields
+/// on the *already-installed* `highlight_theme` in place — after `apply_config` above,
+/// which never touches `highlight_theme` when `config.highlight` is `None` — reaches
+/// exactly the fields this bridge owns and leaves every syntax token colour (and every
+/// other `HighlightThemeStyle` field) exactly as `Theme::change` bundled it.
+fn recess_editor_chrome(t: &Theme, out: &mut gpui_component::Theme) {
+    let highlight = std::sync::Arc::make_mut(&mut out.highlight_theme);
+    highlight.style.editor_background = Some(gpui::rgb(t.well).into());
+    // `selection` fills the active row everywhere else in sid (`.interface-design/
+    // system.md`); the active line is that same row, just inside an editor.
+    highlight.style.editor_active_line = Some(gpui::rgb(t.selection).into());
+    // `surface` raises chrome off the canvas/well; the gutter is a chrome rail, not
+    // more of the recessed text band.
+    highlight.style.editor_gutter_background = Some(gpui::rgb(t.surface).into());
 }
 
 /// The `base.*` colour block, straight from the palette's ANSI 1-6 (normal) and
@@ -498,7 +555,10 @@ mod tests {
     fn every_palette_round_trips_its_canvas_tokens() {
         for t in [cosmos(), void(), dusk(), cosmos_light()] {
             let c = bridged(&t);
-            assert_eq!(c.background, rgb(t.bg).into(), "{}: background", t.name);
+            // NOT `c.background == t.bg`: `background` carries the same `well` token as
+            // `input` for symmetry — see `every_palette_recesses_the_input_border_into_well`
+            // and the module doc's mapping-rules bullet on `background`/`input`. sid's own
+            // canvas fill (`AppState`'s outer `div().bg(rgb(t.bg))`) never reads this token.
             assert_eq!(c.foreground, rgb(t.fg).into(), "{}: foreground", t.name);
             assert_eq!(c.border, rgb(t.border).into(), "{}: border", t.name);
             assert_eq!(
@@ -511,6 +571,54 @@ mod tests {
             assert_eq!(c.danger, rgb(t.danger).into(), "{}: danger", t.name);
             assert_eq!(c.success, rgb(t.success).into(), "{}: success", t.name);
             assert_eq!(c.warning, rgb(t.warning).into(), "{}: warning", t.name);
+        }
+    }
+
+    #[test]
+    fn every_palette_recesses_the_input_border_into_well() {
+        // `input` is the `Input`/`Editor` border stroke (`ThemeColor::input`'s own doc
+        // comment) — mapping it away from `border` to `well` is a flush recess, not a
+        // missing outline. `background` is carried along for symmetry even though nothing
+        // in sid currently reads it (see the module doc).
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let c = bridged(&t);
+            assert_eq!(c.background, rgb(t.well).into(), "{}: background", t.name);
+            assert_eq!(c.input, rgb(t.well).into(), "{}: input (border)", t.name);
+        }
+    }
+
+    #[test]
+    fn every_palette_recesses_the_editor_body_active_line_and_gutter() {
+        // The round-3 bug: `Editor`/`Input` read their body/active-line/gutter fills from
+        // `Theme::highlight_theme.style`, which `gpui-component`'s bundled default theme
+        // populates with stock, unthemed values (`#0a0a0a`/`editor.background`,
+        // `#171717`/`editor.active_line.background` on cosmos — the exact hex the round-3
+        // bug report named) — `Theme::input_background()`'s `background`/`input` fallback
+        // (previous test) never runs, because the bundled theme always sets
+        // `editor_background`. `recess_editor_chrome` patches the three chrome fields in
+        // place after `apply_config`, leaving every other `HighlightThemeStyle` field —
+        // the syntax-colour table included — exactly as `Theme::change` bundled it.
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let c = bridged(&t);
+            let style = &c.highlight_theme.style;
+            assert_eq!(
+                style.editor_background,
+                Some(rgb(t.well).into()),
+                "{}: editor_background",
+                t.name
+            );
+            assert_eq!(
+                style.editor_active_line,
+                Some(rgb(t.selection).into()),
+                "{}: editor_active_line",
+                t.name
+            );
+            assert_eq!(
+                style.editor_gutter_background,
+                Some(rgb(t.surface).into()),
+                "{}: editor_gutter_background",
+                t.name
+            );
         }
     }
 
