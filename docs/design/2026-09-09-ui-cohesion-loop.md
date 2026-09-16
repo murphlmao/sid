@@ -253,7 +253,12 @@ Every item is gated by before/after captures in all four themes and a
       `run` is a live accent primary with no connection selected while `explain` beside it is
       disabled for the same reason; config-file rows have no right-click menu; Workspaces
       SCOPE ITEMS rows spread label and origin badge across 1587px (reading-column cap).
-- [ ] **Round-3 fixes (descriptor + editor)**: the Add-connection form's descriptor-driven
+- [x] **Round-3 fixes (descriptor + editor)**: done 2026-09-16. Descriptor labels lowercase
+      (`field_labels_and_placeholders_are_lowercase`, red on `Host` first). The editor band's
+      colour came from gpui-component's bundled `highlight_theme.style` (`editor_background`
+      `#0a0a0a`/`#ffffff`, `editor_active_line` `#171717`/`#f5f5f5`), not `ThemeColor`;
+      `bridge::recess_editor_chrome` patches those three fields to `well`/`selection`/`surface`
+      after `apply_config`, syntax colours untouched; pixel-verified exact. Original list: the Add-connection form's descriptor-driven
       fields are Title Case (`Host`/`Port`/`Database`/`User`/`Password`, `File`) with Title
       Case placeholders while the form's own labels and the SSH form are lowercase; the SQL
       editor's line band paints an unthemed neutral (`#fff`/`#f5f5f5` on cosmos-light,
