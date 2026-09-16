@@ -242,7 +242,11 @@ Every item is gated by before/after captures in all four themes and a
       table's header paints a stray ~17px empty column at the right (FillTable chrome
       reserve); the scope switcher's track is still flush with the chrome bar's top/bottom
       (give the track an explicit height smaller than the bar and centre it).
-- [ ] **Round-3 fixes (tabs)**, from the 2026-09-16 spot check: System → Config files
+- [x] **Round-3 fixes (tabs)**: done 2026-09-16, five commits; `query_actions_enabled
+      (selected)` decides run/reload/explain together (red-first); Config files got the same
+      `Card::panel` as Processes; config rows got a menu via the shared right-click-target
+      pattern; SCOPE ITEMS capped at the reading column (BRANCHES/LOG rows share the shape
+      and were left for a later pass). Original list: System → Config files
       sub-view toolbar floats on canvas (only Processes got the panel), its input is 32px
       beside a 24px button, and its "14 files" count duplicates the `COMMON · 14` header; the
       PROCESSES header filter is 32px (`.small()` missing, same miss as SSH's was); Database
