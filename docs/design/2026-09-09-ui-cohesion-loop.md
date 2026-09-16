@@ -242,7 +242,23 @@ Every item is gated by before/after captures in all four themes and a
       table's header paints a stray ~17px empty column at the right (FillTable chrome
       reserve); the scope switcher's track is still flush with the chrome bar's top/bottom
       (give the track an explicit height smaller than the bar and centre it).
-- [ ] **Final gate.** Round 1 ran 2026-09-10 (4 opus reviewers, 34 PNGs; 8 sonnet refuters):
+- [ ] **Round-3 fixes (tabs)**, from the 2026-09-16 spot check: System → Config files
+      sub-view toolbar floats on canvas (only Processes got the panel), its input is 32px
+      beside a 24px button, and its "14 files" count duplicates the `COMMON · 14` header; the
+      PROCESSES header filter is 32px (`.small()` missing, same miss as SSH's was); Database
+      `run` is a live accent primary with no connection selected while `explain` beside it is
+      disabled for the same reason; config-file rows have no right-click menu; Workspaces
+      SCOPE ITEMS rows spread label and origin badge across 1587px (reading-column cap).
+- [ ] **Round-3 fixes (descriptor + editor)**: the Add-connection form's descriptor-driven
+      fields are Title Case (`Host`/`Port`/`Database`/`User`/`Password`, `File`) with Title
+      Case placeholders while the form's own labels and the SSH form are lowercase; the SQL
+      editor's line band paints an unthemed neutral (`#fff`/`#f5f5f5` on cosmos-light,
+      `#171717` on cosmos) instead of `well`/`surface` — a bridge mapping gap for the editor
+      background and active-line colours.
+- [ ] **Final gate.** Round 3 (2026-09-16, two themes, review only, 50 PNGs): 13/13 round-2
+      fixes confirmed on both; seven new defects (above) and three nits (segmented-control
+      casing nav vs controls; sort chevron at the far edge of wide fill columns; the selected
+      workspace's name heading sits on canvas above OVERVIEW). Round 1 ran 2026-09-10 (4 opus reviewers, 34 PNGs; 8 sonnet refuters):
       66 raw, 41 non-nit, 28 confirmed (12 distinct), 1 blocker → fixed. Round 2 ran after the
       fixes + nit sweep (64 PNGs): all 12 fixes confirmed on cosmos/dusk/cosmos-light, 11 on
       void; 17 non-nit findings, 11 verified real in 6 clusters (above), 6 unverified because
