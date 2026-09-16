@@ -53,19 +53,19 @@ impl DbClientDescriptor for PostgresDescriptor {
 
     fn connection_fields(&self) -> Vec<ConnField> {
         vec![
-            ConnField::new("host", "Host", ConnFieldKind::Text).required(),
-            ConnField::new("port", "Port", ConnFieldKind::Port).with_default("5432"),
-            ConnField::new("database", "Database", ConnFieldKind::Text).required(),
-            ConnField::new("user", "User", ConnFieldKind::Text).required(),
-            ConnField::new("password", "Password", ConnFieldKind::Password),
+            ConnField::new("host", "host", ConnFieldKind::Text).required(),
+            ConnField::new("port", "port", ConnFieldKind::Port).with_default("5432"),
+            ConnField::new("database", "database", ConnFieldKind::Text).required(),
+            ConnField::new("user", "user", ConnFieldKind::Text).required(),
+            ConnField::new("password", "password", ConnFieldKind::Password),
         ]
     }
 
     fn assemble_params(&self, values: &BTreeMap<String, String>) -> Result<OpenParams, String> {
-        let host = require(values, "host", "Host")?;
-        let port = require(values, "port", "Port")?;
-        let database = require(values, "database", "Database")?;
-        let user = require(values, "user", "User")?;
+        let host = require(values, "host", "host")?;
+        let port = require(values, "port", "port")?;
+        let database = require(values, "database", "database")?;
+        let user = require(values, "user", "user")?;
 
         // Password travels in OpenParams.password, never in the DSN. The
         // PostgresClient::open path encodes it onto the URL itself.
@@ -169,10 +169,10 @@ impl DbClientDescriptor for SqliteDescriptor {
 
     fn connection_fields(&self) -> Vec<ConnField> {
         vec![
-            ConnField::new("path", "File", ConnFieldKind::Path).required(),
+            ConnField::new("path", "file path", ConnFieldKind::Path).required(),
             ConnField::new(
                 "mode",
-                "Mode",
+                "mode",
                 ConnFieldKind::Choice {
                     options: vec![
                         SQLITE_MODE_OPEN_EXISTING.to_string(),
@@ -186,7 +186,7 @@ impl DbClientDescriptor for SqliteDescriptor {
     }
 
     fn assemble_params(&self, values: &BTreeMap<String, String>) -> Result<OpenParams, String> {
-        let path = require(values, "path", "File")?;
+        let path = require(values, "path", "file path")?;
         let sqlite_mode = Some(parse_sqlite_mode(values));
         Ok(OpenParams {
             kind: DbKind::Sqlite,
@@ -239,6 +239,31 @@ mod tests {
         ])
     }
 
+    /// The form renders `field.label` as both the visible label and the input
+    /// placeholder (`db_conn_form.rs::build_fields` passes `field.label.clone()`
+    /// straight into `.placeholder(..)`), so one casing rule covers both. Chrome
+    /// labels are lowercase app-wide (see the SSH host form's `alias`/`user`/
+    /// `host`/`port`); the descriptor's labels were the one holdout in Title Case.
+    #[test]
+    fn field_labels_and_placeholders_are_lowercase() {
+        for field in PostgresDescriptor.connection_fields() {
+            assert_eq!(
+                field.label,
+                field.label.to_lowercase(),
+                "postgres field {} label/placeholder must be lowercase",
+                field.key
+            );
+        }
+        for field in SqliteDescriptor.connection_fields() {
+            assert_eq!(
+                field.label,
+                field.label.to_lowercase(),
+                "sqlite field {} label/placeholder must be lowercase",
+                field.key
+            );
+        }
+    }
+
     #[test]
     fn postgres_kind_is_postgres() {
         assert_eq!(PostgresDescriptor.kind(), DbKind::Postgres);
@@ -250,11 +275,11 @@ mod tests {
         assert_eq!(fields.len(), 5);
 
         let expected: [(&str, &str, ConnFieldKind, bool, Option<&str>); 5] = [
-            ("host", "Host", ConnFieldKind::Text, true, None),
-            ("port", "Port", ConnFieldKind::Port, false, Some("5432")),
-            ("database", "Database", ConnFieldKind::Text, true, None),
-            ("user", "User", ConnFieldKind::Text, true, None),
-            ("password", "Password", ConnFieldKind::Password, false, None),
+            ("host", "host", ConnFieldKind::Text, true, None),
+            ("port", "port", ConnFieldKind::Port, false, Some("5432")),
+            ("database", "database", ConnFieldKind::Text, true, None),
+            ("user", "user", ConnFieldKind::Text, true, None),
+            ("password", "password", ConnFieldKind::Password, false, None),
         ];
 
         for (field, (key, label, kind, required, default)) in fields.iter().zip(expected) {
@@ -295,7 +320,7 @@ mod tests {
 
     #[test]
     fn postgres_missing_required_field_errors() {
-        for (key, label) in [("host", "Host"), ("database", "Database"), ("user", "User")] {
+        for (key, label) in [("host", "host"), ("database", "database"), ("user", "user")] {
             let mut values = pg_values();
             values.remove(key);
             let err = PostgresDescriptor.assemble_params(&values).unwrap_err();
@@ -305,7 +330,7 @@ mod tests {
 
     #[test]
     fn postgres_empty_required_field_errors() {
-        for (key, label) in [("host", "Host"), ("database", "Database"), ("user", "User")] {
+        for (key, label) in [("host", "host"), ("database", "database"), ("user", "user")] {
             let mut values = pg_values();
             values.insert(key.to_string(), String::new());
             let err = PostgresDescriptor.assemble_params(&values).unwrap_err();
@@ -320,7 +345,7 @@ mod tests {
         let mut values = pg_values();
         values.remove("port");
         let err = PostgresDescriptor.assemble_params(&values).unwrap_err();
-        assert_eq!(err, "Port is required");
+        assert_eq!(err, "port is required");
     }
 
     #[test]
@@ -377,14 +402,14 @@ mod tests {
 
         // First field: path.
         assert_eq!(fields[0].key, "path");
-        assert_eq!(fields[0].label, "File");
+        assert_eq!(fields[0].label, "file path");
         assert_eq!(fields[0].kind, ConnFieldKind::Path);
         assert!(fields[0].required);
         assert_eq!(fields[0].default, None);
 
         // Second field: mode Choice with both options + default.
         assert_eq!(fields[1].key, "mode");
-        assert_eq!(fields[1].label, "Mode");
+        assert_eq!(fields[1].label, "mode");
         assert_eq!(
             fields[1].kind,
             ConnFieldKind::Choice {
@@ -437,12 +462,12 @@ mod tests {
         let err = SqliteDescriptor
             .assemble_params(&BTreeMap::new())
             .unwrap_err();
-        assert_eq!(err, "File is required");
+        assert_eq!(err, "file path is required");
 
         // Present-but-empty value.
         let values = BTreeMap::from([("path".to_string(), String::new())]);
         let err = SqliteDescriptor.assemble_params(&values).unwrap_err();
-        assert_eq!(err, "File is required");
+        assert_eq!(err, "file path is required");
     }
 
     #[test]
