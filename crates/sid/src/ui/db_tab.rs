@@ -1116,6 +1116,17 @@ fn connection_dot(live: bool, active: bool, busy: bool, errored: bool) -> Connec
     }
 }
 
+/// Whether the query toolbar's engine-dependent actions (`run`/`reload`, `explain`) may
+/// be enabled at all: both need something selected — a connection or the store-browse
+/// row — to act on. Shared with [`AppState::explain_button`] via [`AppState::
+/// active_kind`], the same `Option<DbKind>` both already read; `explain` narrows this
+/// further with its own per-engine reason, but the "nothing selected" gate is one
+/// decision, not two, and `run` used to skip it entirely (round-3 gate: a live accent
+/// primary with no connection selected, beside a correctly disabled `explain`).
+fn query_actions_enabled(selected: Option<DbKind>) -> bool {
+    selected.is_some()
+}
+
 /// `schema.table` for Postgres (non-empty schema), or the bare table name for SQLite
 /// and the redb browse engine (no schema namespace). Doubles as the tree row's expanded
 /// key and the identifier `SELECT * FROM <table_display_name>` inserts.
@@ -1600,8 +1611,17 @@ impl AppState {
                 .icon(if browse { Icon::Refresh } else { Icon::Run })
                 .size(QUERY_ACTION_SIZE)
                 .loading(self.db.running)
-                .disabled(browse && self.browse_table().is_none())
-                .tooltip(if browse {
+                // Same gate `explain_button` uses, plus browse mode's own "no table
+                // loaded" case — round-3 gate: `run` stayed a live accent primary with
+                // no connection selected while `explain` beside it correctly disabled
+                // for the same reason.
+                .disabled(
+                    !query_actions_enabled(self.active_kind())
+                        || (browse && self.browse_table().is_none()),
+                )
+                .tooltip(if !query_actions_enabled(self.active_kind()) {
+                    "select a connection first"
+                } else if browse {
                     "re-read this table from the store"
                 } else {
                     "run the query (Ctrl-Enter)"
@@ -1922,16 +1942,27 @@ impl AppState {
     /// structural here rather than a guard inside the listener.
     fn explain_button(&self, cx: &mut Context<Self>) -> Button {
         let support = self.explain_support();
-        let (disabled, tooltip): (bool, SharedString) = match support {
-            None => (true, "select a connection first".into()),
-            Some(s) => match (s.keyword(), s.reason()) {
-                (Some(keyword), _) => (false, format!("show the query plan ({keyword})").into()),
-                (None, Some(reason)) => (true, reason.into()),
-                // Unreachable: `ExplainSupport` has exactly one of the two, and
-                // `support_and_keyword_and_reason_agree` pins that for every engine.
-                (None, None) => (true, "no query plan available".into()),
-            },
-        };
+        let (disabled, tooltip): (bool, SharedString) =
+            if !query_actions_enabled(self.active_kind()) {
+                (true, "select a connection first".into())
+            } else {
+                match support {
+                    // Unreachable given the `query_actions_enabled` gate above
+                    // (`support` is `None` exactly when `active_kind()` is), kept so
+                    // the match stays exhaustive on `Option<ExplainSupport>`.
+                    None => (true, "select a connection first".into()),
+                    Some(s) => match (s.keyword(), s.reason()) {
+                        (Some(keyword), _) => {
+                            (false, format!("show the query plan ({keyword})").into())
+                        }
+                        (None, Some(reason)) => (true, reason.into()),
+                        // Unreachable: `ExplainSupport` has exactly one of the two, and
+                        // `support_and_keyword_and_reason_agree` pins that for every
+                        // engine.
+                        (None, None) => (true, "no query plan available".into()),
+                    },
+                }
+            };
         Button::new("db-explain", "explain")
             .size(QUERY_ACTION_SIZE)
             .icon(Icon::Info)
@@ -4227,6 +4258,21 @@ mod connections_count_tests {
     fn the_header_count_equals_rows_rendered_saved_plus_the_store_row() {
         assert_eq!(connections_count(0), 1, "just the store row");
         assert_eq!(connections_count(3), 4, "3 saved rows + the store row");
+    }
+}
+
+#[cfg(test)]
+mod query_actions_enabled_tests {
+    use super::*;
+
+    /// The round-3 gate defect: `run` stayed a live accent primary with no connection
+    /// selected, while `explain` beside it correctly disabled for the same reason. Both
+    /// share the one gate — nothing to run or explain plan a query against.
+    #[test]
+    fn no_selection_disables_both_query_actions() {
+        assert!(!query_actions_enabled(None));
+        assert!(query_actions_enabled(Some(DbKind::Sqlite)));
+        assert!(query_actions_enabled(Some(DbKind::Redb)));
     }
 }
 
