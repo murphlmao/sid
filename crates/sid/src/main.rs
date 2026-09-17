@@ -20,7 +20,7 @@ mod keymap;
 mod ssh_connect;
 mod ui;
 
-use gpui::{AnyView, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{AnyView, Bounds, TitlebarOptions, WindowBounds, WindowOptions, prelude::*, px, size};
 use sid_core::gpu::{GpuPreflight as _, RenderPath};
 
 fn main() {
@@ -121,6 +121,11 @@ fn main() {
                     .unwrap_or_else(|_| "cosmos".into())
             });
             sid_ui::theme::install(&theme_name, cx);
+            // Window title: names the window in bars / `hyprctl clients` (it was empty).
+            // "sid (dev)" when launched from a Claude Code session (`CLAUDECODE` is set
+            // there) — the hook murphy's Hyprland rule keys on to park dev launches on
+            // workspace 4, while a plain terminal launch opens on the terminal's workspace.
+            let title = if std::env::var_os("CLAUDECODE").is_some() { "sid (dev)" } else { "sid" };
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -128,6 +133,10 @@ fn main() {
                     // EMPTY class, so compositor windowrules, taskbars, and the
                     // capture harness (scripts/sid-cap.sh) can't target sid.
                     app_id: Some("sid".into()),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some(title.into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
                 |window, cx| {
