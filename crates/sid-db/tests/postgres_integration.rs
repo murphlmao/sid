@@ -362,6 +362,41 @@ async fn explain_does_not_execute_the_statement() {
 
 #[tokio::test]
 #[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
+async fn explain_refuses_analyze_option_forms_and_leaves_rows_alone() {
+    // `ANALYZE DELETE ...` / `(ANALYZE) DELETE ...` would become `EXPLAIN ANALYZE`,
+    // which executes the statement. Both must be refused and the rows must survive.
+    let client = open_client().await;
+    client
+        .execute("DROP TABLE IF EXISTS sid_explain_probe2")
+        .await
+        .expect("drop");
+    client
+        .execute("CREATE TABLE sid_explain_probe2 (id int)")
+        .await
+        .expect("create");
+    client
+        .execute("INSERT INTO sid_explain_probe2 (id) VALUES (1), (2), (3)")
+        .await
+        .expect("insert");
+    for q in [
+        "ANALYZE DELETE FROM sid_explain_probe2",
+        "(ANALYZE) DELETE FROM sid_explain_probe2",
+    ] {
+        assert!(client.explain(q).await.is_err(), "{q} must be refused");
+    }
+    let after = client
+        .query_paged("SELECT count(*) FROM sid_explain_probe2", None, 10)
+        .await
+        .expect("count");
+    assert_eq!(after.rows[0].values[0], "3");
+    client
+        .execute("DROP TABLE sid_explain_probe2")
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "requires docker/docker-compose.test.yml's postgres service; run via scripts/test-integration.sh"]
 async fn explain_refuses_a_second_statement() {
     // The other half of the safety story. The statement text comes straight from the
     // editor, so `EXPLAIN <sql>` must not become a way to run `sql; DROP TABLE x`.

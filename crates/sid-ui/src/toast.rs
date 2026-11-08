@@ -42,7 +42,10 @@ use gpui::{
 
 use crate::bridge::mix;
 use crate::button::{ButtonSize, IconButton};
+use crate::copy::sentence_case;
 use crate::icon::Icon;
+use crate::metrics::{Radius, Rounded as _, Space};
+use crate::motion::{self, Enter};
 use crate::styled::h_flex;
 use crate::styled::v_flex;
 use crate::theme::{self, Theme};
@@ -249,12 +252,18 @@ impl RenderOnce for Toast {
         // beside it, has to align to the top or the mark floats mid-paragraph.
         let single_line = self.on_dismiss.is_none() && self.actions.is_empty();
 
+        // Keyed by what the notice *says*: a new message animates in, a repaint of the
+        // same one does not.
+        let enter_id = SharedString::from(format!(
+            "toast-enter-{}",
+            content_key(self.tone, &self.message)
+        ));
         let mut strip = h_flex()
             .w_full()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .gap_3()
+            .px(Space::X4.len())
+            .py(Space::X3.len())
+            .corners(Radius::Md)
             .bg(rgb(paint.fill))
             .border_1()
             .border_color(rgb(paint.border))
@@ -266,13 +275,17 @@ impl RenderOnce for Toast {
                     .min_w_0()
                     .gap_0p5()
                     .when_some(self.title, |this, title| {
-                        this.child(div().text_body(&theme).child(title))
+                        // v2: a strong, sentence-case headline — "Couldn't connect" —
+                        // with the detail underneath.
+                        this.child(div().text_heading(&theme).child(sentence_case(&title)))
                     })
                     // The message names its own ink: a notice inside a form would
                     // otherwise inherit whatever the surrounding labels were painted in.
+                    // Body-sized in v2: this is a sentence the user has to read while
+                    // fixing something, not a footnote.
                     .child(
                         div()
-                            .text_meta(&theme)
+                            .text_body(&theme)
                             .text_color(rgb(paint.ink))
                             .child(self.message),
                     ),
@@ -288,8 +301,18 @@ impl RenderOnce for Toast {
                 )
             });
         strip.style().refine(&self.style);
-        strip
+        // v2 motion: a notice settles in over `BASE` rather than appearing mid-form.
+        motion::enter(enter_id, Enter::Rise, motion::BASE, cx, strip)
     }
+}
+
+/// A stable key for a notice's content, so its entrance plays once per message.
+fn content_key(tone: ToastTone, message: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tone.label().hash(&mut hasher);
+    message.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

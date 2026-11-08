@@ -37,6 +37,7 @@ use gpui::{
 };
 
 use crate::bridge::{hover_of, pressed_of};
+use crate::metrics::{Density, STACK_GAP};
 use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
@@ -76,7 +77,7 @@ impl List {
     /// A plain stack of rows, sized by its content. For short lists inside a card or a
     /// reading column.
     pub fn stack() -> Div {
-        v_flex().gap_0p5()
+        v_flex().gap_1()
     }
 
     /// A scrolling list body: takes the pane's free height and scrolls its rows.
@@ -167,6 +168,7 @@ impl RowPaint {
 pub struct Row {
     id: ElementId,
     selected: bool,
+    density: Density,
     tab_index: Option<isize>,
     /// A group name, so descendants can style themselves against this row's hover.
     group: Option<gpui::SharedString>,
@@ -185,6 +187,7 @@ impl Row {
         Self {
             id: id.into(),
             selected: false,
+            density: Density::Comfortable,
             tab_index: None,
             group: None,
             leading: None,
@@ -197,10 +200,24 @@ impl Row {
         }
     }
 
-    /// Fill this row with the `selection` token — the active/current item.
+    /// Fill this row with the `selection` token and mark its leading edge with the
+    /// accent — the active/current item.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
+    }
+
+    /// How tightly this row packs: [`Density::Comfortable`] (44px, the default) for the
+    /// lists a screen is about, [`Density::Compact`] (36px) for sidebars, and
+    /// [`Density::Dense`] (32px) for nested navigation.
+    pub fn density(mut self, density: Density) -> Self {
+        self.density = density;
+        self
+    }
+
+    /// [`Density::Compact`] — a 36px row, for a sidebar beside a bigger surface.
+    pub fn compact(self) -> Self {
+        self.density(Density::Compact)
     }
 
     /// Put this row in the keyboard tab order, at `index`, and give it the focus ring.
@@ -303,9 +320,13 @@ impl RenderOnce for Row {
 
         let mut row = h_flex()
             .id(self.id)
+            .relative()
             .w_full()
-            .gap_2()
+            .gap(STACK_GAP.len())
             .row_padding()
+            // v2: a row's height is a minimum, not whatever its text happens to measure,
+            // so a one-line row and a row carrying a 32px button are one height.
+            .min_h(self.density.row_len())
             // A row's default type. Without it a row was whatever its ancestor happened
             // to set, so the same `Row` rendered at three sizes in three screens; the
             // children that want the meta rung say so themselves, and win, because a
@@ -329,6 +350,21 @@ impl RenderOnce for Row {
             // for a state they can never enter.
             .when_some(self.tab_index, |this, index| {
                 this.tab_index(index).focus_ring(&theme)
+            })
+            // The selected marker: a short accent pill on the leading edge. v2 spends the
+            // accent on affordances like this one — "this is the one you're on" — rather
+            // than on washes; absolute, so it never moves the row's content.
+            .when(self.selected, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left(px(2.))
+                        .top(px(10.))
+                        .bottom(px(10.))
+                        .w(px(3.))
+                        .rounded_full()
+                        .bg(rgb(theme.accent)),
+                )
             })
             .when_some(self.leading, |this, leading| {
                 this.child(
@@ -394,13 +430,14 @@ mod tests {
         // instead of the title it is there to mark. The slot is one Body line tall and
         // the mark centres in that, whatever the stack does.
         let slot = leading_slot_height();
+        // v2's Body is 15px, so one line box is 15 * phi ~= 24.3px.
         assert!(
-            (slot - 22.7).abs() < 0.5,
+            (slot - 24.3).abs() < 0.5,
             "the leading slot is one Body line, got {slot}"
         );
-        // Half the line minus half the mark: an 8px StatusDot lands ~7.3px below the
+        // Half the line minus half the mark: an 8px StatusDot lands ~8.1px below the
         // top of the content box — on the title's line, not a line under it.
-        assert!(((slot - 8.0) / 2.0 - 7.3).abs() < 0.5);
+        assert!(((slot - 8.0) / 2.0 - 8.1).abs() < 0.5);
     }
 
     #[test]

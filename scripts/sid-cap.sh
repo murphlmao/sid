@@ -264,7 +264,9 @@ sid_app_setup_xdg "$REAL" "$CAP_DIR/xdg" "$XDG_SRC"
 if [[ ${#EXTRA_ENV[@]} -gt 0 ]]; then
     APP_ENV+=("${EXTRA_ENV[@]}")
 fi
-env "${APP_ENV[@]}" "$SID_BIN" >"$CAP_DIR/sid.log" 2>&1 &
+# Hermetic by default: no ssh-agent, no session bus (keyring), temp HOME. --real keeps all.
+mapfile -t HERMETIC_ENV < <(sid_app_hermetic_env_args "$REAL" "$CAP_DIR")
+env "${HERMETIC_ENV[@]}" "${APP_ENV[@]}" "$SID_BIN" >"$CAP_DIR/sid.log" 2>&1 &
 APP_PID=$!
 
 # Wait for the window (app_id "sid" — set in crates/sid/src/main.rs), then

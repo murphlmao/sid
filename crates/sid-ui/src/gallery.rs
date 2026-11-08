@@ -20,15 +20,19 @@
 //! ```
 
 use gpui::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Window, div, px, rgb, rgba,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    SharedString, StatefulInteractiveElement as _, Styled, Window, div, px, rgb, rgba,
 };
 use gpui_component::input::InputState;
 
 use crate::badge::{ALL_BADGE_FILLS, ALL_BADGE_TONES, Badge, BadgeFill, BadgeTone};
 use crate::bridge::SCRIM;
-use crate::button::{ALL_BUTTON_VARIANTS, Button, ButtonSize, ButtonVariant, IconButton};
+use crate::button::{
+    ALL_BUTTON_SIZES, ALL_BUTTON_VARIANTS, Button, ButtonSize, ButtonVariant, IconButton,
+};
 use crate::card::Card;
+use crate::checkbox::{CheckState, Checkbox};
+use crate::context_menu::{ContextMenu, MenuItem};
 use crate::elevation::Elevation;
 use crate::empty_state::EmptyState;
 use crate::grid::{CardGrid, GridCard};
@@ -36,18 +40,23 @@ use crate::icon::Icon;
 use crate::input::{self, FieldWidth, SearchInput, TextInput};
 use crate::kbd::Kbd;
 use crate::list::{List, Row};
+use crate::metrics::{Radius, Rounded as _};
 use crate::modal::Modal;
 use crate::notice::{caveat_line, error_line};
 use crate::radio::Radio;
 use crate::scope_chip::ScopeChip;
 use crate::segmented::SegmentedControl;
+use crate::skeleton::Skeleton;
 use crate::status_bar::{StatusBar, StatusItem};
 use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
 use crate::styled::{StyledExt as _, h_flex, v_flex};
+use crate::switch::Switch;
 use crate::theme::{self, Theme};
 use crate::toast::{ALL_TOAST_TONES, Toast};
 use crate::toolbar::Toolbar;
+use crate::tree::{TreeNode, TreeState};
 use crate::typography::{ALL_TYPE_ROLES, TypeRole, Typography};
+use gpui_component::menu::ContextMenuExt as _;
 
 /// The sample objects the card grid is drawn with — a host grid, because that is the
 /// grid this shape was built for.
@@ -81,12 +90,33 @@ struct Fields {
 /// it is fresh per frame.
 pub struct Gallery {
     fields: Option<Fields>,
+    tree: Option<Entity<TreeState>>,
 }
 
 impl Gallery {
     /// Mount with `cx.new(|_| Gallery::new())`.
     pub fn new() -> Self {
-        Self { fields: None }
+        Self {
+            fields: None,
+            tree: None,
+        }
+    }
+
+    /// The sample tree, built on first use (an entity needs a `Context`).
+    fn tree(&mut self, cx: &mut Context<Self>) -> Entity<TreeState> {
+        self.tree
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut tree = TreeState::new("gallery-tree", cx);
+                    tree.set_roots(sample_tree(), cx);
+                    tree.expand("public".into(), cx);
+                    tree.expand("public.orders".into(), cx);
+                    tree.expand("public.users".into(), cx);
+                    tree.select("public.orders.total".into(), cx);
+                    tree
+                })
+            })
+            .clone()
     }
 
     /// The field states, built on first use.
@@ -118,6 +148,7 @@ impl Render for Gallery {
         let fields = self.fields(window, cx);
         let filter = fields.filter.clone();
         let field_band = fields_band(&theme, fields);
+        let tree = self.tree(cx);
         v_flex()
             .id("gallery")
             .size_full()
@@ -131,6 +162,10 @@ impl Render for Gallery {
             .bg(rgb(theme.bg))
             .text_body(&theme)
             .child(chrome(&theme))
+            // Design system v2's new and changed pieces first, so a default 1080px capture
+            // shows them: controls at all three sizes, the new toggles, elevation, the
+            // tree, the context menu, skeletons and the empty state.
+            .child(v2_band(&theme, tree))
             // Directly under the gallery's own chrome, not at the foot of the screen:
             // this band has to be *in* a 1200px capture, and the gallery is four times
             // that tall. The strip is drawn where it can be seen, not where it lives.
@@ -170,6 +205,267 @@ impl Render for Gallery {
                     .child(column().children(rows(&theme))),
             )
     }
+}
+
+/// The tree the gallery draws: a database schema, with one lazy table left loading.
+fn sample_tree() -> Vec<TreeNode> {
+    vec![
+        TreeNode::branch(
+            "public",
+            "public",
+            vec![
+                TreeNode::lazy("public.users", "users")
+                    .icon(Icon::Database)
+                    .meta("table"),
+                TreeNode::branch(
+                    "public.orders",
+                    "orders",
+                    vec![
+                        TreeNode::leaf("public.orders.id", "id").meta("int8"),
+                        TreeNode::leaf("public.orders.total", "total").meta("numeric"),
+                        TreeNode::leaf("public.orders.placed_at", "placed_at").meta("timestamptz"),
+                    ],
+                )
+                .icon(Icon::Database)
+                .meta("table"),
+            ],
+        )
+        .icon(Icon::Folder),
+        TreeNode::lazy("audit", "audit").icon(Icon::Folder),
+    ]
+}
+
+/// Design system v2 at a glance.
+fn v2_band(theme: &Theme, tree: Entity<TreeState>) -> impl IntoElement + use<> {
+    let sizes = h_flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .children(ALL_BUTTON_SIZES.iter().map(|&size| {
+            Button::new(
+                SharedString::from(format!("v2-size-{size:?}")),
+                format!("add connection ({size:?})"),
+            )
+            .primary()
+            .icon(Icon::Add)
+            .size(size)
+            .into_any_element()
+        }))
+        .child(IconButton::new("v2-icon-sm", Icon::Refresh, "Refresh").size(ButtonSize::Sm))
+        .child(IconButton::new("v2-icon-md", Icon::Refresh, "Refresh"))
+        .child(IconButton::new("v2-icon-lg", Icon::Refresh, "Refresh").size(ButtonSize::Lg));
+
+    let toggles = v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .flex_wrap()
+                .gap_4()
+                .child(
+                    Checkbox::new("v2-cb-off", CheckState::Off)
+                        .label("show hidden files")
+                        .on_toggle(|_, _, _| {}),
+                )
+                .child(
+                    Checkbox::new("v2-cb-on", CheckState::On)
+                        .label("follow symlinks")
+                        .on_toggle(|_, _, _| {}),
+                )
+                .child(
+                    Checkbox::new("v2-cb-mixed", CheckState::Mixed)
+                        .label("select all")
+                        .on_toggle(|_, _, _| {}),
+                )
+                .child(
+                    Checkbox::new("v2-cb-dis", CheckState::On)
+                        .label("disabled")
+                        .disabled(true),
+                ),
+        )
+        .child(
+            h_flex()
+                .flex_wrap()
+                .gap_4()
+                .child(
+                    Switch::new("v2-sw-on", true)
+                        .label("reduce motion")
+                        .on_toggle(|_, _, _| {}),
+                )
+                .child(
+                    Switch::new("v2-sw-off", false)
+                        .label("compact rows")
+                        .on_toggle(|_, _, _| {}),
+                )
+                .child(
+                    Switch::new("v2-sw-dis", true)
+                        .label("disabled")
+                        .disabled(true),
+                ),
+        );
+
+    let elevation = h_flex().gap_4().children(
+        [
+            ("Surface", Elevation::Surface),
+            ("Well", Elevation::Well),
+            ("Floating", Elevation::Floating),
+            ("Overlay", Elevation::Overlay),
+        ]
+        .into_iter()
+        .map(|(name, rung)| {
+            v_flex()
+                .flex_1()
+                .h(px(72.))
+                .p_3()
+                .corners(Radius::Lg)
+                .elevation(rung, theme)
+                .child(div().text_heading(theme).child(name))
+                .child(
+                    div()
+                        .text_meta(theme)
+                        .child(format!("{} layers", rung.shadow_layers().len())),
+                )
+                .into_any_element()
+        }),
+    );
+
+    let radii = h_flex().gap_3().children(
+        [
+            Radius::Xs,
+            Radius::Sm,
+            Radius::Md,
+            Radius::Lg,
+            Radius::Xl,
+            Radius::Full,
+        ]
+        .into_iter()
+        .map(|r| {
+            v_flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .size(px(40.))
+                        .corners(r)
+                        .bg(rgb(theme.selection))
+                        .hairline(theme),
+                )
+                .child(div().text_meta(theme).child(format!("{r:?}")))
+                .into_any_element()
+        }),
+    );
+
+    let menu_target = div()
+        .id("v2-menu-target")
+        .p_4()
+        .corners(Radius::Lg)
+        .border_1()
+        .border_dashed()
+        .border_color(rgb(theme.border))
+        .text_meta(theme)
+        .child("Right-click for a ContextMenu (sentence case, icons, danger item fenced last)")
+        .context_menu(|menu, _window, cx| {
+            ContextMenu::new()
+                .item(
+                    MenuItem::new("connect")
+                        .icon(Icon::Terminal)
+                        .on_select(|_, _| {}),
+                )
+                .item(
+                    MenuItem::new("rename")
+                        .icon(Icon::Rename)
+                        .on_select(|_, _| {}),
+                )
+                .item(
+                    MenuItem::new("edit…")
+                        .icon(Icon::Settings)
+                        .on_select(|_, _| {}),
+                )
+                .danger_item(
+                    MenuItem::new("delete")
+                        .icon(Icon::Trash)
+                        .on_select(|_, _| {}),
+                )
+                .apply(menu, cx)
+        });
+
+    v_flex()
+        .flex_none()
+        .gap_4()
+        .p_4()
+        .child(
+            h_flex()
+                .items_start()
+                .gap_4()
+                .child(
+                    Card::new()
+                        .title("controls · v2")
+                        .flex_1()
+                        .min_w_0()
+                        .child(row(theme, "sizes: sm 32 · md 36 · lg 44", sizes))
+                        .child(row(theme, "checkbox · switch", toggles)),
+                )
+                .child(
+                    Card::new()
+                        .title("elevation and radius")
+                        .flex_1()
+                        .min_w_0()
+                        .child(elevation)
+                        .child(radii),
+                ),
+        )
+        .child(
+            h_flex()
+                .items_start()
+                .gap_4()
+                .child(
+                    Card::panel("schema")
+                        .count(2)
+                        .w(px(360.))
+                        .h(px(300.))
+                        .flex_none()
+                        .child(div().flex_1().min_h_0().p_1().child(tree)),
+                )
+                .child(
+                    Card::new()
+                        .title("context menu · skeleton")
+                        .flex_1()
+                        .min_w_0()
+                        .child(menu_target)
+                        .child(Skeleton::line_fraction("v2-skel-line", 0.6))
+                        .child(Skeleton::rows("v2-skel-rows", 3)),
+                )
+                .child(
+                    Card::new()
+                        .title("empty state")
+                        .w(px(440.))
+                        .flex_none()
+                        .child(
+                            div().h(px(250.)).child(
+                                EmptyState::new("no saved connections")
+                                    .icon(Icon::Globe)
+                                    .guidance("Add one, or type user@host above and press Enter.")
+                                    .action(
+                                        Button::new("v2-empty-add", "add connection")
+                                            .primary()
+                                            .icon(Icon::Add)
+                                            .size(ButtonSize::Lg),
+                                    ),
+                            ),
+                        )
+                        .child(
+                            div().h(px(150.)).child(
+                                EmptyState::new("nothing matches \"prod\"")
+                                    .icon(Icon::Search)
+                                    .guidance("Clear the filter to see every connection.")
+                                    .action(
+                                        Button::new("v2-empty-clear", "clear filter")
+                                            .icon(Icon::Close),
+                                    )
+                                    .compact(),
+                            ),
+                        ),
+                ),
+        )
 }
 
 /// One elastic gallery column: an equal share of the row, allowed to shrink below its
@@ -889,7 +1185,9 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
         let measure = format!(
             "{}px · {} · {}",
             f32::from(spec.size),
-            if spec.weight == gpui::FontWeight::MEDIUM {
+            if spec.weight == gpui::FontWeight::SEMIBOLD {
+                "semibold"
+            } else if spec.weight == gpui::FontWeight::MEDIUM {
                 "medium"
             } else {
                 "normal"
@@ -905,7 +1203,7 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
                     .w(px(96.))
                     .flex_none()
                     .text_label(theme)
-                    .child(role.name().to_uppercase()),
+                    .child(crate::copy::sentence_case(role.name())),
             )
             .child(
                 div()
@@ -936,9 +1234,9 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
                 .flex_1()
                 .min_w_0()
                 .child(
-                    div()
-                        .text_meta(theme)
-                        .child("three sizes, two weights, one mono family"),
+                    div().text_meta(theme).child(
+                        "Five rungs (13 / 14 / 15 / 18 / 22), three weights, one mono family",
+                    ),
                 )
                 .child(
                     v_flex()
@@ -953,13 +1251,15 @@ fn type_specimen(theme: &Theme) -> impl IntoElement + use<> {
                 .title("hierarchy in place")
                 .w(px(420.))
                 .flex_none()
+                .child(div().text_display(theme).child("System"))
                 .child(div().text_title(theme).child("Processes"))
+                .child(div().text_heading(theme).child("Top by memory"))
                 .child(
                     div()
                         .text_body(theme)
                         .child("34 running, sorted by resident memory"),
                 )
-                .child(div().text_label(theme).child("FILTERS"))
+                .child(div().text_label(theme).child("Filters"))
                 .child(div().text_meta(theme).child("user · system · all"))
                 .child(div().text_mono(theme).child("/usr/lib/systemd/systemd"))
                 .child(div().text_mono_meta(theme).child("pid 1 · 0.0% · 12.4 MB")),
