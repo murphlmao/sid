@@ -144,12 +144,33 @@ pub(crate) fn discard_paths(repo: &git2::Repository, paths: &[String]) -> Result
         }
     }
     let mut cb = git2::build::CheckoutBuilder::new();
-    cb.force().remove_untracked(false);
+    // Literal paths: a tracked name like `a*` must not match other files.
+    cb.force()
+        .remove_untracked(false)
+        .disable_pathspec_match(true);
     for p in paths {
         cb.path(p.as_str());
     }
     repo.checkout_index(None, Some(&mut cb))
         .map_err(map_git2_error)
+}
+
+/// Whether `p` is inside, or contains at any depth, a repository's metadata directory.
+/// Symlinks are not followed.
+fn holds_repo(p: &Path) -> bool {
+    const META: &str = ".git";
+    if p.components().any(|c| c.as_os_str() == META) {
+        return true;
+    }
+    if !std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(p) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        e.file_name() == META || (e.file_type().is_ok_and(|t| t.is_dir()) && holds_repo(&e.path()))
+    })
 }
 
 pub(crate) fn remove_untracked(repo: &git2::Repository, paths: &[String]) -> Result<(), GitError> {
@@ -161,6 +182,14 @@ pub(crate) fn remove_untracked(repo: &git2::Repository, paths: &[String]) -> Res
         if is_tracked(&index, p) {
             return Err(GitError::InvalidRef(format!(
                 "{p}: tracked (use discard_paths)"
+            )));
+        }
+    }
+    // A directory holding a repository (at any depth) is someone's repo, not junk.
+    for p in paths {
+        if holds_repo(&wd.join(check_path(p)?)) {
+            return Err(GitError::InvalidRef(format!(
+                "{p}: contains a repository — remove it by hand"
             )));
         }
     }

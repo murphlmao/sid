@@ -46,7 +46,7 @@ pub(crate) struct GitV2 {
     pub stash_input: Option<gpui::Entity<InputState>>,
     pub stash_untracked: bool,
     pub stash_input_clear: bool,
-    pub drop_arm: ConfirmArm<usize>,
+    pub drop_arm: ConfirmArm<String>,
 
     pub branch_input: Option<gpui::Entity<InputState>>,
     pub rename_input: Option<gpui::Entity<InputState>>,
@@ -454,11 +454,12 @@ impl AppState {
         );
     }
 
-    pub(super) fn stash_apply(&mut self, index: usize, pop: bool, cx: &mut Context<Self>) {
+    pub(super) fn stash_apply(&mut self, oid: String, pop: bool, cx: &mut Context<Self>) {
         self.mutate(
             if pop { "Popping…" } else { "Applying…" },
             cx,
             move |r| {
+                let index = resolve_stash(&mut **r, &oid)?;
                 if pop {
                     r.stash_pop(index)
                 } else {
@@ -479,15 +480,24 @@ impl AppState {
     }
 
     /// Two-step drop.
-    pub(super) fn stash_drop(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.workspaces.v2.drop_arm.press(index, Instant::now()) == Confirm::Armed {
+    pub(super) fn stash_drop(&mut self, oid: String, cx: &mut Context<Self>) {
+        if self
+            .workspaces
+            .v2
+            .drop_arm
+            .press(oid.clone(), Instant::now())
+            == Confirm::Armed
+        {
             cx.notify();
             return;
         }
         self.mutate(
             "Dropping…",
             cx,
-            move |r| r.stash_drop(index),
+            move |r| {
+                let index = resolve_stash(&mut **r, &oid)?;
+                r.stash_drop(index)
+            },
             |this, _| this.set_notice(ToastTone::Success, "Dropped the stash."),
         );
     }
@@ -778,5 +788,41 @@ mod received_tests {
         assert_eq!(received_summary(1, 512), " (1 object, 512 B)");
         assert_eq!(received_summary(12, 4300), " (12 objects, 4.2 KiB)");
         assert_eq!(received_summary(3, 0), " (3 objects)");
+    }
+}
+
+/// The stash stack is positional and can shift under a stale row (another stash pushed,
+/// one dropped elsewhere). Rows are keyed by the stash commit oid; the index is
+/// re-resolved at execution and the operation refused if the stash is gone.
+fn resolve_stash(r: &mut dyn GitProvider, oid: &str) -> Result<usize, GitError> {
+    pick_stash_index(&r.stash_list()?, oid)
+}
+
+fn pick_stash_index(list: &[StashEntry], oid: &str) -> Result<usize, GitError> {
+    list.iter()
+        .find(|s| s.oid == oid)
+        .map(|s| s.index)
+        .ok_or_else(|| GitError::Other("that stash no longer exists — the list has changed".into()))
+}
+
+#[cfg(test)]
+mod stash_key_tests {
+    use super::*;
+
+    fn e(index: usize, oid: &str) -> StashEntry {
+        StashEntry {
+            index,
+            message: String::new(),
+            oid: oid.into(),
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn index_is_re_resolved_by_oid() {
+        // The row was drawn at index 1; a new stash since pushed it to index 2.
+        let list = [e(0, "new"), e(1, "mid"), e(2, "old")];
+        assert_eq!(pick_stash_index(&list, "old").unwrap(), 2);
+        assert!(pick_stash_index(&list, "gone").is_err());
     }
 }

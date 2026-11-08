@@ -160,3 +160,45 @@ fn paths_escaping_the_repo_are_refused() {
     assert!(outside.exists());
     std::fs::remove_file(outside).unwrap();
 }
+
+#[test]
+fn discard_treats_the_path_literally_not_as_a_glob() {
+    let (dir, repo) = seeded();
+    write(dir.path(), "a*.txt", "star\n");
+    write(dir.path(), "ab.txt", "other\n");
+    commit_all(&repo, "add star and ab");
+    write(dir.path(), "a*.txt", "star edited\n");
+    write(dir.path(), "ab.txt", "other edited\n");
+    let mut p = open(dir.path());
+    p.discard_paths(&["a*.txt".into()]).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a*.txt")).unwrap(),
+        "star\n"
+    );
+    // The glob must not have swept up the unrelated tracked file.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("ab.txt")).unwrap(),
+        "other edited\n"
+    );
+}
+
+#[test]
+fn remove_untracked_refuses_nested_repos_and_dot_git() {
+    let (dir, _repo) = seeded();
+    let nested = dir.path().join("vendor/inner");
+    std::fs::create_dir_all(&nested).unwrap();
+    git2::Repository::init(&nested).unwrap();
+    write(dir.path(), "vendor/inner/work.txt", "precious");
+    let mut p = open(dir.path());
+    for target in ["vendor", "vendor/inner", ".git"] {
+        assert!(
+            matches!(
+                p.remove_untracked(&[target.into()]),
+                Err(GitError::InvalidRef(_))
+            ),
+            "{target}"
+        );
+    }
+    assert!(nested.join(".git").exists() && nested.join("work.txt").exists());
+    assert!(dir.path().join(".git").exists());
+}

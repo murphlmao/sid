@@ -291,6 +291,11 @@ impl GitProvider for Git2Provider {
                 .unwrap_or_default();
             (url, repo.workdir().map(Path::to_path_buf))
         };
+        if let Some(why) = cli::refusal_reason(&url) {
+            return Err(GitError::Other(format!(
+                "refusing to fetch '{remote_name}': {why}"
+            )));
+        }
         if let (true, Some(workdir)) = (cli::is_network_url(&url), workdir) {
             return cli::fetch(&workdir, remote_name, cli::CLI_TIMEOUT);
         }
