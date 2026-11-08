@@ -500,6 +500,8 @@ impl DiagramView {
 
         let header = div()
             .id(("diagram-box-header", ix))
+            .h(px(HEADER_HEIGHT))
+            .flex_none()
             .flex()
             .flex_row()
             .items_center()
@@ -560,6 +562,8 @@ impl DiagramView {
                 let click_column = col.clone();
                 div()
                     .id(("diagram-box-col", ix * 1000 + cix))
+                    .h(px(ROW_HEIGHT))
+                    .flex_none()
                     .px_2()
                     .cursor_pointer()
                     // `MonoMeta`, not `Mono`: a column name is data, but the box is a
@@ -583,6 +587,7 @@ impl DiagramView {
         let overflow = (table.columns.len() > MAX_VISIBLE_COLUMNS).then(|| {
             let more = table.columns.len() - MAX_VISIBLE_COLUMNS;
             div()
+                .h(px(ROW_HEIGHT))
                 .px_2()
                 .text_meta(&t)
                 .child(format!("+{more} more"))
@@ -609,7 +614,7 @@ impl DiagramView {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .py_1()
+                    .py(px(BODY_PAD))
                     .children(visible)
                     .children(overflow),
             )
@@ -682,38 +687,118 @@ fn is_click(down: Point<Pixels>, up: Point<Pixels>, threshold_px: f32) -> bool {
 /// trivially testable.
 struct LayoutInput {
     key: String,
-    /// Count of FK edges touching this table (either side) — higher-degree tables (the
-    /// "hubs" of the schema) sort first, so they land in the first column near the top.
+    /// Count of FK edges touching this table (either side) — used to order hubs first.
     degree: usize,
     column_count: usize,
+    /// The tables this one references through a foreign key (self-references excluded).
+    /// Referenced ("parent") tables are laid out to the left of their referrers.
+    refs: Vec<String>,
 }
 
-/// A table box's height for `column_count` columns: header + one row per column, capped
-/// at [`MAX_VISIBLE_COLUMNS`] (plus one more row for the "+N more" line beyond the cap).
+/// Vertical padding inside a box body, above the first and below the last column row.
+const BODY_PAD: f32 = 4.0;
+/// The box's 1px border, both sides.
+const BORDER: f32 = 2.0;
+
+/// A table box's height for `column_count` columns: header + one fixed-height row per
+/// column (capped at [`MAX_VISIBLE_COLUMNS`], plus one more row for "+N more" beyond the
+/// cap) + the body's padding and the border. Every term is an explicit pixel size that
+/// [`DiagramView::table_box`] applies verbatim, so the last column can never clip.
 fn box_height(column_count: usize) -> f32 {
     let visible_rows = if column_count > MAX_VISIBLE_COLUMNS {
         MAX_VISIBLE_COLUMNS + 1
     } else {
         column_count.max(1)
     };
-    HEADER_HEIGHT + visible_rows as f32 * ROW_HEIGHT
+    HEADER_HEIGHT + visible_rows as f32 * ROW_HEIGHT + 2.0 * BODY_PAD + BORDER
 }
 
-/// Deterministic initial layout: sort tables by FK-degree descending (ties broken by
-/// key, for a stable order independent of `SchemaInfo`'s original table order), then
-/// place them in a grid of [`BOXES_PER_COLUMN`]-tall columns, stacking each table below
-/// the previous one in its column by that table's actual (column-count-derived) height.
+/// Layer index per connected table: referenced tables sit in layer 0, a referrer one
+/// layer right of its deepest parent. Tables caught in an FK cycle (no valid order) share
+/// the layer after the last resolved one. Deterministic.
+fn assign_layers(tables: &[&LayoutInput]) -> HashMap<String, usize> {
+    let keys: HashSet<&str> = tables.iter().map(|t| t.key.as_str()).collect();
+    let mut layer: HashMap<String, usize> = HashMap::new();
+    let mut remaining: Vec<&LayoutInput> = tables.to_vec();
+    loop {
+        let mut placed = Vec::new();
+        for t in &remaining {
+            let parents: Vec<&String> = t
+                .refs
+                .iter()
+                .filter(|r| keys.contains(r.as_str()) && **r != t.key)
+                .collect();
+            if parents.iter().all(|p| layer.contains_key(*p)) {
+                let l = parents.iter().map(|p| layer[*p] + 1).max().unwrap_or(0);
+                placed.push((t.key.clone(), l));
+            }
+        }
+        if placed.is_empty() {
+            break;
+        }
+        remaining.retain(|t| !placed.iter().any(|(k, _)| *k == t.key));
+        layer.extend(placed);
+    }
+    let cycle_layer = layer.values().copied().max().map_or(0, |m| m + 1);
+    for t in remaining {
+        layer.insert(t.key.clone(), cycle_layer);
+    }
+    layer
+}
+
+/// Deterministic layered layout. Tables with FK edges are arranged in columns by FK depth
+/// (referenced tables left, referrers to their right), each column ordered by the mean
+/// row of its parents (barycenter) to keep connectors short and uncrossed. Tables with no
+/// edges at all go in a plain degree-then-key grid to the right of the layered region.
 fn compute_initial_layout(tables: &[LayoutInput]) -> HashMap<String, Point<Pixels>> {
-    let mut order: Vec<&LayoutInput> = tables.iter().collect();
+    let (connected, isolated): (Vec<&LayoutInput>, Vec<&LayoutInput>) =
+        tables.iter().partition(|t| t.degree > 0);
+    let mut positions = HashMap::with_capacity(tables.len());
+
+    let layers = assign_layers(&connected);
+    let depth = layers.values().copied().max().map_or(0, |m| m + 1);
+    // Row index of every placed table within its layer, for the barycenter ordering.
+    let mut row_of: HashMap<String, f32> = HashMap::new();
+    for l in 0..depth {
+        let mut col: Vec<&LayoutInput> = connected
+            .iter()
+            .copied()
+            .filter(|t| layers[&t.key] == l)
+            .collect();
+        let bary = |t: &LayoutInput| -> f32 {
+            let rows: Vec<f32> = t
+                .refs
+                .iter()
+                .filter_map(|r| row_of.get(r).copied())
+                .collect();
+            if rows.is_empty() {
+                f32::MAX
+            } else {
+                rows.iter().sum::<f32>() / rows.len() as f32
+            }
+        };
+        col.sort_by(|a, b| {
+            bary(a)
+                .partial_cmp(&bary(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.degree.cmp(&a.degree))
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        let x = MARGIN + l as f32 * (BOX_WIDTH + GAP_X);
+        let mut y = MARGIN;
+        for (row, t) in col.into_iter().enumerate() {
+            positions.insert(t.key.clone(), point(px(x), px(y)));
+            row_of.insert(t.key.clone(), row as f32);
+            y += box_height(t.column_count) + GAP_Y;
+        }
+    }
+
+    let mut order = isolated;
     order.sort_by(|a, b| b.degree.cmp(&a.degree).then_with(|| a.key.cmp(&b.key)));
-
-    let num_columns = order.len().div_ceil(BOXES_PER_COLUMN).max(1);
-    let mut col_y = vec![MARGIN; num_columns];
-    let mut positions = HashMap::with_capacity(order.len());
-
+    let mut col_y = vec![MARGIN; order.len().div_ceil(BOXES_PER_COLUMN).max(1)];
     for (ix, table) in order.into_iter().enumerate() {
         let col = ix / BOXES_PER_COLUMN;
-        let x = MARGIN + col as f32 * (BOX_WIDTH + GAP_X);
+        let x = MARGIN + (depth + col) as f32 * (BOX_WIDTH + GAP_X);
         let y = col_y[col];
         positions.insert(table.key.clone(), point(px(x), px(y)));
         col_y[col] = y + box_height(table.column_count) + GAP_Y;
@@ -783,6 +868,11 @@ fn layout_inputs(tables: &[DiagramTable], edges: &[DiagramEdge]) -> Vec<LayoutIn
                 .filter(|e| e.from_table == t.key || e.to_table == t.key)
                 .count(),
             column_count: t.columns.len(),
+            refs: edges
+                .iter()
+                .filter(|e| e.from_table == t.key && !e.self_ref)
+                .map(|e| e.to_table.clone())
+                .collect(),
         })
         .collect()
 }
@@ -953,7 +1043,63 @@ mod layout_tests {
             key: key.to_string(),
             degree,
             column_count,
+            refs: Vec::new(),
         }
+    }
+
+    fn linked(key: &str, refs: &[&str]) -> LayoutInput {
+        LayoutInput {
+            key: key.to_string(),
+            degree: refs.len().max(1),
+            column_count: 3,
+            refs: refs.iter().map(|r| r.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn fk_chain_lays_out_left_to_right_by_depth() {
+        let inputs = vec![
+            linked("items", &["orders"]),
+            linked("orders", &["customers"]),
+            linked("customers", &[]),
+        ];
+        let p = compute_initial_layout(&inputs);
+        assert!(p["customers"].x < p["orders"].x);
+        assert!(p["orders"].x < p["items"].x);
+    }
+
+    #[test]
+    fn related_tables_never_share_a_column() {
+        let inputs = vec![linked("a", &["b"]), linked("b", &[])];
+        let p = compute_initial_layout(&inputs);
+        assert_ne!(p["a"].x, p["b"].x);
+    }
+
+    #[test]
+    fn children_are_ordered_by_their_parents_row_to_avoid_crossings() {
+        let inputs = vec![
+            linked("p1", &[]),
+            linked("p2", &[]),
+            linked("c1", &["p2"]),
+            linked("c2", &["p1"]),
+        ];
+        let p = compute_initial_layout(&inputs);
+        assert!(p["p1"].y < p["p2"].y);
+        assert!(p["c2"].y < p["c1"].y);
+    }
+
+    #[test]
+    fn fk_cycles_terminate_and_place_every_table() {
+        let inputs = vec![linked("a", &["b"]), linked("b", &["a"])];
+        let p = compute_initial_layout(&inputs);
+        assert_eq!(p.len(), 2);
+    }
+
+    #[test]
+    fn box_height_fits_every_row_plus_chrome() {
+        let h = box_height(3);
+        assert!(h >= HEADER_HEIGHT + 3.0 * ROW_HEIGHT + 2.0 * BODY_PAD + BORDER);
+        assert!(box_height(MAX_VISIBLE_COLUMNS + 5) > box_height(MAX_VISIBLE_COLUMNS));
     }
 
     #[test]
