@@ -132,7 +132,7 @@ impl Ctx<'_> {
 
     fn impl_block(&mut self, i: &syn::ItemImpl) {
         let self_ty = type_name(&i.self_ty);
-        if let Some((_, path, _)) = &i.trait_ {
+        if let Some((path, _)) = &i.trait_ {
             let tr = path
                 .segments
                 .last()
