@@ -29,7 +29,9 @@ impl LocalIdentities {
     /// otherwise would just hide that fact one layer deeper. Whether the socket is
     /// *live* is still re-checked per call; see [`IdentityScan::agent_available`].
     pub fn from_env() -> Result<Self, KeyScanError> {
-        let home = std::env::var_os("HOME").ok_or(KeyScanError::NoHome)?;
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or(KeyScanError::NoHome)?;
         Ok(Self::new(
             Path::new(&home).join(".ssh"),
             std::env::var_os("SSH_AUTH_SOCK")

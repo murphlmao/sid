@@ -2261,17 +2261,49 @@ fn perf_probe(tab: Tab, start: std::time::Instant) -> impl IntoElement {
 
 // ---- store bootstrap -------------------------------------------------------
 
-/// The global data directory: `$XDG_DATA_HOME/sid` (or `~/.local/share/sid`).
+/// The inputs [`data_dir_for`] reads, so the per-platform branching is a pure function.
+pub struct DataDirEnv {
+    pub xdg_data_home: Option<std::path::PathBuf>,
+    pub home: Option<std::path::PathBuf>,
+    /// `%APPDATA%` (Windows roaming profile).
+    pub appdata: Option<std::path::PathBuf>,
+}
+
+/// The global data directory for `os` (a `std::env::consts::OS` value). Linux and other
+/// unixes: `$XDG_DATA_HOME/sid` or `~/.local/share/sid` (unchanged). macOS:
+/// `~/Library/Application Support/sid`. Windows: `%APPDATA%\sid`.
+pub fn data_dir_for(os: &str, env: &DataDirEnv) -> std::path::PathBuf {
+    let home = || env.home.clone().unwrap_or_else(|| ".".into());
+    match os {
+        "macos" => home()
+            .join("Library")
+            .join("Application Support")
+            .join("sid"),
+        "windows" => env
+            .appdata
+            .clone()
+            .unwrap_or_else(|| home().join("AppData").join("Roaming"))
+            .join("sid"),
+        _ => env
+            .xdg_data_home
+            .clone()
+            .unwrap_or_else(|| home().join(".local").join("share"))
+            .join("sid"),
+    }
+}
+
+/// The global data directory on this machine — see [`data_dir_for`].
 pub fn data_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| ".".into());
-            home.join(".local").join("share")
-        });
-    base.join("sid")
+    let var = |k: &str| std::env::var_os(k).map(std::path::PathBuf::from);
+    let home = var("HOME").or_else(|| var("USERPROFILE"));
+    data_dir_for(
+        std::env::consts::OS,
+        &DataDirEnv {
+            xdg_data_home: var("XDG_DATA_HOME"),
+            home,
+            appdata: var("APPDATA"),
+        },
+    )
 }
 
 /// Open the global store, seeding a small demo set on first run so the attributive
@@ -2923,6 +2955,47 @@ mod seed_tests {
         assert_eq!(
             workspaces.len(),
             store.global().list_workspaces().unwrap().len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn env() -> DataDirEnv {
+        DataDirEnv {
+            xdg_data_home: None,
+            home: Some(PathBuf::from("/home/u")),
+            appdata: Some(PathBuf::from("C:/Users/u/AppData/Roaming")),
+        }
+    }
+
+    #[test]
+    fn linux_path_is_unchanged() {
+        assert_eq!(
+            data_dir_for("linux", &env()),
+            PathBuf::from("/home/u/.local/share/sid")
+        );
+        let mut e = env();
+        e.xdg_data_home = Some("/x".into());
+        assert_eq!(data_dir_for("linux", &e), PathBuf::from("/x/sid"));
+    }
+
+    #[test]
+    fn macos_uses_application_support() {
+        assert_eq!(
+            data_dir_for("macos", &env()),
+            PathBuf::from("/home/u/Library/Application Support/sid")
+        );
+    }
+
+    #[test]
+    fn windows_uses_appdata() {
+        assert_eq!(
+            data_dir_for("windows", &env()),
+            PathBuf::from("C:/Users/u/AppData/Roaming/sid")
         );
     }
 }
