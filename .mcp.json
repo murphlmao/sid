@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sid": {
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "sid-mcp", "--"],
+      "env": {}
+    }
+  }
+}
