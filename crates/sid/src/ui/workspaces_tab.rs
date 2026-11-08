@@ -2456,7 +2456,10 @@ mod tests {
         let now = Instant::now();
         let mut arm: ConfirmArm<WsKey> = ConfirmArm::new();
         assert_eq!(arm.press(ws_key(&a), now), Confirm::Armed);
-        assert_eq!(arm.press(ws_key(&a), now), Confirm::Fire);
+        assert_eq!(
+            arm.press(ws_key(&a), now + std::time::Duration::from_millis(400)),
+            Confirm::Fire
+        );
     }
 
     #[test]
