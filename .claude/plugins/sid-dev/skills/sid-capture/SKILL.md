@@ -31,6 +31,8 @@ connect, DB/Workspaces rows = open), `--rclick X,Y` (context menu), `--scroll X,
 
 - **`--key` needs a prior `--click`.** Pointer motion alone does not hand keyboard focus on a
   headless seat. Order: `--click X,Y --key ctrl+k`.
+- **`--key shift+slash` does not reach gpui's `?` binding through wtype.** Use `--type "?"`
+  (after a `--click`) to open the shortcut cheat sheet.
 - **`--drag` goes last.** Its synthetic mouse-up does not clear the app's drag state, so a
   later pointer action would re-drag.
 - Two `--click`s can never be a double-click (gpui's 400 ms window); use `--dclick`.

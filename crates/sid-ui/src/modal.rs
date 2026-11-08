@@ -228,6 +228,15 @@ impl RenderOnce for ScrimLayer {
     }
 }
 
+/// The header text: sentence-cased UI vocabulary, or verbatim user data.
+fn rendered_title(title: &str, verbatim: bool) -> String {
+    if verbatim {
+        title.to_owned()
+    } else {
+        sentence_case(title)
+    }
+}
+
 /// A modal panel: header, body, footer.
 ///
 /// ```ignore
@@ -242,6 +251,7 @@ impl RenderOnce for ScrimLayer {
 pub struct Modal {
     id: SharedString,
     title: SharedString,
+    verbatim_title: bool,
     submit_verb: Option<SharedString>,
     width: Pixels,
     on_dismiss: Option<ClickHandler>,
@@ -257,6 +267,7 @@ impl Modal {
         Self {
             id: id.into(),
             title: title.into(),
+            verbatim_title: false,
             submit_verb: None,
             width: px(DEFAULT_WIDTH),
             on_dismiss: None,
@@ -264,6 +275,15 @@ impl Modal {
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
+    }
+
+    /// Show the title exactly as given. Titles are UI vocabulary and get sentence-cased,
+    /// which is wrong for ones that interpolate user data (`file1.txt`, a host name, a
+    /// path): use this whenever the title carries any.
+    pub fn title_verbatim(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = title.into();
+        self.verbatim_title = true;
+        self
     }
 
     /// Advertise the keyboard contract as `Esc cancels · Enter {verb}` along the footer's
@@ -356,7 +376,7 @@ impl RenderOnce for Modal {
                     .clamp_one_line()
                     .text_title(&theme)
                     // v2 copy voice: a title is UI vocabulary; the panel owns its casing.
-                    .child(sentence_case(&self.title)),
+                    .child(rendered_title(&self.title, self.verbatim_title)),
             )
             .when_some(self.on_dismiss, |this, on_dismiss| {
                 this.child(
@@ -542,6 +562,15 @@ mod tests {
         // form in a 400px window is a 352px panel, and 352px has no room either.
         let g = panel_geometry(px(DEFAULT_WIDTH), viewport(400., 800.), UiScale::DEFAULT);
         assert!(!shows_key_hint(g.width, UiScale::DEFAULT));
+    }
+
+    #[test]
+    fn verbatim_titles_keep_user_data_lowercase() {
+        assert_eq!(rendered_title("file1.txt", true), "file1.txt");
+        assert_eq!(rendered_title("add host", false), "Add host");
+        let m = Modal::new("m", "x").title_verbatim("file1.txt");
+        assert!(m.verbatim_title);
+        assert_eq!(rendered_title(&m.title, m.verbatim_title), "file1.txt");
     }
 
     #[test]

@@ -3027,7 +3027,7 @@ impl SshSession {
 
         // A remote file name is arbitrary length; `Modal` clamps its title to one line
         // with a real ellipsis, so the name is the part that gives.
-        let panel = Modal::new("session-preview", display_name(&preview.name))
+        let panel = Modal::new("session-preview", "").title_verbatim(display_name(&preview.name))
             .width(px(640.))
             .on_dismiss(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
                 session.close_preview(cx);

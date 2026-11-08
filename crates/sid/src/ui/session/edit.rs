@@ -121,10 +121,31 @@ pub(super) fn saved_message(name: &str, host: &str) -> String {
 }
 
 /// Body text for the conflict dialog.
+/// `path` for display: the home directory becomes `~`. The full path stays available
+/// through the "Copy path" actions.
+pub(super) fn tilde_path(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home
+        && let Ok(rest) = path.strip_prefix(home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
+    }
+    path.display().to_string()
+}
+
+/// [`tilde_path`] against the process's `$HOME`.
+pub(super) fn tilde_home(path: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    tilde_path(path, home.as_deref())
+}
+
 pub(super) fn conflict_body(name: &str, kind: ConflictKind, backups: &Path) -> String {
     let keep = format!(
         "Keeping the server copy leaves it as it is and saves your edits under {}.",
-        backups.display()
+        tilde_home(backups)
     );
     match kind {
         ConflictKind::RemoteChanged { .. } => format!(
@@ -547,23 +568,25 @@ impl SshSession {
                 }
             }
             Preserved::BackedUp(path) => {
-                let shown = path.display().to_string();
+                let full = path.display().to_string();
+                let shown = tilde_home(&path);
                 self.toast_with(
                     ToastTone::Warning,
                     format!("{lead}Your unsaved edits to {name} were saved to {shown}"),
-                    Some(shown),
+                    Some(full),
                     cx,
                 );
             }
             Preserved::Failed { error, kept } => {
-                let shown = kept.display().to_string();
+                let full = kept.display().to_string();
+                let shown = tilde_home(&kept);
                 self.toast_with(
                     ToastTone::Danger,
                     format!(
                         "{lead}Couldn't back up your edits to {name} ({error}). \
                          They are still at {shown}"
                     ),
-                    Some(shown),
+                    Some(full),
                     cx,
                 );
             }
@@ -774,6 +797,14 @@ impl SshSession {
                             .child(conflict_body(&name, kind, &backups)),
                     )
                     .footer(
+                        Button::new("session-edit-copy-backups", "Copy backups path").on_click({
+                            let full = backups.display().to_string();
+                            move |_ev, _w, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(full.clone()));
+                            }
+                        }),
+                    )
+                    .footer(
                         Button::new("session-edit-keep", "Keep server copy").on_click(
                             cx.listener(|s, _ev: &ClickEvent, _w, cx| s.resolve_conflict_keep(cx)),
                         ),
@@ -899,6 +930,22 @@ mod tests {
     #[test]
     fn saved_toast_names_file_and_host() {
         assert_eq!(saved_message("a.conf", "web1"), "Saved a.conf to web1");
+    }
+
+    #[test]
+    fn home_prefix_displays_as_tilde() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            tilde_path(Path::new("/home/u/.local/share/sid/backups/x"), Some(home)),
+            "~/.local/share/sid/backups/x"
+        );
+        assert_eq!(tilde_path(home, Some(home)), "~");
+        assert_eq!(tilde_path(Path::new("/srv/x"), Some(home)), "/srv/x");
+        assert_eq!(
+            tilde_path(Path::new("/home/user2/x"), Some(home)),
+            "/home/user2/x"
+        );
+        assert_eq!(tilde_path(Path::new("/a"), None), "/a");
     }
 
     #[test]

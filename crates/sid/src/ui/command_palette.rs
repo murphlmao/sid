@@ -156,6 +156,22 @@ pub(crate) struct PaletteState {
     scroll: ScrollHandle,
     /// The row currently at the top of the viewport (the snapped scroll position).
     top_row: std::cell::Cell<usize>,
+    /// The selection the last frame saw: the viewport follows it only when it *moves*,
+    /// so wheel-scrolling away from the selection is not undone every frame.
+    seen_selection: std::cell::Cell<usize>,
+}
+
+/// The top row that keeps `selection` inside a `visible`-row viewport currently showing
+/// rows from `top`, moving as little as possible.
+fn top_to_show(top: usize, selection: usize, visible: usize, max_top: usize) -> usize {
+    let top = if selection < top {
+        selection
+    } else if selection >= top + visible {
+        selection + 1 - visible
+    } else {
+        top
+    };
+    top.min(max_top)
 }
 
 /// Recents key for a host row: origin + alias, so a workspace host that shares an alias
@@ -220,6 +236,7 @@ impl AppState {
                 selection: 0,
                 scroll: ScrollHandle::new(),
                 top_row: std::cell::Cell::new(0),
+                seen_selection: std::cell::Cell::new(0),
             });
             cx.notify();
         }
@@ -533,6 +550,11 @@ impl AppState {
         } else {
             last
         };
+        let top = if palette.seen_selection.replace(selection) != selection {
+            top_to_show(top, selection, VISIBLE_ROWS as usize, max_top)
+        } else {
+            top
+        };
         palette.top_row.set(top);
         scroll.set_offset(point(px(0.), px(-(top as f32 * row_px))));
 
@@ -728,6 +750,15 @@ pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_viewport_follows_the_selection_minimally() {
+        assert_eq!(top_to_show(0, 3, 9, 20), 0);
+        assert_eq!(top_to_show(0, 9, 9, 20), 1);
+        assert_eq!(top_to_show(5, 2, 9, 20), 2);
+        assert_eq!(top_to_show(5, 8, 9, 20), 5);
+        assert_eq!(top_to_show(0, 29, 9, 21), 21);
+    }
 
     #[test]
     fn host_recents_are_keyed_by_origin_and_alias() {
