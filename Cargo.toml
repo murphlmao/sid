@@ -51,8 +51,10 @@ russh = "0.65"
 russh-sftp = "3"
 
 # Desktop notifications (`sid-os`): org.freedesktop.Notifications over the blocking zbus
-# API; same zbus 5 line already in the lock via sid-secrets.
-zbus = { version = "5.16", default-features = false, features = ["async-io", "blocking-api"] }
+# API; same zbus 5 line already in the lock via sid-secrets. zbus 6 is out, but the
+# Secret Service keyring store is still on 5 — moving sid-os alone would put two zbus
+# majors (and two D-Bus connection stacks) in one binary, so 5 is held until it moves.
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Terminal emulation — vt100 0.18 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
@@ -134,6 +136,12 @@ zeroize = "1"
 # sid while gpui-component holds 0.3.11, which cargo refuses rather than unifies.
 gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
+# gpui-component's optional `gpui-fast` feature stays OFF (evaluated 2026-11-07). It
+# swaps sid's renderer for longbridge's 0.1.x fork (`gpui-fast` + `gpui-fast-platform`)
+# while gpui-component/gpui-base keep a hard dependency on `gpui-pre`, so the build
+# carries two gpui cores. It built cleanly and rendered all six tabs pixel-identically,
+# but measured no win: System-tab scroll cost ~25% MORE instructions per frame
+# (271-329M vs 232-242M, debug build, `scripts/perfcap.sh`).
 gpui-component = { version = "0.9.0", features = ["tree-sitter-languages"] }
 # The unstyled half of gpui-component, which the 0.6 split carved out. Already in the
 # lock as gpui-component's own dependency; named here for the one API the styled crate
