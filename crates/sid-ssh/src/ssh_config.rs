@@ -548,8 +548,7 @@ mod tests {
     /// `~/.ssh/<name>` under the fake home, spelled as the host joins it.
     fn home_ssh(name: &str) -> String {
         PathBuf::from("/home/me")
-            .join(".ssh")
-            .join(name)
+            .join(format!(".ssh/{name}"))
             .display()
             .to_string()
     }
