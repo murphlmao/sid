@@ -20,13 +20,14 @@
 #
 # Usage:
 #   perfcap.sh --bin /path/to/sid --out DIR [--tab system] [--window 8]
+#              [--unfocus: park a second client on top so sid loses keyboard focus]
 #              [--notches 130] [--gap 16] [--size 1920x1080] [--park X,Y]
 set -uo pipefail
 
 die() { echo "perfcap: $*" >&2; exit 1; }
 
 BIN=""; OUTDIR=""; TAB="system"; NOTCHES=130; GAP=16; SIZE="1920x1080"
-WINDOW=8; WAIT=6; PARK="960,500"; ENVS=(); MODE="scroll"; HOVER="960,300,900"
+WINDOW=8; WAIT=6; PARK="960,500"; ENVS=(); MODE="scroll"; HOVER="960,300,900"; UNFOCUS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,6 +43,7 @@ while [[ $# -gt 0 ]]; do
         --env) ENVS+=("$2"); shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --hover) HOVER="$2"; shift 2 ;;
+        --unfocus) UNFOCUS=1; shift ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -103,12 +105,22 @@ done
 [[ "$FOUND" -eq 1 ]] || { tail -20 "$LOG" >&2; die "no sid window"; }
 swaymsg -s "$SWAYSOCK" '[app_id="sid"] fullscreen enable' >/dev/null
 sleep "$WAIT"
+if [[ "$UNFOCUS" -eq 1 ]]; then
+    # A second client takes keyboard focus; sid keeps running, unfocused.
+    WAYLAND_DISPLAY="$ND" kitty --class perfcap-dummy sleep 600 >/dev/null 2>&1 &
+    for _ in $(seq 1 40); do
+        swaymsg -s "$SWAYSOCK" -t get_tree 2>/dev/null | grep -q 'perfcap-dummy' && break
+        sleep 0.25
+    done
+    swaymsg -s "$SWAYSOCK" '[app_id="perfcap-dummy"] focus' >/dev/null
+    sleep 2
+fi
 
 VENV="$HOME/.cache/sid-cap/venv"
 [[ -x "$VENV/bin/python" ]] || die "no sid-cap venv (run scripts/sid-cap.sh once)"
 mkfifo "$CAP_DIR/ptr"
 VPTR_LOG="$OUTDIR/vptr.log"
-WAYLAND_DISPLAY="$ND" "$VENV/bin/python" "$HERE/vptr2.py" \
+WAYLAND_DISPLAY="$ND" "$VENV/bin/python" "$HERE/cap-input/vptr.py" \
     < "$CAP_DIR/ptr" > "$VPTR_LOG" 2>&1 &
 VPTR_PID=$!
 exec 4> "$CAP_DIR/ptr"
@@ -157,13 +169,14 @@ out, fi, fs, ft, window = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(s
 
 def counters(p):
     if not os.path.exists(p):
-        return 0, 0
+        return 0, 0, 0
     txt = open(p).read()
     ins = sum(int(m.replace(',', '')) for m in
               re.findall(r'^\s*([\d,]+)\s+\S*instructions\S*', txt, re.M))
     cyc = sum(int(m.replace(',', '')) for m in
               re.findall(r'^\s*([\d,]+)\s+\S*cycles\S*', txt, re.M))
-    return ins, cyc
+    cs = sum(int(m.replace(",", "")) for m in re.findall(r"^\s*([\d,]+)\s+\S*context-switches", txt, re.M))
+    return ins, cyc, cs
 
 def pct(xs, p):
     if not xs: return float('nan')
@@ -176,8 +189,8 @@ def phases(p):
             for m in (pat.search(l) for l in open(p)) if m]
     return rows
 
-ii, ic = counters(f'{out}/perf-idle.txt')
-si, sc = counters(f'{out}/perf-scroll.txt')
+ii, ic, ics = counters(f'{out}/perf-idle.txt')
+si, sc, scs = counters(f'{out}/perf-scroll.txt')
 print(f'== {out}   window={window:g}s  load={open("/proc/loadavg").read().split()[0]}')
 print(f'-- idle   {fi:3d} frames  {ii/1e6:9.1f}M instr')
 print(f'-- scroll {fs:3d} frames  {si/1e6:9.1f}M instr')
