@@ -71,7 +71,7 @@ pub struct Theme {
 
 impl Global for Theme {}
 
-/// The POC's signature theme — deep space, galaxy aesthetic, red accent.
+/// The POC's signature theme — deep space, galaxy aesthetic, violet accent (red is reserved for `danger`).
 pub fn cosmos() -> Theme {
     Theme {
         name: "cosmos",
@@ -83,7 +83,7 @@ pub fn cosmos() -> Theme {
         fg_strong: 0xffffff,
         muted: 0x9893ab,
         faint: 0x554f6c,
-        accent: 0xd44141,
+        accent: 0x7c6cf2,
         success: 0xa8d8e8,
         warning: 0xe8b04a,
         danger: 0xff5570,
@@ -108,7 +108,7 @@ pub fn void() -> Theme {
         fg_strong: 0xffffff,
         muted: 0x999999,
         faint: 0x555555,
-        accent: 0xd44141,
+        accent: 0x7c6cf2,
         success: 0xc0c0c0,
         warning: 0xe0a040,
         danger: 0xff3333,
@@ -182,7 +182,8 @@ pub fn cosmos_light() -> Theme {
         fg_strong: 0x000000,
         muted: 0x5c5c6e,
         faint: 0xa0a0b0,
-        accent: 0xb03030,
+        // Violet, not red: red means "this destroys something" (`danger`) and nothing else.
+        accent: 0x5b46d6,
         success: 0x246e7c,
         warning: 0x8a5f1a,
         // A deep crimson, a hue and a lightness away from the red `accent` — the same
@@ -277,9 +278,9 @@ mod tests {
     fn cosmos_matches_the_poc_palette() {
         let t = cosmos();
         assert_eq!(t.bg, 0x0b0b14);
-        assert_eq!(t.accent, 0xd44141);
         // v2 lifted the surface a step and tilted the neutrals toward violet; the
-        // canvas and the accent are the POC's and stay.
+        // canvas is the POC's and stays. The accent moved red -> violet (red is
+        // reserved for destructive actions).
         assert_eq!(t.surface, 0x181626);
         assert_eq!(t.border, 0x29263d);
     }
@@ -321,8 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn cosmos_ansi_red_is_the_galaxy_accent() {
-        assert_eq!(cosmos().ansi[1], cosmos().accent);
+    fn accent_is_violet_never_red_in_every_palette() {
+        // Red is spent on destruction only; an accent whose red channel dominates
+        // would put "engage" and "destroy" in the same family again. (dusk's amber
+        // accent is orange, red-dominant by construction but a hue away from danger;
+        // it is excluded.)
+        for t in [cosmos(), void(), cosmos_light()] {
+            let (r, b) = ((t.accent >> 16) & 0xff, t.accent & 0xff);
+            assert!(b > r, "{}: accent leans blue/violet", t.name);
+        }
     }
 
     #[test]

@@ -757,7 +757,7 @@ impl SshSession {
                     )
                     .footer(
                         Button::new("session-edit-overwrite", overwrite)
-                            .primary()
+                            .danger()
                             .on_click(cx.listener(|s, _ev: &ClickEvent, _w, cx| {
                                 s.resolve_conflict_overwrite(cx)
                             })),

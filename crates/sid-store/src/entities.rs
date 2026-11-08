@@ -309,6 +309,11 @@ pub struct Settings {
     /// Absent in v1..v6 stores — `false`.
     #[serde(default)]
     pub import_banner_dismissed: bool,
+    /// How often the System and Network tabs re-probe while hidden, in whole seconds;
+    /// `0` = never (the default: sid stays idle when nobody is looking). Absent in
+    /// v1..v7 stores — `0`.
+    #[serde(default)]
+    pub background_refresh_secs: u32,
 }
 
 /// How many command-palette recents are kept.
@@ -342,6 +347,7 @@ impl Default for Settings {
             text_rendering: TextRendering::default(),
             palette_recents: Vec::new(),
             import_banner_dismissed: false,
+            background_refresh_secs: 0,
         }
     }
 }
@@ -540,9 +546,9 @@ pub(crate) struct SettingsV6 {
     pub last_tab: String,
 }
 
-impl From<SettingsV6> for Settings {
+impl From<SettingsV6> for SettingsV7 {
     fn from(v: SettingsV6) -> Self {
-        Settings {
+        SettingsV7 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
@@ -555,6 +561,56 @@ impl From<SettingsV6> for Settings {
             text_rendering: TextRendering::default(),
             palette_recents: Vec::new(),
             import_banner_dismissed: false,
+        }
+    }
+}
+
+/// The version-7 on-disk shape of [`Settings`] (after `import_banner_dismissed`, before
+/// `background_refresh_secs`). Decode-only; postcard is positional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV7 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+    #[serde(default)]
+    pub reduce_motion: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub desktop_notifications: bool,
+    #[serde(default)]
+    pub last_tab: String,
+    #[serde(default)]
+    pub text_rendering: TextRendering,
+    #[serde(default)]
+    pub palette_recents: Vec<String>,
+    #[serde(default)]
+    pub import_banner_dismissed: bool,
+}
+
+impl From<SettingsV7> for Settings {
+    fn from(v: SettingsV7) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: v.ui_scale_percent,
+            reduce_motion: v.reduce_motion,
+            desktop_notifications: v.desktop_notifications,
+            last_tab: v.last_tab,
+            text_rendering: v.text_rendering,
+            palette_recents: v.palette_recents,
+            import_banner_dismissed: v.import_banner_dismissed,
+            background_refresh_secs: 0,
         }
     }
 }
