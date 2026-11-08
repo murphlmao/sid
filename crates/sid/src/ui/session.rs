@@ -416,6 +416,8 @@ pub struct SshSession {
     // ---- edit-in-place (SFTP "Edit") -----------------------------------------------------
     /// The host's alias, for "Saved <name> to <host>".
     host_label: String,
+    /// The dialled host and port, for the failed pane title and friendly error copy.
+    host_addr: (String, u16),
     /// Remote files currently open in the user's editor. See [`edit`].
     edits: Vec<edit::ActiveEdit>,
     /// The conflict / no-editor dialog, if one is up.
@@ -508,6 +510,7 @@ impl SshSession {
                 preview: None,
                 dock_side,
                 host_label: host.alias.clone(),
+                host_addr: (host.host.clone(), host.port),
                 edits: Vec::new(),
                 edit_dialog: None,
                 toast: None,
@@ -3026,7 +3029,11 @@ impl SshSession {
     /// the terminal's handle when connected) so Enter works at once.
     fn failed_pane(&self, err: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        div()
+        let (host, port) = (&self.host_addr.0, self.host_addr.1);
+        let friendly = super::connect_error::friendly(err, host, port);
+        let guidance = friendly.clone().unwrap_or_else(|| err.to_string());
+        let details = friendly.is_some().then(|| format!("Details: {err}"));
+        v_flex()
             .size_full()
             .bg(rgb(t.bg))
             .track_focus(&self.focus_handle)
@@ -3037,27 +3044,41 @@ impl SshSession {
                 }
             }))
             .child(
-                EmptyState::new(format!("Couldn't connect to {}", self.host_label))
-                    .icon(Icon::Warning)
-                    .guidance(err.to_string())
-                    .action(
-                        Button::new("session-retry", "Retry")
-                            .primary()
-                            .size(sid_ui::ButtonSize::Lg)
-                            .icon(Icon::Refresh)
-                            .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
-                                cx.emit(SshSessionEvent::Retry);
-                            })),
-                    )
-                    .secondary(
-                        Button::new("session-edit", "Edit connection")
-                            .size(sid_ui::ButtonSize::Lg)
-                            .icon(Icon::Rename)
-                            .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
-                                cx.emit(SshSessionEvent::EditConnection);
-                            })),
-                    ),
+                div().flex_1().min_h(px(0.)).child(
+                    EmptyState::new(super::connect_error::title(&self.host_label, host, port))
+                        .icon(Icon::Warning)
+                        .guidance(guidance)
+                        .action(
+                            Button::new("session-retry", "Retry")
+                                .primary()
+                                .size(sid_ui::ButtonSize::Lg)
+                                .icon(Icon::Refresh)
+                                .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
+                                    cx.emit(SshSessionEvent::Retry);
+                                })),
+                        )
+                        .secondary(
+                            Button::new("session-edit", "Edit connection")
+                                .size(sid_ui::ButtonSize::Lg)
+                                .icon(Icon::Rename)
+                                .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
+                                    cx.emit(SshSessionEvent::EditConnection);
+                                })),
+                        ),
+                ),
             )
+            .when_some(details, |this, details| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .pb(sid_ui::PAGE_GUTTER.len())
+                        .text_center()
+                        .text_meta(t)
+                        .text_color(rgb(t.muted))
+                        .child(details),
+                )
+            })
     }
 
     /// The connecting state: a calm centred block. There is deliberately no Cancel here:

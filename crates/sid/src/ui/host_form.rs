@@ -816,7 +816,7 @@ fn auth_at(index: usize) -> AuthChoice {
 /// git") stays put — a greyed row with no reason read as broken, not "add a
 /// workspace first".
 fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
-    (!ws_active).then_some("— no workspace focused")
+    (!ws_active).then_some("— focus a workspace to save here")
 }
 
 impl EventEmitter<HostFormEvent> for HostForm {}
@@ -966,12 +966,18 @@ pub(crate) fn add_guard(
     }
 }
 
-/// Which `save to:` option an add form preselects. `Ask` preselects nothing; a
+/// Which `save to:` option an add form preselects. `Ask` picks the focused workspace, else global; a
 /// `Workspace` default falls back to no preselection when no workspace is active
 /// (a disabled option cannot be preselected). The dialog itself always shows.
 pub(crate) fn preselect(default_scope: DefaultScope, workspace_active: bool) -> Option<SaveTarget> {
     match default_scope {
-        DefaultScope::Ask => None,
+        // `Ask` still shows the dialog, but never as a blank choice: the focused
+        // workspace if there is one (where the user is working), else global.
+        DefaultScope::Ask => Some(if workspace_active {
+            SaveTarget::Workspace
+        } else {
+            SaveTarget::Global
+        }),
         DefaultScope::Global => Some(SaveTarget::Global),
         DefaultScope::Workspace => workspace_active.then_some(SaveTarget::Workspace),
     }
@@ -1131,7 +1137,10 @@ mod tests {
 
     #[test]
     fn no_focused_workspace_explains_why_its_disabled() {
-        assert_eq!(workspace_option_note(false), Some("— no workspace focused"));
+        assert_eq!(
+            workspace_option_note(false),
+            Some("— focus a workspace to save here")
+        );
     }
 
     fn input(alias: &str, user: &str, host: &str, port: &str) -> FormInput {
@@ -1274,9 +1283,15 @@ mod tests {
     // ---- save-to preselection ---------------------------------------------------
 
     #[test]
-    fn preselect_ask_selects_nothing() {
-        assert_eq!(preselect(DefaultScope::Ask, true), None);
-        assert_eq!(preselect(DefaultScope::Ask, false), None);
+    fn preselect_ask_follows_the_focused_workspace() {
+        assert_eq!(
+            preselect(DefaultScope::Ask, true),
+            Some(SaveTarget::Workspace)
+        );
+        assert_eq!(
+            preselect(DefaultScope::Ask, false),
+            Some(SaveTarget::Global)
+        );
     }
 
     #[test]
