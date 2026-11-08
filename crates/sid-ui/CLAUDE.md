@@ -5,7 +5,7 @@ theme bridge, and the component gallery. The only crate besides `sid` that may n
 
 ## Surface
 - `theme.rs` (`Theme`, `theme::active(cx)`, four palettes: cosmos/void/dusk/cosmos-light),
-  `typography.rs` (nine roles: `.text_display/title/heading/body/control/label/meta/mono(&t)`),
+  `typography.rs` (ten roles: `.text_display/title/heading/body/control/label/meta/mono/cell(&t)`),
   `metrics.rs` (`Space`, `Radius` + `.corners()`, `Density`, semantic gaps), `motion.rs`
   (`motion::enter`, durations, reduced motion), `elevation.rs` (rungs incl. shadows),
   `copy.rs` (`sentence_case`), `styled.rs` (`StyledExt`: `clamp_one_line`, `focus_ring`),

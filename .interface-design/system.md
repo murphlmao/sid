@@ -82,12 +82,14 @@ measurement — `tests/hygiene.rs` fails the build on `text_xs()` / `text_sm()` 
 | Label | `.text_label(&t)` | 13 | medium | `muted` | field labels, small-control labels (sentence case) |
 | Meta | `.text_meta(&t)` | 13 | normal | `muted` | hints, counts, timestamps, badge words |
 | Mono | `.text_mono(&t)` | 14 | normal | `fg` | data cells, paths, hosts, ports |
+| Cell | `.text_cell(&t)` | 14 | normal | `fg` | an English value inside a data table |
 | MonoMeta | `.text_mono_meta(&t)` | 13 | normal | `muted` | ids, hashes, dim paths |
 
 - **A role is absolute** — size, weight, family and ink. Only the ink is meant to be
   overridden (`.text_meta(&t).text_color(rgb(t.danger))`).
 - **Every component owns its type.** Nothing inherits a size from an ancestor.
-- **A data table sits on one rung** (Mono 14). Columns differ by ink, never by size.
+- **A data table sits on one rung** (14: `Mono` for identifiers, `Cell` for English).
+  Columns differ by family and ink, never by size.
 - **No BOLD (700).** Semibold (600) is for Display/Title/Heading only; Medium (500) for
   Control and Label. Noto Sans ships a true SemiBold — no synthetic weights.
 - 14 is the mono rung only: DejaVu Sans Mono is ~20% wider per glyph, so tables keep

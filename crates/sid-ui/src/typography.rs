@@ -28,6 +28,7 @@
 //! | [`Label`]     | 13px | Medium   | `muted`      | field labels, small-control labels          |
 //! | [`Meta`]      | 13px | Normal   | `muted`      | hints, counts, timestamps, badge words      |
 //! | [`Mono`]      | 14px | Normal   | `fg`         | data cells, paths, hosts, ports             |
+//! | [`Cell`]      | 14px | Normal   | `fg`         | an English value inside a data table        |
 //! | [`MonoMeta`]  | 13px | Normal   | `muted`      | ids, hashes, dim paths                      |
 //!
 //! Every role is still *absolute*: it sets size **and** weight **and** family **and** ink,
@@ -41,9 +42,11 @@
 //! asked for, everywhere text is actually read. The top grows a Display rung (22) and a
 //! real Title (18) so a screen has a heading and a modal has a title, and a Heading at
 //! body size but semibold so a card header can be *strong* without being *loud*. 14 is
-//! the mono rung only: DejaVu Sans Mono is roughly a fifth wider per glyph than the UI
+//! the *table* rung: DejaVu Sans Mono is roughly a fifth wider per glyph than the UI
 //! sans, so a 15px data cell would cost a results grid a column; tables stay
 //! instrument-sized, which is also why "bigger" is this ladder and not a default zoom.
+//! [`Cell`] is the proportional twin on that rung, so a table that mixes identifiers and
+//! English (Workspaces' fleet view) still sits on one size.
 //!
 //! ## Why semibold is allowed now, and bold still is not
 //!
@@ -68,6 +71,7 @@
 //! [`Label`]: TypeRole::Label
 //! [`Meta`]: TypeRole::Meta
 //! [`Mono`]: TypeRole::Mono
+//! [`Cell`]: TypeRole::Cell
 //! [`MonoMeta`]: TypeRole::MonoMeta
 
 use gpui::{FontWeight, Pixels, Rems, Styled, px, rgb};
@@ -131,6 +135,10 @@ pub enum TypeRole {
     Meta,
     /// Monospace content: paths, addresses, hosts, ports, data cells.
     Mono,
+    /// A proportional value inside a data table — "3 days ago", a commit subject — on the
+    /// same rung as [`TypeRole::Mono`], because a table's columns differ by family and
+    /// ink, never by size.
+    Cell,
     /// Monospace content that is also secondary: a dim path, an opaque id, a hash.
     MonoMeta,
 }
@@ -145,6 +153,7 @@ pub const ALL_TYPE_ROLES: &[TypeRole] = &[
     TypeRole::Label,
     TypeRole::Meta,
     TypeRole::Mono,
+    TypeRole::Cell,
     TypeRole::MonoMeta,
 ];
 
@@ -155,7 +164,7 @@ impl TypeRole {
             TypeRole::Display => px(DISPLAY_PX),
             TypeRole::Title => px(TITLE_PX),
             TypeRole::Heading | TypeRole::Body | TypeRole::Control => px(BODY_PX),
-            TypeRole::Mono => px(MONO_PX),
+            TypeRole::Mono | TypeRole::Cell => px(MONO_PX),
             TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => px(SMALL_PX),
         }
     }
@@ -170,9 +179,11 @@ impl TypeRole {
         match self {
             TypeRole::Display | TypeRole::Title | TypeRole::Heading => FontWeight::SEMIBOLD,
             TypeRole::Control | TypeRole::Label => FontWeight::MEDIUM,
-            TypeRole::Body | TypeRole::Meta | TypeRole::Mono | TypeRole::MonoMeta => {
-                FontWeight::NORMAL
-            }
+            TypeRole::Body
+            | TypeRole::Meta
+            | TypeRole::Mono
+            | TypeRole::Cell
+            | TypeRole::MonoMeta => FontWeight::NORMAL,
         }
     }
 
@@ -201,7 +212,7 @@ impl TypeRole {
     pub const fn ink(self, theme: &Theme) -> u32 {
         match self {
             TypeRole::Display | TypeRole::Title | TypeRole::Heading => theme.fg_strong,
-            TypeRole::Body | TypeRole::Control | TypeRole::Mono => theme.fg,
+            TypeRole::Body | TypeRole::Control | TypeRole::Mono | TypeRole::Cell => theme.fg,
             TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => theme.muted,
         }
     }
@@ -228,6 +239,7 @@ impl TypeRole {
             TypeRole::Label => "label",
             TypeRole::Meta => "meta",
             TypeRole::Mono => "mono",
+            TypeRole::Cell => "cell",
             TypeRole::MonoMeta => "mono-meta",
         }
     }
@@ -290,6 +302,11 @@ pub trait Typography: Styled + Sized {
         self.text_role(TypeRole::Mono, theme)
     }
 
+    /// [`TypeRole::Cell`] — a proportional value inside a data table.
+    fn text_cell(self, theme: &Theme) -> Self {
+        self.text_role(TypeRole::Cell, theme)
+    }
+
     /// [`TypeRole::MonoMeta`] — monospace content that is also secondary.
     fn text_mono_meta(self, theme: &Theme) -> Self {
         self.text_role(TypeRole::MonoMeta, theme)
@@ -350,6 +367,8 @@ mod tests {
         assert!(TypeRole::Mono.size() > TypeRole::Meta.size());
         assert_eq!(TypeRole::MonoMeta.size(), TypeRole::Meta.size());
         assert_eq!(TypeRole::Label.size(), TypeRole::Meta.size());
+        // A table's English column sits on the mono rung, not on body's.
+        assert_eq!(TypeRole::Cell.size(), TypeRole::Mono.size());
     }
 
     #[test]
@@ -498,6 +517,7 @@ mod tests {
             (TypeRole::Label, style_of(div().text_label(&t))),
             (TypeRole::Meta, style_of(div().text_meta(&t))),
             (TypeRole::Mono, style_of(div().text_mono(&t))),
+            (TypeRole::Cell, style_of(div().text_cell(&t))),
             (TypeRole::MonoMeta, style_of(div().text_mono_meta(&t))),
         ];
         assert_eq!(by_helper.len(), ALL_TYPE_ROLES.len(), "one helper per role");
@@ -552,6 +572,9 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total);
-        assert_eq!(total, 9, "nine roles — adding a tenth is a design decision");
+        assert_eq!(
+            total, 10,
+            "ten roles — adding an eleventh is a design decision"
+        );
     }
 }

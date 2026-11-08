@@ -119,12 +119,15 @@ instrument-sized. Zoom remains the user's lever on top.
 | Label | `.text_label(&t)` | **13** | Medium 500 | `muted` | field labels, small-control labels — **sentence case** |
 | Meta | `.text_meta(&t)` | **13** | Normal 400 | `muted` | hints, counts, timestamps, badge words |
 | Mono | `.text_mono(&t)` | **14** | Normal 400 | `fg` | data cells, paths, hosts, ports |
+| Cell | `.text_cell(&t)` | **14** | Normal 400 | `fg` | an English value inside a data table (fleet "last commit") |
 | MonoMeta | `.text_mono_meta(&t)` | **13** | Normal 400 | `muted` | ids, hashes, dim paths |
 
 - **Five rungs: 13 / 14 / 15 / 18 / 22.** Body moves 14 → 15 and Meta 12 → 13: the
   "a little bigger" Murphy asked for, everywhere text is read. 14 is the mono rung only:
   DejaVu Sans Mono is ~20% wider per glyph than Noto Sans, so a 15px data cell would cost
-  a table a column; tables stay where they were.
+  a table a column; tables stay where they were (a 15px trial broke the DB results-grid
+  column plan at narrow widths). `Cell` is the proportional role on that rung, so a table
+  mixing identifiers and English stays on one size.
 - **Weights 400 / 500 / 600.** Semibold is allowed for Display/Title/Heading. Noto Sans
   (the system UI face on this box) ships a true SemiBold, so it renders as a weight, not
   as a smeared synthetic bold. 700 stays banned — it still blooms on dark at these sizes.
