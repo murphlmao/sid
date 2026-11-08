@@ -516,7 +516,8 @@ fn stage_content(bytes: &[u8]) -> Result<tempfile::NamedTempFile, PrivError> {
     Ok(file)
 }
 
-#[cfg(test)]
+// The harness drives POSIX shell-script stand-ins for sudo; Windows has no sudo path.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

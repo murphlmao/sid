@@ -192,6 +192,7 @@ mod tests {
         assert_eq!(names(&source), vec!["id_ed25519"]);
     }
 
+    #[cfg(unix)] // fixture permissions are POSIX modes
     #[test]
     fn a_public_sibling_is_recorded_on_the_candidate_it_belongs_to() {
         let dir = ssh_dir(&[

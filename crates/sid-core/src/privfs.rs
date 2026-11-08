@@ -244,6 +244,7 @@ impl PrivError {
 /// ```
 /// use std::path::Path;
 /// use sid_core::privfs::guard_path;
+/// # #[cfg(unix)]
 /// assert!(guard_path(Path::new("/etc/fstab")).is_ok());
 /// assert!(guard_path(Path::new("etc/fstab")).is_err());
 /// assert!(guard_path(Path::new("--reference=/etc/shadow")).is_err());

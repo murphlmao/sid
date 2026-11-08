@@ -206,6 +206,7 @@ mod tests {
 
     // ---- the path guard is enforced at the port, before any subprocess -------------
 
+    #[cfg(unix)] // a leading `/` is not absolute on Windows
     #[tokio::test]
     async fn a_relative_path_is_refused_without_ever_spawning_sudo() {
         // If this reached `sudo`, the test would hang or prompt. It must fail on the
