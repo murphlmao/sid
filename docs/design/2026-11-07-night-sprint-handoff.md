@@ -17,13 +17,23 @@ last batch is **ungated** on purpose.
     files, sudo-password timeout; its own gate: 70 suites / 1960 tests + docker sshd live
     test), `night/perf` (unfocused System probe 5× slower, SSH drain 133 ms unfocused,
     perfcap fixes; `sid` tests only).
-  - Still on their own branches at the stop (WIP commits allowed, ungated) — merge into the
-    wrap branch next session: `night/ssh-session` (session v2, SFTP edit-in-place UI, Esc on
-    modals + keep-server-copy backup in progress), `night/db-polish` (tree select-vs-activate
-    fix for the arrow-key bug, table/column icons, sentence-case label test),
-    `night/polish-settings-ws` (text rendering setting Auto/Subpixel/Grayscale, theme
-    swatches, palette persistence, Workspaces polish), `night/ci-fix` (toolchain 1.99.1 for
-    macOS, workspace clippy lints, Windows test fixes; re-merging main at the stop).
+  - Also merged into the wrap branch: `night/db-polish` (tree select-vs-activate fix for
+    the arrow-key bug, table/column icons, sentence-case label test, folder headers).
+  - Still on their own branches (pushed, ungated) because they CONFLICT with the wrap
+    branch — resolve and merge next session:
+    - `night/ssh-session` @ b907100 (wip, not compiled): session v2, SFTP edit-in-place UI,
+      keep-server-copy backup, Esc on modals. Conflict: `crates/sid/src/ui/session.rs`
+      vs sec-binding's host-key prompt / bounded view+download (their logic wins, its
+      presentation wins).
+    - `night/polish-settings-ws` @ 2cf62f4: text rendering setting (Auto/Subpixel/
+      Grayscale), Settings v7, theme swatch cards, palette recents + sub-view entries,
+      Workspaces log badges. Conflict: `crates/sid-store/src/{global.rs,lib.rs}` — its
+      Settings v7 vs sec-binding's `secret_bindings` table (keep both; re-check the v6→v7
+      migration test).
+    - `night/ci-fix` @ 637f8c0: toolchain 1.99.1, workspace clippy lints, Windows fixes,
+      macOS mint_secret_id clock fix. Conflict: `crates/sid-ui/Cargo.toml` (its `[lints]`
+      vs ui-tests' gpui-kit dev-dependency — keep both). Its last CI run (42445111268) was
+      unfinished at the stop.
 
 ## What landed on main tonight (summary)
 
