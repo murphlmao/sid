@@ -76,7 +76,7 @@
 //! are plain read-only tables, closer in shape to `db_tab.rs`'s `ResultDelegate`.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -89,7 +89,10 @@ use sid_core::containers::{
     ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
 };
 use sid_core::svc::{ServiceInfo, ServiceProvider, SvcAction, SvcActiveState, SvcScope};
-use sid_core::sys::{ListeningPort, NetInterface, Pid, Protocol, Signal, SysProvider};
+use sid_core::sys::{
+    Connection, ListeningPort, NetInterface, Pid, ProcUsage, Protocol, Signal, SysProvider,
+    owner_pids,
+};
 use sid_svcctl::SvcctlProvider;
 use sid_sysinfo::SysinfoProvider;
 
@@ -98,16 +101,18 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Badge, BadgeTone, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, InputState, PANEL_FILTER_FLOOR,
-    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, Typography as _,
-    caveat_line, error_line, h_flex, scaled, sortable_th, v_flex,
+    ActionCell, Badge, BadgeTone, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
+    PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl, StyledExt as _, Switch,
+    TextInput, Toast, Typography as _, caveat_line, h_flex, scaled, sortable_th,
+    v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NetSubTab {
     Ports,
+    Connections,
     Services,
     Interfaces,
     Docker,
@@ -117,8 +122,9 @@ enum NetSubTab {
 impl NetSubTab {
     /// In the order the segmented control lists them; the index into this array is the
     /// index the control reports back from `on_select`.
-    const ALL: [NetSubTab; 5] = [
+    const ALL: [NetSubTab; 6] = [
         NetSubTab::Ports,
+        NetSubTab::Connections,
         NetSubTab::Services,
         NetSubTab::Interfaces,
         NetSubTab::Docker,
@@ -128,6 +134,7 @@ impl NetSubTab {
     fn label(self) -> &'static str {
         match self {
             NetSubTab::Ports => "Ports",
+            NetSubTab::Connections => "Connections",
             NetSubTab::Services => "Services",
             NetSubTab::Interfaces => "Interfaces",
             NetSubTab::Docker => "Docker",
@@ -142,7 +149,7 @@ impl NetSubTab {
     /// Settings tab).
     fn icon(self) -> Option<Icon> {
         match self {
-            NetSubTab::Ports | NetSubTab::Services => None,
+            NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Services => None,
             NetSubTab::Interfaces => Some(Icon::Interfaces),
             NetSubTab::Docker => Some(Icon::Docker),
             NetSubTab::Kubernetes => Some(Icon::Kubernetes),
@@ -196,6 +203,11 @@ pub struct NetworkTabState {
     /// The ports table. Lazily built by `ensure_network_widgets` (needs `window`,
     /// which isn't available from `AppState::new`) — mirrors `DbTabState::results`.
     table: Option<Entity<TableState<PortsDelegate>>>,
+    /// The established-connections table, lazily built alongside `table`.
+    connections_table: Option<Entity<TableState<ConnectionsDelegate>>>,
+    /// How many ports/connections refreshes have sampled process usage. CPU is a delta, so
+    /// the first sample reads 0 and is shown as `—` until the second ([`cpu_ready`]).
+    usage_samples: u32,
     /// The services table, lazily built alongside `table`.
     services_table: Option<Entity<TableState<ServicesDelegate>>>,
     /// `system` or `user` — which systemd manager the Services sub-tab queries.
@@ -275,6 +287,8 @@ impl NetworkTabState {
             interfaces_expanded: false,
             error: None,
             table: None,
+            connections_table: None,
+            usage_samples: 0,
             services_table: None,
             svc_scope: SvcScope::System,
             svc_loaded: false,
@@ -371,6 +385,11 @@ struct PortsDelegate {
     all_ports: Vec<ListeningPort>,
     /// The currently displayed (filtered) rows.
     ports: Vec<ListeningPort>,
+    /// Owner CPU/memory by pid from the last refresh (joined at render time).
+    usage: HashMap<Pid, ProcUsage>,
+    /// False until the second usage sample: CPU is a delta, so the first reads 0 and is
+    /// shown as `—` (see [`cpu_label`]).
+    cpu_ready: bool,
     /// The active filter query, cached so `set_ports` can re-apply it after a refresh.
     query: String,
     /// The two-step kill confirm, keyed by pid.
@@ -400,6 +419,8 @@ impl PortsDelegate {
             provider,
             all_ports: Vec::new(),
             ports: Vec::new(),
+            usage: HashMap::new(),
+            cpu_ready: false,
             query: String::new(),
             kill_arm: ConfirmArm::new(),
             kill_error: None,
@@ -422,7 +443,7 @@ impl PortsDelegate {
                 // wide window.
                 (
                     Column::new("addr", "Addr").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(240.),
+                    ColumnWidth::grow().weight(1.0).min_width(200.),
                 ),
                 // 100, not 80: the cells are monospace at the body rung now (see
                 // `data_cell`), and a fixed-advance 14px digit is wider than the 12px
@@ -435,7 +456,15 @@ impl PortsDelegate {
                 ),
                 (
                     Column::new("process", "Process").sortable(),
-                    ColumnWidth::grow().weight(1.6).min_width(220.),
+                    ColumnWidth::grow().weight(1.6).min_width(140.),
+                ),
+                (
+                    Column::new("cpu", "CPU").sortable(),
+                    ColumnWidth::Fixed(72.),
+                ),
+                (
+                    Column::new("mem", "Memory").sortable(),
+                    ColumnWidth::Fixed(88.),
                 ),
                 // Not sortable — an action column, not data. Wide enough for the armed
                 // state's "confirm" label, so arming a row never resizes its column.
@@ -450,8 +479,15 @@ impl PortsDelegate {
     /// A pending kill confirmation is kept **unless its process is gone**
     /// ([`ConfirmArm::retain`]). Clearing it unconditionally — what this did before — is
     /// what made the two-step confirm a race against the refresh that the refresh won.
-    fn set_ports(&mut self, ports: Vec<ListeningPort>) {
+    fn set_ports(
+        &mut self,
+        ports: Vec<ListeningPort>,
+        usage: HashMap<Pid, ProcUsage>,
+        cpu_ready: bool,
+    ) {
         self.all_ports = ports;
+        self.usage = usage;
+        self.cpu_ready = cpu_ready;
         let live: HashSet<Pid> = self.all_ports.iter().filter_map(|p| p.pid).collect();
         self.kill_arm.retain(|pid| live.contains(&pid));
         self.recompute();
@@ -472,7 +508,10 @@ impl PortsDelegate {
             .cloned()
             .collect();
         if let Some((col_ix, dir)) = self.active_sort {
-            sort_ports(&mut ports, col_ix, dir);
+            match col_ix {
+                5 | 6 => sort_by_usage(&mut ports, |p| p.pid, &self.usage, col_ix == 6, dir),
+                _ => sort_ports(&mut ports, col_ix, dir),
+            }
         }
         self.ports = ports;
     }
@@ -650,6 +689,16 @@ impl TableDelegate for PortsDelegate {
                 };
                 data_cell(t, fg, label)
             }
+            5 => data_cell(
+                t,
+                muted,
+                cpu_label(port.pid.and_then(|p| self.usage.get(&p)), self.cpu_ready),
+            ),
+            6 => data_cell(
+                t,
+                muted,
+                mem_label(port.pid.and_then(|p| self.usage.get(&p))),
+            ),
             _ => {
                 let Some(PortAction::Kill(pid)) = port_action(port.pid) else {
                     // No attributable owner, no action — an empty cell, not a
@@ -668,7 +717,7 @@ impl TableDelegate for PortsDelegate {
                         ConfirmButton::new(button_id, "kill")
                             .armed(armed)
                             .armed_label("confirm")
-                            .tooltip("send SIGTERM to this process")
+                            .tooltip("Ask this process to stop (SIGTERM)")
                             .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 let outcome =
                                     this.delegate_mut().kill_arm.press(pid, Instant::now());
@@ -680,6 +729,181 @@ impl TableDelegate for PortsDelegate {
                     ),
                 )
             }
+        }
+    }
+}
+
+/// Backs the Connections table: established / closing outbound TCP, each attributed to its
+/// owning process with that process's CPU and memory. Read-only, same shape as
+/// [`DockerDelegate`] plus the usage map [`PortsDelegate`] carries.
+struct ConnectionsDelegate {
+    all_connections: Vec<Connection>,
+    connections: Vec<Connection>,
+    usage: HashMap<Pid, ProcUsage>,
+    cpu_ready: bool,
+    query: String,
+    columns: FillColumns,
+    active_sort: Option<(usize, SortDir)>,
+}
+
+impl ConnectionsDelegate {
+    fn new() -> Self {
+        Self {
+            all_connections: Vec::new(),
+            connections: Vec::new(),
+            usage: HashMap::new(),
+            cpu_ready: false,
+            query: String::new(),
+            // Both endpoints and the process are unbounded (bracketed IPv6 + port, a long
+            // executable name), so they grow; the rest have a known ceiling.
+            columns: FillColumns::new([
+                (
+                    Column::new("local", "Local").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(170.),
+                ),
+                (
+                    Column::new("remote", "Remote").sortable(),
+                    ColumnWidth::grow().weight(1.0).min_width(170.),
+                ),
+                (
+                    Column::new("state", "State").sortable(),
+                    ColumnWidth::Fixed(130.),
+                ),
+                (
+                    Column::new("pid", "PID").sortable(),
+                    ColumnWidth::Fixed(100.),
+                ),
+                (
+                    Column::new("process", "Process").sortable(),
+                    ColumnWidth::grow().weight(0.8).min_width(130.),
+                ),
+                (
+                    Column::new("cpu", "CPU").sortable(),
+                    ColumnWidth::Fixed(72.),
+                ),
+                (
+                    Column::new("mem", "Memory").sortable(),
+                    ColumnWidth::Fixed(88.),
+                ),
+            ]),
+            active_sort: None,
+        }
+    }
+
+    fn set_connections(
+        &mut self,
+        connections: Vec<Connection>,
+        usage: HashMap<Pid, ProcUsage>,
+        cpu_ready: bool,
+    ) {
+        self.all_connections = connections;
+        self.usage = usage;
+        self.cpu_ready = cpu_ready;
+        self.recompute();
+    }
+
+    fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.recompute();
+    }
+
+    fn recompute(&mut self) {
+        let mut rows: Vec<Connection> = filter_connections(&self.all_connections, &self.query)
+            .into_iter()
+            .cloned()
+            .collect();
+        if let Some((col_ix, dir)) = self.active_sort {
+            match col_ix {
+                5 | 6 => sort_by_usage(&mut rows, |c| c.pid, &self.usage, col_ix == 6, dir),
+                _ => sort_connections(&mut rows, col_ix, dir),
+            }
+        }
+        self.connections = rows;
+    }
+}
+
+impl FillTableDelegate for ConnectionsDelegate {
+    fn fill_columns(&mut self) -> &mut FillColumns {
+        &mut self.columns
+    }
+}
+
+impl TableDelegate for ConnectionsDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.connections.len()
+    }
+
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns.column(col_ix).clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        self.columns.apply_sort(col_ix, sort);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.recompute();
+        cx.notify();
+    }
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        sortable_th(col_ix, self.columns.column(col_ix), cx)
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let t = theme::active(cx);
+        let (fg, muted) = (t.fg, t.muted);
+        let c = &self.connections[row_ix];
+        let usage = c.pid.and_then(|p| self.usage.get(&p));
+        // No `.id()` on cells - see `sid_ui::table`.
+        match col_ix {
+            0 => data_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
+            1 => data_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
+            2 => {
+                let ink = if c.state == sid_core::sys::SocketState::Established {
+                    fg
+                } else {
+                    muted
+                };
+                data_cell(t, ink, c.state_label.clone())
+            }
+            3 => data_cell(
+                t,
+                muted,
+                c.pid
+                    .map(|p| p.as_u32().to_string())
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            4 => data_cell(
+                t,
+                fg,
+                if c.command.is_empty() {
+                    "—".to_string()
+                } else {
+                    c.command.clone()
+                },
+            ),
+            5 => data_cell(t, muted, cpu_label(usage, self.cpu_ready)),
+            _ => data_cell(t, muted, mem_label(usage)),
         }
     }
 }
@@ -1296,6 +1520,7 @@ impl AppState {
         let sub_tab = self.network.sub_tab;
         let body: AnyElement = match sub_tab {
             NetSubTab::Ports => self.ports_view(cx),
+            NetSubTab::Connections => self.connections_view(cx),
             NetSubTab::Services => self.services_view(cx),
             NetSubTab::Interfaces => self.interfaces_view(&theme, cx),
             NetSubTab::Docker => self.docker_view(cx),
@@ -1321,7 +1546,7 @@ impl AppState {
     /// every other panel header on every other tab uses.
     ///
     /// The `error: …` / `refreshing…` strings this row used to carry *instead of* a count
-    /// are gone: a failure is an [`error_line`] in the panel body, where it has room to
+    /// are gone: a failure is a danger `Toast` in the panel body, where it has room to
     /// be as long as the OS made it, and "refreshing" is the refresh button's own
     /// spinner. A slot that sometimes holds a count and sometimes holds a sentence is
     /// not a count.
@@ -1408,15 +1633,15 @@ impl AppState {
         sub_tab: NetSubTab,
         refreshing: bool,
         cx: &mut Context<Self>,
-    ) -> Button {
-        Button::new("net-refresh", "refresh")
-            .small()
-            .icon(Icon::Refresh)
+    ) -> IconButton {
+        IconButton::new("net-refresh", Icon::Refresh, "Refresh (F5)")
             .loading(refreshing)
             .on_click(
                 cx.listener(move |this, _ev: &ClickEvent, _window, cx| match sub_tab {
                     NetSubTab::Services => this.refresh_network_services(cx),
-                    NetSubTab::Ports | NetSubTab::Interfaces => this.refresh_network(cx),
+                    NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
+                        this.refresh_network(cx)
+                    }
                     NetSubTab::Docker => this.refresh_network_docker(cx),
                     NetSubTab::Kubernetes => this.refresh_network_kube(cx),
                 }),
@@ -1445,11 +1670,11 @@ impl AppState {
             .as_ref()
             .and_then(|t| t.read(cx).delegate().kill_error.clone());
         let empty = (count == 0 && !refreshing && self.network.error.is_none()).then(|| {
-            EmptyState::new("no listening ports")
+            EmptyState::new("No listening ports")
                 .icon(Icon::Globe)
                 .guidance(empty_guidance(
                     &self.network_query(cx),
-                    "nothing on this machine is accepting connections",
+                    "Nothing on this machine is accepting connections. Start a server and refresh.",
                 ))
         });
 
@@ -1459,17 +1684,42 @@ impl AppState {
             .unwrap_or(0);
 
         self.sub_view_panel(NetSubTab::Ports, count, refreshing, None, cx)
-            .children(notice_row(self.network.error.clone()))
+            .children(notice_row("Couldn't read ports", self.network.error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(notice_row(kill_error))
+            .children(notice_row("Couldn't stop that process", kill_error))
             // One Meta-role line naming *why* some rows have no `kill` button — the
             // fact `port_action` renders as an empty cell, not a `—`, still needs
             // saying once rather than looking like an inconsistent table.
             .when(unowned > 0, |el| {
                 el.child(div().flex_none().px_3().pt_2().child(caveat_line(format!(
-                    "{unowned} ports without owner info (needs root)"
+                    "{unowned} ports have no owner info. Run sid as root to see them."
                 ))))
             })
+            .into_any_element()
+    }
+
+    /// Connections: established / closing outbound TCP with each owner's CPU and memory.
+    fn connections_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let refreshing = self.network.refreshing;
+        let table = self.network.connections_table.clone();
+        let count = table
+            .as_ref()
+            .map(|t| t.read(cx).delegate().connections.len())
+            .unwrap_or(0);
+        let empty = (count == 0 && !refreshing && self.network.error.is_none()).then(|| {
+            EmptyState::new("No open connections")
+                .icon(Icon::Globe)
+                .guidance(empty_guidance(
+                    &self.network_query(cx),
+                    "Nothing on this machine is connected out right now. Refresh to look again.",
+                ))
+        });
+        self.sub_view_panel(NetSubTab::Connections, count, refreshing, None, cx)
+            .children(notice_row(
+                "Couldn't read connections",
+                self.network.error.clone(),
+            ))
+            .child(table_pane(table.as_ref(), empty))
             .into_any_element()
     }
 
@@ -1487,11 +1737,11 @@ impl AppState {
             .as_ref()
             .and_then(|t| t.read(cx).delegate().action_error.clone());
         let empty = (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
-            EmptyState::new("no units")
+            EmptyState::new("No service units")
                 .icon(Icon::Settings)
                 .guidance(empty_guidance(
                     &self.network_query(cx),
-                    "this systemd manager reports no service units",
+                    "This systemd manager reports no units. Try the other scope.",
                 ))
         });
 
@@ -1505,9 +1755,9 @@ impl AppState {
             // are disjoint unit sets, so `SYSTEM SERVICES · 12` and `USER SERVICES · 3`
             // are counts of different things and the header has to say which.
             .title(format!("{} services", svc_scope_label(scope)))
-            .children(notice_row(self.network.svc_error.clone()))
+            .children(notice_row("Couldn't read services", self.network.svc_error.clone()))
             .child(table_pane(table.as_ref(), empty))
-            .children(notice_row(action_error))
+            .children(notice_row("That service action failed", action_error))
             .into_any_element()
     }
 
@@ -1548,25 +1798,25 @@ impl AppState {
             .unwrap_or(0);
 
         let body: AnyElement = if not_installed {
-            EmptyState::new("docker not installed — no daemon reachable")
+            EmptyState::new("Docker isn't installed")
                 .icon(Icon::Info)
-                .guidance("install Docker and start the daemon to see containers here")
+                .guidance("Install Docker and start the daemon to see containers here.")
                 .into_any_element()
         } else {
             let empty =
                 (count == 0 && !refreshing && self.network.docker_error.is_none()).then(|| {
-                    EmptyState::new("no containers")
+                    EmptyState::new("No containers")
                         .icon(Icon::Info)
                         .guidance(empty_guidance(
                             &self.network_query(cx),
-                            "the daemon is reachable and reports no containers, running or stopped",
+                            "The daemon is reachable but has no containers, running or stopped.",
                         ))
                 });
             table_pane(table.as_ref(), empty)
         };
 
         self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
-            .children(notice_row(self.network.docker_error.clone()))
+            .children(notice_row("Couldn't read containers", self.network.docker_error.clone()))
             .child(body)
             .into_any_element()
     }
@@ -1584,23 +1834,23 @@ impl AppState {
             .unwrap_or(0);
 
         let body: AnyElement = if not_installed {
-            EmptyState::new("kubectl not installed — no cluster")
+            EmptyState::new("kubectl isn't available")
                 .icon(Icon::Info)
-                .guidance("install kubectl and configure a context to see pods here")
+                .guidance("Install kubectl and configure a context to see pods here.")
                 .into_any_element()
         } else if context_count == 0 {
-            EmptyState::new("no kube contexts configured")
+            EmptyState::new("No Kubernetes contexts")
                 .icon(Icon::Info)
-                .guidance("add a cluster to your kubeconfig to scope the pods table to it")
+                .guidance("Add a cluster to your kubeconfig to see its pods here.")
                 .into_any_element()
         } else {
             let empty =
                 (count == 0 && !refreshing && self.network.kube_error.is_none()).then(|| {
-                    EmptyState::new("no pods")
+                    EmptyState::new("No pods")
                         .icon(Icon::Info)
                         .guidance(empty_guidance(
                             &self.network_query(cx),
-                            "this context reports no pods in any namespace",
+                            "This context reports no pods in any namespace.",
                         ))
                 });
             table_pane(table.as_ref(), empty)
@@ -1613,7 +1863,7 @@ impl AppState {
             .kube_context_control(cx)
             .map(IntoElement::into_any_element);
         self.sub_view_panel(NetSubTab::Kubernetes, count, refreshing, secondary, cx)
-            .children(notice_row(self.network.kube_error.clone()))
+            .children(notice_row("Couldn't read pods", self.network.kube_error.clone()))
             .child(body)
             .into_any_element()
     }
@@ -1694,39 +1944,38 @@ impl AppState {
             .w_full()
             .child(v_flex().w_full().children(visible_rows))
             .children((hidden_count > 0).then(|| {
+                let this = cx.entity();
                 v_flex()
                     .w_full()
                     .child(
-                        h_flex().w_full().pt_1().child(
-                            Button::new("net-hidden-toggle", format!("hidden ({hidden_count})"))
-                                .small()
-                                .ghost()
-                                .icon(if expanded {
-                                    Icon::ChevronDown
-                                } else {
-                                    Icon::ChevronRight
-                                })
-                                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                    this.network.interfaces_expanded =
-                                        !this.network.interfaces_expanded;
-                                    cx.notify();
-                                })),
+                        h_flex().w_full().py_2().child(
+                            Switch::new("net-hidden-toggle", expanded)
+                                .label(format!("Show hidden interfaces ({hidden_count})"))
+                                .on_toggle(move |on, _window, cx| {
+                                    this.update(cx, |this, cx| {
+                                        this.network.interfaces_expanded = on;
+                                        cx.notify();
+                                    });
+                                }),
                         ),
                     )
                     .children(expanded.then(|| v_flex().w_full().children(hidden_rows)))
             }))
             .children(nothing_to_show.then(|| {
-                EmptyState::new("no interfaces")
+                EmptyState::new("No network interfaces")
                     .icon(Icon::Globe)
                     .guidance(empty_guidance(
                         &self.network_query(cx),
-                        "the probe found no network interfaces on this machine",
+                        "The probe found no interfaces on this machine. Try refreshing.",
                     ))
                     .into_any_element()
             }));
 
         self.sub_view_panel(NetSubTab::Interfaces, total, refreshing, None, cx)
-            .children(notice_row(self.network.error.clone()))
+            .children(notice_row(
+                "Couldn't read interfaces",
+                self.network.error.clone(),
+            ))
             .child(
                 div()
                     .id("net-ifaces-scroll")
@@ -1748,6 +1997,10 @@ impl AppState {
             let provider = self.network.provider.clone();
             let table = cx.new(|cx| TableState::new(PortsDelegate::new(provider), window, cx));
             self.network.table = Some(table);
+        }
+        if self.network.connections_table.is_none() {
+            let table = cx.new(|cx| TableState::new(ConnectionsDelegate::new(), window, cx));
+            self.network.connections_table = Some(table);
         }
         if self.network.services_table.is_none() {
             let svc_provider = self.network.svc_provider.clone();
@@ -1790,6 +2043,12 @@ impl AppState {
             .map(|f| f.read(cx).value().to_string())
             .unwrap_or_default();
         if let Some(table) = self.network.table.clone() {
+            table.update(cx, |state, cx| {
+                state.delegate_mut().set_query(&query);
+                state.refresh(cx);
+            });
+        }
+        if let Some(table) = self.network.connections_table.clone() {
             table.update(cx, |state, cx| {
                 state.delegate_mut().set_query(&query);
                 state.refresh(cx);
@@ -1849,12 +2108,29 @@ impl AppState {
 
         let provider = self.network.provider.clone();
         let table = self.network.table.clone();
+        let conn_table = self.network.connections_table.clone();
 
         cx.spawn(async move |this, cx| {
             let handle = ssh_runtime().spawn(async move {
                 let mut guard = provider.lock().unwrap_or_else(|e| e.into_inner());
+                let ports = guard.list_listening_ports();
+                let conns = guard.list_connections();
+                // One usage sample for both tables' owners, so CPU deltas advance once
+                // per refresh.
+                let mut pids = ports
+                    .as_ref()
+                    .map(|p| owner_pids(p, |r| r.pid))
+                    .unwrap_or_default();
+                if let Ok(c) = &conns {
+                    pids.extend(owner_pids(c, |r| r.pid));
+                }
+                pids.sort_unstable();
+                pids.dedup();
+                let usage = guard.process_usage(&pids).unwrap_or_default();
                 (
-                    guard.list_listening_ports(),
+                    ports,
+                    conns,
+                    usage,
                     guard.list_interfaces(),
                     guard.default_route_iface_name(),
                 )
@@ -1863,18 +2139,35 @@ impl AppState {
             let _ = this.update(cx, |this, cx| {
                 this.network.refreshing = false;
                 match outcome {
-                    Ok((ports_res, ifaces_res, route_res)) => {
+                    Ok((ports_res, conns_res, usage, ifaces_res, route_res)) => {
                         let mut err = None;
-                        match ports_res {
-                            Ok(ports) => {
-                                if let Some(table) = &table {
+                        this.network.usage_samples = this.network.usage_samples.saturating_add(1);
+                        let cpu_ready = this.network.usage_samples >= 2;
+                        match conns_res {
+                            Ok(conns) => {
+                                if let Some(table) = &conn_table {
                                     table.update(cx, |state, cx| {
-                                        state.delegate_mut().set_ports(ports);
+                                        state.delegate_mut().set_connections(
+                                            conns,
+                                            usage.clone(),
+                                            cpu_ready,
+                                        );
                                         state.refresh(cx);
                                     });
                                 }
                             }
                             Err(e) => err = Some(e.to_string()),
+                        }
+                        match ports_res {
+                            Ok(ports) => {
+                                if let Some(table) = &table {
+                                    table.update(cx, |state, cx| {
+                                        state.delegate_mut().set_ports(ports, usage.clone(), cpu_ready);
+                                        state.refresh(cx);
+                                    });
+                                }
+                            }
+                            Err(e) => err = err.or(Some(e.to_string())),
                         }
                         match ifaces_res {
                             Ok(mut ifaces) => {
@@ -2216,7 +2509,7 @@ fn empty_guidance(query: &str, unfiltered: &str) -> String {
     if query.is_empty() {
         return unfiltered.to_string();
     }
-    format!("nothing matches \"{query}\" — clear the filter to see everything")
+    format!("Nothing matches \"{query}\". Clear the filter to see everything.")
 }
 
 /// The table half of a sub-view: the fill-width table, or an [`EmptyState`] in its place.
@@ -2237,11 +2530,17 @@ fn table_pane<D: FillTableDelegate + 'static>(
     }
 }
 
-/// An inline failure notice: `sid_ui::error_line`'s glyph and two-line wrap, carrying the
-/// padding a panel body deliberately does not supply, or nothing at all when there is no
+/// An inline failure notice (`Toast::danger`: what happened as the title, the raw OS
+/// error beneath), carrying the padding a panel body deliberately does not supply, or nothing at all when there is no
 /// message. `flex_none` so it never eats the height the table below it is claiming.
-fn notice_row(message: Option<String>) -> Option<impl IntoElement + use<>> {
-    message.map(|m| div().flex_none().px_3().pt_2().child(error_line(m)))
+fn notice_row(title: &'static str, message: Option<String>) -> Option<impl IntoElement + use<>> {
+    message.map(|m| {
+        div()
+            .flex_none()
+            .px_3()
+            .pt_2()
+            .child(Toast::danger(m).title(title))
+    })
 }
 
 /// One cell of a data table: monospace, on one rung, cut with an ellipsis.
@@ -2319,6 +2618,91 @@ fn port_action(pid: Option<Pid>) -> Option<PortAction> {
 /// it to look inconsistent.
 fn ports_without_owner(ports: &[ListeningPort]) -> usize {
     ports.iter().filter(|p| p.pid.is_none()).count()
+}
+
+/// `addr:port`, bracketing IPv6 so the final colon is unambiguous.
+fn socket_label(addr: &str, port: u16) -> String {
+    if addr.is_empty() {
+        return "—".into();
+    }
+    if addr.contains(':') {
+        format!("[{addr}]:{port}")
+    } else {
+        format!("{addr}:{port}")
+    }
+}
+
+/// CPU cell: `—` when the owner is unknown, or until the second sample (a delta reads 0
+/// the first time, which would be a lie rather than a measurement).
+fn cpu_label(usage: Option<&ProcUsage>, cpu_ready: bool) -> String {
+    match usage {
+        Some(u) if cpu_ready => format!("{:.1}%", u.cpu_pct),
+        _ => "—".into(),
+    }
+}
+
+/// Memory cell: the owner's resident set, or `—` when it is unknown.
+fn mem_label(usage: Option<&ProcUsage>) -> String {
+    usage.map_or_else(|| "—".into(), |u| humanize_bytes(u.rss_bytes))
+}
+
+/// Sort rows by their owner's CPU (`by_mem == false`) or memory. Rows with no resolved
+/// owner sort lowest ascending.
+fn sort_by_usage<T>(
+    rows: &mut [T],
+    pid_of: impl Fn(&T) -> Option<Pid>,
+    usage: &HashMap<Pid, ProcUsage>,
+    by_mem: bool,
+    dir: SortDir,
+) {
+    let key = |r: &T| -> f64 {
+        pid_of(r).and_then(|p| usage.get(&p)).map_or(-1.0, |u| {
+            if by_mem {
+                u.rss_bytes as f64
+            } else {
+                f64::from(u.cpu_pct)
+            }
+        })
+    };
+    rows.sort_by(|a, b| dir.apply(key(a).total_cmp(&key(b))));
+}
+
+/// Case-insensitive filter over connections: either endpoint, state, process, or an exact pid.
+fn filter_connections<'a>(conns: &'a [Connection], query: &str) -> Vec<&'a Connection> {
+    let query = query.trim();
+    if query.is_empty() {
+        return conns.iter().collect();
+    }
+    let lower = query.to_lowercase();
+    let exact_pid: Option<u32> = query.parse().ok();
+    conns
+        .iter()
+        .filter(|c| {
+            socket_label(&c.local_addr, c.local_port)
+                .to_lowercase()
+                .contains(&lower)
+                || socket_label(&c.remote_addr, c.remote_port)
+                    .to_lowercase()
+                    .contains(&lower)
+                || c.state_label.to_lowercase().contains(&lower)
+                || c.command.to_lowercase().contains(&lower)
+                || exact_pid.is_some_and(|pid| c.pid.map(Pid::as_u32) == Some(pid))
+        })
+        .collect()
+}
+
+/// Column dispatch for Connections (`local, remote, state, pid, process`; cpu/mem go through
+/// [`sort_by_usage`]).
+fn sort_connections(rows: &mut [Connection], col_ix: usize, dir: SortDir) {
+    let cmp: fn(&Connection, &Connection) -> Ordering = match col_ix {
+        0 => |a, b| (&a.local_addr, a.local_port).cmp(&(&b.local_addr, b.local_port)),
+        1 => |a, b| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)),
+        2 => |a, b| a.state_label.cmp(&b.state_label),
+        3 => |a, b| a.pid.map(Pid::as_u32).cmp(&b.pid.map(Pid::as_u32)),
+        4 => |a, b| a.command.to_lowercase().cmp(&b.command.to_lowercase()),
+        _ => return,
+    };
+    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
 }
 
 /// Case-insensitive filter over the ports table: port-number prefix match,
@@ -3013,7 +3397,11 @@ mod tests {
         let now = Instant::now();
         delegate.kill_arm.press(pid, now);
 
-        delegate.set_ports(vec![port(8080, Some(4242), "nginx", "0.0.0.0")]);
+        delegate.set_ports(
+            vec![port(8080, Some(4242), "nginx", "0.0.0.0")],
+            HashMap::new(),
+            false,
+        );
         assert!(
             delegate.kill_arm.is_armed(pid, now),
             "arm lost to a refresh"
@@ -3027,7 +3415,11 @@ mod tests {
         let now = Instant::now();
         delegate.kill_arm.press(pid, now);
 
-        delegate.set_ports(vec![port(8080, Some(9), "nginx", "0.0.0.0")]);
+        delegate.set_ports(
+            vec![port(8080, Some(9), "nginx", "0.0.0.0")],
+            HashMap::new(),
+            false,
+        );
         assert!(!delegate.kill_arm.is_armed(pid, now));
     }
 
@@ -3398,7 +3790,9 @@ mod tests {
         let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
-        let plans: [(&str, &mut FillColumns); 4] = [
+        let mut conns = ConnectionsDelegate::new();
+        let plans: [(&str, &mut FillColumns); 5] = [
+            ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
             ("services", &mut services.columns),
             ("docker", &mut docker.columns),
@@ -3424,7 +3818,9 @@ mod tests {
         let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
-        let plans: [(&str, &mut FillColumns); 4] = [
+        let mut conns = ConnectionsDelegate::new();
+        let plans: [(&str, &mut FillColumns); 5] = [
+            ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
             ("services", &mut services.columns),
             ("docker", &mut docker.columns),
@@ -3476,7 +3872,8 @@ mod tests {
     /// comparator silently sorts by the wrong field (or, past the end, not at all).
     #[test]
     fn every_column_plan_has_the_arity_its_comparator_dispatch_assumes() {
-        assert_eq!(ports_delegate().columns.len(), 6);
+        assert_eq!(ports_delegate().columns.len(), 8);
+        assert_eq!(ConnectionsDelegate::new().columns.len(), 7);
         assert_eq!(services_delegate().columns.len(), 5);
         assert_eq!(DockerDelegate::new().columns.len(), 5);
         assert_eq!(KubePodsDelegate::new().columns.len(), 6);
@@ -3855,5 +4252,94 @@ mod tests {
 
         sort_pods(&mut pods, 5, SortDir::Asc);
         assert_eq!(pods[0].node, "node-1");
+    }
+
+    fn conn(local: (&str, u16), remote: (&str, u16), pid: Option<u32>, cmd: &str) -> Connection {
+        Connection {
+            protocol: Protocol::Tcp,
+            state: sid_core::sys::SocketState::Established,
+            state_label: "ESTABLISHED".into(),
+            local_addr: local.0.into(),
+            local_port: local.1,
+            remote_addr: remote.0.into(),
+            remote_port: remote.1,
+            pid: pid.map(Pid::from_u32),
+            command: cmd.into(),
+        }
+    }
+
+    #[test]
+    fn socket_labels_bracket_ipv6_only() {
+        assert_eq!(socket_label("10.0.0.2", 443), "10.0.0.2:443");
+        assert_eq!(socket_label("fe80::1", 22), "[fe80::1]:22");
+        assert_eq!(socket_label("", 22), "—");
+    }
+
+    #[test]
+    fn cpu_reads_a_dash_until_the_second_sample() {
+        let u = ProcUsage {
+            cpu_pct: 12.34,
+            rss_bytes: 2048,
+        };
+        assert_eq!(cpu_label(Some(&u), false), "—");
+        assert_eq!(cpu_label(Some(&u), true), "12.3%");
+        assert_eq!(cpu_label(None, true), "—");
+        assert_eq!(mem_label(Some(&u)), "2.0 KB");
+        assert_eq!(mem_label(None), "—");
+    }
+
+    #[test]
+    fn filter_connections_matches_endpoint_state_process_or_exact_pid() {
+        let rows = vec![
+            conn(("10.0.0.2", 50000), ("93.184.216.34", 443), Some(7), "curl"),
+            conn(("10.0.0.2", 50001), ("1.1.1.1", 53), Some(8), "dig"),
+        ];
+        assert_eq!(filter_connections(&rows, "").len(), 2);
+        assert_eq!(filter_connections(&rows, "93.184").len(), 1);
+        assert_eq!(filter_connections(&rows, "DIG").len(), 1);
+        assert_eq!(filter_connections(&rows, "established").len(), 2);
+        assert_eq!(filter_connections(&rows, "7").len(), 1);
+    }
+
+    #[test]
+    fn sort_by_usage_orders_by_cpu_or_memory_with_unknown_owner_lowest() {
+        let mut usage = HashMap::new();
+        usage.insert(
+            Pid::from_u32(1),
+            ProcUsage {
+                cpu_pct: 5.0,
+                rss_bytes: 100,
+            },
+        );
+        usage.insert(
+            Pid::from_u32(2),
+            ProcUsage {
+                cpu_pct: 1.0,
+                rss_bytes: 900,
+            },
+        );
+        let mut rows = vec![
+            conn(("a", 1), ("b", 2), Some(1), "x"),
+            conn(("a", 1), ("b", 2), None, "y"),
+            conn(("a", 1), ("b", 2), Some(2), "z"),
+        ];
+        sort_by_usage(&mut rows, |c| c.pid, &usage, false, SortDir::Desc);
+        let order: Vec<_> = rows.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(order, ["x", "z", "y"]);
+        sort_by_usage(&mut rows, |c| c.pid, &usage, true, SortDir::Asc);
+        let order: Vec<_> = rows.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(order, ["y", "x", "z"]);
+    }
+
+    #[test]
+    fn sort_connections_orders_by_remote_and_pid() {
+        let mut rows = vec![
+            conn(("a", 1), ("9.9.9.9", 80), Some(5), "x"),
+            conn(("a", 1), ("1.1.1.1", 80), None, "y"),
+        ];
+        sort_connections(&mut rows, 1, SortDir::Asc);
+        assert_eq!(rows[0].remote_addr, "1.1.1.1");
+        sort_connections(&mut rows, 3, SortDir::Asc);
+        assert_eq!(rows[0].pid, None);
     }
 }
