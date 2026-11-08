@@ -287,7 +287,7 @@ impl GitProvider for Git2Provider {
             let url = repo
                 .find_remote(remote_name)
                 .ok()
-                .and_then(|r| r.url().map(String::from))
+                .and_then(|r| r.url().ok().map(String::from))
                 .unwrap_or_default();
             (url, repo.workdir().map(Path::to_path_buf))
         };

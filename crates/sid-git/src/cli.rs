@@ -241,7 +241,7 @@ fn remote_refs(repo: &git2::Repository, remote: &str) -> BTreeMap<String, git2::
     let mut m = BTreeMap::new();
     if let Ok(refs) = repo.references_glob(&format!("refs/remotes/{remote}/*")) {
         for r in refs.flatten() {
-            if let (Some(n), Some(t)) = (r.shorthand(), r.target()) {
+            if let (Some(n), Some(t)) = (r.shorthand().ok(), r.target()) {
                 m.insert(n.to_string(), t);
             }
         }
@@ -266,7 +266,7 @@ pub fn fetch(workdir: &Path, remote: &str, timeout: Duration) -> Result<FetchRep
         .map(|(n, _)| n.clone())
         .collect();
     let (ahead, behind) = match repo.head() {
-        Ok(h) if h.is_branch() => match h.shorthand() {
+        Ok(h) if h.is_branch() => match h.shorthand().ok() {
             Some(n) => ahead_behind(&repo, n)?,
             None => (None, None),
         },

@@ -76,7 +76,7 @@ fn cli_push_publishes_and_then_is_up_to_date() {
         .unwrap()
         .peel_to_commit()
         .unwrap();
-    assert_eq!(c.summary(), Some("add b"));
+    assert_eq!(c.summary().ok().flatten(), Some("add b"));
 
     assert!(p.push().unwrap().up_to_date);
 }

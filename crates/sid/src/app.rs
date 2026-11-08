@@ -695,11 +695,11 @@ impl AppState {
             return;
         }
         self.active_tab = tab;
-        if let Ok(mut settings) = self.store.settings() {
-            if settings.last_tab != tab.id() {
-                settings.last_tab = tab.id().to_string();
-                let _ = self.store.set_settings(&settings);
-            }
+        if let Ok(mut settings) = self.store.settings()
+            && settings.last_tab != tab.id()
+        {
+            settings.last_tab = tab.id().to_string();
+            let _ = self.store.set_settings(&settings);
         }
     }
 
