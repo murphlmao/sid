@@ -37,7 +37,7 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
 };
-use sid_core::git::{Branch, GitError, GitStatus, RepoSummary};
+use sid_core::git::{Branch, GitError, GitStatus, RefKind, RepoSummary};
 use sid_store::{DbConnection, Host, Scope, ViewFilters, WorkspaceId, WorkspaceMeta};
 
 use crate::app::{AppState, Tab};
@@ -48,10 +48,10 @@ use sid_ui::component::{
 };
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    Badge, BadgeTone, Button, ButtonSize, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List, Row,
-    Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput, TypeRole, Typography as _,
-    h_flex, scaled, sortable_th,
+    Badge, BadgeTone, Button, ButtonSize, Card, CardGrid, ColumnWidth, Confirm, ConfirmArm,
+    ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton,
+    InputState, List, Row, Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput,
+    TypeRole, Typography as _, h_flex, scaled, sortable_th, v_flex,
 };
 
 // Workspaces v2 git UI (Changes / Stash / Branches / Log): pure helpers, the background
@@ -852,7 +852,11 @@ impl AppState {
             && matches!(self.workspaces.shape, Some(WorkspaceShape::Repo))
         {
             match self.workspaces.sub_tab {
-                DetailSubTab::Overview => {}
+                DetailSubTab::Overview => {
+                    self.ensure_stash_loaded(cx);
+                    self.ensure_log_loaded(cx);
+                    self.ensure_remotes_loaded(cx);
+                }
                 DetailSubTab::Changes => self.ensure_status_loaded(cx),
                 DetailSubTab::Branches => self.ensure_branches_loaded(cx),
                 DetailSubTab::Stash => self.ensure_stash_loaded(cx),
@@ -869,8 +873,8 @@ impl AppState {
             .flex_row()
             .flex_1()
             .min_h(px(0.))
-            .gap_2()
-            .p_3()
+            .gap(sid_ui::SECTION_GAP.len())
+            .p(sid_ui::PAGE_GUTTER.len())
             .child(self.workspaces_list_panel(cx))
             .child(self.workspaces_detail_panel(cx))
             .into_any_element()
@@ -1914,27 +1918,38 @@ impl AppState {
             })
             .collect();
 
-        let empty = (count == 0).then(|| {
+        let body: AnyElement = if count == 0 {
             div()
                 .text_meta(t)
-                .child("no hosts or connections in this workspace's own layer")
-        });
-
-        // Capped to the reading column (`.interface-design/system.md`'s `max_w(880px)`
-        // rule) and `w_full` rather than left bare: this detail pane spans the whole
-        // window minus the sidebar, and `Row` is `w_full` — so an uncapped row spread
-        // its label and origin badge 1587px apart at 1920px wide (round-3 gate). `w_full`
-        // lets the column fill up to the cap instead of shrinking to its content, and
-        // the containing `v_flex` never centers it, so the column stays anchored to the
-        // panel's left edge exactly like Settings' content gutter.
-        Card::section("Scope items").count(count).child(
-            div().w_full().max_w(scaled(880.)).child(
-                List::stack()
-                    .children(host_rows)
-                    .children(conn_rows)
-                    .children(empty),
-            ),
-        )
+                .child("This workspace has no hosts or connections of its own.")
+                .into_any_element()
+        } else {
+            // Hosts and connections side by side at wide widths (a card each), one
+            // column when narrow, instead of one row stretched across the window.
+            CardGrid::new()
+                .min_col(px(420.))
+                .max_col(px(900.))
+                .when(!host_rows.is_empty(), |g| {
+                    g.child(
+                        Card::new()
+                            .w_full()
+                            .title("Hosts")
+                            .count(host_rows.len())
+                            .child(List::stack().children(host_rows)),
+                    )
+                })
+                .when(!conn_rows.is_empty(), |g| {
+                    g.child(
+                        Card::new()
+                            .w_full()
+                            .title("Connections")
+                            .count(conn_rows.len())
+                            .child(List::stack().children(conn_rows)),
+                    )
+                })
+                .into_any_element()
+        };
+        Card::section("Scope items").count(count).child(body)
     }
 
     /// The detail pane's own top row: the workspace's name, and whatever switches or
@@ -1954,6 +1969,7 @@ impl AppState {
             // its trailing control happens to be (a `Badge` here, a `SegmentedControl`
             // there) puts the detail pane's first panel at a different y per workspace.
             .h(scaled(40.))
+            .px(sid_ui::CARD_PADDING.len())
             .justify_between()
             .gap_3()
             // A pane heading is the one place the scale goes above body text — 16px
@@ -2070,10 +2086,9 @@ impl AppState {
                 Fetch::Done(Ok(branches)) => Some(branches.len()),
                 _ => None,
             },
-            DetailSubTab::Changes => match self.workspaces.status.as_ref()? {
-                Fetch::Done(Ok(status)) => Some(status.files.len()),
-                _ => None,
-            },
+            // The Changes view carries its own per-group count pills; a panel count
+            // on top of them read as the same number twice.
+            DetailSubTab::Changes => None,
             DetailSubTab::Stash => match self.workspaces.v2.stash.as_ref()? {
                 Fetch::Done(Ok(entries)) => Some(entries.len()),
                 _ => None,
@@ -2110,60 +2125,250 @@ impl AppState {
     }
 
     fn repo_overview(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
+        let theme_owned = theme::active(cx).clone();
+        let t = &theme_owned;
         let (muted, warning, danger) = (t.muted, t.warning, t.danger);
-
-        let summary_view: AnyElement = match self.workspaces.summaries.get(&meta.id) {
-            None | Some(Fetch::Loading) => text_cell(t, muted, "loading git status…"),
-            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
-            Some(Fetch::Done(Ok(s))) => {
-                let branch = s.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
-                let last_commit = s
-                    .last_commit
-                    .as_ref()
-                    .map(|c| {
-                        format!(
-                            "{} · {}",
-                            c.summary,
-                            commit_age(now_secs(), c.timestamp_secs)
-                        )
-                    })
-                    .unwrap_or_else(|| "no commits yet".to_string());
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    // The same chips the fleet table and the list row use, so one repo
-                    // reads identically wherever it is shown.
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .flex_wrap()
-                            .child(Badge::new(branch))
-                            .child(dirty_badge(s.staged + s.unstaged + s.untracked))
-                            .child(ahead_behind_cell(t, s.ahead, s.behind)),
-                    )
-                    .child(text_cell(
-                        t,
-                        if s.is_clean() { muted } else { warning },
-                        format!(
-                            "{} staged · {} unstaged · {} untracked",
-                            s.staged, s.unstaged, s.untracked
-                        ),
-                    ))
-                    .child(text_cell(t, muted, last_commit))
-                    .into_any_element()
-            }
-        };
 
         let hosts = self.workspaces.overview_hosts.clone();
         let connections = self.workspaces.overview_connections.clone();
+        let scope = self.scope_items_section(&meta.id, &hosts, &connections, cx);
+
+        let s = match self.workspaces.summaries.get(&meta.id) {
+            None | Some(Fetch::Loading) => {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap(sid_ui::SECTION_GAP.len())
+                    .child(text_cell(t, muted, "Loading git status…"))
+                    .child(scope)
+                    .into_any_element();
+            }
+            Some(Fetch::Done(Err(e))) => {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap(sid_ui::SECTION_GAP.len())
+                    .child(text_cell(t, danger, e.to_string()))
+                    .child(scope)
+                    .into_any_element();
+            }
+            Some(Fetch::Done(Ok(s))) => s.clone(),
+        };
+
+        let body_line = |ink: u32, text: String| {
+            div()
+                .min_w(px(0.))
+                .clamp_one_line()
+                .text_body(t)
+                .text_color(rgb(ink))
+                .child(text)
+        };
+        let meta_line = |text: String| {
+            div()
+                .min_w(px(0.))
+                .clamp_one_line()
+                .text_meta(t)
+                .child(text)
+        };
+
+        // Branch + ahead/behind.
+        let branch = s.branch.clone().unwrap_or_else(|| "(detached HEAD)".into());
+        let tracking = match (s.ahead, s.behind) {
+            (None, None) => "No upstream branch is set.".to_string(),
+            (a, b) => format!(
+                "{} ahead, {} behind its upstream.",
+                a.unwrap_or(0),
+                b.unwrap_or(0)
+            ),
+        };
+        let branch_card = Card::new().title("Branch").child(
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .child(Badge::new(branch))
+                        .when(s.ahead.is_some() || s.behind.is_some(), |h| {
+                            h.child(ahead_behind_cell(t, s.ahead, s.behind))
+                        }),
+                )
+                .child(meta_line(tracking)),
+        );
+
+        // Last commit.
+        let now = now_secs();
+        let commit_card = Card::new()
+            .title("Last commit")
+            .child(match &s.last_commit {
+                Some(c) => v_flex()
+                    .gap_2()
+                    .child(body_line(t.fg, c.summary.clone()))
+                    .child(meta_line(format!(
+                        "{} · {}",
+                        c.author_name,
+                        commit_age(now, c.timestamp_secs)
+                    )))
+                    .child(
+                        div()
+                            .text_mono_meta(t)
+                            .text_color(rgb(muted))
+                            .child(c.oid.chars().take(8).collect::<String>()),
+                    )
+                    .into_any_element(),
+                None => meta_line("No commits yet.".into()).into_any_element(),
+            });
+
+        // Working tree, with the shortcuts.
+        let busy = self.workspaces.v2.busy.is_some();
+        let tree_card = Card::new().title("Working tree").child(
+            v_flex()
+                .gap_2()
+                .child(body_line(
+                    if s.is_clean() { muted } else { warning },
+                    if s.is_clean() {
+                        "Clean — nothing to commit.".to_string()
+                    } else {
+                        format!(
+                            "{} staged · {} unstaged · {} untracked",
+                            s.staged, s.unstaged, s.untracked
+                        )
+                    },
+                ))
+                .when(!s.is_clean(), |d| {
+                    d.child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new(
+                                    "ws-ov-review",
+                                    if s.staged > 0 {
+                                        "Review and commit"
+                                    } else {
+                                        "Review changes"
+                                    },
+                                )
+                                .small()
+                                .primary()
+                                .on_click(cx.listener(
+                                    |this, _ev: &ClickEvent, _w, cx| {
+                                        this.workspaces.sub_tab = DetailSubTab::Changes;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .when(s.unstaged + s.untracked > 0, |h| {
+                                h.child(
+                                    Button::new("ws-ov-stage", "Stage all")
+                                        .small()
+                                        .ghost()
+                                        .disabled(busy)
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                            this.stage_all(cx)
+                                        })),
+                                )
+                            }),
+                    )
+                }),
+        );
+
+        // Remotes.
+        let remotes_card = Card::new()
+            .title("Remotes")
+            .child(match &self.workspaces.v2.remotes {
+                Some(Fetch::Done(Ok(names))) if !names.is_empty() => v_flex()
+                    .gap_1()
+                    .children(names.iter().map(|n| {
+                        div()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_mono(t)
+                            .text_color(rgb(t.fg))
+                            .child(n.clone())
+                    }))
+                    .into_any_element(),
+                Some(Fetch::Done(Ok(_))) => {
+                    meta_line("No remotes configured.".into()).into_any_element()
+                }
+                Some(Fetch::Done(Err(e))) => meta_line(e.to_string()).into_any_element(),
+                _ => meta_line("Loading…".into()).into_any_element(),
+            });
+
+        // Recent tags, from the first page of history.
+        let tags_card = Card::new()
+            .title("Recent tags")
+            .child(match &self.workspaces.v2.log {
+                Some(Fetch::Done(Ok(log))) => {
+                    let mut tags: Vec<String> = Vec::new();
+                    for e in &log.entries {
+                        for r in &e.refs {
+                            if r.kind == RefKind::Tag && !tags.contains(&r.name) {
+                                tags.push(r.name.clone());
+                            }
+                        }
+                    }
+                    tags.drain(6.min(tags.len())..);
+                    if tags.is_empty() {
+                        meta_line("No tags in recent history.".into()).into_any_element()
+                    } else {
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .children(
+                                tags.into_iter()
+                                    .map(|n| Badge::new(n).tone(BadgeTone::Warning)),
+                            )
+                            .into_any_element()
+                    }
+                }
+                _ => meta_line("Loading…".into()).into_any_element(),
+            });
+
+        // Stash.
+        let stash_n = match &self.workspaces.v2.stash {
+            Some(Fetch::Done(Ok(v))) => Some(v.len()),
+            _ => None,
+        };
+        let stash_card = Card::new().title("Stash").child(
+            v_flex()
+                .gap_2()
+                .child(meta_line(match stash_n {
+                    Some(0) => "Nothing stashed.".to_string(),
+                    Some(1) => "1 stashed change set.".to_string(),
+                    Some(n) => format!("{n} stashed change sets."),
+                    None => "Loading…".to_string(),
+                }))
+                .when(stash_n.is_some_and(|n| n > 0), |d| {
+                    d.child(
+                        div().child(
+                            Button::new("ws-ov-stash", "Open stash")
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                    this.workspaces.sub_tab = DetailSubTab::Stash;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                }),
+        );
+
         div()
             .flex()
             .flex_col()
-            .gap_4()
-            .child(summary_view)
-            .child(self.scope_items_section(&meta.id, &hosts, &connections, cx))
+            .gap(sid_ui::SECTION_GAP.len())
+            .child(
+                CardGrid::new()
+                    .min_col(px(340.))
+                    .max_col(px(700.))
+                    .child(branch_card.w_full())
+                    .child(commit_card.w_full())
+                    .child(tree_card.w_full())
+                    .child(remotes_card.w_full())
+                    .child(tags_card.w_full())
+                    .child(stash_card.w_full()),
+            )
+            .child(scope)
             .into_any_element()
     }
 
