@@ -51,7 +51,7 @@ use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, Card, CardGrid, ColumnWidth, Confirm, ConfirmArm,
     ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton,
     InputState, List, Row, Segment, SegmentSelect, SegmentedControl, StyledExt as _, TextInput,
-    TypeRole, Typography as _, h_flex, scaled, sortable_th, v_flex,
+    Tipped as _, TypeRole, Typography as _, h_flex, scaled, sortable_th, v_flex,
 };
 
 // Workspaces v2 git UI (Changes / Stash / Branches / Log): pure helpers, the background
@@ -530,16 +530,16 @@ impl FleetDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("repo", "Repo").sortable(),
-                    ColumnWidth::Min(150.),
+                    ColumnWidth::grow().min_width(160.).weight(1.),
                 ),
                 // Wide enough for a real `feature/…` branch name, not just `main`.
                 (
                     Column::new("branch", "Branch").sortable(),
-                    ColumnWidth::Min(190.),
+                    ColumnWidth::grow().min_width(180.).weight(1.2),
                 ),
                 (
                     Column::new("dirty", "Dirty").sortable(),
-                    ColumnWidth::Fixed(90.),
+                    ColumnWidth::Fixed(100.),
                 ),
                 // Fixed widths are the header's width, not the cell's: upstream lays the
                 // label and the sort chevron in one `justify_between` row, so a column
@@ -554,7 +554,7 @@ impl FleetDelegate {
                 ),
                 (
                     Column::new("path", "Path").sortable(),
-                    ColumnWidth::grow().min_width(240.),
+                    ColumnWidth::grow().min_width(200.).weight(2.5),
                 ),
             ]),
             active_sort: None,
@@ -672,7 +672,20 @@ impl TableDelegate for FleetDelegate {
                     // The chip a fleet of forty repos is scanned by: green means nothing
                     // to do, amber means work is pending. Never accent — accent is
                     // "engage", and a status chip is not an invitation to click.
-                    Fetch::Done(Ok(s)) => dirty_badge(s.staged + s.unstaged + s.untracked),
+                    // Content-sized (`h_flex` does not stretch), so the chip is a chip
+                    // and not a bar the width of its column.
+                    Fetch::Done(Ok(s)) => {
+                        let n = s.staged + s.unstaged + s.untracked;
+                        h_flex()
+                            .child(if n == 0 {
+                                dirty_badge(0)
+                            } else {
+                                Badge::new(format!("{n} dirty"))
+                                    .tone(BadgeTone::Warning)
+                                    .into_any_element()
+                            })
+                            .into_any_element()
+                    }
                     Fetch::Done(Err(e)) => words(muted, e.to_string().into()),
                 },
                 3 => match &row.fetch {
@@ -707,6 +720,43 @@ impl TableDelegate for FleetDelegate {
             .min_w(px(0.))
             .child(content)
     }
+}
+
+/// How many Overview cards share a line at `viewport_w`: as many as fit at 340px, but
+/// only a count that divides `cards` evenly, so the last line is as full as the first
+/// (six cards are 3+3 or 2+2+2, never 4+2 with a hole). The pane is the window less the
+/// workspace list (~320px) and the page gutters.
+fn overview_columns(viewport_w: f32, cards: usize) -> usize {
+    let pane = (viewport_w - 320. - 112.).max(0.);
+    let fit = ((pane + 16.) / (340. + 16.)).floor().max(1.) as usize;
+    (1..=fit.min(cards))
+        .rev()
+        .find(|n| cards.is_multiple_of(*n))
+        .unwrap_or(1)
+}
+
+/// `cards` laid out `cols` to a line, every card on a line sharing it equally and the
+/// lines stretching to the pane — `CardGrid`'s wrap-and-cap leaves a short last line
+/// stranded at its cap, which is the hole this replaces.
+fn even_card_rows(cards: Vec<AnyElement>, cols: usize) -> impl IntoElement {
+    let cols = cols.max(1);
+    let mut rows = v_flex().gap(sid_ui::SECTION_GAP.len());
+    let mut it = cards.into_iter().peekable();
+    while it.peek().is_some() {
+        let line: Vec<AnyElement> = it.by_ref().take(cols).collect();
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_row()
+                .w_full()
+                .gap(sid_ui::SECTION_GAP.len())
+                .children(
+                    line.into_iter()
+                        .map(|c| div().flex().flex_1().min_w_0().child(c)),
+                ),
+        );
+    }
+    rows
 }
 
 // ---- state --------------------------------------------------------------------------
@@ -758,6 +808,9 @@ pub struct WorkspacesTabState {
     /// Bumped on every umbrella (re)selection/refresh; guards the concurrent per-repo
     /// fetch — see the module doc.
     fleet_generation: u64,
+    /// The window's width at the last render — the Overview's card grid picks its column
+    /// count from it (see `overview_columns`); a stale frame costs one reflow, nothing more.
+    viewport_w: f32,
 
     // ---- `+ add` inline path input ---------------------------------------------------
     add_open: bool,
@@ -813,6 +866,7 @@ impl WorkspacesTabState {
             detail_generation: 0,
             fleet: None,
             fleet_generation: 0,
+            viewport_w: 1280.,
             add_open: false,
             add_input: Some(
                 cx.new(|cx| InputState::new(window, cx).placeholder("~/path/to/workspace")),
@@ -842,6 +896,7 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.workspaces.viewport_w = f32::from(window.viewport_size().width);
         self.ensure_workspaces_widgets(window, cx);
         self.ensure_git_v2_widgets(window, cx);
         if !self.workspaces.loaded {
@@ -2314,10 +2369,16 @@ impl AppState {
                         h_flex()
                             .gap_1()
                             .flex_wrap()
-                            .children(
-                                tags.into_iter()
-                                    .map(|n| Badge::new(n).tone(BadgeTone::Warning)),
-                            )
+                            .children(tags.into_iter().enumerate().map(|(i, n)| {
+                                // Content-sized up to a cap; past it the badge
+                                // ellipsises and the tooltip carries the full name.
+                                div()
+                                    .id(("ws-ov-tag", i))
+                                    .flex_none()
+                                    .max_w(scaled(220.))
+                                    .tip(n.clone())
+                                    .child(Badge::new(n).tone(BadgeTone::Warning))
+                            }))
                             .into_any_element()
                     }
                 }
@@ -2340,7 +2401,7 @@ impl AppState {
                 }))
                 .when(stash_n.is_some_and(|n| n > 0), |d| {
                     d.child(
-                        div().child(
+                        h_flex().child(
                             Button::new("ws-ov-stash", "Open stash")
                                 .small()
                                 .ghost()
@@ -2357,17 +2418,17 @@ impl AppState {
             .flex()
             .flex_col()
             .gap(sid_ui::SECTION_GAP.len())
-            .child(
-                CardGrid::new()
-                    .min_col(px(340.))
-                    .max_col(px(700.))
-                    .child(branch_card.w_full())
-                    .child(commit_card.w_full())
-                    .child(tree_card.w_full())
-                    .child(remotes_card.w_full())
-                    .child(tags_card.w_full())
-                    .child(stash_card.w_full()),
-            )
+            .child(even_card_rows(
+                vec![
+                    branch_card.w_full().h_full().into_any_element(),
+                    commit_card.w_full().h_full().into_any_element(),
+                    tree_card.w_full().h_full().into_any_element(),
+                    remotes_card.w_full().h_full().into_any_element(),
+                    tags_card.w_full().h_full().into_any_element(),
+                    stash_card.w_full().h_full().into_any_element(),
+                ],
+                overview_columns(self.workspaces.viewport_w, 6),
+            ))
             .child(scope)
             .into_any_element()
     }
@@ -2426,6 +2487,16 @@ mod tests {
     /// a renderer. Same trick `sid_ui::styled`'s own tests use.
     fn style_of(mut d: gpui::Div) -> gpui::StyleRefinement {
         d.style().clone()
+    }
+
+    #[test]
+    fn overview_columns_always_divide_the_cards_evenly() {
+        // Six cards: 3+3 on a wide window, 2+2+2 on a mid one, a stack when narrow —
+        // never 4+2, which leaves the last line short.
+        assert_eq!(overview_columns(1920., 6), 3);
+        assert_eq!(overview_columns(1280., 6), 2);
+        assert_eq!(overview_columns(900., 6), 1);
+        assert_eq!(overview_columns(0., 6), 1);
     }
 
     #[test]
@@ -2729,13 +2800,14 @@ mod tests {
     fn the_fleet_gives_every_spare_pixel_to_the_path_column() {
         // The whole point of the migration: `Path` was 280 fixed pixels truncating
         // `/home/murphy/vcs/…` while ~1350px sat unused to its right. The numeric columns
-        // keep their declared widths at every viewport; `Path` absorbs the difference.
+        // keep their declared widths at every viewport; the three text columns (repo,
+        // branch, path) share the difference, `Path` taking the biggest share.
         let mut cols = FleetDelegate::empty().columns;
         for viewport in [1000., 1400., 1700., 2600.] {
             cols.sync(viewport, sid_ui::UiScale::DEFAULT);
             let widths = fleet_widths(&cols);
-            assert_eq!(&widths[2..5], &[90., 150., 120.], "{viewport}px: numerics");
-            assert!(widths[5] >= 240., "{viewport}px: path floor");
+            assert_eq!(&widths[2..5], &[100., 150., 120.], "{viewport}px: numerics");
+            assert!(widths[5] >= 200., "{viewport}px: path floor");
             let total: f32 = widths.iter().sum();
             assert!(
                 (total - (viewport - sid_ui::table::TABLE_CHROME)).abs() < 0.01,
@@ -2750,7 +2822,10 @@ mod tests {
         // stays legible and the table scrolls, rather than squeezing `Path` to nothing.
         let mut cols = FleetDelegate::empty().columns;
         cols.sync(600., sid_ui::UiScale::DEFAULT);
-        assert_eq!(fleet_widths(&cols), vec![150., 190., 90., 150., 120., 240.]);
+        assert_eq!(
+            fleet_widths(&cols),
+            vec![160., 180., 100., 150., 120., 200.]
+        );
     }
 
     #[test]
