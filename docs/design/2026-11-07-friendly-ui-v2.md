@@ -187,8 +187,8 @@ and lifts surfaces a step so cards read as objects:
 | `Bg` | `bg` | – | – | canvas, sidebars |
 | `Surface` | `surface` | `border` | `0 1 2 /.30` + `0 2 8 /.18` · light `0 1 2 /.06` + `0 2 8 /.05` | cards, panels |
 | `Well` | `well` | `border` | – (recess) | fields, editors, terminals |
-| `Floating` (new) | raised surface | `border` | `0 2 4 /.30` + `0 8 24 /.45` · light `/.06` + `/.12` | menus, popovers, toasts, tooltips |
-| `Overlay` | `surface` | `border` | `0 16 48 /.60` · light `/.20` | modals (over the scrim) |
+| `Floating` (new) | raised surface (dark) · `surface` (light) | `border` | `0 2 4 /.30` + `0 8 24 /.45` · light `/.06` + `/.12` | menus, popovers, palettes, tooltips |
+| `Overlay` | `surface` | `border` | `0 4 8 /.30` + `0 16 48 /.60` · light `/.06` + `/.20` | modals (over the scrim) |
 
 Shadow ink is a new palette token, `Theme::shadow` (`#000000` on dark palettes, a
 tinted `#1d1a33` on cosmos-light so the shadow is part of the palette, not grey
@@ -287,10 +287,13 @@ Changed: `Button`/`IconButton` (Sm/Md/Lg = 32/36/44, Control role labels, senten
 8px radius), `TextInput`/`SearchInput` (32/36/44 heights), `Card` (12px radius, 16px
 padding, shadow, Heading-role header + count pill, 52px panel header), `Row` (44px
 min, compact 36, accent marker when selected), `Modal` (16px radius, overlay shadow,
-rise-in), `Toast` (12px radius, floating shadow, rise-in), `EmptyState` (v2 shape: 40px
-icon in a soft disc, Title headline, Body guidance, Lg primary button, optional
-secondary), `Badge` (pill), `SegmentedControl` (track sizes follow buttons),
-`focus_ring` (halo).
+rise-in), `Toast` (an *inline* strip, so 8px radius and no shadow; Heading title,
+Body message, rise-in keyed by its message), `EmptyState` (v2 shape: 22px icon on a
+48px soft disc, Title headline, Body guidance, the caller's Lg primary button, optional
+secondary; `compact()` for small panels), `Badge` (6px corner, pills stay pills),
+`SegmentedControl` (track = the button of its size; a white chip on the light track),
+`GridCard` (12px radius, 16px padding, Surface shadow, 16px grid gap), `Toolbar`
+(same 52px strip as a panel header), `focus_ring` (halo).
 
 New: `Tree` (expand/collapse, keyboard nav, selection, lazy children), `ContextMenu`
 (sid-styled builder over `PopupMenu`, icons, danger items, headings), `Checkbox`,
@@ -464,6 +467,8 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   strip height (`TAB_STRIP_H`, L1551/L1975) should become 40.
 - **Status bar**: 32px tall, items in `Meta`, the secrets word gets an icon (ShieldCheck /
   Warning) so it does not read as a stray cyan word.
+- **Startup** (`main.rs`): call `sid_ui::motion::init(cx)` explicitly beside
+  `theme::install` (which calls it today so `SID_REDUCED_MOTION` already works).
 - **Cheat sheet** (L1415–1445): `Modal` instead of the hand-built overlay; `Kbd` rows.
 - **Command palette** (`command_palette.rs`): use `Elevation::Floating` + `Radius::Lg`,
   `motion::enter(.., Enter::Rise, FAST)`, result rows as `Row::compact()` with icon +

@@ -35,7 +35,7 @@ palettes keep an edge. `crates/sid-ui/src/elevation.rs` names the rungs:
 | `Bg` | `bg` | – | – | canvas, sidebars |
 | `Surface` | `surface` | `border` | small | cards, panels |
 | `Well` | `well` | `border` | – | fields, editors, terminals (a recess) |
-| `Floating` | raised surface | `border` | medium | menus, popovers, toasts, tooltips |
+| `Floating` | raised surface | `border` | medium | menus, popovers, the command palette, tooltips |
 | `Overlay` | `surface` | `border` | large | modals, over the scrim |
 
 Shadow ink is `Theme::shadow` (black on dark palettes, tinted indigo on cosmos-light);

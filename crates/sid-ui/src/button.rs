@@ -47,7 +47,9 @@ use gpui_component::{
 };
 
 use crate::bridge::{contrast_ink, hover_of, mix, pressed_of};
+use crate::copy::sentence_case;
 use crate::icon::Icon;
+use crate::metrics::{ICON_GAP, Radius, Rounded as _};
 use crate::scale::scaled;
 use crate::styled::h_flex;
 use crate::theme::{self, Theme};
@@ -89,16 +91,37 @@ pub const ALL_BUTTON_VARIANTS: &[ButtonVariant] = &[
     ButtonVariant::Danger,
 ];
 
-/// The two sizes sid uses. `Sm` is for row-level and toolbar actions, `Md` for a
-/// screen's primary action and for anything inside a form or a modal.
+/// The three control sizes. `Sm` is for row-level, table and toolbar actions, `Md` (the
+/// default) for anything in a form, a modal or a panel header, `Lg` for a screen's one
+/// primary action and an empty state's way out.
+///
+/// v2 (`docs/design/2026-11-07-friendly-ui-v2.md`): 32 / 36 / 44. v1's small control was
+/// 24px — most of the app's click targets — and its default 32. The floor is now the
+/// 32px minimum hit target ([`crate::metrics::MIN_HIT`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ButtonSize {
-    /// 24px tall, meta-rung label, 14px icon.
+    /// 24px tall — **inside a data-table cell only.** A `FillTable` row is a 32px
+    /// instrument row with 4px of cell padding, so its content box is 24px; anything
+    /// taller pokes out of the row. The one exception to [`crate::metrics::MIN_HIT`],
+    /// and the reason [`crate::ConfirmButton`] (the table's kill/stop control) defaults
+    /// to it.
+    Xs,
+    /// 32px tall, Label-rung (13px medium) label, 14px icon.
     Sm,
-    /// 32px tall, body-rung label, 16px icon.
+    /// 36px tall, Control-rung (15px medium) label, 16px icon.
     #[default]
     Md,
+    /// 44px tall, Control-rung label, 16px icon, wider padding.
+    Lg,
 }
+
+/// Every size, for the gallery and for exhaustive tests.
+pub const ALL_BUTTON_SIZES: &[ButtonSize] = &[
+    ButtonSize::Xs,
+    ButtonSize::Sm,
+    ButtonSize::Md,
+    ButtonSize::Lg,
+];
 
 impl ButtonSize {
     /// The `gpui-component` size that carries this size's box (height, padding,
@@ -106,8 +129,10 @@ impl ButtonSize {
     /// two rungs — a filter and the refresh button beside it have to line up.
     pub(crate) fn component(self) -> Size {
         match self {
+            ButtonSize::Xs => Size::XSmall,
             ButtonSize::Sm => Size::Small,
             ButtonSize::Md => Size::Medium,
+            ButtonSize::Lg => Size::Large,
         }
     }
 
@@ -119,8 +144,26 @@ impl ButtonSize {
     /// the scope switcher and the icon buttons beside it are one control tall.
     pub(crate) fn square(self) -> gpui::Pixels {
         match self {
-            ButtonSize::Sm => px(24.),
-            ButtonSize::Md => px(32.),
+            ButtonSize::Xs => px(24.),
+            ButtonSize::Sm => px(32.),
+            ButtonSize::Md => px(36.),
+            ButtonSize::Lg => px(44.),
+        }
+    }
+
+    /// The control's height in design pixels — the same box as [`ButtonSize::square`],
+    /// public so a screen can line a hand-built element up with a button row.
+    pub fn height(self) -> gpui::Pixels {
+        self.square()
+    }
+
+    /// A labelled button's horizontal padding at this size, in design pixels.
+    fn padding_x(self) -> f32 {
+        match self {
+            ButtonSize::Xs => 8.,
+            ButtonSize::Sm => 12.,
+            ButtonSize::Md => 14.,
+            ButtonSize::Lg => 18.,
         }
     }
 
@@ -129,7 +172,7 @@ impl ButtonSize {
     /// The glyph inside an icon button already scales — `gpui-component`'s `Size::Small`
     /// is `size_3p5()`, i.e. rems — so an absolute box here would clip its own icon the
     /// moment a user zoomed in.
-    fn edge(self) -> gpui::Rems {
+    pub(crate) fn edge(self) -> gpui::Rems {
         scaled(f32::from(self.square()))
     }
 
@@ -137,23 +180,25 @@ impl ButtonSize {
     /// inherited: the library's `Medium` maps to `text_base` (16px), which is a rung
     /// sid's ladder does not have.
     ///
-    /// A button label is content the user is about to act on, so `Md` is [`Body`]; the
-    /// dense row-level `Sm` drops to the meta rung to sit level with the row's chips.
-    /// Only the *measurement* comes from the role — the ink is the variant's paint.
+    /// v2: [`Control`] (15px medium) for `Md`/`Lg` — body-sized, a weight up, so a
+    /// control's words read as something to press — and [`Label`] (13px medium) for the
+    /// dense `Sm`. Only the *measurement* comes from the role; the ink is the variant's
+    /// paint.
     ///
-    /// [`Body`]: crate::typography::TypeRole::Body
+    /// [`Control`]: crate::typography::TypeRole::Control
+    /// [`Label`]: crate::typography::TypeRole::Label
     pub const fn role(self) -> TypeRole {
         match self {
-            ButtonSize::Sm => TypeRole::Meta,
-            ButtonSize::Md => TypeRole::Body,
+            ButtonSize::Xs | ButtonSize::Sm => TypeRole::Label,
+            ButtonSize::Md | ButtonSize::Lg => TypeRole::Control,
         }
     }
 
     /// The leading icon's size.
     fn icon(self) -> Size {
         match self {
-            ButtonSize::Sm => Size::Small,
-            ButtonSize::Md => Size::Medium,
+            ButtonSize::Xs | ButtonSize::Sm => Size::Small,
+            ButtonSize::Md | ButtonSize::Lg => Size::Medium,
         }
     }
 }
@@ -466,10 +511,15 @@ impl RenderOnce for Button {
         let interactive = state.is_interactive();
 
         let button = shell(cx, self.id, &paint, size, interactive, self.tab_index)
+            // The library's `Size` ladder tops out at 32px (`Medium` and `Large` are
+            // both `h_8`), so v2's box is stated here; the instance style is applied
+            // after the library's own, so it wins.
+            .h(size.edge())
+            .px(scaled(size.padding_x()))
             .when(self.full_width, |this| this.w_full())
             .child(
                 h_flex()
-                    .gap_1p5()
+                    .gap(ICON_GAP.len())
                     .when(state.shows_spinner(), |this| {
                         this.child(
                             Spinner::new()
@@ -490,7 +540,9 @@ impl RenderOnce for Button {
                             .flex_none()
                             .text_role(size.role(), &theme)
                             .text_color(rgb(paint.ink))
-                            .child(self.label),
+                            // v2 copy voice: a label is UI vocabulary, so the button owns
+                            // its casing (`"add connection"` renders `Add connection`).
+                            .child(sentence_case(&self.label)),
                     )
                     .when_some(self.trailing, |this, icon| {
                         this.child(icon.el().with_size(size.icon()).text_color(rgb(paint.ink)))
@@ -686,6 +738,9 @@ fn shell(
         .border_1()
         .border_color(colour(paint.border))
         .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
+        // v2 control corner — stated rather than left to the library's `radius`, so a
+        // button and a field beside it share one curve whatever the bridge says.
+        .corners(Radius::Md)
         .with_size(size.component())
         .tab_index(tab_index)
         .tab_stop(interactive)
@@ -989,8 +1044,17 @@ mod tests {
 
     #[test]
     fn the_small_size_is_smaller_in_every_measure() {
+        assert!(ButtonSize::Xs.square() < ButtonSize::Sm.square());
         assert!(ButtonSize::Sm.square() < ButtonSize::Md.square());
+        // The in-table size fits a 32px table row's 24px content box.
+        assert_eq!(ButtonSize::Xs.square(), px(24.));
+        // Everything else clears the hit-target floor.
+        for size in [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg] {
+            assert!(size.square() >= crate::metrics::MIN_HIT, "{size:?}");
+        }
+        assert!(ButtonSize::Md.square() < ButtonSize::Lg.square());
         assert!(ButtonSize::Sm.role().size() < ButtonSize::Md.role().size());
+        assert!(ButtonSize::Sm.padding_x() < ButtonSize::Lg.padding_x());
         assert_eq!(ButtonSize::Sm.component(), Size::Small);
         assert_eq!(ButtonSize::Md.component(), Size::Medium);
     }

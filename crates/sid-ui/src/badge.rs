@@ -20,6 +20,7 @@ use gpui::{
 use gpui_component::{Sizable as _, tag::Tag};
 
 use crate::bridge::{contrast_ink, mix};
+use crate::metrics::{Radius, Rounded as _};
 use crate::styled::StyledExt as _;
 use crate::theme::{self, Theme};
 use crate::typography::Typography;
@@ -219,7 +220,15 @@ impl RenderOnce for Badge {
 
         Tag::custom(fill, rgb(paint.ink).into(), rgb(paint.border).into())
             .small()
-            .map(|tag| if self.pill { tag.rounded_full() } else { tag })
+            // v2: badges take the `Sm` corner (6px) rather than the library tag's; a pill is
+            // still a pill.
+            .map(|tag| {
+                if self.pill {
+                    tag.rounded_full()
+                } else {
+                    tag.corners(Radius::Sm)
+                }
+            })
             // The label carries the badge's own type rather than inheriting: a badge is
             // an orientation mark, so it sits on the meta rung wherever it is dropped.
             // The ink is the tone's, not the role's — that is the whole point of a tone.

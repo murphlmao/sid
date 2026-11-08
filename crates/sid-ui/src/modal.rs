@@ -86,9 +86,12 @@ use gpui_component::FocusTrapElement as _;
 
 use crate::bridge::SCRIM;
 use crate::button::{ButtonSize, IconButton};
+use crate::copy::sentence_case;
 use crate::elevation::Elevation;
 use crate::icon::Icon;
 use crate::kbd::Kbd;
+use crate::metrics::{CONTROL_GAP, Radius, Rounded as _, Space};
+use crate::motion::{self, Enter};
 use crate::scale::UiScale;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme::{self, Theme};
@@ -324,8 +327,8 @@ impl RenderOnce for Modal {
             .w_full()
             .flex_none()
             .gap_3()
-            .px_4()
-            .py_3()
+            .px(Space::X5.len())
+            .py(Space::X4.len())
             .hairline_b(&theme)
             .child(
                 div()
@@ -333,7 +336,8 @@ impl RenderOnce for Modal {
                     .min_w_0()
                     .clamp_one_line()
                     .text_title(&theme)
-                    .child(self.title),
+                    // v2 copy voice: a title is UI vocabulary; the panel owns its casing.
+                    .child(sentence_case(&self.title)),
             )
             .when_some(self.on_dismiss, |this, on_dismiss| {
                 this.child(
@@ -351,8 +355,8 @@ impl RenderOnce for Modal {
             .id(body_id)
             .w_full()
             .min_h_0()
-            .gap_3()
-            .p_4()
+            .gap(Space::X4.len())
+            .p(Space::X5.len())
             .overflow_y_scroll()
             .children(self.children);
 
@@ -360,7 +364,7 @@ impl RenderOnce for Modal {
             .w(geometry.width)
             .max_h(geometry.max_height)
             .elevation(Elevation::Overlay, &theme)
-            .rounded_lg()
+            .corners(Radius::Xl)
             // The panel states its own type: a modal is mounted from wherever the app
             // happened to be painting, and the fields inside it must not inherit that.
             .text_body(&theme)
@@ -375,8 +379,8 @@ impl RenderOnce for Modal {
                         .flex_none()
                         .justify_between()
                         .gap_3()
-                        .px_4()
-                        .py_3()
+                        .px(Space::X5.len())
+                        .py(Space::X4.len())
                         .hairline_t(&theme)
                         .child(
                             div()
@@ -385,14 +389,29 @@ impl RenderOnce for Modal {
                                 .overflow_hidden()
                                 .when_some(hint, |this, verb| this.child(key_hint(&theme, verb))),
                         )
-                        .child(h_flex().flex_none().gap_2().children(self.footer)),
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .gap(CONTROL_GAP.len())
+                                .children(self.footer),
+                        ),
                 )
             });
         panel.style().refine(&self.style);
 
         // See the module docs. `tab_group` groups the panel's stops; `focus_trap` is what
         // makes Tab wrap at the ends of that group instead of walking out of the modal.
-        panel.tab_group().focus_trap(trap_id, &trap)
+        let trapped = panel.tab_group().focus_trap(trap_id, &trap);
+        // v2 motion: the panel settles up into place over `SLOW` instead of appearing in
+        // one frame. Keyed by the modal's id, so it plays once per opening; under reduced
+        // motion `enter` hands the panel back untouched.
+        motion::enter(
+            SharedString::from(format!("{}-enter", self.id)),
+            Enter::Rise,
+            motion::SLOW,
+            cx,
+            div().child(trapped),
+        )
     }
 }
 

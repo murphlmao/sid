@@ -291,11 +291,14 @@ pub fn theme_config(t: &Theme) -> ThemeConfig {
         font_family: None,
         mono_font_family: None,
         mono_font_size: None,
-        // `rounded_md` — the corner spec every sid row/chip/card already uses.
-        radius: Some(6),
-        radius_lg: Some(8),
-        // Design law: depth is borders + surface shifts. No shadows, anywhere.
-        shadow: Some(false),
+        // Design system v2 corners (`crate::metrics::Radius`): `Md` (8) for controls,
+        // `Lg` (12) for the library's larger surfaces (popovers, menus, dialogs).
+        radius: Some(8),
+        radius_lg: Some(12),
+        // v2 amended "no shadows": things that float get a soft shadow. This turns the
+        // library's own on for its popovers and menus; sid's buttons still opt out
+        // per-variant (`button.rs`), and sid's own surfaces use `crate::elevation`.
+        shadow: Some(true),
         colors: config_colors(t),
         // Left at the library's per-mode default — see module docs.
         highlight: None,
@@ -669,9 +672,20 @@ mod tests {
         assert_eq!(bridged(&cosmos()).mode, ThemeMode::Dark);
         assert_eq!(bridged(&cosmos_light()).mode, ThemeMode::Light);
         for t in [cosmos(), void(), dusk(), cosmos_light()] {
-            // Design law: borders + surface shifts, never shadows.
-            assert!(!bridged(&t).shadow, "{}: shadow off", t.name);
-            assert_eq!(bridged(&t).radius, gpui::px(6.), "{}: radius", t.name);
+            // v2: floating library chrome casts a shadow; corners follow the radius scale.
+            assert!(bridged(&t).shadow, "{}: shadow on", t.name);
+            assert_eq!(
+                bridged(&t).radius,
+                crate::metrics::Radius::Md.px(),
+                "{}: radius",
+                t.name
+            );
+            assert_eq!(
+                bridged(&t).radius_lg,
+                crate::metrics::Radius::Lg.px(),
+                "{}: radius_lg",
+                t.name
+            );
         }
     }
 
