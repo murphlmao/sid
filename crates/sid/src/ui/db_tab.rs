@@ -3507,8 +3507,6 @@ impl AppState {
         let conn = conn?;
         let secret_ref = conn.secret_ref.as_deref()?;
         let new_ref = crate::ui::db_conn_form::mint_secret_id(&conn.id);
-        let mut moved = conn.clone();
-        moved.secret_ref = Some(new_ref.clone());
         secret_binding::relocate(
             self.secrets.as_ref(),
             self.store.global(),
@@ -3517,7 +3515,9 @@ impl AppState {
             secret_ref,
             &new_ref,
             &secret_binding::db_endpoint(&conn),
-            || {
+            |carried| {
+                let mut moved = conn.clone();
+                moved.secret_ref = carried.map(String::from);
                 self.store
                     .write_connection(&moved, to)
                     .map_err(|e| e.to_string())

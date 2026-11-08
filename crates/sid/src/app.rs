@@ -884,8 +884,6 @@ impl AppState {
         let host = host?;
         let secret_ref = host.secret_ref.as_deref()?;
         let new_ref = crate::ui::host_form::mint_secret_id(&host.alias);
-        let mut moved = host.clone();
-        moved.secret_ref = Some(new_ref.clone());
         secret_binding::relocate(
             self.secrets.as_ref(),
             self.store.global(),
@@ -894,7 +892,9 @@ impl AppState {
             secret_ref,
             &new_ref,
             &secret_binding::ssh_endpoint(&host),
-            || {
+            |carried| {
+                let mut moved = host.clone();
+                moved.secret_ref = carried.map(String::from);
                 self.store
                     .write_host(&moved, to)
                     .map_err(|e| e.to_string())
