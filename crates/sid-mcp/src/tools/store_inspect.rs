@@ -194,6 +194,9 @@ mod tests {
             "postgres://db/app?sslmode=require&password=hunter2",
             &["hunter2"],
         ),
+        ("postgres://bob:/s3cret@db/app", &["s3cret", "/s3cret"]),
+        ("postgres://bob:5432/s3cret@db/app", &["s3cret"]),
+        ("host=db;password=x9z user=bob", &["x9z", "password=x"]),
     ];
 
     #[test]

@@ -5,9 +5,10 @@
 //! 17 files. Each of those is a place where a call site could have typed something else,
 //! and several did. These helpers give the spec exactly one spelling.
 
-use gpui::{Div, InteractiveElement, Styled, div, rgb, transparent_black};
+use gpui::{BoxShadow, Div, Hsla, InteractiveElement, Styled, div, px, rgb, transparent_black};
 
 use crate::elevation::Elevation;
+use crate::metrics::{Radius, Rounded as _};
 use crate::theme::Theme;
 use crate::typography::Typography;
 
@@ -25,9 +26,15 @@ pub fn v_flex() -> Div {
 
 /// sid's house style shorthands, on every `gpui` element.
 pub trait StyledExt: Styled + Sized {
-    /// The design system's row box: `px_3 py_2`, `rounded_md`.
+    /// The design system's row box: 12px across, 6px down, [`Radius::Md`] corners.
+    ///
+    /// v2 moved the row's height out of its padding and into a minimum
+    /// ([`crate::metrics::Density`], applied by [`crate::Row`]): `py_2` alone made a row
+    /// exactly as tall as its text, so a one-line row and a row carrying a 32px button
+    /// disagreed by 10px in the same list. The vertical padding is now just the breathing
+    /// room a two-line stack keeps from the row's edges.
     fn row_padding(self) -> Self {
-        self.px_3().py_2().rounded_md()
+        self.px_3().py_1p5().corners(Radius::Md)
     }
 
     /// A hairline border on all four edges.
@@ -47,11 +54,20 @@ pub trait StyledExt: Styled + Sized {
 
     /// Sit this element on a rung of the depth ladder: its fill, plus its hairline if
     /// the rung has one. See [`Elevation`].
+    ///
+    /// v2: the rungs above the canvas also cast their soft shadow (see the module docs of
+    /// [`crate::elevation`]), so a card is an object rather than an outline.
     fn elevation(self, rung: Elevation, theme: &Theme) -> Self {
         let filled = self.bg(rgb(rung.fill(theme)));
-        match rung.border(theme) {
+        let bordered = match rung.border(theme) {
             Some(border) => filled.border_1().border_color(rgb(border)),
             None => filled,
+        };
+        let shadow = rung.shadow(theme);
+        if shadow.is_empty() {
+            bordered
+        } else {
+            bordered.shadow(shadow)
         }
     }
 
@@ -130,14 +146,21 @@ pub trait StyledExt: Styled + Sized {
     /// The element still has to be focusable for a ring to ever show:
     /// `InteractiveElement::tab_index` (which also enrols it as a tab stop) or
     /// `track_focus`.
+    ///
+    /// v2 adds a **halo**: a 3px spread of the accent at 30% alpha around the hairline,
+    /// drawn as a box shadow so it too costs no layout. It is shown on *focus-visible*
+    /// (keyboard focus), so a mouse click does not light a row up; the hairline alone
+    /// still marks plain focus.
     fn focus_ring(self, theme: &Theme) -> Self
     where
         Self: InteractiveElement,
     {
         let ring = rgb(focus_ring_color(theme));
+        let halo = focus_halo(theme);
         self.border_1()
             .border_color(transparent_black())
             .focus(move |s| s.border_color(ring))
+            .focus_visible(move |s| s.border_color(ring).shadow(halo))
     }
 }
 
@@ -148,6 +171,20 @@ pub trait StyledExt: Styled + Sized {
 /// `ThemeColor::ring`) has something to be checked against.
 pub fn focus_ring_color(theme: &Theme) -> u32 {
     theme.accent
+}
+
+/// The halo's spread, in design pixels.
+pub const FOCUS_HALO_PX: f32 = 3.;
+
+/// The halo's alpha over the accent.
+pub const FOCUS_HALO_ALPHA: f32 = 0.30;
+
+/// The focus halo: [`focus_ring_color`] at [`FOCUS_HALO_ALPHA`], spread [`FOCUS_HALO_PX`]
+/// with no blur — a soft ring, not a glow.
+pub fn focus_halo(theme: &Theme) -> Vec<BoxShadow> {
+    let mut ink: Hsla = rgb(focus_ring_color(theme)).into();
+    ink.a = FOCUS_HALO_ALPHA;
+    vec![BoxShadow::new(px(0.), px(0.), ink).spread_radius(px(FOCUS_HALO_PX))]
 }
 
 impl<T: Styled + Sized> StyledExt for T {}

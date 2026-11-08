@@ -14,6 +14,9 @@ pub fn init_repo(path: &Path) -> git2::Repository {
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "Test").unwrap();
     cfg.set_str("user.email", "test@example.com").unwrap();
+    // Pin line endings: Windows hosts default `core.autocrlf=true` (global config), which
+    // would turn checked-out "\n" into "\r\n" and break byte-exact content assertions.
+    cfg.set_bool("core.autocrlf", false).unwrap();
     drop(cfg);
     repo
 }

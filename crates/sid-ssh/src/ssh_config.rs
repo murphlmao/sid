@@ -24,6 +24,12 @@ use sid_store::entities::{AuthMethod, Host};
 
 /// Maximum `Include` nesting before the importer stops following (and notes it).
 pub const MAX_INCLUDE_DEPTH: usize = 16;
+/// Total Include files visited across one import (glob fan-out cap).
+pub const MAX_INCLUDE_FILES: usize = 256;
+/// Per-file read cap.
+pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// Total bytes read across one import.
+pub const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The local facts token/`~` expansion needs. Passed in (not read from the process
 /// environment) so the parser stays pure and testable.
@@ -110,12 +116,27 @@ struct Block {
     source: String,
 }
 
+/// Read a regular file, refusing anything over `max` bytes.
+fn read_bounded(path: &Path, max: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(max + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > max {
+        return Err(std::io::Error::other(format!("larger than {max} bytes")));
+    }
+    Ok(text)
+}
+
 struct Parser {
     base: PathBuf,
     env: ImportEnv,
     blocks: Vec<Block>,
     notes: Vec<String>,
     visited: Vec<PathBuf>,
+    files_read: usize,
+    bytes_read: u64,
 }
 
 impl Parser {
@@ -131,6 +152,8 @@ impl Parser {
             }],
             notes: Vec::new(),
             visited: Vec::new(),
+            files_read: 0,
+            bytes_read: 0,
         }
     }
 
@@ -203,8 +226,16 @@ impl Parser {
                 ));
                 continue;
             }
-            match std::fs::read_to_string(&f) {
+            if self.files_read >= MAX_INCLUDE_FILES || self.bytes_read >= MAX_TOTAL_BYTES {
+                self.notes.push(format!(
+                    "{source}: Include budget ({MAX_INCLUDE_FILES} files / {MAX_TOTAL_BYTES} bytes) exhausted; remaining includes ignored"
+                ));
+                return;
+            }
+            self.files_read += 1;
+            match read_bounded(&f, MAX_FILE_BYTES) {
                 Ok(text) => {
+                    self.bytes_read += text.len() as u64;
                     self.visited.push(canon);
                     self.feed(&text, &f.display().to_string(), depth + 1);
                     self.visited.pop();
@@ -743,6 +774,29 @@ mod tests {
         assert!(p.notes.iter().any(|n| n.contains("cycle")), "{:?}", p.notes);
         let aliases: Vec<_> = p.candidates.iter().map(|c| c.alias.as_str()).collect();
         assert_eq!(aliases, ["o", "root"]);
+    }
+
+    #[test]
+    fn include_fanout_and_oversize_are_capped() {
+        let d = tempfile::tempdir().unwrap();
+        let ssh = d.path().join(".ssh");
+        for i in 0..(MAX_INCLUDE_FILES + 50) {
+            write(&ssh, &format!("inc/f{i:04}"), &format!("Host h{i}\n"));
+        }
+        write(&ssh, "big", &"#".repeat(MAX_FILE_BYTES as usize + 10));
+        write(&ssh, "config", "Include big\nInclude inc/*\n");
+        let p = parse_file(&ssh.join("config"), &env_in(d.path())).unwrap();
+        assert!(p.candidates.len() < MAX_INCLUDE_FILES + 50);
+        assert!(
+            p.notes.iter().any(|n| n.contains("budget")),
+            "{:?}",
+            p.notes
+        );
+        assert!(
+            p.notes.iter().any(|n| n.contains("larger than")),
+            "{:?}",
+            p.notes
+        );
     }
 
     #[test]

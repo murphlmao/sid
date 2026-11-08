@@ -45,7 +45,37 @@ pub struct CmdOut {
     pub timed_out: bool,
 }
 
-/// Run `program args…` in `cwd` with a hard timeout. The child is killed on timeout.
+/// Per-stream capture cap; output beyond it is dropped and a marker appended.
+const MAX_CAPTURE: usize = 1024 * 1024;
+
+/// Read `r` to EOF, keeping at most [`MAX_CAPTURE`] bytes (the rest is drained and dropped).
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = MAX_CAPTURE.saturating_sub(buf.len());
+                if room < n {
+                    truncated = true;
+                }
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
+    }
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        s.push_str("\n[output truncated at 1 MiB]");
+    }
+    s
+}
+
+/// Run `program args…` in `cwd` with a hard timeout. The child runs in its own process
+/// group; on timeout the whole group is killed (so grandchildren such as sway/sid/rustc
+/// are not orphaned). Captured output is capped at 1 MiB per stream.
 pub async fn run(
     program: &str,
     args: &[String],
@@ -60,28 +90,65 @@ pub async fn run(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot spawn `{program}`: {e}"))?;
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(o)) => Ok(CmdOut {
-            code: o.status.code(),
-            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+    let pid = child.id();
+    let out = child.stdout.take().map(read_capped);
+    let err = child.stderr.take().map(read_capped);
+    let work = async {
+        let (so, se, st) = tokio::join!(
+            async {
+                match out {
+                    Some(f) => f.await,
+                    None => String::new(),
+                }
+            },
+            async {
+                match err {
+                    Some(f) => f.await,
+                    None => String::new(),
+                }
+            },
+            child.wait()
+        );
+        (so, se, st)
+    };
+    match tokio::time::timeout(timeout, work).await {
+        Ok((stdout, stderr, Ok(status))) => Ok(CmdOut {
+            code: status.code(),
+            stdout,
+            stderr,
             timed_out: false,
         }),
-        Ok(Err(e)) => Err(format!("`{program}` failed: {e}")),
-        // The future (and with it the child) is dropped here; `kill_on_drop` reaps it.
-        Err(_) => Ok(CmdOut {
-            code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            timed_out: true,
-        }),
+        Ok((_, _, Err(e))) => Err(format!("`{program}` failed: {e}")),
+        Err(_) => {
+            kill_group(pid);
+            Ok(CmdOut {
+                code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: true,
+            })
+        }
     }
+}
+
+/// SIGKILL the process group led by `pid` (the child was spawned with `process_group(0)`).
+fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .status();
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 /// Whether `program` is found on `$PATH`.
@@ -127,6 +194,48 @@ mod tests {
         assert_eq!(clip("abcdef", 3), "abc...");
         assert_eq!(clip("ab", 3), "ab");
         assert_eq!(clip("ééé", 2), "éé...");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_grandchildren_and_output_is_capped() {
+        let d = tempfile::tempdir().unwrap();
+        let marker = d.path().join("alive");
+        // Grandchild keeps touching a marker; the group kill must stop it.
+        let script = format!(
+            "(while true; do date +%s%N > {m}; sleep 0.1; done) & wait",
+            m = marker.display()
+        );
+        let out = run(
+            "bash",
+            &["-c".into(), script],
+            d.path(),
+            &[],
+            Duration::from_millis(600),
+        )
+        .await
+        .unwrap();
+        assert!(out.timed_out);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let a = std::fs::read_to_string(&marker).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            a,
+            std::fs::read_to_string(&marker).unwrap(),
+            "grandchild survived"
+        );
+
+        let big = run(
+            "bash",
+            &["-c".into(), "head -c 3000000 /dev/zero | tr '\\0' x".into()],
+            d.path(),
+            &[],
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+        assert!(big.stdout.len() < 1024 * 1024 + 100);
+        assert!(big.stdout.ends_with("[output truncated at 1 MiB]"));
     }
 
     #[tokio::test]

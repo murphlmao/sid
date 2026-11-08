@@ -24,6 +24,26 @@ pub trait Tipped: StatefulInteractiveElement + Sized {
         let text = text.into();
         self.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
     }
+
+    /// Name this element on hover *and* show its shortcut as a keycap — `"ctrl-t"`,
+    /// `"f5"`, in `gpui`'s keystroke syntax. A keyboard-first app teaches its keys where
+    /// the mouse already is. An unparseable chord falls back to the plain tip.
+    fn tip_with_key(self, text: impl Into<SharedString>, keys: &str) -> Self {
+        let text = text.into();
+        // Parsed the way `Kbd` parses a spec, so a tooltip's keycap and a cheat-sheet
+        // row agree on what `secondary-` means; the first stroke of a chord is shown.
+        let stroke = crate::kbd::chips(keys)
+            .into_iter()
+            .find_map(|chip| match chip {
+                crate::kbd::Chip::Stroke(stroke) => Some(stroke),
+                _ => None,
+            });
+        self.tooltip(move |window, cx| {
+            Tooltip::new(text.clone())
+                .key_binding(stroke.clone().map(gpui_component::kbd::Kbd::new))
+                .build(window, cx)
+        })
+    }
 }
 
 impl<E: StatefulInteractiveElement> Tipped for E {}

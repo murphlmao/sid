@@ -56,6 +56,11 @@ pub struct Theme {
     pub danger: u32,
     /// Active row / selected item fill.
     pub selection: u32,
+    /// The ink soft shadows are drawn in (`crate::elevation`). Pure black on the dark
+    /// palettes — on a near-black canvas anything lighter reads as a glow, not a shadow —
+    /// and a tinted indigo on the light one, so a card's shadow belongs to the palette
+    /// instead of reading as a grey smudge. Alphas live in `elevation.rs`, never here.
+    pub shadow: u32,
     /// The terminal's base-16 ANSI palette (normal 0-7, bright 8-15), in the standard
     /// black/red/green/yellow/blue/magenta/cyan/white order. kitty renders shell art
     /// through the USER's configured scheme, not stock xterm RGBs — sid does the same
@@ -71,18 +76,19 @@ pub fn cosmos() -> Theme {
     Theme {
         name: "cosmos",
         bg: 0x0b0b14,
-        surface: 0x13131f,
+        surface: 0x181626,
         well: 0x080810,
-        border: 0x1f1f2e,
-        fg: 0xe6e6f0,
+        border: 0x29263d,
+        fg: 0xe9e6f3,
         fg_strong: 0xffffff,
-        muted: 0x8a8a9a,
-        faint: 0x4a4a60,
+        muted: 0x9893ab,
+        faint: 0x554f6c,
         accent: 0xd44141,
         success: 0xa8d8e8,
         warning: 0xe8b04a,
         danger: 0xff5570,
-        selection: 0x1c1c2c,
+        selection: 0x242138,
+        shadow: 0x000000,
         ansi: [
             0x1a1a26, 0xd44141, 0x77c48a, 0xe8b04a, 0x6a8dd8, 0xb07ad0, 0xa8d8e8, 0xc8c8d4,
             0x4a4a60, 0xff5570, 0x99e0a8, 0xf0c878, 0x8fb0f0, 0xd0a0e8, 0xc8ecf8, 0xffffff,
@@ -95,9 +101,9 @@ pub fn void() -> Theme {
     Theme {
         name: "void",
         bg: 0x000000,
-        surface: 0x0a0a0a,
+        surface: 0x101010,
         well: 0x050505,
-        border: 0x222222,
+        border: 0x262626,
         fg: 0xeeeeee,
         fg_strong: 0xffffff,
         muted: 0x999999,
@@ -106,7 +112,8 @@ pub fn void() -> Theme {
         success: 0xc0c0c0,
         warning: 0xe0a040,
         danger: 0xff3333,
-        selection: 0x161616,
+        selection: 0x1c1c1c,
+        shadow: 0x000000,
         ansi: [
             0x000000, 0xd44141, 0x8fbf8f, 0xd0b070, 0x8090c0, 0xb090c0, 0x90c0c0, 0xcccccc,
             0x555555, 0xff3333, 0xa8d8a8, 0xe8cc90, 0xa0b0e0, 0xd0b0e0, 0xb0e0e0, 0xffffff,
@@ -119,12 +126,12 @@ pub fn dusk() -> Theme {
     Theme {
         name: "dusk",
         bg: 0x14100c,
-        surface: 0x1c1812,
+        surface: 0x211b14,
         well: 0x0e0b08,
-        border: 0x2a221a,
+        border: 0x32291e,
         fg: 0xf0e5d0,
         fg_strong: 0xfff8ea,
-        muted: 0x9a8c74,
+        muted: 0xa6977c,
         faint: 0x605548,
         accent: 0xe87040,
         success: 0xa8d890,
@@ -135,7 +142,8 @@ pub fn dusk() -> Theme {
         // were the same warm smudge at a glance. `ansi[1]` keeps the brick — the
         // terminal's red is the user's shell colour, not a UI status ink.
         danger: 0xe05070,
-        selection: 0x241d14,
+        selection: 0x2b231a,
+        shadow: 0x000000,
         ansi: [
             0x241d14, 0xd04a4a, 0x9ab86a, 0xe8b04a, 0x7a90a8, 0xc088a0, 0xa8c0b0, 0xd8c8b0,
             0x605548, 0xe87040, 0xb8d890, 0xf0c878, 0x98b0c8, 0xd8a8c0, 0xc0d8c8, 0xfff8ea,
@@ -158,14 +166,18 @@ pub fn dusk() -> Theme {
 pub fn cosmos_light() -> Theme {
     Theme {
         name: "cosmos-light",
-        bg: 0xf4f4f8,
-        surface: 0xeaeaf2,
-        // Below `surface`, which is below `bg`: a recess is cut *into* the panel it
-        // sits in. Pure white was the brightest token in the palette, so every input,
-        // editor and terminal well read as the one thing raised off the card. This is
-        // as dark as the rung goes before `warning` stops clearing AA on it (4.53:1).
-        well: 0xe6e6ee,
-        border: 0xd0d0dc,
+        bg: 0xf1f0f6,
+        // v2: paper on the desk. v1's surface sat *below* the canvas, so every card in
+        // the light theme read as a grey recess; a near-white card over an off-white
+        // canvas is the convention every light UI uses, and the soft shadow
+        // (`Theme::shadow`, `crate::elevation`) now does the separating a darker fill
+        // used to.
+        surface: 0xfdfcff,
+        // Below `bg`, and well below `surface`: a recess is cut *into* the panel it sits
+        // in. Pure white was once the brightest token in the palette, so every input,
+        // editor and terminal well read as the one thing raised off the card.
+        well: 0xebeaf2,
+        border: 0xdcdae6,
         fg: 0x181824,
         fg_strong: 0x000000,
         muted: 0x5c5c6e,
@@ -178,7 +190,8 @@ pub fn cosmos_light() -> Theme {
         // 1.13:1 from `accent` and the same hue family: "engage" and "destroy" were one
         // colour. `ansi[9]` keeps #c03040 as the terminal's bright red.
         danger: 0x8c1550,
-        selection: 0xdedee8,
+        selection: 0xe7e5f0,
+        shadow: 0x1d1a33,
         ansi: [
             0x181824, 0xb03030, 0x3a7a4a, 0xa07020, 0x3a5aa8, 0x8040a0, 0x2a7a8a, 0x8a8a98,
             0x707082, 0xc03040, 0x4a9a5a, 0xb08030, 0x5a7ac8, 0xa060c0, 0x408090, 0x4a4a58,
@@ -205,6 +218,10 @@ pub fn by_name(name: &str) -> Theme {
 /// switches themes (followed by `cx.refresh_windows()` so every element re-reads it).
 pub fn install(name: &str, cx: &mut App) {
     cx.set_global(by_name(name));
+    // The one startup hook sid-ui owns, so `SID_REDUCED_MOTION` works without the app
+    // shell having to know about it. Idempotent and one-way (it can only switch motion
+    // off), so re-running on every theme switch cannot undo a Settings choice.
+    crate::motion::init(cx);
 }
 
 /// The active theme. Elements call this at render time — never cache the result
@@ -261,8 +278,10 @@ mod tests {
         let t = cosmos();
         assert_eq!(t.bg, 0x0b0b14);
         assert_eq!(t.accent, 0xd44141);
-        assert_eq!(t.surface, 0x13131f);
-        assert_eq!(t.border, 0x1f1f2e);
+        // v2 lifted the surface a step and tilted the neutrals toward violet; the
+        // canvas and the accent are the POC's and stay.
+        assert_eq!(t.surface, 0x181626);
+        assert_eq!(t.border, 0x29263d);
     }
 
     #[test]
