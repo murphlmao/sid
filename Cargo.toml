@@ -16,6 +16,7 @@ members = [
     "crates/sid-containers",
     "crates/sid-privfs",
     "crates/sid-mcp",
+    "crates/sid-os",
 ]
 
 [workspace.package]
@@ -37,12 +38,17 @@ sid-gpu = { path = "crates/sid-gpu" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-containers = { path = "crates/sid-containers" }
 sid-privfs = { path = "crates/sid-privfs" }
+sid-os = { path = "crates/sid-os" }
 
 # SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
 # is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154
 # (CryptoVec allocation hardening). russh-sftp is version-independent of russh.
 russh = "0.61"
 russh-sftp = "2.3"
+
+# Desktop notifications (`sid-os`): org.freedesktop.Notifications over the blocking zbus
+# API; same zbus 5 line already in the lock via sid-secrets.
+zbus = { version = "5.16", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.

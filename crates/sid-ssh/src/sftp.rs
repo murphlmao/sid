@@ -111,6 +111,13 @@ impl SftpSession for RusshSftp {
         }
     }
 
+    async fn rename(&mut self, from: &str, to: &str) -> Result<(), SshError> {
+        self.inner
+            .rename(from.to_string(), to.to_string())
+            .await
+            .map_err(map_sftp_error)
+    }
+
     async fn close(&mut self) -> Result<(), SshError> {
         let _ = self.inner.close().await;
         Ok(())

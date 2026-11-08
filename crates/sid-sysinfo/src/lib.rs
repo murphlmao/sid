@@ -29,8 +29,11 @@
 //! - `overview`: refreshes CPU usage + memory on the same cached `System` used by
 //!   `list_processes` (see `overview.rs`'s module doc for the CPU% warm-up caveat).
 
+use std::collections::HashMap;
+
 use sid_core::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider, SystemOverview,
+    Connection, ListeningPort, NetInterface, Pid, ProcUsage, ProcessInfo, Signal, SysError,
+    SysProvider, SystemOverview,
 };
 
 pub mod default_route;
@@ -52,6 +55,8 @@ mod processes;
 pub struct SysinfoProvider {
     /// Cached sysinfo handle. `&mut self` access makes refreshes serialized.
     inner: sysinfo::System,
+    /// Cached uid -> username table (refreshed rarely, not per poll).
+    users: processes::UserNames,
 }
 
 impl SysinfoProvider {
@@ -69,7 +74,10 @@ impl SysinfoProvider {
         let mut inner = sysinfo::System::new();
         // Prime the CPU sampling baseline.
         inner.refresh_cpu_usage();
-        Self { inner }
+        Self {
+            inner,
+            users: processes::UserNames::new(),
+        }
     }
 }
 
@@ -81,7 +89,7 @@ impl Default for SysinfoProvider {
 
 impl SysProvider for SysinfoProvider {
     fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
-        processes::list_processes(&mut self.inner)
+        processes::list_processes(&mut self.inner, &mut self.users)
     }
 
     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
@@ -102,6 +110,14 @@ impl SysProvider for SysinfoProvider {
 
     fn default_route_iface_name(&mut self) -> Result<Option<String>, SysError> {
         default_route::read_default_route_iface()
+    }
+
+    fn list_connections(&mut self) -> Result<Vec<Connection>, SysError> {
+        ports::list_connections(&mut self.inner)
+    }
+
+    fn process_usage(&mut self, pids: &[Pid]) -> Result<HashMap<Pid, ProcUsage>, SysError> {
+        ports::process_usage(&mut self.inner, pids)
     }
 }
 
