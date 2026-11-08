@@ -18,7 +18,7 @@
 use std::path::Path;
 use std::process::{Child, Command};
 
-use sid_core::editor::{EditorError, EditorExit, EditorHandle, EditorLauncher};
+use sid_core::editor::{EditorError, EditorExit, EditorHandle, EditorLauncher, LaunchPolicy};
 
 /// Editors that need a terminal.
 const TERMINAL_EDITORS: &[&str] = &[
@@ -52,6 +52,23 @@ const WAIT_FLAGS: &[(&str, &str)] = &[
     ("sublime_text", "--wait"),
     ("gedit", "--wait"),
     ("kate", "--block"),
+];
+
+/// GUI editors probed (in order) when no `$VISUAL`/`$EDITOR` is set and the policy is
+/// [`LaunchPolicy::EditorOnly`].
+const DETECTABLE_GUI_EDITORS: &[&str] = &[
+    "code",
+    "codium",
+    "zeditor",
+    "zed",
+    "subl",
+    "gnome-text-editor",
+    "gedit",
+    "kate",
+    "kwrite",
+    "mousepad",
+    "xed",
+    "pluma",
 ];
 
 /// What the launcher sees of the environment. Pass your own in tests.
@@ -153,16 +170,40 @@ fn terminal_invocation(term: &str) -> (Vec<String>, bool) {
 pub fn plan_launch(
     env: &EditorEnv,
     path: &Path,
+    policy: LaunchPolicy,
     on_path: &dyn Fn(&str) -> bool,
 ) -> Result<LaunchPlan, EditorError> {
+    if !path.is_absolute() {
+        // A relative name could start with `-` and be read as an option.
+        return Err(EditorError::Spawn(format!(
+            "editor path must be absolute: {}",
+            path.display()
+        )));
+    }
     let path_s = path.display().to_string();
+    let editor_only = policy == LaunchPolicy::EditorOnly;
     let xdg = || LaunchPlan {
         program: "xdg-open".into(),
         args: vec![path_s.clone()],
         awaitable: false,
     };
     let chosen = env.visual.as_deref().or(env.editor.as_deref());
+    let detected;
+    let chosen = match chosen {
+        Some(c) => Some(c),
+        None if editor_only => {
+            detected = DETECTABLE_GUI_EDITORS
+                .iter()
+                .find(|e| on_path(e))
+                .map(|e| (*e).to_string());
+            detected.as_deref()
+        }
+        None => None,
+    };
     let Some(chosen) = chosen else {
+        if editor_only {
+            return Err(EditorError::NoEditorConfigured);
+        }
         return if on_path("xdg-open") {
             Ok(xdg())
         } else {
@@ -190,6 +231,9 @@ pub fn plan_launch(
                     .map(|t| (*t).to_string())
             });
         let Some(term) = term else {
+            if editor_only {
+                return Err(EditorError::NoEditorConfigured);
+            }
             return if on_path("xdg-open") {
                 Ok(xdg())
             } else {
@@ -293,9 +337,13 @@ impl EditorHandle for ProcHandle {
 }
 
 impl EditorLauncher for LinuxEditorLauncher {
-    fn open(&self, path: &Path) -> Result<Box<dyn EditorHandle>, EditorError> {
+    fn open(
+        &self,
+        path: &Path,
+        policy: LaunchPolicy,
+    ) -> Result<Box<dyn EditorHandle>, EditorError> {
         let env = self.env.clone().unwrap_or_else(EditorEnv::from_process);
-        let plan = plan_launch(&env, path, &on_path)?;
+        let plan = plan_launch(&env, path, policy, &on_path)?;
         let child = Command::new(&plan.program)
             .args(&plan.args)
             .spawn()
@@ -321,7 +369,48 @@ mod tests {
 
     fn plan(e: &EditorEnv, have: &[&str]) -> Result<LaunchPlan, EditorError> {
         let have: Vec<String> = have.iter().map(|s| s.to_string()).collect();
-        plan_launch(e, Path::new("/tmp/f.txt"), &|n| have.iter().any(|h| h == n))
+        plan_launch(e, Path::new("/tmp/f.txt"), LaunchPolicy::Any, &|n| {
+            have.iter().any(|h| h == n)
+        })
+    }
+
+    fn plan_only(e: &EditorEnv, have: &[&str]) -> Result<LaunchPlan, EditorError> {
+        let have: Vec<String> = have.iter().map(|s| s.to_string()).collect();
+        plan_launch(e, Path::new("/tmp/f.txt"), LaunchPolicy::EditorOnly, &|n| {
+            have.iter().any(|h| h == n)
+        })
+    }
+
+    #[test]
+    fn editor_only_never_falls_back_to_xdg_open() {
+        assert!(matches!(
+            plan_only(&env(None, None, None), &["xdg-open"]),
+            Err(EditorError::NoEditorConfigured)
+        ));
+        assert!(matches!(
+            plan_only(&env(None, Some("vim"), None), &["xdg-open"]),
+            Err(EditorError::NoEditorConfigured)
+        ));
+        let p = plan_only(&env(None, Some("nano"), Some("kitty")), &["xdg-open"]).unwrap();
+        assert_eq!(p.program, "kitty");
+        assert!(!cmdline(&p).contains("xdg-open"));
+    }
+
+    #[test]
+    fn editor_only_detects_a_known_gui_editor_and_launches_it_directly() {
+        let p = plan_only(&env(None, None, None), &["xdg-open", "gedit"]).unwrap();
+        assert_eq!(cmdline(&p), "gedit --wait /tmp/f.txt");
+    }
+
+    #[test]
+    fn relative_paths_are_refused() {
+        let r = plan_launch(
+            &env(None, Some("vim"), Some("kitty")),
+            Path::new("-evil.txt"),
+            LaunchPolicy::Any,
+            &|_| true,
+        );
+        assert!(matches!(r, Err(EditorError::Spawn(_))));
     }
 
     fn cmdline(p: &LaunchPlan) -> String {

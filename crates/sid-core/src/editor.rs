@@ -21,6 +21,10 @@ pub enum EditorError {
     /// Nothing usable to launch.
     #[error("no editor available: {0}")]
     NoEditor(String),
+    /// [`LaunchPolicy::EditorOnly`] was requested and no real editor is configured or
+    /// detected. The UI should say "set $EDITOR / pick an editor".
+    #[error("no editor configured: set $VISUAL or $EDITOR")]
+    NoEditorConfigured,
     /// The process could not be started.
     #[error("could not start editor: {0}")]
     Spawn(String),
@@ -43,10 +47,23 @@ pub trait EditorHandle: Send {
     fn wait(&mut self) -> Result<EditorExit, EditorError>;
 }
 
+/// What the launcher may fall back to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LaunchPolicy {
+    /// Any handler is acceptable, including the desktop's default opener (`xdg-open`).
+    #[default]
+    Any,
+    /// A real text editor only. The desktop opener dispatches on the file *type*, so it
+    /// must never see a file whose name/content a remote party chose; otherwise return
+    /// [`EditorError::NoEditorConfigured`].
+    EditorOnly,
+}
+
 /// Opens files in the user's editor.
 pub trait EditorLauncher: Send + Sync {
-    /// Launch an editor on `path` and return a handle to it.
-    fn open(&self, path: &Path) -> Result<Box<dyn EditorHandle>, EditorError>;
+    /// Launch an editor on `path` (which must be absolute) and return a handle to it.
+    fn open(&self, path: &Path, policy: LaunchPolicy)
+    -> Result<Box<dyn EditorHandle>, EditorError>;
 }
 
 /// Test fake: records opened paths; the test ends the "editor" with [`Self::finish_all`].
@@ -109,7 +126,15 @@ impl EditorHandle for FakeHandle {
 }
 
 impl EditorLauncher for FakeEditorLauncher {
-    fn open(&self, path: &Path) -> Result<Box<dyn EditorHandle>, EditorError> {
+    fn open(
+        &self,
+        path: &Path,
+        policy: LaunchPolicy,
+    ) -> Result<Box<dyn EditorHandle>, EditorError> {
+        if policy == LaunchPolicy::EditorOnly && self.hand_off {
+            // a hand-off launcher is exactly what EditorOnly forbids
+            return Err(EditorError::NoEditorConfigured);
+        }
         self.opened.lock().unwrap().push(path.to_path_buf());
         Ok(Box::new(FakeHandle {
             done: self.done.clone(),
@@ -125,7 +150,7 @@ mod tests {
     #[test]
     fn fake_records_and_finishes() {
         let l = FakeEditorLauncher::new();
-        let mut h = l.open(Path::new("/a/b")).unwrap();
+        let mut h = l.open(Path::new("/a/b"), LaunchPolicy::Any).unwrap();
         assert_eq!(l.opened(), [PathBuf::from("/a/b")]);
         assert_eq!(h.try_wait().unwrap(), None);
         l.finish_all();
@@ -135,7 +160,7 @@ mod tests {
     #[test]
     fn hand_off_handles_refuse_to_wait() {
         let l = FakeEditorLauncher::hand_off();
-        let mut h = l.open(Path::new("x")).unwrap();
+        let mut h = l.open(Path::new("/x"), LaunchPolicy::Any).unwrap();
         assert!(!h.awaitable());
         assert!(matches!(h.wait(), Err(EditorError::NotAwaitable)));
     }

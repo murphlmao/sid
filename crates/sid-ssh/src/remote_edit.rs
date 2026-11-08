@@ -29,7 +29,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use sid_core::editor::{EditorError, EditorExit, EditorHandle, EditorLauncher};
+use sid_core::editor::{EditorError, EditorExit, EditorHandle, EditorLauncher, LaunchPolicy};
 use sid_core::ssh::{SftpSession, SshError};
 
 /// Default refusal threshold: 5 MiB.
@@ -212,6 +212,44 @@ fn looks_binary(b: &[u8]) -> bool {
     b[..b.len().min(8192)].contains(&0)
 }
 
+/// Extensions whose desktop handler would *run* or *render* the file rather than edit it.
+const DANGEROUS_EXTS: &[&str] = &[
+    "desktop", "html", "htm", "xhtml", "svg", "sh", "bash", "zsh", "py", "pl", "rb", "js", "jar",
+    "exe", "appimage", "run", "command", "url", "webloc", "lnk", "bat", "cmd", "ps1",
+];
+
+const MAX_NAME_CHARS: usize = 100;
+
+/// The local working-copy name for a remote path: control characters and backslashes
+/// removed, length capped, and `.txt` appended when the extension is one whose handler
+/// would execute or render it (the name is chosen by the remote party). Other extensions
+/// are kept so the editor still gets its syntax hint.
+fn safe_local_name(remote_path: &str) -> String {
+    let base = remote_path.rsplit('/').next().unwrap_or("");
+    let mut name: String = base
+        .chars()
+        .filter(|c| !c.is_control() && *c != '\\')
+        .collect();
+    let n = name.chars().count();
+    if n > MAX_NAME_CHARS {
+        // keep the tail so the extension survives
+        name = name.chars().skip(n - MAX_NAME_CHARS).collect();
+    }
+    let name = name.trim().to_string();
+    if name.is_empty() || name == "." || name == ".." {
+        return "file.txt".to_string();
+    }
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if DANGEROUS_EXTS.contains(&ext.as_str()) {
+        format!("{name}.txt")
+    } else {
+        name
+    }
+}
+
 /// One remote file being edited locally.
 pub struct RemoteEdit {
     remote_path: String,
@@ -284,20 +322,18 @@ impl RemoteEdit {
             return Err(RemoteEditError::Binary);
         }
 
-        private_dir_all(&cfg.cache_root)?;
+        let cache_root = std::path::absolute(&cfg.cache_root)?;
+        private_dir_all(&cache_root)?;
         let dir = tempfile::Builder::new()
             .prefix("edit-")
-            .tempdir_in(&cfg.cache_root)?;
+            .tempdir_in(&cache_root)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
         }
-        let name = match remote_path.rsplit('/').next() {
-            Some(n) if !n.is_empty() && n != "." && n != ".." => n,
-            _ => "file",
-        };
-        let local = dir.path().join(name);
+        let name = safe_local_name(remote_path);
+        let local = dir.path().join(&name);
         write_private(&local, &bytes)?;
         let mtime = std::fs::metadata(&local).and_then(|m| m.modified()).ok();
         Ok(Self {
@@ -331,7 +367,7 @@ impl RemoteEdit {
 
     /// Open the working copy in the user's editor.
     pub fn launch(&mut self, launcher: &dyn EditorLauncher) -> Result<(), RemoteEditError> {
-        self.handle = Some(launcher.open(&self.local)?);
+        self.handle = Some(launcher.open(&self.local, LaunchPolicy::EditorOnly)?);
         Ok(())
     }
 
@@ -729,16 +765,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hand_off_launcher_reports_hand_off() {
+    async fn editor_state_starts_not_launched() {
         let root = tempfile::tempdir().unwrap();
         let mut sftp = FakeSftp::with(P, b"x");
         let mut re = RemoteEdit::open(&mut sftp, P, &cfg(root.path()))
             .await
             .unwrap();
         assert_eq!(re.editor_state().unwrap(), EditorState::NotLaunched);
-        let ed = FakeEditorLauncher::hand_off();
-        re.launch(&ed).unwrap();
-        assert_eq!(re.editor_state().unwrap(), EditorState::HandOff);
     }
 
     #[tokio::test]
@@ -752,6 +785,56 @@ mod tests {
         assert!(dir.exists());
         re.close().unwrap();
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn local_names_are_sanitized() {
+        assert_eq!(safe_local_name("/a/b/conf.toml"), "conf.toml");
+        assert_eq!(safe_local_name("/a/evil.desktop"), "evil.desktop.txt");
+        assert_eq!(safe_local_name("/a/X.HTML"), "X.HTML.txt");
+        assert_eq!(safe_local_name("/a/run.SH"), "run.SH.txt");
+        assert_eq!(safe_local_name("/a/p.ps1"), "p.ps1.txt");
+        assert_eq!(safe_local_name("/a/app.AppImage"), "app.AppImage.txt");
+        assert_eq!(safe_local_name("/a/x.sh.bak"), "x.sh.bak");
+        assert_eq!(
+            safe_local_name("/a/we\nird\x07na\x1b[me.txt"),
+            "weirdna[me.txt"
+        );
+        assert_eq!(safe_local_name("/a/dir/"), "file.txt");
+        assert_eq!(safe_local_name("/a/.."), "file.txt");
+        assert_eq!(safe_local_name("/a/-rf"), "-rf");
+        let long = format!("/a/{}.rs", "n".repeat(300));
+        let n = safe_local_name(&long);
+        assert!(n.chars().count() <= MAX_NAME_CHARS && n.ends_with(".rs"));
+    }
+
+    #[tokio::test]
+    async fn a_hostile_remote_name_lands_neutralised_and_absolute() {
+        let root = tempfile::tempdir().unwrap();
+        let hostile = "/srv/-evil.desktop";
+        let mut sftp = FakeSftp::with(hostile, b"[Desktop Entry]\n");
+        let mut re = RemoteEdit::open(&mut sftp, hostile, &cfg(root.path()))
+            .await
+            .unwrap();
+        assert_eq!(re.local_path().file_name().unwrap(), "-evil.desktop.txt");
+        assert!(re.local_path().is_absolute());
+        let ed = FakeEditorLauncher::new();
+        re.launch(&ed).unwrap();
+        assert!(ed.opened()[0].is_absolute());
+    }
+
+    #[tokio::test]
+    async fn remote_edits_refuse_a_hand_off_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"x");
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg(root.path()))
+            .await
+            .unwrap();
+        let err = re.launch(&FakeEditorLauncher::hand_off()).unwrap_err();
+        assert!(matches!(
+            err,
+            RemoteEditError::Editor(EditorError::NoEditorConfigured)
+        ));
     }
 
     #[test]
