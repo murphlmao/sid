@@ -185,7 +185,8 @@ impl AppState {
                     .child(key.fingerprint.clone()),
             );
 
-        let panel = Modal::new("host-key-prompt", "").title_verbatim(title)
+        let panel = Modal::new("host-key-prompt", "")
+            .title_verbatim(title)
             .on_dismiss(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.answer_host_key(false, window, cx);
             }))

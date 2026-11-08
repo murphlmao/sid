@@ -125,7 +125,8 @@ impl Render for PasswordPromptModal {
             }))
             .on_action(cx.listener(|this, _: &PasswordPromptSubmit, _window, cx| this.submit(cx)))
             .child(
-                Modal::new("password-prompt", "").title_verbatim(title)
+                Modal::new("password-prompt", "")
+                    .title_verbatim(title)
                     // The forms' width, not the old 380: a narrower panel drops the
                     // footer's `Enter connects` hint (`sid_ui::modal::shows_key_hint`),
                     // and every modal being the same size is worth more than 80px.
