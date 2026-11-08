@@ -1,0 +1,34 @@
+[package]
+name = "sid-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+description = "MCP server (stdio) that helps AI agents work on the sid codebase: crate map, symbol search, adapter check, gate, UI capture."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sid-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.9", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "fs", "time"] }
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+regex = "1"
+toml = "0.8"
+url = "2"
+walkdir = "2"
+base64 = "0.22"
+tempfile = { workspace = true }
+sid-store = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
