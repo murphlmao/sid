@@ -1121,7 +1121,7 @@ impl AppState {
     /// Whether `target`'s **own layer** already holds `alias` (the add-mode guard's
     /// question). Reads the layer directly — the composed default view collapses
     /// duplicates, which would hide exactly the record the guard must see.
-    fn layer_holds_alias(&self, target: &Scope, alias: &str) -> sid_store::Result<bool> {
+    pub(crate) fn layer_holds_alias(&self, target: &Scope, alias: &str) -> sid_store::Result<bool> {
         match target {
             Scope::Global => Ok(self.store.global().get_host(alias)?.is_some()),
             Scope::Workspace(_) => {
@@ -1178,7 +1178,10 @@ impl AppState {
     /// stays out of the way entirely while one of these is up — `ui::command_palette`'s
     /// `toggle_palette` already declines to open *over* one for the same reason.
     pub(crate) fn blocking_modal_open(&self) -> bool {
-        self.form.is_some() || self.db.form.is_some() || self.password_prompt.is_some()
+        self.form.is_some()
+            || self.db.form.is_some()
+            || self.password_prompt.is_some()
+            || self.ssh_home.import_open()
     }
 
     /// Whether the active SSH session's terminal currently holds keyboard focus — the
@@ -2142,6 +2145,8 @@ impl Render for AppState {
             .form
             .clone()
             .map(|form| modal::overlay(window, form));
+        // The SSH config import dialog lives on `ssh_home` (its state is that tab's).
+        let ssh_import_overlay = self.ssh_home.import_overlay(window);
         let password_prompt_overlay = self
             .password_prompt
             .clone()
@@ -2195,6 +2200,7 @@ impl Render for AppState {
             .children(overlay)
             .children(db_overlay)
             .children(password_prompt_overlay)
+            .children(ssh_import_overlay)
             .children(palette_overlay)
             .children(cheat_sheet_overlay)
             // Last child, so its paint closure runs at the very end of the paint phase.

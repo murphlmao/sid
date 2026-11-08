@@ -30,22 +30,25 @@
 //! does — never an ad-hoc dial any more). Rendering is observation-gated, per the plan's
 //! pragmatic-TDD rule.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, IntoElement, MouseButton, MouseDownEvent,
-    SharedString, Window, actions, div, prelude::*, px, rgb,
+    SharedString, Subscription, Window, actions, div, prelude::*, px, rgb,
 };
-use sid_store::{Attributed, Host, Scope};
+use sid_store::{Attributed, AuthMethod, Host, Scope};
 
 use crate::app::{AppState, can_demote, can_promote};
+use crate::keymap::{Action, default_bindings, primary_shortcut};
+use crate::ui::ssh_import::ImportSlot;
 use crate::ui::{SessionStatus, host_form};
-use sid_ui::component::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use sid_ui::component::{ContextMenuExt, PopupMenu};
+use sid_ui::input::FieldWidth;
 use sid_ui::{
-    Button, Card, CardGrid, ConnectionState, EmptyState, GridCard, Icon, IconButton, InputState,
-    List, Row, StatusDot, StatusLegend, StyledExt as _, TextInput, Typography as _,
-    card::header_text, caveat_line, h_flex, scaled, theme, v_flex,
+    Badge, Button, ButtonSize, Card, CardGrid, ConnectionState, ContextMenu, EmptyState, GridCard,
+    Icon, IconButton, InputState, Kbd, List, MenuItem, Row, StatusDot, StyledExt as _, TextInput,
+    TreeNode, TreeState, Typography as _, caveat_line, h_flex, scaled, theme, v_flex,
 };
 
 actions!(
@@ -100,10 +103,15 @@ impl InlineEdit {
 /// composed host list itself lives on `AppState` (`self.hosts`) — this only holds
 /// view-local state that isn't part of the layered store.
 pub(crate) struct HomeTabState {
-    /// Folder names collapsed in the grid. The unfiled group (`folder: None`) is not a
-    /// folder anyone created and is never collapsible, so this only ever holds named
-    /// folders.
-    collapsed_folders: HashSet<String>,
+    /// The folders tree beside the grid (shown only when a folder exists). Its
+    /// expansion and selection live in the entity, so they survive refreshes by key
+    /// (they are not persisted across launches).
+    tree: Entity<TreeState>,
+    _tree_subscription: Subscription,
+    /// The folder the tree last selected: the grid shows only its hosts. `None` = all.
+    folder_filter: Option<String>,
+    /// The "Import from SSH config" dialog (see `ui::ssh_import`).
+    pub(crate) import: ImportSlot,
     /// Quick-connect / filter box: as-you-type substring filter over the grid, and — on
     /// Enter — either the saved connection the text *names* or an invitation to add it.
     search: Entity<InputState>,
@@ -160,9 +168,33 @@ impl HomeTabState {
         self.search.update(cx, |state, cx| state.focus(window, cx));
     }
 
+    /// Whether the import dialog is up (it blocks the root key dispatcher like the forms).
+    pub(crate) fn import_open(&self) -> bool {
+        self.import.modal.is_some()
+    }
+
+    /// The import dialog's scrim, for `AppState::render` to stack with the other overlays.
+    pub(crate) fn import_overlay(&self, window: &Window) -> Option<impl IntoElement + use<>> {
+        self.import
+            .modal
+            .clone()
+            .map(|modal| sid_ui::modal::overlay(window, modal))
+    }
+
     pub(crate) fn new(window: &mut Window, cx: &mut Context<AppState>) -> Self {
+        let tree = cx.new(|cx| TreeState::new("ssh-groups", cx));
+        let subscription = cx.subscribe_in(
+            &tree,
+            window,
+            |this: &mut AppState, _tree, ev, window, cx| {
+                this.on_groups_tree_event(ev, window, cx);
+            },
+        );
         Self {
-            collapsed_folders: HashSet::new(),
+            tree,
+            _tree_subscription: subscription,
+            folder_filter: None,
+            import: ImportSlot::default(),
             search: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("user@host[:port] — filter, connect, or add")
@@ -395,7 +427,7 @@ pub(crate) fn section_title(folder: Option<&str>, named_folders: usize) -> Optio
 }
 
 /// The implicit final/first group's name — see [`section_title`].
-const UNGROUPED: &str = "ungrouped";
+const UNGROUPED: &str = "Ungrouped";
 
 /// Parse the quick-connect box's `user@host[:port]` shorthand. `None` if the text
 /// doesn't look like that shape at all — the same box doubles as a plain grid filter, so
@@ -564,223 +596,401 @@ pub(crate) fn missing_message(seed: &AddSeed) -> String {
     )
 }
 
+// ---- tree / get-started / card-info logic (unit-tested) ----------------------------------
+
+/// Below this many saved connections the home shows its "Get started" cards.
+pub(crate) const GET_STARTED_BELOW: usize = 6;
+
+/// Whether the "Get started" surface fills the free space: only while the fleet is small.
+pub(crate) fn show_get_started(total: usize) -> bool {
+    total < GET_STARTED_BELOW
+}
+
+/// The folder filter that still applies: a filter naming a folder no host is in any more
+/// (renamed, emptied) is ignored rather than showing an empty grid.
+pub(crate) fn effective_folder<'a>(
+    filter: Option<&'a str>,
+    hosts: &[Attributed<Host>],
+) -> Option<&'a str> {
+    filter.filter(|f| hosts.iter().any(|a| a.item.folder.as_deref() == Some(*f)))
+}
+
+/// One line of auth info for a card.
+pub(crate) fn auth_summary(auth: &AuthMethod) -> String {
+    match auth {
+        AuthMethod::Agent => "Agent".into(),
+        AuthMethod::Password => "Password".into(),
+        AuthMethod::Key { path } => {
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            format!("Key {name}")
+        }
+    }
+}
+
+/// What a groups-tree key refers to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TreeTarget {
+    All,
+    Folder(String),
+    Host(u64),
+}
+
+const TREE_ALL: &str = "all";
+
+/// Decode a tree key built by [`tree_nodes`].
+pub(crate) fn parse_tree_key(key: &str) -> TreeTarget {
+    if let Some(f) = key.strip_prefix("folder:") {
+        return TreeTarget::Folder(f.to_string());
+    }
+    if let Some(id) = key.strip_prefix("host:").and_then(|n| n.parse().ok()) {
+        return TreeTarget::Host(id);
+    }
+    TreeTarget::All
+}
+
+/// The groups tree: `All connections`, then one branch per named folder holding its
+/// hosts. A store with no folders yields only the `All` node (the caller hides the tree).
+pub(crate) fn tree_nodes(hosts: &[Attributed<Host>]) -> Vec<TreeNode> {
+    let mut roots = vec![
+        TreeNode::leaf(TREE_ALL, "All connections")
+            .icon(Icon::Globe)
+            .meta(hosts.len().to_string()),
+    ];
+    for group in group_by_folder(hosts) {
+        let Some(folder) = group.folder else { continue };
+        let children = group
+            .hosts
+            .iter()
+            .map(|a| {
+                TreeNode::leaf(
+                    format!("host:{}", row_hash(&a.item.alias, &a.origin)),
+                    a.item.alias.clone(),
+                )
+                .icon(Icon::Terminal)
+            })
+            .collect();
+        roots.push(
+            TreeNode::branch(format!("folder:{folder}"), folder, children)
+                .icon(Icon::Folder)
+                .meta(group.hosts.len().to_string()),
+        );
+    }
+    roots
+}
+
 // ---- rendering + row actions (observation-gated) ------------------------------------
 
 impl AppState {
-    /// Home's single connections surface: a **card-grid dashboard**. Header and
-    /// quick-connect across the top, then every saved host as a card, grouped under
-    /// full-width folder headings and flowing into as many columns as the window has
-    /// room for.
+    /// Home's connections surface: a folders `Tree` (when any folder exists) beside a
+    /// **card-grid** panel. Quick-connect field, `Import` and `Add connection` live in the
+    /// panel header; the grid below groups hosts under folder headings and flows into as
+    /// many columns as the window has room for. With only a few hosts the cards grow and a
+    /// "Get started" row of cards fills the rest of the panel (see [`show_get_started`]) so
+    /// a wide window is never a small cluster beside a void.
     ///
-    /// This replaces a left-anchored 880px column, and the verdict that killed it was
-    /// *"a shitload of empty space where there shouldn't be"* plus *"make the
-    /// connections easier to work with"*. Both come from the same root cause: a
-    /// connection is an **object**, and the screen was rendering it as a **line**. A
-    /// line has to be capped at a reading width or its actions end up a screen away from
-    /// its name — which is exactly why 1120px of a 2000px window was dead canvas. A card
-    /// carries its own name, address, origin and controls inside one 300px box, so the
-    /// reading-width problem is solved *per card* and the layout is free to use the
-    /// whole width. See `sid_ui::grid` for the mechanism and the tested column contract.
-    ///
-    /// This IS the connection manager; there is no second list anywhere (the old
-    /// sidebar/main split showed the same hosts twice).
+    /// This IS the connection manager; there is no second list anywhere.
     pub(crate) fn ssh_home_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx).clone();
         let query = self.ssh_home.search.read(cx).value().to_string();
-        let filtered = filter_hosts(&self.hosts, &query);
-        let owned: Vec<Attributed<Host>> = filtered.into_iter().cloned().collect();
+        let folder = effective_folder(self.ssh_home.folder_filter.as_deref(), &self.hosts);
+        let in_folder: Vec<Attributed<Host>> = self
+            .hosts
+            .iter()
+            .filter(|a| folder.is_none_or(|f| a.item.folder.as_deref() == Some(f)))
+            .cloned()
+            .collect();
+        let owned: Vec<Attributed<Host>> = filter_hosts(&in_folder, &query)
+            .into_iter()
+            .cloned()
+            .collect();
         let empty = home_empty(self.hosts.len(), owned.len());
         let groups = group_by_folder(&owned);
-        // Whether the unfiled group needs a heading of its own — see `section_title`.
         let named = groups.iter().filter(|g| g.folder.is_some()).count();
+        let few = show_get_started(self.hosts.len()) && query.trim().is_empty();
+
+        // Keep the tree's rows in step with the store. Guarded by equality so a steady
+        // state never notifies (this runs in render).
+        let nodes = tree_nodes(&self.hosts);
+        let tree = self.ssh_home.tree.clone();
+        if tree.read(cx).roots() != nodes.as_slice() {
+            tree.update(cx, |tree, cx| tree.set_roots(nodes.clone(), cx));
+        }
+        let has_folders = nodes.len() > 1;
 
         let mut sections = Vec::new();
-        for (gix, group) in groups.into_iter().enumerate() {
-            let collapsed = group
-                .folder
-                .is_some_and(|f| self.ssh_home.collapsed_folders.contains(f));
-            let mut section = v_flex().w_full().gap_2();
+        for group in groups {
+            let mut section = v_flex().w_full().gap_3();
             if let Some(title) = section_title(group.folder, named) {
                 let count = group.hosts.len();
-                section = section.child(self.section_header(
-                    gix,
-                    title,
-                    group.folder,
-                    count,
-                    collapsed,
-                    cx,
-                ));
+                section = section.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_heading(&t)
+                                .clamp_one_line()
+                                .child(SharedString::from(title.to_string())),
+                        )
+                        .child(div().flex_none().child(Badge::count(count).pill())),
+                );
             }
-            if !collapsed {
-                let cards: Vec<_> = group.hosts.iter().map(|a| self.host_card(a, cx)).collect();
-                section = section.child(CardGrid::new().children(cards));
-            }
+            let cards: Vec<_> = group.hosts.iter().map(|a| self.host_card(a, cx)).collect();
+            section = section.child(
+                CardGrid::new()
+                    .min_col(px(320.))
+                    .max_col(match few {
+                        true => px(800.),
+                        false => px(440.),
+                    })
+                    .children(cards),
+            );
             sections.push(section.into_any_element());
         }
 
-        // The one panel this screen has, in the vocabulary Database and Settings already
-        // speak: `surface` fill, hairline, uppercase `CONNECTIONS · n` header, and the
-        // controls anchored to that header rather than floating on the canvas above it.
-        //
-        // The header row IS the toolbar row, in the house order
-        // `[label · count] [filter] [secondary] [primary]`: the quick-connect box is the
-        // filter (it filters the grid as you type), `add connection` is the secondary
-        // act, and `connect` — the tab's one accent — is the primary one. One row at one
-        // height, where this screen previously spent two: a header carrying a four-item
-        // dot legend, and a second strip under it holding the field.
         let panel = Card::panel("connections")
             .count(self.hosts.len())
             .flex_1()
+            .min_w(px(0.))
             .min_h(px(0.))
             .action(self.quick_connect_field(cx))
             .action(
-                Button::new("ssh-home-add-connection", "add connection")
-                    .small()
+                Button::new("ssh-home-import", "Import")
+                    .icon(Icon::File)
+                    .tooltip("Import connections from ~/.ssh/config")
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.open_ssh_import(window, cx);
+                    })),
+            )
+            .action(
+                Button::new("ssh-home-add-connection", "Add connection")
+                    .primary()
                     .icon(Icon::Add)
                     .tooltip("Save a new SSH connection")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.open_add_form(window, cx);
                     })),
-            )
-            .action(self.quick_connect_go(cx));
+            );
 
-        v_flex().flex_1().min_h(px(0.)).p_3().child(
-            panel
-                // The dot vocabulary, directly under the header it explains — not
-                // ~800px away in a footer under the last row of cards. A legend is
-                // not a control, so it gets one Meta-role row, left-aligned, and
-                // nothing else competes with it for that line.
-                .child(
-                    h_flex()
-                        .flex_none()
-                        .px_3()
-                        .pt_2()
-                        .child(StatusLegend::new("ssh-home-legend")),
-                )
-                // What the box has to say back: the inline `add … as a connection`
-                // row, and the note left by an Enter that named nothing. Both are
-                // answers to what was just typed, so they sit directly under the
-                // field's row rather than anywhere else.
-                .children(self.quick_connect_answer(cx))
-                .child(
-                    List::scrolling("ssh-home-grid")
-                        // The grid's own gutter and the gap between folder sections.
-                        .gap_4()
-                        .p_3()
-                        // Right-click *anywhere* in the grid defaults to "no card" —
-                        // `capture_any_mouse_down` fires during the CAPTURE phase, which
-                        // completes in full before any BUBBLE-phase handler runs (see
-                        // `dispatch_mouse_event` in gpui's `window.rs`: capture is one full
-                        // pass over every listener, then bubble is a second full pass, in
-                        // reverse/child-first order). So this always resets the target
-                        // first; a specific card's own `on_mouse_down(Right, ..)` (an
-                        // ordinary BUBBLE-phase handler, see `host_card`) then fires
-                        // straight after and overrides it back to `Some(host)` — but only
-                        // when the click actually landed on that card. Reaching for this
-                        // instead of a plain bubble-phase clear on this same container:
-                        // bubble fires child-before-parent, so a bubble-phase clear here
-                        // would run AFTER (and stomp) a card's bubble-phase set, not before.
-                        .capture_any_mouse_down(cx.listener(
-                            |this, ev: &MouseDownEvent, _window, cx| {
-                                if ev.button == MouseButton::Right {
-                                    this.ssh_home.right_click_target = None;
-                                    cx.notify();
-                                }
-                            },
-                        ))
-                        .children(sections)
-                        // Nothing to show: say which nothing this is, and hand back
-                        // a way out of it. See `home_empty`. It takes the free
-                        // height rather than a fixed 280px, so an empty screen is
-                        // centred in the panel instead of pinned under the header.
-                        .when_some(empty, |this, empty| {
-                            this.child(self.home_empty_state(empty, cx))
-                        })
-                        // Trailing empty space below the last row of cards, so
-                        // "right-click empty space → Add connection" has somewhere
-                        // to land even when the grid is short — purely a layout
-                        // spacer; the capture-phase reset above is what actually
-                        // makes empty-space right-clicks correct. It is also all
-                        // that is under the cards on a wide window, and deliberately
-                        // so: there is no per-host fact in the store worth a second
-                        // region (no last-connected time, no recents), and inventing
-                        // one to fill the panel would be decoration with a data
-                        // shape. Skipped when an empty state is up, since that
-                        // already claims the free height.
-                        .when(empty.is_none(), |this| {
-                            this.child(div().flex_1().min_h(scaled(48.)))
-                        })
-                        // ONE context menu for the whole grid — see
-                        // `right_click_target`'s doc comment on why this can't be
-                        // attached per-card.
-                        .context_menu(self.grid_context_menu(cx)),
-                ),
-        )
+        let panel = panel.children(self.quick_connect_answer(folder, cx)).child(
+            List::scrolling("ssh-home-grid")
+                .gap_5()
+                .p(sid_ui::CARD_PADDING.len())
+                // Right-click anywhere in the grid defaults to "no card": this
+                // capture-phase handler runs before any card's bubble-phase one, which
+                // then sets the target back if the click landed on a card.
+                .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    if ev.button == MouseButton::Right {
+                        this.ssh_home.right_click_target = None;
+                        cx.notify();
+                    }
+                }))
+                .children(sections)
+                .when_some(empty, |this, empty| {
+                    this.child(self.home_empty_state(empty, &query, cx))
+                })
+                .when(few && empty.is_none(), |this| {
+                    this.child(self.get_started(cx))
+                })
+                .when(empty.is_none(), |this| {
+                    this.child(div().flex_1().min_h(scaled(48.)))
+                })
+                // ONE context menu for the whole grid — see `right_click_target`.
+                .context_menu(self.grid_context_menu(cx)),
+        );
+
+        let groups_card = has_folders.then(|| {
+            Card::panel("groups")
+                .w(scaled(260.))
+                .flex_none()
+                .child(div().flex_1().min_h(px(0.)).p_2().child(tree))
+        });
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h(px(0.))
+            .gap(sid_ui::SECTION_GAP.len())
+            .p(sid_ui::PAGE_GUTTER.len())
+            .children(groups_card)
+            .child(panel)
     }
 
-    /// The list's empty state: a headline, one line of what to do next, and a real
-    /// control that does it.
-    ///
-    /// `.interface-design/system.md` says empty states "say what to do next, in muted
-    /// text, without a box" — right about the box, incomplete about the rest. The
-    /// zero-host case used to render *nothing at all* under a `CONNECTIONS · 0` header,
-    /// which on a wide window is indistinguishable from a failed render; and telling a
-    /// first-run user what to do while giving them no way to do it is the same mistake
-    /// as documenting the tab's primary verb in a hint string.
-    fn home_empty_state(&self, empty: HomeEmpty, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The "Get started" surface: three cards that occupy the free width while there are
+    /// few connections — add one, import from `~/.ssh/config`, and the keys worth
+    /// knowing (real bindings from the keymap). It collapses away at
+    /// [`GET_STARTED_BELOW`] hosts.
+    fn get_started(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx).clone();
+        let bindings = default_bindings();
+        let key = |action: Action| primary_shortcut(action, &bindings);
+        let start_card =
+            |id: &'static str, icon: Icon, title: &'static str, body: &'static str| -> GridCard {
+                GridCard::new(id)
+                    .child(
+                        div()
+                            .size(scaled(40.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(rgb(t.selection))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon.el().size(scaled(20.)).text_color(rgb(t.accent))),
+                    )
+                    .child(div().text_heading(&t).child(title))
+                    .child(div().text_body(&t).text_color(rgb(t.muted)).child(body))
+            };
+
+        let add = start_card(
+            "ssh-start-add",
+            Icon::Add,
+            "Add a connection",
+            "Save a host once, then reach it with one click, Enter, or the palette.",
+        )
+        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+            this.open_add_form(window, cx);
+        }));
+        let import = start_card(
+            "ssh-start-import",
+            Icon::File,
+            "Import from ~/.ssh/config",
+            "Bring your existing hosts along. You review them first; nothing is overwritten.",
+        )
+        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+            this.open_ssh_import(window, cx);
+        }));
+
+        let tip = |label: &'static str, spec: Option<String>| {
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(div().text_body(&t).child(label))
+                .children(spec.map(Kbd::new))
+        };
+        let keys = start_card(
+            "ssh-start-keys",
+            Icon::Terminal,
+            "Keyboard tips",
+            "Everything here works without the mouse.",
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(tip("Filter or quick-connect", key(Action::FocusFilter)))
+                .child(tip("Command palette", key(Action::CommandPalette)))
+                .child(tip("New session", key(Action::NewSession)))
+                .child(tip("Keyboard cheat sheet", key(Action::CheatSheet))),
+        );
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(div().text_heading(&t).child("Get started"))
+            .child(
+                CardGrid::new()
+                    .min_col(px(320.))
+                    .max_col(px(640.))
+                    .child(add)
+                    .child(import)
+                    .child(keys),
+            )
+            .into_any_element()
+    }
+
+    /// The list's empty state: what is missing, what to do, and the buttons that do it.
+    fn home_empty_state(
+        &self,
+        empty: HomeEmpty,
+        query: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let state = match empty {
-            HomeEmpty::NoHosts => EmptyState::new("no saved connections")
+            HomeEmpty::NoHosts => EmptyState::new("No saved connections")
                 .icon(Icon::Globe)
-                .guidance(
-                    "type user@host in the box above and press Enter — sid fills the \
-                     form in for you, then opens the connection it saves",
-                )
+                .guidance("Add one, or type user@host above and press Enter.")
                 .action(
-                    Button::new("ssh-empty-add", "add connection")
+                    Button::new("ssh-empty-add", "Add connection")
+                        .size(ButtonSize::Lg)
                         .primary()
                         .icon(Icon::Add)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                             this.open_add_form(window, cx);
                         })),
+                )
+                .secondary(
+                    Button::new("ssh-empty-import", "Import from ~/.ssh/config")
+                        .size(ButtonSize::Lg)
+                        .icon(Icon::File)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.open_ssh_import(window, cx);
+                        })),
                 ),
-            // A dead end the user typed, so the way out is to undo it — offering "add a
-            // connection" here would answer a search with a form.
-            HomeEmpty::NoMatch => EmptyState::new("no connection matches the filter")
+            HomeEmpty::NoMatch => EmptyState::new(format!("Nothing matches \"{}\"", query.trim()))
                 .icon(Icon::Search)
                 .guidance(
-                    "clear the filter to see every saved connection — or use the add row \
-                     above to save what you typed as a new one",
+                    "Clear the filter to see every connection, or use the add row above to \
+                     save what you typed.",
                 )
                 .action(
-                    Button::new("ssh-empty-clear", "clear filter")
+                    Button::new("ssh-empty-clear", "Clear filter")
+                        .size(ButtonSize::Lg)
                         .icon(Icon::Close)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                             this.ssh_home
                                 .search
                                 .update(cx, |input, cx| input.set_value("", window, cx));
                             this.ssh_home.quick_note = None;
+                            this.ssh_home.folder_filter = None;
                             cx.notify();
                         })),
                 ),
         };
-        // The scroll body is a plain stack, so the panel needs a height of its own to
-        // have something to centre itself in. `flex_1` claims the body's free height —
-        // on a 1200px window that centres the panel in the canvas, where a fixed 280px
-        // box would leave it hanging under the toolbar with 700px of nothing below it.
         div().w_full().flex_1().min_h(scaled(320.)).child(state)
     }
 
-    /// Builds the grid's single [`ContextMenuExt::context_menu`]: "+ Add connection"
-    /// when nothing more specific was right-clicked, or the target card's actions when
+    /// The groups tree's events: a folder narrows the grid to it, "All connections"
+    /// widens it again, a host selects its card, activating a host connects.
+    fn on_groups_tree_event(
+        &mut self,
+        ev: &sid_ui::tree::TreeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use sid_ui::tree::TreeEvent;
+        match ev {
+            TreeEvent::Selected(key) => match parse_tree_key(key) {
+                TreeTarget::All => self.ssh_home.folder_filter = None,
+                TreeTarget::Folder(f) => self.ssh_home.folder_filter = Some(f),
+                TreeTarget::Host(id) => {
+                    if let Some(a) = self.host_by_tree_id(id) {
+                        self.ssh_home.selected = Some((a.item.alias.clone(), a.origin.clone()));
+                    }
+                }
+            },
+            TreeEvent::Activated(key) => {
+                if let TreeTarget::Host(id) = parse_tree_key(key)
+                    && let Some(a) = self.host_by_tree_id(id)
+                {
+                    let (host, key) = (a.item.clone(), (a.item.alias.clone(), a.origin.clone()));
+                    self.row_primary_action(host, key, window, cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn host_by_tree_id(&self, id: u64) -> Option<&Attributed<Host>> {
+        self.hosts
+            .iter()
+            .find(|a| row_hash(&a.item.alias, &a.origin) == id)
+    }
+
+    /// Builds the grid's single [`ContextMenuExt::context_menu`]: add/import when nothing
+    /// more specific was right-clicked, or the target card's actions when
     /// [`HomeTabState::right_click_target`] says a card was hit.
-    ///
-    /// This menu carries more than it used to, and deliberately: the card shows
-    /// `connect`, `files` and `edit`, so rename, folder assignment, the layer moves and
-    /// **delete** live only here. Putting delete on a 300px card would have been one
-    /// stray click from destroying a record.
-    ///
-    /// Reads `right_click_target` fresh at build time — set by whichever card's own
-    /// `on_mouse_down(MouseButton::Right, ..)` fired first for this same click, always
-    /// before this builder runs.
     fn grid_context_menu(
         &self,
         cx: &mut Context<Self>,
@@ -791,217 +1001,182 @@ impl AppState {
             let scope = this.read(cx).scope.clone();
             match target {
                 Some((host, origin)) => {
-                    Self::row_context_menu(menu, this.clone(), host, origin, scope)
+                    Self::row_context_menu(menu, this.clone(), host, origin, scope, cx)
                 }
-                None => Self::add_connection_menu_item(menu, this.clone(), "+ Add connection"),
+                None => {
+                    let (add, import) = (this.clone(), this.clone());
+                    ContextMenu::new()
+                        .item(MenuItem::new("Add connection").icon(Icon::Add).on_select(
+                            move |window, cx| {
+                                add.update(cx, |state, cx| state.open_add_form(window, cx));
+                            },
+                        ))
+                        .item(
+                            MenuItem::new("Import from ~/.ssh/config")
+                                .icon(Icon::File)
+                                .on_select(move |window, cx| {
+                                    import
+                                        .update(cx, |state, cx| state.open_ssh_import(window, cx));
+                                }),
+                        )
+                        .apply(menu, cx)
+                }
             }
         }
     }
 
-    /// A menu with just the single "+ Add connection" item — the empty-space/no-target
-    /// case shared by [`Self::grid_context_menu`]'s `None` arm.
-    fn add_connection_menu_item(
-        menu: PopupMenu,
-        this: Entity<AppState>,
-        label: &'static str,
-    ) -> PopupMenu {
-        menu.item(PopupMenuItem::new(label).icon(Icon::Add.el()).on_click(
-            move |_ev, window, cx| {
-                this.update(cx, |state, cx| state.open_add_form(window, cx));
-            },
-        ))
-    }
-
-    /// The per-row menu: connect, the same in-place rename/folder-assign the row's hover
-    /// icons already offer, a full [`crate::ui::host_form::HostForm`] edit, layer moves
-    /// (promote to global / demote into the focused workspace — carried over from the
-    /// deleted second host list), and delete.
+    /// The per-row menu: connect, rename, a full-form edit, folder assignment, layer moves
+    /// and — last, after a separator, as a danger item — delete.
     fn row_context_menu(
         menu: PopupMenu,
         this: Entity<AppState>,
         host: Host,
         origin: Scope,
         scope: Scope,
+        cx: &gpui::App,
     ) -> PopupMenu {
         let key = (host.alias.clone(), origin.clone());
-        menu.item(
-            PopupMenuItem::new("connect")
-                .icon(Icon::Terminal.el())
-                .on_click({
-                    let this = this.clone();
-                    let host = host.clone();
-                    let key = key.clone();
-                    move |_ev, window, cx| {
-                        let host = host.clone();
-                        let key = key.clone();
-                        this.update(cx, |state, cx| {
-                            state.connect_host(host, Some(key), window, cx)
-                        });
-                    }
-                }),
-        )
-        .item(
-            PopupMenuItem::new("rename")
-                .icon(Icon::Rename.el())
-                .on_click({
-                    let this = this.clone();
-                    let alias = host.alias.clone();
-                    let origin = origin.clone();
-                    move |_ev, window, cx| {
-                        let alias = alias.clone();
-                        let origin = origin.clone();
-                        this.update(cx, |state, cx| {
-                            state.start_rename(alias, origin, window, cx)
-                        });
-                    }
-                }),
-        )
-        .item(
-            PopupMenuItem::new("edit…")
-                .icon(Icon::Settings.el())
-                .on_click({
-                    let this = this.clone();
-                    let host = host.clone();
-                    let origin = origin.clone();
-                    move |_ev, window, cx| {
-                        let host = host.clone();
-                        let origin = origin.clone();
-                        this.update(cx, |state, cx| {
-                            state.open_edit_form(host, origin, window, cx)
-                        });
-                    }
-                }),
-        )
-        .item(
-            PopupMenuItem::new("assign folder…")
-                .icon(Icon::Folder.el())
-                .on_click({
-                    let this = this.clone();
-                    let alias = host.alias.clone();
-                    let origin = origin.clone();
-                    let folder = host.folder.clone();
-                    move |_ev, window, cx| {
-                        let alias = alias.clone();
-                        let origin = origin.clone();
-                        let folder = folder.clone();
-                        this.update(cx, |state, cx| {
-                            state.start_folder_edit(alias, origin, folder, window, cx)
-                        });
-                    }
-                }),
-        )
-        .when(can_promote(&origin), |menu| {
-            menu.item(
-                PopupMenuItem::new("Promote to global")
-                    .icon(Icon::ArrowUp.el())
-                    .on_click({
-                        let this = this.clone();
-                        let alias = host.alias.clone();
-                        let origin = origin.clone();
-                        move |_ev, _window, cx| {
-                            let alias = alias.clone();
-                            let origin = origin.clone();
+        let mut items = ContextMenu::new()
+            .item(MenuItem::new("Connect").icon(Icon::Terminal).on_select({
+                let (this, host, key) = (this.clone(), host.clone(), key.clone());
+                move |window, cx| {
+                    let (host, key) = (host.clone(), key.clone());
+                    this.update(cx, |state, cx| {
+                        state.connect_host(host, Some(key), window, cx)
+                    });
+                }
+            }))
+            .item(MenuItem::new("Rename").icon(Icon::Rename).on_select({
+                let (this, alias, origin) = (this.clone(), host.alias.clone(), origin.clone());
+                move |window, cx| {
+                    let (alias, origin) = (alias.clone(), origin.clone());
+                    this.update(cx, |state, cx| {
+                        state.start_rename(alias, origin, window, cx)
+                    });
+                }
+            }))
+            .item(MenuItem::new("Edit…").icon(Icon::Settings).on_select({
+                let (this, host, origin) = (this.clone(), host.clone(), origin.clone());
+                move |window, cx| {
+                    let (host, origin) = (host.clone(), origin.clone());
+                    this.update(cx, |state, cx| {
+                        state.open_edit_form(host, origin, window, cx)
+                    });
+                }
+            }))
+            .item(
+                MenuItem::new("Assign folder…")
+                    .icon(Icon::Folder)
+                    .on_select({
+                        let (this, alias, origin, folder) = (
+                            this.clone(),
+                            host.alias.clone(),
+                            origin.clone(),
+                            host.folder.clone(),
+                        );
+                        move |window, cx| {
+                            let (alias, origin, folder) =
+                                (alias.clone(), origin.clone(), folder.clone());
+                            this.update(cx, |state, cx| {
+                                state.start_folder_edit(alias, origin, folder, window, cx)
+                            });
+                        }
+                    }),
+            );
+        if can_promote(&origin) {
+            items = items.item(
+                MenuItem::new("Promote to global")
+                    .icon(Icon::ArrowUp)
+                    .on_select({
+                        let (this, alias, origin) =
+                            (this.clone(), host.alias.clone(), origin.clone());
+                        move |_window, cx| {
+                            let (alias, origin) = (alias.clone(), origin.clone());
                             this.update(cx, |state, cx| state.promote_row(&alias, &origin, cx));
                         }
                     }),
-            )
-        })
-        .when(can_demote(&origin, &scope), |menu| {
-            menu.item(
-                PopupMenuItem::new("Demote to workspace")
-                    .icon(Icon::ArrowDown.el())
-                    .on_click({
-                        let this = this.clone();
-                        let alias = host.alias.clone();
-                        move |_ev, _window, cx| {
+            );
+        }
+        if can_demote(&origin, &scope) {
+            items = items.item(
+                MenuItem::new("Demote to workspace")
+                    .icon(Icon::ArrowDown)
+                    .on_select({
+                        let (this, alias) = (this.clone(), host.alias.clone());
+                        move |_window, cx| {
                             let alias = alias.clone();
                             this.update(cx, |state, cx| state.demote_row(&alias, cx));
                         }
                     }),
-            )
-        })
-        .separator()
-        .item(
-            PopupMenuItem::new("delete")
-                .icon(Icon::Trash.el())
-                .on_click({
-                    let secret_ref = host.secret_ref.clone();
-                    move |_ev, _window, cx| {
-                        let (alias, origin) = key.clone();
-                        let secret_ref = secret_ref.clone();
-                        this.update(cx, |state, cx| {
-                            state.delete_row(&alias, &origin, secret_ref.as_deref(), cx)
-                        });
-                    }
-                }),
-        )
+            );
+        }
+        items
+            .separator()
+            .danger_item(MenuItem::new("Delete").icon(Icon::Trash).on_select({
+                let secret_ref = host.secret_ref.clone();
+                move |_window, cx| {
+                    let (alias, origin) = key.clone();
+                    let secret_ref = secret_ref.clone();
+                    this.update(cx, |state, cx| {
+                        state.delete_row(&alias, &origin, secret_ref.as_deref(), cx)
+                    });
+                }
+            }))
+            .apply(menu, cx)
     }
 
-    /// The quick-connect box, as the panel header's **filter** slot.
-    ///
-    /// It is the tab's filter (it narrows the grid as you type) and, since issue #2, the
-    /// one place a connection gets added without leaving the keyboard — so it sits in
-    /// the toolbar contract's filter position and nowhere else. The key context rides on
-    /// this wrapper rather than on a surrounding column, because the wrapper is now the
-    /// only ancestor of the focused `TextInput` this screen controls; `QuickConnectGo`
-    /// (Enter) dispatches up the focus tree from the field and finds it here.
+    /// The quick-connect box, as the panel header's **filter** slot. Enter connects (or
+    /// offers to add), and typing narrows the grid.
     fn quick_connect_field(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        // `TextInput` paints its shaped line at its own natural width, ignoring the
-        // box's flex-assigned bounds (see `TextElement::paint` in `text_input.rs` — it
-        // calls `line.paint` with no content mask). Left unclipped, the
-        // placeholder/typed text bled straight through the button beside it and into
-        // whatever sat past it. `min_w(0)` lets this flex item actually shrink;
-        // `overflow_hidden` then clips the input's own paint (including its nested
-        // `TextElement`) to that width — a content mask gpui's `Div` establishes around
-        // all of its descendants' painting, not just its own quad, so it fixes the child
-        // without needing to touch the shared `TextInput` element.
-        //
-        // A definite width, not `flex_1`: this lives in a header's action group, which
-        // is `flex_none` so the title beside it is the thing that elides. 300px is a
-        // `user@host:port` and change — a 2000px-wide text field is not a better text
-        // field, and letting it run the full width would drag the `connect` button it
-        // submits to the far edge of the screen.
+        // `min_w(0)` + `overflow_hidden` clips the input's own paint to the box so the
+        // placeholder/typed text cannot bleed into the buttons beside it.
         div()
             .key_context(QUICK_CONNECT_CONTEXT)
             .on_action(cx.listener(|this, _: &QuickConnectGo, window, cx| {
                 this.quick_connect(window, cx);
             }))
             .flex_none()
-            .w(scaled(300.))
+            .w(scaled(380.))
             .min_w(px(0.))
             .overflow_hidden()
-            // `.small()` — same as the network/database panel filters — so this field
-            // is 24px, not the 32px default that was inflating the whole CONNECTIONS
-            // header to 49px against every other panel's 41px.
-            .child(TextInput::new(&self.ssh_home.search).small())
-    }
-
-    /// The screen's primary action: open what the box names.
-    ///
-    /// A red filled square with a `⏎` in it used to sit here: sid's most emphatic
-    /// affordance, spent on "submit this text field", while the tab's actual primary
-    /// verb had no button at all. Now it is a labelled button and says which of the
-    /// box's two jobs it performs — the same box is also the list filter, and typing in
-    /// it never needs this. It is the screen's ONE accent (the per-card `connect` is
-    /// deliberately `Secondary`; see `host_card`).
-    fn quick_connect_go(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        Button::new("ssh-quick-connect-go", "connect")
-            .small()
-            .primary()
-            .icon(Icon::Terminal)
-            .tooltip("Open the saved connection you typed — or add it, if it isn't saved yet")
-            .on_click(
-                cx.listener(|this, _ev: &ClickEvent, window, cx| this.quick_connect(window, cx)),
-            )
+            .child(TextInput::new(&self.ssh_home.search).width(FieldWidth::Fixed(px(380.))))
     }
 
     /// What the box has to say back, if anything: the inline add row and the note left
     /// by an Enter that named nothing. Both live under the header, above the grid.
-    fn quick_connect_answer(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn quick_connect_answer(
+        &self,
+        folder: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let t = theme::active(cx).clone();
         let query = self.ssh_home.search.read(cx).value().to_string();
         let matched = saved_match(&self.hosts, &query).is_some();
         let mut out: Vec<AnyElement> = Vec::new();
+        if let Some(folder) = folder {
+            out.push(
+                h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .px_4()
+                    .pt_2()
+                    .child(
+                        div()
+                            .text_meta(&t)
+                            .child(SharedString::from(format!("Showing folder {folder}"))),
+                    )
+                    .child(
+                        Button::new("ssh-folder-clear", "Show all")
+                            .size(ButtonSize::Sm)
+                            .ghost()
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                this.ssh_home.folder_filter = None;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         // The inline add row — issue #2's headline. It appears the moment what is typed
         // stops naming anything saved, which is also the moment the grid below has
         // nothing left to show; before this, that state was a dead end with a "clear the
@@ -1011,7 +1186,7 @@ impl AppState {
         if add_row_visible(&query, matched) {
             let seed = add_seed(&query);
             let label: SharedString =
-                format!("add {} as a connection…", seed_display(&seed)).into();
+                format!("Add {} as a connection…", seed_display(&seed)).into();
             out.push(
                 div()
                     .flex_none()
@@ -1171,78 +1346,6 @@ impl AppState {
         );
     }
 
-    /// One group's full-width heading: `WORK · 3` over a hairline, with a disclosure
-    /// caret when the group is a real folder.
-    ///
-    /// The list this replaced made a folder a *row* — same box, same padding and the
-    /// same hover as the hosts inside it, distinguished only by a caret. In a grid the
-    /// distinction is structural instead: a heading spans the full width and the cards
-    /// flow beneath it, which is the `Card::section` language (`text_xs` UPPERCASE
-    /// `muted`, via the shared [`header_text`]) applied to a group of objects rather
-    /// than a block of text.
-    ///
-    /// The implicit `ungrouped` heading is not a folder and gets no caret and no click:
-    /// there is nothing to collapse it *into*, and a group the user never created should
-    /// not offer to hide itself. The 14px spacer keeps its title on the same left edge as
-    /// every folder's.
-    fn section_header(
-        &self,
-        gix: usize,
-        title: &str,
-        folder: Option<&str>,
-        count: usize,
-        collapsed: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let t = theme::active(cx).clone();
-        let caret = match collapsed {
-            true => Icon::ChevronRight,
-            false => Icon::ChevronDown,
-        };
-        let header = h_flex()
-            .w_full()
-            .gap_1p5()
-            .py_1()
-            .rounded_sm()
-            .hairline_b(&t)
-            .child(match folder {
-                Some(_) => caret
-                    .el()
-                    .size(scaled(14.))
-                    .text_color(rgb(t.muted))
-                    .into_any_element(),
-                None => div().w(scaled(14.)).flex_none().into_any_element(),
-            })
-            .child(
-                div()
-                    .section_label(&t)
-                    .child(header_text(title, Some(count))),
-            );
-        match folder {
-            // A folder heading is the whole collapse target, not just its caret — a 14px
-            // triangle is a worse click target than the 1900px rule beside it.
-            Some(folder) => {
-                let owned = folder.to_string();
-                header
-                    .id(("ssh-folder", gix))
-                    .cursor_pointer()
-                    .hover_fill(&t)
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.toggle_folder(owned.clone(), cx);
-                    }))
-                    .into_any_element()
-            }
-            None => header.into_any_element(),
-        }
-    }
-
-    fn toggle_folder(&mut self, folder: String, cx: &mut Context<Self>) {
-        if !self.ssh_home.collapsed_folders.remove(&folder) {
-            self.ssh_home.collapsed_folders.insert(folder);
-        }
-        cx.notify();
-    }
-
     /// The live session this row opened, if one is still in the tab strip.
     fn session_for_row(&self, key: &(String, Scope)) -> Option<usize> {
         self.ssh_sessions
@@ -1352,7 +1455,7 @@ impl AppState {
             let host = host.clone();
             let key = key.clone();
             Button::new(slot("ssh-card-connect"), primary.label())
-                .small()
+                .primary()
                 .icon(Icon::Terminal)
                 .tooltip(primary.tooltip())
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
@@ -1364,20 +1467,20 @@ impl AppState {
         let files = {
             let host = host.clone();
             let key = key.clone();
-            IconButton::new(slot("ssh-card-files"), Icon::File, "Browse files (SFTP)")
-                .small()
-                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-card-files"), Icon::File, "Browse files (SFTP)").on_click(
+                cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.row_browse_files(host.clone(), key.clone(), window, cx);
-                }))
+                }),
+            )
         };
         let edit = {
             let host = host.clone();
             let origin = origin.clone();
-            IconButton::new(slot("ssh-card-edit-btn"), Icon::Settings, "Edit connection")
-                .small()
-                .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+            IconButton::new(slot("ssh-card-edit-btn"), Icon::Settings, "Edit connection").on_click(
+                cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.open_edit_form(host.clone(), origin.clone(), window, cx);
-                }))
+                }),
+            )
         };
 
         // The body click. One click picks the card up, two open it — see
@@ -1431,8 +1534,7 @@ impl AppState {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .text_body(&t)
-                            .text_color(rgb(t.fg_strong))
+                            .text_heading(&t)
                             .clamp_one_line()
                             .child(alias),
                     )
@@ -1457,18 +1559,19 @@ impl AppState {
                             .child(self.scope_chip(a)),
                     ),
             )
+            .child(div().w_full().text_mono(&t).clamp_one_line().child(addr))
             .child(
                 div()
                     .w_full()
-                    .text_mono_meta(&t)
+                    .text_meta(&t)
                     .clamp_one_line()
-                    .child(addr),
+                    .child(SharedString::from(auth_summary(&host.auth))),
             )
             .child(
                 h_flex()
                     .w_full()
-                    .gap_1()
-                    .pt_1()
+                    .gap_2()
+                    .pt_2()
                     .child(connect)
                     // The word on the left, the glyphs on the right: the same
                     // engagement-last ordering `sid_ui::Row` fixes for rows, held to
@@ -1660,6 +1763,63 @@ mod tests {
             origin: Scope::Global,
             duplicate: false,
         }
+    }
+
+    #[test]
+    fn get_started_collapses_as_the_fleet_grows() {
+        assert!(show_get_started(0));
+        assert!(show_get_started(GET_STARTED_BELOW - 1));
+        assert!(!show_get_started(GET_STARTED_BELOW));
+    }
+
+    #[test]
+    fn tree_has_only_all_without_folders() {
+        let hosts = vec![attributed(host("a", None))];
+        assert_eq!(tree_nodes(&hosts).len(), 1);
+    }
+
+    #[test]
+    fn tree_nests_hosts_under_their_folder_and_keys_round_trip() {
+        let hosts = vec![
+            attributed(host("a", Some("work"))),
+            attributed(host("b", Some("work"))),
+            attributed(host("c", None)),
+        ];
+        let nodes = tree_nodes(&hosts);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(parse_tree_key(&nodes[0].key), TreeTarget::All);
+        assert_eq!(
+            parse_tree_key(&nodes[1].key),
+            TreeTarget::Folder("work".into())
+        );
+        let sid_ui::TreeChildren::Loaded(kids) = &nodes[1].children else {
+            panic!("folder must be a loaded branch");
+        };
+        assert_eq!(kids.len(), 2);
+        assert_eq!(
+            parse_tree_key(&kids[0].key),
+            TreeTarget::Host(row_hash("a", &Scope::Global))
+        );
+    }
+
+    #[test]
+    fn a_stale_folder_filter_is_ignored() {
+        let hosts = vec![attributed(host("a", Some("work")))];
+        assert_eq!(effective_folder(Some("work"), &hosts), Some("work"));
+        assert_eq!(effective_folder(Some("gone"), &hosts), None);
+        assert_eq!(effective_folder(None, &hosts), None);
+    }
+
+    #[test]
+    fn auth_summary_names_the_key_file_not_the_path() {
+        assert_eq!(auth_summary(&AuthMethod::Agent), "Agent");
+        assert_eq!(auth_summary(&AuthMethod::Password), "Password");
+        assert_eq!(
+            auth_summary(&AuthMethod::Key {
+                path: "/home/me/.ssh/id_ed25519".into()
+            }),
+            "Key id_ed25519"
+        );
     }
 
     #[test]
@@ -2113,8 +2273,8 @@ mod tests {
         assert_eq!(section_title(None, 0), None);
         // As soon as a named folder exists, the unfiled cards need a name of their own —
         // otherwise they read as belonging to whatever header is nearest.
-        assert_eq!(section_title(None, 1), Some("ungrouped"));
-        assert_eq!(section_title(None, 5), Some("ungrouped"));
+        assert_eq!(section_title(None, 1), Some("Ungrouped"));
+        assert_eq!(section_title(None, 5), Some("Ungrouped"));
     }
 
     #[test]
@@ -2130,7 +2290,7 @@ mod tests {
             .iter()
             .map(|g| section_title(g.folder, named))
             .collect();
-        assert_eq!(titles, vec![Some("ungrouped"), Some("work")]);
+        assert_eq!(titles, vec![Some("Ungrouped"), Some("work")]);
 
         // The all-unfiled store — the shape a first-run user actually has.
         let flat = vec![attributed(host("alpha", None))];
