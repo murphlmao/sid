@@ -566,7 +566,7 @@ impl DbConnForm {
                 // it is a required choice inside a modal. After the last descriptor
                 // field, wherever the engine put it.
                 .tab_index(save_to)
-                .leading(radio_mark(selected, enabled, theme))
+                .leading(sid_ui::Radio::new(selected).enabled(enabled))
                 // Title and note in the same slot — see `host_form::save_to_selector`
                 // for why the right-anchored meta slot is the wrong home for it.
                 .child(
@@ -636,31 +636,6 @@ fn kind_index(kinds: &[DbKind], kind: DbKind) -> usize {
 /// "kept local so `ui` stays self-contained" rule on `radio_mark` below).
 fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
     (!ws_active).then_some("— no workspace focused")
-}
-
-/// The save-to picker's radio mark — see `host_form::radio_mark`, which this duplicates
-/// on purpose: `SaveTarget`, `preselect` and `add_guard` are already duplicated between
-/// these two modules under this file's "kept local so `ui` stays self-contained" rule,
-/// and a shared `Radio`/scope-picker component in `sid-ui` is the right way to collapse
-/// all four at once rather than making the DB form depend on the SSH form.
-fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
-    let edge = match (selected, enabled) {
-        (true, _) => theme.accent,
-        // Was inverted — see `host_form::radio_mark`'s doc comment.
-        (false, true) => theme.muted,
-        (false, false) => theme.border,
-    };
-    div()
-        .size_3()
-        .rounded_full()
-        .border_1()
-        .border_color(rgb(edge))
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(selected, |mark| {
-            mark.child(div().size_1p5().rounded_full().bg(rgb(theme.accent)))
-        })
 }
 
 impl EventEmitter<DbConnFormEvent> for DbConnForm {}

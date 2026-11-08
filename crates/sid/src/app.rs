@@ -12,9 +12,10 @@
 
 use gpui::{
     Anchor, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, Pixels,
-    SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px, rgb, rgba,
+    SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, prelude::*, px,
+    rgb,
 };
+use sid_core::notify::{Notification, Notifier, Urgency};
 use sid_secrets::SecretStore;
 use sid_store::{
     Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
@@ -37,9 +38,10 @@ use crate::ui::systems_tab::SystemsTabState;
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
-    BadgeTone, Icon, IconButton, ScopeChip, ScopeOrigin, Segment, SegmentSelect, SegmentedControl,
-    StatusBar, StatusDot, StatusItem, StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
-    bridge::{SCRIM, contrast_ink, pressed_of},
+    BadgeTone, Button, Elevation, Icon, IconButton, Kbd, Modal, Radius, Rounded as _, ScopeChip,
+    ScopeOrigin, Segment, SegmentSelect, SegmentedControl, StatusBar, StatusDot, StatusItem,
+    StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
+    bridge::{contrast_ink, pressed_of},
     modal, scaled, theme,
     toolbar::count_label,
 };
@@ -66,6 +68,18 @@ impl Tab {
         Tab::System,
         Tab::Settings,
     ];
+
+    /// The tab's persisted name (`Settings::last_tab`); the inverse of [`tab_from_str`].
+    fn id(self) -> &'static str {
+        match self {
+            Tab::Ssh => "ssh",
+            Tab::Database => "database",
+            Tab::Network => "network",
+            Tab::Workspaces => "workspaces",
+            Tab::System => "system",
+            Tab::Settings => "settings",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -96,7 +110,15 @@ impl Tab {
 /// The height of both tab strips — the top chrome and the SSH session bar under it.
 /// One number, so the two read as the same control at two levels rather than as a bar
 /// and a row of chips.
-const TAB_STRIP_H: f32 = 42.;
+const TAB_STRIP_H: f32 = 40.;
+
+/// The primary top bar (design v2 section 4.7): taller than the session strip under it,
+/// because it carries the wordmark, the tabs and the scope switcher.
+const TOP_BAR_H: f32 = 48.;
+
+/// Past this many milliseconds a finished query is worth a desktop notification when sid
+/// is in the background.
+pub(crate) const LONG_QUERY_MS: u128 = 5_000;
 
 /// The narrowest window the six tab *words* fit in, beside the wordmark and the scope
 /// switcher.
@@ -183,7 +205,7 @@ fn chrome_tab(id: impl Into<ElementId>, selected: bool, t: &Theme) -> Stateful<D
         .px_3()
         .h_full()
         .cursor_pointer()
-        .text_body(t)
+        .text_control(t)
         .text_color(rgb(if selected { t.fg_strong } else { t.muted }))
         .focus_ring(t)
         .hover(|s| s.bg(rgb(t.selection)))
@@ -226,6 +248,30 @@ fn tab_from_env() -> Option<Tab> {
         .and_then(|v| tab_from_str(&v))
 }
 
+/// Whether the first-run import banner shows: an empty host list, a config to import
+/// from, and not yet dismissed. Pure so the rule is testable.
+fn import_banner_visible(host_count: usize, config_present: bool, dismissed: bool) -> bool {
+    host_count == 0 && config_present && !dismissed
+}
+
+/// Whether to raise a desktop notification: only when the user opted in, and only when
+/// they cannot already see the event happen.
+pub(crate) fn should_notify(enabled: bool, user_is_looking: bool) -> bool {
+    enabled && !user_is_looking
+}
+
+/// Whether the user has an `~/.ssh/config`. Probed once at startup.
+fn ssh_config_exists() -> bool {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .is_some_and(|home| {
+            std::path::Path::new(&home)
+                .join(".ssh")
+                .join("config")
+                .is_file()
+        })
+}
+
 /// The zoom the app opens at (GitHub #4): the persisted `Settings.ui_scale_percent`,
 /// unless `SID_UI_SCALE` overrides it *for this run only* — the capture harness's hook
 /// for shooting the UI at 150% against a hermetic store, same convention as
@@ -250,6 +296,18 @@ pub(crate) struct ScopeChoice {
 /// The single application entity.
 pub struct AppState {
     pub(crate) store: Store,
+    /// Entries the user ran from the command palette this run, most recent first
+    /// (`ui::command_palette::remember_recent`).
+    pub(crate) recent_commands: Vec<String>,
+    /// Desktop notifications (`sid_core::notify`). Constructed here, at the composition
+    /// root; the blocking D-Bus call is only ever made off the UI thread
+    /// ([`Self::desktop_notify`]).
+    notifier: std::sync::Arc<dyn Notifier>,
+    /// Whether `~/.ssh/config` exists (probed once at startup, never from `render`) --
+    /// gates the first-run import banner on the SSH home.
+    ssh_config_present: bool,
+    /// The user closed the import banner this run.
+    import_banner_dismissed: bool,
     /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
     /// through here; the store only ever sees opaque `secret_ref` ids.
     pub(crate) secrets: Box<dyn SecretStore>,
@@ -468,11 +526,18 @@ impl AppState {
         // why the Settings screen keeps its own snapshot rather than re-reading
         // `store.settings()` from `render`.
         let settings = SettingsTabState::new(&store);
+        // The last tab and the reduce-motion switch ride in the same cached snapshot: one
+        // read at startup, none from `render`.
+        let last_tab = tab_from_str(&settings.cached_settings().last_tab);
+        if settings.cached_settings().reduce_motion {
+            sid_ui::motion::set_reduced(true, cx);
+        }
+        let ssh_config_present = ssh_config_exists();
         let mut state = Self {
             store,
             secrets,
             scope: Scope::Global,
-            active_tab: tab_from_env().unwrap_or(Tab::Ssh),
+            active_tab: tab_from_env().or(last_tab).unwrap_or(Tab::Ssh),
             filters: ViewFilters::default(),
             scopes: Vec::new(),
             hosts: Vec::new(),
@@ -500,6 +565,10 @@ impl AppState {
             host_key_prompt: HostKeyPrompts::default(),
             palette: None,
             cheat_sheet_open: false,
+            recent_commands: Vec::new(),
+            notifier: std::sync::Arc::new(sid_os::DbusNotifier::new()),
+            ssh_config_present,
+            import_banner_dismissed: false,
             root_focus: cx.focus_handle(),
         };
         state.apply_seed_lists(seed_lists);
@@ -625,6 +694,46 @@ impl AppState {
                 Some((self.scope.clone(), label))
             }
         }
+    }
+
+    /// Make `tab` the active primary tab and remember it (`Settings::last_tab`) so the
+    /// next launch reopens there. Every tab switch goes through here. Persisting is a
+    /// best-effort single redb write, skipped when the tab did not change.
+    pub(crate) fn set_active_tab(&mut self, tab: Tab) {
+        if self.active_tab == tab {
+            return;
+        }
+        self.active_tab = tab;
+        if let Ok(mut settings) = self.store.settings()
+            && settings.last_tab != tab.id()
+        {
+            settings.last_tab = tab.id().to_string();
+            let _ = self.store.set_settings(&settings);
+        }
+    }
+
+    /// Raise a desktop notification, unless the user turned them off in Settings or
+    /// `user_is_looking` (they can already see what happened). The blocking D-Bus call
+    /// runs on its own thread, never on the UI thread. Failures are dropped: a missing
+    /// notification daemon must not become an error dialog.
+    pub(crate) fn desktop_notify(
+        &self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        urgency: Urgency,
+        user_is_looking: bool,
+    ) {
+        if !should_notify(
+            self.settings.cached_settings().desktop_notifications,
+            user_is_looking,
+        ) {
+            return;
+        }
+        let notifier = self.notifier.clone();
+        let note = Notification::new(title, body).urgency(urgency);
+        std::thread::spawn(move || {
+            let _ = notifier.notify(&note);
+        });
     }
 
     /// Which primary tab is active. `pub(crate)` (rather than exposing `active_tab`
@@ -956,6 +1065,25 @@ impl AppState {
             // (`ui::host_key_prompt` owns the modal and the answer).
             SshSessionEvent::UnknownHostKey(key) => {
                 self.open_host_key_prompt(session.downgrade(), key.clone(), window, cx);
+            }
+            SshSessionEvent::Dropped => {
+                let ix = self.ssh_sessions.iter().position(|t| &t.session == session);
+                let label = ix.map_or_else(
+                    || "an SSH session".to_string(),
+                    |i| self.ssh_sessions[i].label.to_string(),
+                );
+                // The user is looking if sid is focused and this very session is on
+                // screen; anything else (another tab, another app) deserves a ping.
+                let looking = window.is_window_active()
+                    && self.active_tab == Tab::Ssh
+                    && ix.is_some()
+                    && self.active_session == ix;
+                self.desktop_notify(
+                    "SSH session disconnected",
+                    format!("The connection to {label} dropped."),
+                    Urgency::Normal,
+                    looking,
+                );
             }
             SshSessionEvent::Retry | SshSessionEvent::EditConnection => {
                 let Some(ix) = self.ssh_sessions.iter().position(|t| &t.session == session) else {
@@ -1401,6 +1529,16 @@ impl AppState {
             }
         }
 
+        // Esc closes the topmost thing, consistently: palette (above), then the cheat
+        // sheet, then the status-bar popovers.
+        if key == "escape" && (self.secrets_detail_open || self.gpu_badge_open) {
+            cx.stop_propagation();
+            self.secrets_detail_open = false;
+            self.gpu_badge_open = false;
+            cx.notify();
+            return;
+        }
+
         if self.cheat_sheet_open && key == "escape" {
             cx.stop_propagation();
             self.cheat_sheet_open = false;
@@ -1444,7 +1582,7 @@ impl AppState {
                 if let Some(ix) = (n as usize).checked_sub(1)
                     && let Some(&tab) = Tab::ALL.get(ix)
                 {
-                    self.active_tab = tab;
+                    self.set_active_tab(tab);
                     self.close_palette(cx);
                     self.refocus_stable_target(window, cx);
                     cx.notify();
@@ -1470,7 +1608,7 @@ impl AppState {
                 // Round-E §C: a real Settings screen now lives at `Tab::Settings`
                 // (Theme/Behavior/Keyboard/Storage) — Settings -> Keymap rebinding
                 // itself stays deferred, per the plan; everything else here is live.
-                self.active_tab = Tab::Settings;
+                self.set_active_tab(Tab::Settings);
                 self.close_palette(cx);
                 self.refocus_stable_target(window, cx);
                 cx.notify();
@@ -1513,7 +1651,7 @@ impl AppState {
             .iter()
             .position(|&t| t == self.active_tab)
             .unwrap_or(0);
-        self.active_tab = Tab::ALL[cycle_index(current, len, backwards)];
+        self.set_active_tab(Tab::ALL[cycle_index(current, len, backwards)]);
         self.refocus_stable_target(window, cx);
         cx.notify();
     }
@@ -1533,9 +1671,9 @@ impl AppState {
         }
     }
 
-    /// The `?` cheat-sheet overlay: one row per [`keymap::Action`] naming its default
-    /// shortcut. Same `deferred`/`anchored` backdrop pattern as every other overlay
-    /// here.
+    /// The `?` shortcut overlay: a `Modal` listing every [`keymap::Action`] with its
+    /// *current* binding as `Kbd` chips, read from the live keymap so a rebind shows up
+    /// the moment it is made.
     fn cheat_sheet_overlay(
         &self,
         window: &mut Window,
@@ -1544,84 +1682,37 @@ impl AppState {
         if !self.cheat_sheet_open {
             return None;
         }
-        let t = theme::active(cx);
-        let (accent, surface, border, muted, selection) =
-            (t.accent, t.surface, t.border, t.muted, t.selection);
+        let t = theme::active(cx).clone();
         let bindings = self.effective_bindings();
-        let viewport = window.viewport_size();
         let rows: Vec<_> = keymap::ALL_ACTIONS
             .iter()
             .map(|&action| {
-                let shortcut = keymap::primary_shortcut(action, &bindings).unwrap_or_default();
+                let shortcut = keymap::primary_shortcut(action, &bindings);
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .justify_between()
                     .gap_4()
-                    .px_3()
-                    .py_2()
-                    .child(div().text_body(t).child(action.label()))
-                    .child(div().text_body(t).text_color(rgb(accent)).child(shortcut))
+                    .py_1()
+                    .child(div().text_body(&t).child(action.label()))
+                    .child(div().flex_none().children(shortcut.map(Kbd::new)))
             })
             .collect();
-
-        Some(
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .id("cheat-sheet-backdrop")
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(SCRIM))
-                        .child(
-                            div()
-                                .w(scaled(420.))
-                                .flex()
-                                .flex_col()
-                                .bg(rgb(surface))
-                                .border_1()
-                                .border_color(rgb(border))
-                                .rounded_md()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(rgb(border))
-                                        .child(div().text_title(t).child("Keyboard Shortcuts"))
-                                        .child(
-                                            div()
-                                                .id("cheat-sheet-close")
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .text_color(rgb(muted))
-                                                .hover(|s| s.bg(rgb(selection)))
-                                                .child("✕ close")
-                                                .on_click(cx.listener(
-                                                    |this, _ev: &ClickEvent, _window, cx| {
-                                                        this.cheat_sheet_open = false;
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        ),
-                                )
-                                .child(div().flex().flex_col().py_1().children(rows)),
-                        ),
-                ),
-            )
-            .with_priority(2),
-        )
+        let modal = Modal::new("cheat-sheet", "Keyboard shortcuts")
+            .width(px(460.))
+            .on_dismiss(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.cheat_sheet_open = false;
+                cx.notify();
+            }))
+            .child(div().flex().flex_col().children(rows))
+            .child(
+                div()
+                    .pt_2()
+                    .text_meta(&t)
+                    .child("Change any of these in Settings, under Keyboard."),
+            );
+        Some(modal::overlay(window, modal))
     }
 
     // ---- rendering helpers --------------------------------------------------
@@ -1660,7 +1751,7 @@ impl AppState {
                     // `tooltip()` call for the same element anyway.
                     .when(!chrome.shows_label(), |this| this.tip(tab.label()))
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                        this.active_tab = tab;
+                        this.set_active_tab(tab);
                         // Mouse-driven tab switches need the same refocus as the
                         // keyboard path (`dispatch_action`'s `PrimaryTab` arm) — see
                         // `root_focus`'s doc comment: leaving a tab that had something
@@ -1679,18 +1770,18 @@ impl AppState {
             .iter()
             .position(|choice| choice.scope == current)
             .unwrap_or(0);
+        // Md size (design v2 section 4.7): the most important state in the app is not a
+        // 12px chip. The workspace segments carry a Folder mark so "Global" and "a
+        // workspace" read as different kinds of thing, not two labels.
         let scope_switcher = SegmentedControl::new("scope-switcher")
-            // The chrome rung (24px), not the content one: see `sid_ui`'s `track_height`.
-            // The switcher is the only filled control in the bar, so it is the only one
-            // whose box is visible, and at the content rung it was 41px of track in a
-            // 42px bar — flush top and bottom, reading as the chrome rather than as a
-            // control inside it.
-            .small()
-            .segments(
-                self.scopes
-                    .iter()
-                    .map(|choice| Segment::new(choice.label.clone())),
-            )
+            .segments(self.scopes.iter().map(|choice| {
+                let seg = Segment::new(choice.label.clone());
+                if matches!(choice.scope, Scope::Global) {
+                    seg
+                } else {
+                    seg.icon(Icon::Folder)
+                }
+            }))
             .selected(selected_scope)
             .on_select(cx.listener(|this, ev: &SegmentSelect, _win, cx| {
                 let Some(choice) = this.scopes.get(ev.index) else {
@@ -1706,7 +1797,7 @@ impl AppState {
             .flex_row()
             .items_center()
             .w_full()
-            .h(scaled(TAB_STRIP_H))
+            .h(scaled(TOP_BAR_H))
             // The chrome's height is not negotiable. Without this the strip is an
             // ordinary shrinkable flex item in the window's column, so any tab whose
             // content reports a taller intrinsic height than the window has left
@@ -1726,7 +1817,7 @@ impl AppState {
                 // no rung of its own.
                 div()
                     .flex_none()
-                    .pr_2()
+                    .pr_4()
                     .text_title(&t)
                     .text_color(rgb(accent))
                     .child("✦ sid"),
@@ -1855,10 +1946,10 @@ impl AppState {
             .child(
                 StatusItem::new("status-secrets", word)
                     .tone(tone)
-                    // The glyph is spent only on the degraded state. A healthy backend
-                    // gets one quiet word: chrome that decorates the good news trains
-                    // the eye to skip the bad.
-                    .when(degraded, |item| item.icon(Icon::Warning))
+                    // A mark on both states (design v2 section 4.7) so the word does not
+                    // read as a stray cyan label: a check when healthy, a warning when
+                    // secrets only live in memory.
+                    .icon(if degraded { Icon::Warning } else { Icon::Check })
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.secrets_detail_open = !this.secrets_detail_open;
                         cx.notify();
@@ -1869,6 +1960,19 @@ impl AppState {
         let mut bar = StatusBar::new().left(secrets);
         if let Some(label) = ssh_session_fact(self.ssh_sessions.len()) {
             bar = bar.left(StatusItem::new("status-ssh", label));
+        }
+        if let Some(tab) = self.active_session.and_then(|ix| self.ssh_sessions.get(ix)) {
+            // The connected host; clicking copies its name (the clipboard seam is gpui's,
+            // which is fine this high in the frontend).
+            let label = tab.label.clone();
+            let copy = label.to_string();
+            bar = bar.left(
+                StatusItem::new("status-host", label)
+                    .icon(Icon::Copy)
+                    .on_click(cx.listener(move |_this, _ev: &ClickEvent, _window, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                    })),
+            );
         }
         if let Some((name, state)) = self.db_status() {
             bar = bar.left(StatusItem::new("status-db", format!("db: {name}")).dot(state));
@@ -1987,10 +2091,74 @@ impl AppState {
                     .flex_1()
                     .min_h(px(0.))
                     .children(self.ssh_status_bar(cx))
+                    .children(self.import_banner(cx))
                     .child(self.ssh_home_main(cx).into_any_element())
                     .into_any_element(),
                 Some(ix) => self.ssh_session_view(ix, cx).into_any_element(),
             })
+    }
+
+    /// First-run banner: no saved hosts yet and an `~/.ssh/config` to start from. Friendly
+    /// and dismissible; the import itself is [`Self::open_ssh_import`].
+    fn import_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if !import_banner_visible(
+            self.hosts.len(),
+            self.ssh_config_present,
+            self.import_banner_dismissed,
+        ) {
+            return None;
+        }
+        let t = theme::active(cx).clone();
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .mx_3()
+                .mt_3()
+                .px_4()
+                .py_3()
+                .corners(Radius::Lg)
+                .elevation(Elevation::Surface, &t)
+                .child(
+                    div().flex_none().child(Icon::Info.small()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(
+                            div()
+                                .text_heading(&t)
+                                .text_color(rgb(t.fg_strong))
+                                .child("Bring your SSH hosts along"),
+                        )
+                        .child(
+                            div()
+                                .text_meta(&t)
+                                .clamp_one_line()
+                                .child("You have no saved hosts yet, but ~/.ssh/config has some to start from."),
+                        ),
+                )
+                .child(
+                    Button::new("import-banner-import", "Import from ~/.ssh/config")
+                        .primary()
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                            this.open_ssh_import(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("import-banner-dismiss", "Not now")
+                        .ghost()
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                            this.import_banner_dismissed = true;
+                            cx.notify();
+                        })),
+                ),
+        )
     }
 
     /// The SSH Home tab's error notice: a **full-width bar** between the session tab
@@ -2232,7 +2400,7 @@ impl AppState {
     /// three-step sequence, otherwise identical to `dispatch_action`'s `PrimaryTab`/
     /// `Settings` arms and `tab_strip`'s own click handler.
     pub(crate) fn switch_to_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        self.active_tab = tab;
+        self.set_active_tab(tab);
         self.close_palette(cx);
         self.refocus_stable_target(window, cx);
         cx.notify();
@@ -2925,6 +3093,28 @@ mod tests {
         assert!(matches!(tab_from_str("SETTINGS"), Some(Tab::Settings)));
         assert!(tab_from_str("bogus").is_none());
         assert!(tab_from_str("").is_none());
+    }
+
+    #[test]
+    fn every_tab_id_round_trips_through_tab_from_str() {
+        for tab in Tab::ALL {
+            assert_eq!(tab_from_str(tab.id()), Some(tab));
+        }
+    }
+
+    #[test]
+    fn the_import_banner_needs_no_hosts_a_config_and_no_dismissal() {
+        assert!(import_banner_visible(0, true, false));
+        assert!(!import_banner_visible(1, true, false));
+        assert!(!import_banner_visible(0, false, false));
+        assert!(!import_banner_visible(0, true, true));
+    }
+
+    #[test]
+    fn notifications_need_opt_in_and_an_absent_user() {
+        assert!(should_notify(true, false));
+        assert!(!should_notify(false, false));
+        assert!(!should_notify(true, true));
     }
 
     #[test]

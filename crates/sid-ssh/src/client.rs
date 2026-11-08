@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use russh::{
     Preferred,
     client::{Config, Handle, Handler},
-    keys::{Algorithm, PublicKey},
+    keys::{Algorithm, PublicKeyOrCertificate},
 };
 use sid_core::ssh::{
     ExecResult, SftpSession, SshAuth, SshClient, SshError, SshHostSpec, SshShellReader,
@@ -173,8 +173,22 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // russh 0.65 hands the host key over as key-or-certificate. sid never
+        // advertises a certificate host-key algorithm (`host_key_certificates` stays
+        // at its empty default), so a certificate here is unsolicited: refuse it
+        // rather than trust it, exactly as before the type grew the variant.
+        let PublicKeyOrCertificate::PublicKey {
+            key: server_public_key,
+            ..
+        } = server_key
+        else {
+            *self.verdict.lock().unwrap() = Some(SshError::ConnectFailed(
+                "the server presented a host certificate; sid only trusts plain host keys".into(),
+            ));
+            return Ok(false);
+        };
         match known_hosts::decide(
             &self.host,
             self.port,

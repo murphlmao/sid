@@ -49,11 +49,11 @@ use crate::ui::db_conn_form::{
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
 use sid_ui::{
-    Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, Elevation,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, List,
-    PANEL_FILTER_FLOOR, Row as UiRow, ScopeChip, StatusDot, StyledExt as _, TextInput,
-    Typography as _, bridge::SCRIM, caveat_line, error_line, h_flex, scaled, sortable_th, theme,
-    v_flex,
+    Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, ContextMenu,
+    Elevation, EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
+    List, MenuItem, PANEL_FILTER_FLOOR, Row as UiRow, ScopeChip, StatusDot, StyledExt as _,
+    TextInput, Toast, TreeEvent, TreeNode, TreeState, Typography as _, bridge::SCRIM, caveat_line,
+    h_flex, scaled, sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -215,6 +215,11 @@ pub struct DbTabState {
     /// Which tables are expanded (columns visible), keyed by [`table_display_name`].
     /// Cleared whenever the active connection changes or the schema is re-fetched.
     schema_expanded: HashSet<String>,
+    /// The schema browser's `Tree` (schema -> table -> column), built lazily by
+    /// `ensure_query_widgets`. Rebuilt from `schema` whenever `schema_tree_dirty`.
+    schema_tree: Option<Entity<TreeState>>,
+    _schema_tree_sub: Option<Subscription>,
+    schema_tree_dirty: bool,
     /// The relationships pop-out, while one is open — see
     /// [`AppState::push_schema_to_diagram`] for why the main window keeps a handle to a
     /// view living in another window. Weak on purpose: the strong reference belongs to
@@ -937,7 +942,7 @@ impl TableDelegate for ResultDelegate {
                 Icon::Maximize,
                 "view the whole value",
             )
-            .small()
+            .size(ButtonSize::Xs)
             .on_click(move |_ev, _window, cx| {
                 let Some(app) = &view_app else { return };
                 let _ = app.update(cx, |state, cx| {
@@ -989,49 +994,49 @@ impl TableDelegate for ResultDelegate {
 
 // ---- D1: schema tree (pure `SchemaInfo -> tree-rows` transform) --------------------------
 
-/// One renderable row of the schema tree — either a table header (expand/collapse +
-/// click-to-insert-SQL) or one of its columns (only present while that table is
-/// expanded). Pure data, no rendering — `schema_tree_rows` below is the one place
-/// `SchemaInfo` becomes a flat, orderable list the tree view can `uniform_list`/`Vec`
-/// over; kept separate from rendering so it's unit-testable without a `Window` (D1's
-/// TDD requirement).
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum SchemaRow {
-    Table {
-        display_name: String,
-        expanded: bool,
-    },
-    Column {
-        name: String,
-    },
-}
-
-/// `schema` flattened into `SchemaRow`s, in table order, expanding each table present
-/// in `expanded` (keyed by [`table_display_name`]) into its columns immediately after
-/// its header row.
-fn schema_tree_rows(schema: &SchemaInfo, expanded: &HashSet<String>) -> Vec<SchemaRow> {
-    let mut rows = Vec::with_capacity(schema.tables.len());
+/// The schema as `Tree` nodes: `schema -> table -> column` when the engine has schemas,
+/// `table -> column` otherwise. Table keys are [`table_display_name`] (what the click
+/// handler matches); column keys are `"<table>\u{1f}<column>"`; the column's type
+/// is the row meta.
+fn schema_tree_nodes(schema: &SchemaInfo) -> Vec<TreeNode> {
+    let table_node = |table: &TableInfo| {
+        let key = table_display_name(table);
+        let cols = table
+            .columns
+            .iter()
+            .map(|c| {
+                TreeNode::leaf(format!("{key}\u{1f}{}", c.name), c.name.clone())
+                    .meta(format!("{:?}", c.ty).to_lowercase())
+            })
+            .collect();
+        TreeNode::branch(key, table.name.clone(), cols)
+    };
+    let mut roots: Vec<TreeNode> = Vec::new();
+    let mut by_schema: BTreeMap<String, Vec<TreeNode>> = BTreeMap::new();
     for table in &schema.tables {
-        let display_name = table_display_name(table);
-        let is_expanded = expanded.contains(&display_name);
-        rows.push(SchemaRow::Table {
-            display_name,
-            expanded: is_expanded,
-        });
-        if is_expanded {
-            rows.extend(table.columns.iter().map(|c| SchemaRow::Column {
-                name: c.name.clone(),
-            }));
+        match table.schema.as_deref() {
+            Some(s) if !s.is_empty() => by_schema
+                .entry(s.to_string())
+                .or_default()
+                .push(table_node(table)),
+            _ => roots.push(table_node(table)),
         }
     }
-    rows
+    let mut out: Vec<TreeNode> = by_schema
+        .into_iter()
+        .map(|(name, kids)| {
+            TreeNode::branch(format!("schema:{name}"), name, kids).icon(Icon::Folder)
+        })
+        .collect();
+    out.extend(roots);
+    out
 }
 
 // ---- connections panel: folder grouping (pure `connections -> panel rows` transform) ----
 
 /// One renderable row of the connections panel — a collapsible folder header, or a
 /// connection nested under one (or sitting at the top level, when ungrouped). Pure data,
-/// mirroring [`SchemaRow`]'s split from rendering — [`group_connections`] is the one
+/// mirroring the schema tree's split from rendering — [`group_connections`] is the one
 /// place the composed connection list becomes this flat, orderable row list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ConnRow {
@@ -1223,6 +1228,9 @@ impl DbTabState {
             query_generation: 0,
             schema_error: None,
             schema_expanded: HashSet::new(),
+            schema_tree: None,
+            _schema_tree_sub: None,
+            schema_tree_dirty: true,
             diagram: None,
             cell_view: None,
             notice: None,
@@ -1275,10 +1283,13 @@ impl AppState {
         // strip is now just the tab's shared error line (still needed: promote/demote/
         // delete/rename/folder-edit failures all land in `self.error`), collapsing to
         // nothing when there is none rather than reserving dead space.
-        let error_banner = self
-            .error
-            .clone()
-            .map(|e| div().px_4().hairline_b(&t).child(error_line(e)));
+        let error_banner = self.error.clone().map(|e| {
+            div()
+                .px_4()
+                .py_2()
+                .hairline_b(&t)
+                .child(Toast::danger(e).title("Something went wrong"))
+        });
 
         v_flex()
             .flex_1()
@@ -1391,6 +1402,27 @@ impl AppState {
     fn ensure_query_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.db.conn_focus.is_none() {
             self.db.conn_focus = Some(cx.focus_handle());
+        }
+        if self.db.schema_tree.is_none() {
+            let tree = cx.new(|cx| TreeState::new("db-schema-tree", cx));
+            self.db._schema_tree_sub = Some(cx.subscribe_in(
+                &tree,
+                window,
+                |this: &mut Self, _tree, ev: &TreeEvent, window, cx| {
+                    // A click on a table row (a branch) inserts its `SELECT *`; schema
+                    // and column rows only expand / select.
+                    if let TreeEvent::Selected(key) = ev
+                        && this.db.schema.as_ref().is_some_and(|s| {
+                            s.tables
+                                .iter()
+                                .any(|t| table_display_name(t) == key.as_ref())
+                        })
+                    {
+                        this.insert_select_star(key.as_ref(), window, cx);
+                    }
+                },
+            ));
+            self.db.schema_tree = Some(tree);
         }
         if self.db.sql.is_some() {
             return;
@@ -1600,50 +1632,51 @@ impl AppState {
         // The QUERY panel: the statement, the two controls that act on it, and — when a
         // run fails — the driver's message under the editor it came from. Header actions
         // in the toolbar order: no filter here, so `[label] [secondary] [primary]`.
-        let query_panel = Card::panel(match &active_label {
-            Some(name) => format!("query · {name}"),
-            None => "query".to_string(),
-        })
-        .flex_none()
-        .action(self.explain_button(cx))
-        .action(
-            // Browse mode's Run re-reads the table already on screen, so it is labelled
-            // for what it does. Same id, same slot, same size — only the word, tooltip
-            // and leading icon change (`play` for a fresh run, the same `redo`
-            // `network_refresh_button` uses for a re-read).
-            Button::new("db-run", if browse { "reload" } else { "run" })
-                .primary()
-                .icon(if browse { Icon::Refresh } else { Icon::Run })
-                .size(QUERY_ACTION_SIZE)
-                .loading(self.db.running)
-                // Same gate `explain_button` uses, plus browse mode's own "no table
-                // loaded" case — round-3 gate: `run` stayed a live accent primary with
-                // no connection selected while `explain` beside it correctly disabled
-                // for the same reason.
-                .disabled(
-                    !query_actions_enabled(self.active_kind())
-                        || (browse && self.browse_table().is_none()),
-                )
-                .tooltip(if !query_actions_enabled(self.active_kind()) {
-                    "select a connection first"
-                } else if browse {
-                    "re-read this table from the store"
-                } else {
-                    "run the query (Ctrl-Enter)"
-                })
-                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                    this.run_query(window, cx);
-                })),
-        )
-        .child(
-            // A panel's body carries no padding of its own (a scrolling list has to
-            // reach its edges), so a body that is *not* a list states its own.
-            v_flex()
-                .p_3()
-                .gap_2()
-                .child(sql_editor)
-                .children(error_text.map(error_line)),
-        );
+        let query_panel = Card::panel("query")
+            .flex_none()
+            .when_some(active_label.clone(), |c, name| c.action(Badge::new(name)))
+            .action(self.explain_button(cx))
+            .action(
+                // Browse mode's Run re-reads the table already on screen, so it is labelled
+                // for what it does. Same id, same slot, same size — only the word, tooltip
+                // and leading icon change (`play` for a fresh run, the same `redo`
+                // `network_refresh_button` uses for a re-read).
+                Button::new("db-run", if browse { "reload" } else { "run" })
+                    .primary()
+                    .icon(if browse { Icon::Refresh } else { Icon::Run })
+                    .size(QUERY_ACTION_SIZE)
+                    .loading(self.db.running)
+                    // Same gate `explain_button` uses, plus browse mode's own "no table
+                    // loaded" case — round-3 gate: `run` stayed a live accent primary with
+                    // no connection selected while `explain` beside it correctly disabled
+                    // for the same reason.
+                    .disabled(
+                        !query_actions_enabled(self.active_kind())
+                            || (browse && self.browse_table().is_none()),
+                    )
+                    .tooltip(if !query_actions_enabled(self.active_kind()) {
+                        "select a connection first"
+                    } else if browse {
+                        "re-read this table from the store"
+                    } else {
+                        "run the query (Ctrl-Enter)"
+                    })
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                        this.run_query(window, cx);
+                    })),
+            )
+            .child(
+                // A panel's body carries no padding of its own (a scrolling list has to
+                // reach its edges), so a body that is *not* a list states its own.
+                v_flex()
+                    .p_3()
+                    .gap_2()
+                    .child(sql_editor)
+                    .children(error_text.map(|e| {
+                        let (title, body) = friendly_failure(&e);
+                        Toast::danger(body).title(title)
+                    })),
+            );
 
         // A plan takes the whole results slot while it is up, as its own panel rather
         // than a second frame inside one: same chrome, different header and one close
@@ -1655,42 +1688,42 @@ impl AppState {
                 self.db.plan = Some(plan);
                 element
             }
-            None => Card::panel(match &results_summary {
-                Some(summary) => format!("results · {summary}"),
-                None => "results".to_string(),
-            })
-            .flex_1()
-            .min_h_0()
-            .action(
-                // Capped, not filling: a 1200px-wide filter field is as wrong as the
-                // ribbon table it sits above used to be. Sized off the same rung as the
-                // buttons beside it, so the header row is one height.
-                // `FieldWidth`'s own 160px floor at rest, not the 280px cap this field
-                // used to carry — but `.flex_shrink_1()` down to `PANEL_FILTER_FLOOR`
-                // (120px) once the header is squeezed, so it is *this* that gives up
-                // width at a 700px window (this pane is only ~390px wide there), not
-                // the `RESULTS` title beside it (`card.rs`'s `header_actions`).
-                div().children(self.db.result_filter.clone().map(|f| {
-                    TextInput::new(&f)
-                        .small()
-                        .fixed(px(160.))
-                        .flex_shrink_1()
-                        .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
-                })),
-            )
-            .when_some(next_page, Card::action)
-            // Far right, after the rest (Murphy: "download as csv should be on the far
-            // right") — the generic export control (Task 1).
-            .action(self.export_control(cx))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .children(caveat.map(|c| div().px_3().child(caveat_line(c))))
-                    .children(notice.map(|n| div().px_3().child(n)))
-                    .child(self.results_area(cx)),
-            )
-            .into_any_element(),
+            None => Card::panel("results")
+                .when_some(results_summary.clone(), |c, summary| {
+                    c.action(Badge::new(summary))
+                })
+                .flex_1()
+                .min_h_0()
+                .action(
+                    // Capped, not filling: a 1200px-wide filter field is as wrong as the
+                    // ribbon table it sits above used to be. Sized off the same rung as the
+                    // buttons beside it, so the header row is one height.
+                    // `FieldWidth`'s own 160px floor at rest, not the 280px cap this field
+                    // used to carry — but `.flex_shrink_1()` down to `PANEL_FILTER_FLOOR`
+                    // (120px) once the header is squeezed, so it is *this* that gives up
+                    // width at a 700px window (this pane is only ~390px wide there), not
+                    // the `RESULTS` title beside it (`card.rs`'s `header_actions`).
+                    div().children(self.db.result_filter.clone().map(|f| {
+                        TextInput::new(&f)
+                            .small()
+                            .fixed(px(160.))
+                            .flex_shrink_1()
+                            .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
+                    })),
+                )
+                .when_some(next_page, Card::action)
+                // Far right, after the rest (Murphy: "download as csv should be on the far
+                // right") — the generic export control (Task 1).
+                .action(self.export_control(cx))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .children(caveat.map(|c| div().px_3().child(caveat_line(c))))
+                        .children(notice.map(|n| div().px_3().child(n)))
+                        .child(self.results_area(cx)),
+                )
+                .into_any_element(),
         };
 
         let editor_and_results = v_flex()
@@ -1799,6 +1832,7 @@ impl AppState {
         self.db.client = None;
         self.db.client_for = None;
         self.db.schema = Some(sid_db::redb_browse::browse_schema());
+        self.db.schema_tree_dirty = true;
         self.db.schema_graph = Some(sid_db::redb_browse::browse_graph());
         self.db.schema_error = None;
         self.ensure_query_widgets(window, cx);
@@ -1880,6 +1914,7 @@ impl AppState {
     /// result can never land under the newly-selected target (bug-hunt round D, HIGH).
     fn reset_for_selection_change(&mut self, cx: &mut Context<Self>) {
         self.db.schema = None;
+        self.db.schema_tree_dirty = true;
         self.db.schema_graph = None;
         self.db.schema_error = None;
         self.db.schema_expanded.clear();
@@ -2039,13 +2074,16 @@ impl AppState {
     /// actually got, so a 2000px window shows 2000px of data instead of a 140px-per-column
     /// ribbon with the rest of the screen black (`sid_ui::table`).
     fn results_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::active(cx).clone();
         if self.db.active_id.is_none() {
             let empty = if self.db.connections.is_empty() {
-                EmptyState::new("no database connections yet")
-                    .guidance("add one to browse its schema, run queries and export the results")
+                EmptyState::new("Add a database")
+                    .guidance(
+                        "Connect one to browse its schema, run queries and export the results.",
+                    )
                     .icon(Icon::Dashboard)
                     .action(
-                        Button::new("db-empty-add", "add a connection")
+                        Button::new("db-empty-add", "add database")
                             .primary()
                             .icon(Icon::Add)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -2053,17 +2091,9 @@ impl AppState {
                             })),
                     )
             } else {
-                EmptyState::new("no connection selected")
-                    .guidance("pick a connection on the left to load its schema and run queries")
+                EmptyState::new("No connection selected")
+                    .guidance("Pick a connection on the left to load its schema and run queries.")
                     .icon(Icon::Dashboard)
-                    .action(
-                        Button::new("db-empty-add", "add a connection")
-                            .primary()
-                            .icon(Icon::Add)
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.open_add_db_form(window, cx);
-                            })),
-                    )
             };
             return div()
                 .flex_1()
@@ -2082,15 +2112,23 @@ impl AppState {
                 .min_h(px(0.))
                 .w_full()
                 .child(
-                    EmptyState::new("no results yet")
+                    EmptyState::new("No results yet")
                         .guidance(if self.browse_mode() {
                             // There is no query to write here, so pointing at Run would
                             // be pointing at a control that is disabled.
-                            "click one of sid's store tables on the left to list its rows"
+                            "Click one of sid's store tables on the left to list its rows."
                         } else {
-                            "write a query above and Run it, or click a table in the schema tree"
+                            "Write a query above, or click a table in the schema tree."
                         })
-                        .icon(Icon::Terminal),
+                        .icon(Icon::Terminal)
+                        .secondary(
+                            h_flex()
+                                .gap_2()
+                                .text_meta(&t)
+                                .child("Press")
+                                .child(sid_ui::Kbd::new("ctrl-enter"))
+                                .child("to run"),
+                        ),
                 )
                 .into_any_element();
         }
@@ -2178,7 +2216,7 @@ impl AppState {
             // an origin chip beside its name, and the DSN subtitle under it was already
             // the first thing to truncate. The 20px comes out of a query pane that has
             // ~1700px at the capture width.
-            .w(scaled(280.))
+            .w(scaled(332.))
             .flex_none()
             .h_full()
             .gap_2()
@@ -2203,29 +2241,95 @@ impl AppState {
                 .into_any_element()
         } else if let Some(err) = &self.db.schema_error {
             div()
-                .px_2()
-                .child(error_line(err.clone()))
+                .p_2()
+                .child(
+                    Toast::danger(err.clone())
+                        .title("Couldn't load the schema")
+                        .action(
+                            Button::new("db-schema-retry", "retry")
+                                .size(ButtonSize::Xs)
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                    this.refresh_schema(window, cx);
+                                })),
+                        ),
+                )
                 .into_any_element()
         } else {
-            let rows = match &self.db.schema {
-                Some(schema) => schema_tree_rows(schema, &self.db.schema_expanded),
-                None => Vec::new(),
-            };
-            if rows.is_empty() {
+            if self.db.schema.as_ref().is_none_or(|s| s.tables.is_empty()) {
+                EmptyState::new("No schema loaded")
+                    .guidance("Pick a connection to see its schema.")
+                    .compact()
+                    .into_any_element()
+            } else if let Some(tree) = self.db.schema_tree.clone() {
+                if self.db.schema_tree_dirty {
+                    self.db.schema_tree_dirty = false;
+                    let nodes = self
+                        .db
+                        .schema
+                        .as_ref()
+                        .map(schema_tree_nodes)
+                        .unwrap_or_default();
+                    tree.update(cx, |tree, cx| tree.set_roots(nodes, cx));
+                }
+                let menu_state = tree.clone();
+                let app = cx.entity();
                 div()
-                    .p_2()
-                    .text_meta(&t)
-                    .child("no schema loaded — select a connection")
+                    .id("db-schema-tree-wrap")
+                    .size_full()
+                    .min_h_0()
+                    .child(tree)
+                    .context_menu(move |menu, _window, cx| {
+                        let Some(key) = menu_state.read(cx).selected().cloned() else {
+                            return menu;
+                        };
+                        let known = app.read(cx).db.schema.as_ref().is_some_and(|s| {
+                            s.tables
+                                .iter()
+                                .any(|t| table_display_name(t) == key.as_ref())
+                        });
+                        if !known {
+                            return menu;
+                        }
+                        let name = key.to_string();
+                        let top = {
+                            let app = app.clone();
+                            let name = name.clone();
+                            move |window: &mut Window, cx: &mut App| {
+                                app.update(cx, |this, cx| {
+                                    this.insert_select_star(&name, window, cx);
+                                    this.db_set_top_100(&name, window, cx);
+                                });
+                            }
+                        };
+                        let copy = {
+                            let name = name.clone();
+                            move |_w: &mut Window, cx: &mut App| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                            }
+                        };
+                        let diagram = {
+                            let app = app.clone();
+                            move |window: &mut Window, cx: &mut App| {
+                                app.update(cx, |this, cx| this.open_diagram_window(window, cx));
+                            }
+                        };
+                        ContextMenu::new()
+                            .item(
+                                MenuItem::new("Select top 100")
+                                    .icon(Icon::Run)
+                                    .on_select(top),
+                            )
+                            .item(MenuItem::new("Copy name").icon(Icon::Copy).on_select(copy))
+                            .item(
+                                MenuItem::new("Show in diagram")
+                                    .icon(Icon::Diagram)
+                                    .on_select(diagram),
+                            )
+                            .apply(menu, cx)
+                    })
                     .into_any_element()
             } else {
-                List::scrolling("db-schema-tree-body")
-                    .px_1()
-                    .children(
-                        rows.into_iter()
-                            .enumerate()
-                            .map(|(ix, row)| self.schema_tree_row(ix, row, cx)),
-                    )
-                    .into_any_element()
+                div().into_any_element()
             }
         };
 
@@ -2345,71 +2449,6 @@ impl AppState {
         );
     }
 
-    /// One [`SchemaRow`]'s rendering — a table header (chevron toggles expand, name
-    /// inserts `SELECT * FROM <table>`) or an indented column leaf.
-    fn schema_tree_row(&self, ix: usize, row: SchemaRow, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx).clone();
-        match row {
-            SchemaRow::Table {
-                display_name,
-                expanded,
-            } => {
-                let chevron_name = display_name.clone();
-                let insert_name = display_name.clone();
-                let (chevron, hint) = match expanded {
-                    true => (Icon::ChevronDown, "hide this table's columns"),
-                    false => (Icon::ChevronRight, "show this table's columns"),
-                };
-                UiRow::new(("db-schema-table", ix))
-                    // Tree rows are the densest list in the app — three panels share one
-                    // 280px column — so they take the row language at the tighter of the
-                    // system's two vertical rhythms.
-                    .py_0p5()
-                    .px_1()
-                    .leading(
-                        IconButton::new(("db-schema-toggle", ix), chevron, hint)
-                            .small()
-                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                this.toggle_schema_table(&chevron_name, cx);
-                            })),
-                    )
-                    // A table name is an identifier the engine chose — mono, and clamped
-                    // rather than `truncate()`d: that spelling sets `Nowrap`, which is
-                    // exactly what stops the ellipsis from ever being drawn, so a long
-                    // table name used to run to the edge of a 280px panel and stop.
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .clamp_one_line()
-                            .text_mono(&t)
-                            .text_color(rgb(t.fg))
-                            .child(display_name),
-                    )
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                        this.insert_select_star(&insert_name, window, cx);
-                    }))
-                    .into_any_element()
-            }
-            // Inert by design: a column leaf has no behaviour, and `Row` paints no hover
-            // on a row that does nothing (`sid_ui::list`'s "an inert row promises
-            // nothing").
-            // Indented past the table name above it, not merely past the chevron: at the
-            // same x the two levels read as one flat list.
-            SchemaRow::Column { name } => UiRow::new(("db-schema-col", ix))
-                .py_0p5()
-                .pl_12()
-                .pr_2()
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .clamp_one_line()
-                        .text_mono_meta(&t)
-                        .child(name),
-                )
-                .into_any_element(),
-        }
-    }
-
     /// D4: the query-history panel — most-recent-first, click an entry to reload it
     /// (unmodified) into the SQL editor.
     fn history_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -2418,10 +2457,9 @@ impl AppState {
         let count = entries.len();
 
         let body: AnyElement = if entries.is_empty() {
-            div()
-                .p_2()
-                .text_meta(&t)
-                .child("no queries run yet")
+            EmptyState::new("No queries yet")
+                .guidance("Queries you run show up here.")
+                .compact()
                 .into_any_element()
         } else {
             List::scrolling("db-history-body")
@@ -2473,7 +2511,6 @@ impl AppState {
     /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
     /// `render_connection_row`) needs no focus of its own.
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = theme::active(cx).clone();
         let count = connections_count(self.db.connections.len());
         let rows = group_connections(&self.db.connections, &self.db.collapsed_folders);
         // The store row is always present and always first — it is not a connection the
@@ -2496,11 +2533,11 @@ impl AppState {
             .child(self.store_browse_row(cx))
             .when(rows.is_empty(), |list| {
                 list.child(
-                    div()
-                        .p_2()
-                        .text_meta(&t)
-                        .child("no connections yet")
-                        .into_any_element(),
+                    div().h(scaled(150.)).child(
+                        EmptyState::new("No connections yet")
+                            .guidance("Add a database to get started.")
+                            .compact(),
+                    ),
                 )
             })
             .children(
@@ -2535,8 +2572,9 @@ impl AppState {
                     .count(count)
                     .size_full()
                     .action(
-                        IconButton::new("db-conn-add", Icon::Add, "add a connection")
-                            .small()
+                        Button::new("db-conn-add", "add connection")
+                            .icon(Icon::Add)
+                            .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.open_add_db_form(window, cx);
                             })),
@@ -3579,9 +3617,32 @@ impl AppState {
         let generation = self.db.query_generation;
         cx.notify();
 
+        let started = std::time::Instant::now();
+        let conn_name = conn.name.clone();
         cx.spawn(async move |this, cx| {
             let outcome = run_first_page(factory, conn, secret, cached, sql).await;
+            let took = started.elapsed();
             let _ = this.update(cx, |this, cx| {
+                // A long query that finished while sid is in the background: tell the
+                // user (chrome's desktop-notification seam; gated by the Settings switch).
+                if took.as_millis() >= crate::app::LONG_QUERY_MS {
+                    let (title, body) = match &outcome {
+                        Ok(_) => (
+                            "Query finished",
+                            format!("{conn_name}: done in {:.1}s", took.as_secs_f32()),
+                        ),
+                        Err(_) => (
+                            "Query failed",
+                            format!("{conn_name}: failed after {:.1}s", took.as_secs_f32()),
+                        ),
+                    };
+                    this.desktop_notify(
+                        title,
+                        body,
+                        sid_core::notify::Urgency::Normal,
+                        cx.active_window().is_some(),
+                    );
+                }
                 if this.db.query_generation != generation {
                     // Stale: the user switched connections (or started a newer run)
                     // while this query was in flight — its result must not land under
@@ -3827,6 +3888,7 @@ impl AppState {
             // the constant — which is still worth doing rather than short-circuiting,
             // because it is also the path the ⟳ button takes and it must not look dead.
             self.db.schema = Some(sid_db::redb_browse::browse_schema());
+            self.db.schema_tree_dirty = true;
             self.db.schema_graph = Some(sid_db::redb_browse::browse_graph());
             self.db.schema_error = None;
             self.db.schema_loading = false;
@@ -3903,6 +3965,7 @@ impl AppState {
                         this.db.client = Some(client);
                         this.db.client_for = Some(id);
                         this.db.schema = Some(schema);
+                        this.db.schema_tree_dirty = true;
                         this.db.schema_graph = Some(graph);
                         this.push_schema_to_diagram(cx);
                     }
@@ -3938,14 +4001,6 @@ impl AppState {
         });
     }
 
-    /// D1: chevron-click — toggle one table's expanded state (shows/hides its columns).
-    fn toggle_schema_table(&mut self, display_name: &str, cx: &mut Context<Self>) {
-        if !self.db.schema_expanded.remove(display_name) {
-            self.db.schema_expanded.insert(display_name.to_string());
-        }
-        cx.notify();
-    }
-
     /// D1: name-click — replace the editor contents with `SELECT * FROM <table>`.
     ///
     /// In browse mode there is no editor to write into and no SQL to write: the store
@@ -3969,6 +4024,19 @@ impl AppState {
             state.set_value(stmt, window, cx);
         });
         cx.notify();
+    }
+
+    /// Context-menu "Select top 100": rewrite the statement the click just inserted with
+    /// a `LIMIT` and run it. Browse mode has no SQL, so it only loads the table.
+    fn db_set_top_100(&mut self, display_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.browse_mode() {
+            return;
+        }
+        if let Some(sql_entity) = self.db.sql.clone() {
+            let stmt = format!("SELECT * FROM {} LIMIT 100", quote_ident(display_name));
+            sql_entity.update(cx, |state, cx| state.set_value(stmt, window, cx));
+        }
+        self.run_query(window, cx);
     }
 
     /// Task 2 — diagram click-through, table NAME click: set the editor to
@@ -4310,8 +4378,43 @@ fn page_to_csv(page: &QueryPage) -> String {
 /// module is off-limits for edits this slice, so its helper can't be reused directly; both
 /// intentionally avoid the `dirs` crate for one env-var read).
 fn downloads_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join("Downloads")
+    downloads_dir_for(
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("USERPROFILE").map(PathBuf::from),
+    )
+}
+
+/// Pure half of [`downloads_dir`]: `HOME` (unix, macOS), else `USERPROFILE` (Windows),
+/// else the current directory — never a world-writable `/tmp`.
+fn downloads_dir_for(home: Option<PathBuf>, userprofile: Option<PathBuf>) -> PathBuf {
+    home.filter(|p| !p.as_os_str().is_empty())
+        .or(userprofile.filter(|p| !p.as_os_str().is_empty()))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Downloads")
+}
+
+/// A readable (title, body) for a failed query/connect/plan. The raw driver message is
+/// always kept in the body; the `ANALYZE` refusal gets its own plain-language headline.
+fn friendly_failure(raw: &str) -> (&'static str, String) {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("analyze would execute") || lower.contains("explain refused") {
+        return (
+            "Plan view never runs the query",
+            format!("Remove ANALYZE and try again. ({raw})"),
+        );
+    }
+    let connecty = [
+        "connect",
+        "refused",
+        "timed out",
+        "timeout",
+        "authentication",
+        "password",
+    ];
+    if connecty.iter().any(|k| lower.contains(k)) {
+        return ("Couldn't connect", raw.to_string());
+    }
+    ("Query failed", raw.to_string())
 }
 
 /// Strip everything but alphanumerics/`-`/`_` from a connection name before it becomes
@@ -5003,59 +5106,50 @@ mod schema_tree_tests {
     }
 
     #[test]
-    fn collapsed_tables_render_as_headers_only() {
+    fn schemaless_tables_are_root_branches_with_column_children() {
+        let schema = SchemaInfo {
+            tables: vec![table(None, "users", &["id", "name"])],
+        };
+        let nodes = schema_tree_nodes(&schema);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].key.as_ref(), "users");
+        assert!(nodes[0].is_expandable());
+    }
+
+    #[test]
+    fn schema_qualified_tables_nest_under_their_schema() {
         let schema = SchemaInfo {
             tables: vec![
-                table(None, "users", &["id", "name"]),
-                table(None, "orders", &["id"]),
+                table(Some("public"), "users", &["id"]),
+                table(Some("audit"), "log", &[]),
+                table(None, "loose", &[]),
             ],
         };
-        let rows = schema_tree_rows(&schema, &HashSet::new());
+        let nodes = schema_tree_nodes(&schema);
+        let keys: Vec<&str> = nodes.iter().map(|n| n.key.as_ref()).collect();
+        assert_eq!(keys, vec!["schema:audit", "schema:public", "loose"]);
+    }
+
+    #[test]
+    fn download_dir_never_falls_back_to_tmp() {
+        use std::path::PathBuf;
         assert_eq!(
-            rows,
-            vec![
-                SchemaRow::Table {
-                    display_name: "users".to_string(),
-                    expanded: false
-                },
-                SchemaRow::Table {
-                    display_name: "orders".to_string(),
-                    expanded: false
-                },
-            ]
+            downloads_dir_for(None, Some(PathBuf::from("C:/Users/m"))),
+            PathBuf::from("C:/Users/m").join("Downloads")
+        );
+        assert_eq!(
+            downloads_dir_for(None, None),
+            PathBuf::from(".").join("Downloads")
         );
     }
 
     #[test]
-    fn expanded_table_inserts_its_columns_right_after_its_header() {
-        let schema = SchemaInfo {
-            tables: vec![
-                table(None, "users", &["id", "name"]),
-                table(None, "orders", &["id"]),
-            ],
-        };
-        let mut expanded = HashSet::new();
-        expanded.insert("users".to_string());
-        let rows = schema_tree_rows(&schema, &expanded);
-        assert_eq!(
-            rows,
-            vec![
-                SchemaRow::Table {
-                    display_name: "users".to_string(),
-                    expanded: true
-                },
-                SchemaRow::Column {
-                    name: "id".to_string()
-                },
-                SchemaRow::Column {
-                    name: "name".to_string()
-                },
-                SchemaRow::Table {
-                    display_name: "orders".to_string(),
-                    expanded: false
-                },
-            ]
-        );
+    fn analyze_refusal_gets_a_friendly_headline() {
+        let (title, body) =
+            friendly_failure("EXPLAIN refused: ANALYZE would execute the statement");
+        assert_eq!(title, "Plan view never runs the query");
+        assert!(body.contains("Remove ANALYZE"));
+        assert_eq!(friendly_failure("syntax error").0, "Query failed");
     }
 
     #[test]
