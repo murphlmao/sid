@@ -46,8 +46,9 @@ sid-containers.workspace = true
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/
 # `vt100` themselves.
 sid-core.workspace = true
-# Desktop notifications: the one crate allowed to name `sid-os`'s concrete `DbusNotifier`
-# (constructed at the composition root, `app::AppState::new`).
+# Desktop notifications + SFTP edit-in-place: the one crate allowed to name `sid-os`'s
+# concrete `DbusNotifier` (composition root, `app::AppState::new`) and `LinuxEditorLauncher`
+# (`ui/session/edit.rs`, behind `sid_core::editor`).
 sid-os.workspace = true
 # Privileged (root) config-file reads/writes for the System tab's editor: the one crate
 # allowed to name `sid-privfs`'s concrete `SudoPrivilegedFs::new()` constructor — same seam
