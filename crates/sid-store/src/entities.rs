@@ -283,6 +283,37 @@ pub struct Settings {
     /// than an error. Absent in v1..v4 stores — defaults to `100`.
     #[serde(default = "default_ui_scale_percent")]
     pub ui_scale_percent: u16,
+    /// Glyph antialiasing: [`TextRendering::Auto`] picks grayscale on a fractionally
+    /// scaled display and subpixel otherwise. Absent in v1..v5 stores — defaults to
+    /// `Auto`.
+    #[serde(default)]
+    pub text_rendering: TextRendering,
+    /// Whether UI motion is reduced (the Settings -> Appearance "Reduce motion" switch).
+    /// Absent in v1..v5 stores — defaults to `false` (motion on).
+    #[serde(default)]
+    pub reduce_motion: bool,
+    /// Command-palette recents, most recent first, capped at
+    /// [`PALETTE_RECENTS_CAP`]. Opaque entry ids owned by the frontend; ids this build
+    /// no longer knows are dropped at resolve time, never at decode time. Absent in
+    /// v1..v5 stores — defaults to empty.
+    #[serde(default)]
+    pub palette_recents: Vec<String>,
+}
+
+/// How many command-palette recents are kept.
+pub const PALETTE_RECENTS_CAP: usize = 20;
+
+/// How glyphs are antialiased. Stored as the choice, not the outcome: `Auto` is resolved
+/// per window by the frontend (it depends on the live scale factor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextRendering {
+    /// Grayscale on fractional scale factors, subpixel otherwise.
+    #[default]
+    Auto,
+    /// Always subpixel (LCD) antialiasing.
+    Subpixel,
+    /// Always grayscale antialiasing.
+    Grayscale,
 }
 
 impl Default for Settings {
@@ -294,6 +325,9 @@ impl Default for Settings {
             secret_file_enabled: true,
             theme: default_theme(),
             ui_scale_percent: default_ui_scale_percent(),
+            text_rendering: TextRendering::default(),
+            reduce_motion: false,
+            palette_recents: Vec::new(),
         }
     }
 }
@@ -418,15 +452,50 @@ pub(crate) struct SettingsV4 {
     pub theme: String,
 }
 
-impl From<SettingsV4> for Settings {
+impl From<SettingsV4> for SettingsV5 {
     fn from(v: SettingsV4) -> Self {
-        Settings {
+        SettingsV5 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
             secret_file_enabled: v.secret_file_enabled,
             theme: v.theme,
             ui_scale_percent: default_ui_scale_percent(),
+        }
+    }
+}
+
+/// The version-5 on-disk shape of [`Settings`] (after `ui_scale_percent`, before
+/// `text_rendering` / `reduce_motion` / `palette_recents`). Decode-only, like its
+/// predecessors; postcard is positional so it must be read against this exact layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV5 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+}
+
+impl From<SettingsV5> for Settings {
+    fn from(v: SettingsV5) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: v.ui_scale_percent,
+            text_rendering: TextRendering::default(),
+            reduce_motion: false,
+            palette_recents: Vec::new(),
         }
     }
 }
