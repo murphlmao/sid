@@ -175,13 +175,13 @@ impl LinuxGpuPreflight {
     /// produced a verdict — see the call site for why both halves matter.
     fn sweep_markers(&self, markers: &[PathBuf]) {
         for marker in markers {
-            if let Err(e) = remove_marker(marker) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!(
-                        "sid-gpu: could not clear stale launch marker {}: {e}",
-                        marker.display()
-                    );
-                }
+            if let Err(e) = remove_marker(marker)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!(
+                    "sid-gpu: could not clear stale launch marker {}: {e}",
+                    marker.display()
+                );
             }
         }
     }
@@ -205,10 +205,10 @@ impl LinuxGpuPreflight {
     /// Strictly its own: clearing anyone else's is what made the marker
     /// defeatable — a healthy instance would erase a crashing instance's record.
     pub fn clear_launch_attempt(&self) {
-        if let Err(e) = std::fs::remove_file(self.marker_path()) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("sid-gpu: could not clear the launch-attempt marker: {e}");
-            }
+        if let Err(e) = std::fs::remove_file(self.marker_path())
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("sid-gpu: could not clear the launch-attempt marker: {e}");
         }
     }
 
@@ -371,10 +371,10 @@ impl LinuxGpuPreflight {
                 "sid-gpu: {} launch attempt(s) did not complete; re-probing",
                 stale_markers.len()
             );
-        } else if let Some(s) = stamp::load(&self.stamp_path()) {
-            if s.fingerprint == fp {
-                return Ok(remembered(s));
-            }
+        } else if let Some(s) = stamp::load(&self.stamp_path())
+            && s.fingerprint == fp
+        {
+            return Ok(remembered(s));
         }
 
         let run = ladder::run(self, &icds);

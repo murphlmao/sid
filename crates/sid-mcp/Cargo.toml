@@ -2,7 +2,7 @@
 name = "sid-mcp"
 version = "0.1.0"
 edition.workspace = true
-rust-version = "1.89"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "MCP server (stdio) that helps AI agents work on the sid codebase: crate map, symbol search, adapter check, gate, UI capture."

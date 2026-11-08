@@ -97,10 +97,10 @@ impl DbClientDescriptor for PostgresDescriptor {
             Some((u, tail)) => (Some(u), tail),
             None => (None, rest),
         };
-        if let Some(user) = user {
-            if !user.is_empty() {
-                out.insert("user".to_string(), user.to_string());
-            }
+        if let Some(user) = user
+            && !user.is_empty()
+        {
+            out.insert("user".to_string(), user.to_string());
         }
 
         // `host:port/database` — split off the path at the first '/'.
@@ -108,10 +108,10 @@ impl DbClientDescriptor for PostgresDescriptor {
             Some((a, db)) => (a, Some(db)),
             None => (authority_and_path, None),
         };
-        if let Some(database) = database {
-            if !database.is_empty() {
-                out.insert("database".to_string(), database.to_string());
-            }
+        if let Some(database) = database
+            && !database.is_empty()
+        {
+            out.insert("database".to_string(), database.to_string());
         }
 
         // `host:port` — port is optional; omit it when absent.

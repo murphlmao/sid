@@ -20,7 +20,11 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# The real floor, not an aspiration: sysinfo 0.39+ declares 1.95, so nothing older
+# could build sid anyway. It also steers the v3 resolver, which skips any release
+# whose own rust-version is newer than this — at 1.85 it was quietly holding back
+# patch releases (elliptic-curve, ssh-key's stack) that every other pin allowed.
+rust-version = "1.95"
 license = "GPL-3.0-only"
 authors = ["Murphy Malcolm"]
 repository = "https://github.com/murphlmao/sid"

@@ -659,10 +659,10 @@ fn assemble_primary_keys(rows: Vec<PgPkRow>) -> BTreeMap<String, Vec<String>> {
 /// auth failure, distinct from every other connect failure (DNS, refused,
 /// timeout, TLS, etc.) which stays `DbError::Connect`.
 pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
-    if let Some(db_err) = e.as_db_error() {
-        if matches!(db_err.code().code(), "28P01" | "28000") {
-            return DbError::Auth;
-        }
+    if let Some(db_err) = e.as_db_error()
+        && matches!(db_err.code().code(), "28P01" | "28000")
+    {
+        return DbError::Auth;
     }
     DbError::Connect(e.to_string())
 }
