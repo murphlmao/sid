@@ -42,11 +42,11 @@ sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-containers = { path = "crates/sid-containers" }
 sid-privfs = { path = "crates/sid-privfs" }
 
-# SSH — russh 0.61 (keys live in `russh::keys`; the standalone russh-keys crate
-# is obsolete and was dropped). Pinned >=0.61 to clear RUSTSEC-2026-0153/0154
+# SSH — russh 0.65 (keys live in `russh::keys`; the standalone russh-keys crate
+# is obsolete and was dropped). Must stay >=0.61 to clear RUSTSEC-2026-0153/0154
 # (CryptoVec allocation hardening). russh-sftp is version-independent of russh.
-russh = "0.61"
-russh-sftp = "2.3"
+russh = "0.65"
+russh-sftp = "3"
 
 # Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
