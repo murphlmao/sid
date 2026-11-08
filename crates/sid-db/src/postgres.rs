@@ -115,12 +115,11 @@ pub(crate) fn explain_option_injection(sql: &str) -> Option<&'static str> {
     if is_analyze(&word) {
         return Some("EXPLAIN refused: ANALYZE would execute the statement");
     }
-    if word == "VERBOSE" {
-        if let Some(n) = toks.next() {
-            if is_analyze(&n.text.to_ascii_uppercase()) {
-                return Some("EXPLAIN refused: ANALYZE would execute the statement");
-            }
-        }
+    if word == "VERBOSE"
+        && let Some(n) = toks.next()
+        && is_analyze(&n.text.to_ascii_uppercase())
+    {
+        return Some("EXPLAIN refused: ANALYZE would execute the statement");
     }
     None
 }
