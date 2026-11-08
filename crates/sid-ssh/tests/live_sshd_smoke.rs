@@ -6,17 +6,44 @@
 //!   - a running ssh-agent with that key loaded (`ssh-add -l` non-empty;
 //!     `SSH_AUTH_SOCK` exported),
 //!   - your host key already trusted, or a writable temp app known_hosts (this
-//!     test uses a temp file, so first contact TOFU-learns and succeeds).
+//!     test uses a temp file; first contact is refused as `HostKeyUnknown` and the
+//!     test then approves that fingerprint — the same two-step the UI's prompt does).
 //!
 //! Run with:
 //!   cargo test -p sid-ssh --test live_sshd_smoke -- --ignored --nocapture
 
 use std::path::PathBuf;
 
-use sid_core::ssh::{SshAuth, SshClient, SshHostSpec};
+use sid_core::ssh::{SshAuth, SshClient, SshError, SshHostSpec};
 use sid_core::term::TerminalScreen;
 use sid_ssh::RusshClientFactory;
 use sid_term::Vt100Screen;
+
+/// First contact the way the app does it (security review M1): the unknown key is
+/// refused with its fingerprint and nothing is written; approving exactly that
+/// fingerprint and dialling again learns it and connects.
+async fn connect_confirming_first_contact(
+    client: &mut dyn SshClient,
+    spec: &SshHostSpec,
+    auth: &SshAuth,
+    app_known_hosts: &std::path::Path,
+) {
+    let key = match client.connect(spec, auth).await {
+        Err(SshError::HostKeyUnknown(key)) => key,
+        other => panic!("first contact must ask before trusting, got {other:?}"),
+    };
+    assert!(key.fingerprint.starts_with("SHA256:"), "{key:?}");
+    assert!(
+        !app_known_hosts.exists(),
+        "nothing learned before confirmation"
+    );
+    client.approve_host_key(&key.fingerprint);
+    client
+        .connect(spec, auth)
+        .await
+        .expect("connect after approving the fingerprint");
+    assert!(app_known_hosts.exists(), "the confirmed key was learned");
+}
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a live sshd + ssh-agent on localhost; run manually (B5 gate)"]
@@ -25,17 +52,14 @@ async fn live_sshd_agent_exec_shell_sftp() {
     let tmp = tempfile::tempdir().unwrap();
     let app_known_hosts: PathBuf = tmp.path().join("known_hosts");
 
-    let factory = RusshClientFactory::new(app_known_hosts);
+    let factory = RusshClientFactory::new(app_known_hosts.clone());
     let mut client = factory.new_client();
 
     let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
     let host = SshHostSpec::new("localhost", user);
 
-    // 1. Connect via ssh-agent.
-    client
-        .connect(&host, &SshAuth::Agent)
-        .await
-        .expect("agent-auth connect to localhost");
+    // 1. Connect via ssh-agent (confirming the host key first).
+    connect_confirming_first_contact(&mut client, &host, &SshAuth::Agent, &app_known_hosts).await;
     assert!(client.is_connected());
 
     // 2. exec("echo ok") → exit 0, stdout contains "ok".
@@ -115,7 +139,7 @@ async fn docker_sshd_key_auth_exec_and_sftp_round_trip() {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docker/ssh/test_id_ed25519")
         });
 
-    let factory = RusshClientFactory::new(app_known_hosts);
+    let factory = RusshClientFactory::new(app_known_hosts.clone());
     let mut client = factory.new_client();
 
     let mut spec = SshHostSpec::new(host, user);
@@ -125,12 +149,9 @@ async fn docker_sshd_key_auth_exec_and_sftp_round_trip() {
         passphrase: None,
     };
 
-    // 1. Connect via the baked-in disposable test key (TOFU-learns the
-    // container's host key into the throwaway known_hosts above).
-    client
-        .connect(&spec, &auth)
-        .await
-        .expect("key-auth connect to dockerized sshd");
+    // 1. Connect via the baked-in disposable test key, confirming the container's
+    // host key into the throwaway known_hosts above first.
+    connect_confirming_first_contact(&mut client, &spec, &auth, &app_known_hosts).await;
     assert!(client.is_connected());
 
     // 2. exec — same shape as the agent-based smoke test.

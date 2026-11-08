@@ -18,7 +18,7 @@ use sid_core::ssh::{
 };
 
 use crate::auth::authenticate;
-use crate::known_hosts::{self, Verdict};
+use crate::known_hosts;
 
 /// How long [`RusshClient::connect`] may spend on the TCP dial plus the SSH
 /// transport handshake before it gives up.
@@ -100,6 +100,7 @@ impl RusshClientFactory {
             handle: None,
             app_known_hosts: self.app_known_hosts.clone(),
             dial_timeout: self.dial_timeout,
+            approved_host_key: None,
         }
     }
 }
@@ -119,6 +120,9 @@ pub struct RusshClient {
     app_known_hosts: PathBuf,
     /// Deadline for the dial + handshake in `connect` (see [`DEFAULT_DIAL_TIMEOUT`]).
     dial_timeout: Duration,
+    /// The unknown host key the user confirmed (`SHA256:` fingerprint), consumed by the
+    /// next `connect` — see [`SshClient::approve_host_key`].
+    approved_host_key: Option<String>,
 }
 
 /// The user's read-only `~/.ssh/known_hosts`, if a home directory is known.
@@ -145,15 +149,19 @@ fn order_hostkeyalgs(recorded: &[Algorithm], defaults: &[Algorithm]) -> Vec<Algo
     ordered
 }
 
-/// TOFU host-key verifying handler. Checks the server key against the user's
-/// read-only `~/.ssh/known_hosts` and sid's app file; on first contact it
-/// learns the key into the app file. A changed key is recorded in `verdict` and
-/// the handshake is aborted so `connect` can surface `HostKeyMismatch`.
+/// Host-key verifying handler. Checks the server key against the user's read-only
+/// `~/.ssh/known_hosts` and sid's app file ([`known_hosts::decide`]). A first-contact
+/// key is learned only if the user already confirmed exactly that key (`approved`);
+/// otherwise — and for a changed key, always — the reason is recorded in `verdict` and
+/// the handshake is aborted so `connect` can surface `HostKeyUnknown` (for the UI to ask)
+/// or `HostKeyMismatch`.
 pub struct ClientHandler {
     host: String,
     port: u16,
     app_known_hosts: PathBuf,
     user_known_hosts: Option<PathBuf>,
+    /// The `SHA256:` fingerprint the user confirmed for this host on the last attempt.
+    approved: Option<String>,
     /// Set when verification fails, so `connect` can distinguish a host-key
     /// problem from a generic transport error (the handler can only return a
     /// `russh::Error`, which erases the reason).
@@ -167,39 +175,15 @@ impl Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        let outcome = known_hosts::verify(
+        match known_hosts::decide(
             &self.host,
             self.port,
             server_public_key,
             self.user_known_hosts.as_deref(),
             &self.app_known_hosts,
-        );
-        match outcome {
-            Ok(Verdict::Match) => Ok(true),
-            Ok(Verdict::Unknown) => {
-                // First contact — trust and record.
-                match known_hosts::learn(
-                    &self.host,
-                    self.port,
-                    server_public_key,
-                    &self.app_known_hosts,
-                ) {
-                    Ok(()) => Ok(true),
-                    Err(e) => {
-                        *self.verdict.lock().unwrap() = Some(e);
-                        Ok(false) // abort the handshake
-                    }
-                }
-            }
-            Ok(Verdict::Mismatch) => {
-                let host_id = if self.port == 22 {
-                    self.host.clone()
-                } else {
-                    format!("[{}]:{}", self.host, self.port)
-                };
-                *self.verdict.lock().unwrap() = Some(SshError::HostKeyMismatch(host_id));
-                Ok(false) // abort the handshake
-            }
+            self.approved.as_deref(),
+        ) {
+            Ok(()) => Ok(true),
             Err(e) => {
                 *self.verdict.lock().unwrap() = Some(e);
                 Ok(false) // abort the handshake
@@ -241,6 +225,8 @@ impl SshClient for RusshClient {
             port: host.port,
             app_known_hosts: self.app_known_hosts.clone(),
             user_known_hosts: user_known_hosts_path(),
+            // One attempt only: an approval is for the key the user just looked at.
+            approved: self.approved_host_key.take(),
             verdict: verdict.clone(),
         };
         // Bound the TCP dial *and* the SSH transport handshake. `russh` bounds
@@ -276,6 +262,10 @@ impl SshClient for RusshClient {
         authenticate(&mut handle, &host.user, auth).await?;
         self.handle = Some(handle);
         Ok(())
+    }
+
+    fn approve_host_key(&mut self, fingerprint: &str) {
+        self.approved_host_key = Some(fingerprint.to_string());
     }
 
     async fn disconnect(&mut self) -> Result<(), SshError> {

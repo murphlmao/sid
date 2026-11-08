@@ -9,6 +9,9 @@ modules `auth`, `known_hosts`, `keyscan` (`LocalIdentities: IdentityScan`), `she
 
 ## Invariants
 - Known-hosts handling fails closed (a changed key for a trusted host is `Mismatch`).
+- First contact is never learned silently: `connect` returns `SshError::HostKeyUnknown`
+  (key type + `SHA256:` fingerprint) and learns the key only on a retry after
+  `approve_host_key(<that fingerprint>)` — see `known_hosts::decide`.
 - The shell reader/writer split is deadlock-free; don't hold one lock across both halves.
 - SFTP transfers are traversal-guarded.
 - No russh types escape the crate.
