@@ -171,13 +171,14 @@ impl EncryptedFileStore {
         let bytes =
             fs::read(&self.path).map_err(|e| SecretError::Backend(format!("read vault: {e}")))?;
         let header = parse_header(&bytes)?;
+        check_kdf_bounds(header.m_cost, header.t_cost, header.p_cost)?;
         let params = Params::new(header.m_cost, header.t_cost, header.p_cost, None)
             .map_err(|e| SecretError::Backend(format!("vault params: {e}")))?;
         let key = derive_key(passphrase, &header.salt, &params)?;
         // Decrypting IS the passphrase check — see the module docs on why there is no
         // separate header MAC. The plaintext is discarded (and zeroized) immediately;
         // `unlock` only proves the key works, it doesn't cache the map.
-        decrypt_map(&key, &header.nonce, header.ciphertext)?;
+        wipe(decrypt_map(&key, &header.nonce, header.ciphertext)?);
         *self.state.lock().expect("vault state poisoned") = Some(Unlocked {
             key,
             salt: header.salt,
@@ -228,30 +229,67 @@ impl SecretStore for EncryptedFileStore {
         self.with_unlocked(|unlocked| {
             let mut map = self.read_map(unlocked)?;
             map.insert(id.0.clone(), value.to_vec());
-            self.write_map(unlocked, &map)
+            let res = self.write_map(unlocked, &map);
+            wipe(map);
+            res
         })
     }
 
     fn get(&self, id: &SecretId) -> Result<Option<Vec<u8>>, SecretError> {
-        self.with_unlocked(|unlocked| Ok(self.read_map(unlocked)?.get(&id.0).cloned()))
+        self.with_unlocked(|unlocked| {
+            let map = self.read_map(unlocked)?;
+            let found = map.get(&id.0).cloned();
+            wipe(map);
+            Ok(found)
+        })
     }
 
     fn delete(&self, id: &SecretId) -> Result<(), SecretError> {
         self.with_unlocked(|unlocked| {
             let mut map = self.read_map(unlocked)?;
-            if map.remove(&id.0).is_none() {
+            if let Some(mut gone) = map.remove(&id.0) {
+                zeroize::Zeroize::zeroize(&mut gone);
+            } else {
                 // Nothing to do — and nothing to re-encrypt or burn a nonce on.
+                wipe(map);
                 return Ok(());
             }
-            self.write_map(unlocked, &map)
+            let res = self.write_map(unlocked, &map);
+            wipe(map);
+            res
         })
     }
 
     fn list_ids(&self) -> Result<Vec<SecretId>, SecretError> {
         self.with_unlocked(|unlocked| {
-            Ok(self.read_map(unlocked)?.into_keys().map(SecretId).collect())
+            let map = self.read_map(unlocked)?;
+            let ids = map.keys().cloned().map(SecretId).collect();
+            wipe(map);
+            Ok(ids)
         })
     }
+}
+
+/// Zeroize every decrypted value, then drop the map.
+fn wipe(mut map: BTreeMap<String, Vec<u8>>) {
+    for v in map.values_mut() {
+        zeroize::Zeroize::zeroize(v);
+    }
+}
+
+/// Sane upper bounds on KDF cost read from an (untrusted) vault header, so a tampered
+/// file cannot demand gigabytes of RAM or minutes of CPU. Far above [`Params::DEFAULT`].
+const MAX_M_COST_KIB: u32 = 1024 * 1024; // 1 GiB
+const MAX_T_COST: u32 = 16;
+const MAX_P_COST: u32 = 16;
+
+fn check_kdf_bounds(m: u32, t: u32, p: u32) -> Result<(), SecretError> {
+    if m > MAX_M_COST_KIB || t > MAX_T_COST || p > MAX_P_COST {
+        return Err(SecretError::Backend(format!(
+            "vault KDF parameters out of range (m={m} KiB, t={t}, p={p}); refusing — file may be tampered"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -394,43 +432,22 @@ fn write_vault(
     buf.extend_from_slice(&nonce);
     buf.extend_from_slice(&ciphertext);
 
-    let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp_path = PathBuf::from(tmp_name);
-    {
-        let mut f = create_0600(&tmp_path)
-            .map_err(|e| SecretError::Backend(format!("write vault tmp: {e}")))?;
-        f.write_all(&buf)
-            .map_err(|e| SecretError::Backend(format!("write vault tmp: {e}")))?;
-        // Best-effort durability: a failure here doesn't corrupt anything already on
-        // disk (the rename below hasn't happened yet), so it isn't fatal to the write.
-        let _ = f.sync_all();
-    }
-    fs::rename(&tmp_path, path)
+    // O_EXCL, randomly named, 0600 from creation (NamedTempFile) in the vault's own
+    // directory, then renamed over the vault: a planted `<vault>.tmp` symlink is never
+    // followed and a crash never leaves a half-written vault.
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| SecretError::Backend(format!("write vault tmp: {e}")))?;
+    tmp.write_all(&buf)
+        .map_err(|e| SecretError::Backend(format!("write vault tmp: {e}")))?;
+    // Best-effort durability: failing here corrupts nothing already on disk.
+    let _ = tmp.as_file().sync_all();
+    tmp.persist(path)
         .map_err(|e| SecretError::Backend(format!("finalize vault: {e}")))?;
     Ok(())
-}
-
-#[cfg(unix)]
-fn create_0600(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-}
-
-/// Non-Unix perms are an empty slot for now (`CLAUDE.md`: cross-platform is
-/// accommodated, not solved — Wayland/Linux now, keep the seams).
-#[cfg(not(unix))]
-fn create_0600(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
 }
 
 #[cfg(test)]
@@ -439,6 +456,30 @@ mod tests {
 
     fn vault_path(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join("secrets.vault")
+    }
+
+    #[test]
+    fn tampered_kdf_cost_is_refused_not_obeyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        EncryptedFileStore::at(&path).create("pw").unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[5..9].copy_from_slice(&u32::MAX.to_le_bytes()); // m_cost = 4 TiB
+        fs::write(&path, &bytes).unwrap();
+        let err = EncryptedFileStore::at(&path).unlock("pw").unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planted_tmp_symlink_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "SENTINEL").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("secrets.vault.tmp")).unwrap();
+        EncryptedFileStore::at(&path).create("pw").unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "SENTINEL");
     }
 
     #[test]
