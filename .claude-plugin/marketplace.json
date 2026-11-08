@@ -1,0 +1,26 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sid",
+  "id": "sid",
+  "description": "Project-local Claude Code plugins for the sid GPUI ops-cockpit.",
+  "owner": {
+    "name": "Murphy Malcolm",
+    "email": "murphyjmalcolm@gmail.com"
+  },
+  "metadata": {
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "sid-dev",
+      "source": "./.claude/plugins/sid-dev",
+      "description": "Dev workflow for sid: gate, headless UI capture, component/adapter/store-migration recipes, worktree conventions, and test/UI/adapter review agents.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Murphy Malcolm"
+      },
+      "keywords": ["rust", "gpui", "testing", "adapter-pattern", "ui-review"],
+      "category": "development"
+    }
+  ]
+}

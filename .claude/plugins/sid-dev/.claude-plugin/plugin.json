@@ -1,0 +1,9 @@
+{
+  "name": "sid-dev",
+  "version": "0.1.0",
+  "description": "Dev workflow for sid: gate, headless UI capture, component/adapter/store-migration recipes, worktree conventions, and test/UI/adapter review agents.",
+  "author": {
+    "name": "Murphy Malcolm"
+  },
+  "keywords": ["rust", "gpui", "testing", "adapter-pattern", "ui-review"]
+}
