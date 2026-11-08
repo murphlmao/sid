@@ -1277,7 +1277,11 @@ impl AppState {
             state.set_value(current_name, window, cx);
             state
         });
-        input.update(cx, |state, cx| state.focus(window, cx));
+        // Select the whole name so typing replaces it instead of appending to it.
+        input.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.select_all(window, cx);
+        });
         self.workspaces.renaming = Some(RenameState { id, input });
         cx.notify();
     }
