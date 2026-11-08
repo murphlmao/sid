@@ -11,7 +11,9 @@ Global redb + per-workspace committed `.sid/config.toml`, composed attributively
 
 ## Invariants
 - Composition is a union tagged by origin; never shadow/override. Dedupe is a view filter.
-- Secrets never stored here: only an opaque `SecretId` (`secret_ref`).
+- Secrets never stored here: only an opaque `SecretId` (`secret_ref`). The one related table is
+  `secret_bindings` (global redb only, `SecretBinding`, `SECRET_BINDING_VERSION`): which layer and
+  endpoint fingerprint a keyring secret was saved for. The policy lives in `crates/sid/src/secret_binding.rs`.
 - postcard is positional: new fields `#[serde(default)]` only, never `skip_serializing_if`;
   bump `*_VERSION` in `global.rs`, keep every old `decode_*` arm, add a migration test.
 - New write paths get a `StoreError::Conflict` guard + test (promote/demote model it).

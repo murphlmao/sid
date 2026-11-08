@@ -39,9 +39,17 @@ on the target machine. No failure mode remains. Next: plan 2 — the layered sto
 - **No built-in text input.** gpui ships no `TextInput`; the examples hand-roll one (focus
   handle + key handling + caret). The SSH command line, query editor, and search boxes will
   each need a real input component — non-trivial, plan for it.
-- **Wayland fractional scaling → blurry text** (known gpui issue). Mitigate with integer
-  display scale (100%/200%), maximize/fullscreen, or XWayland (`WAYLAND_DISPLAY=''`). Revisit
-  for HiDPI/fractional-scale users.
+- **Wayland fractional scaling → blurry text — CORRECTED 2026-11-08.** True of gpui 0.2.x
+  (the spike's version), not of the current renderer. `gpui-pre` 0.3.11 binds
+  `wp_fractional_scale_manager_v1` (`gpui-pre-linux` `wayland/client.rs:307-308`), requests a
+  per-surface scale (`wayland/window.rs:863-870`), applies `PreferredScale` events
+  (`:1218-1222`) and resizes the buffer to the fractional scale (`:1517-1549`); glyphs are
+  rasterized at device resolution (`Window::paint_glyph`, gpui-pre `window.rs:5048-5090`:
+  origin scaled by `scale_factor`, `scale_factor` part of the glyph cache key). So the integer-scale /
+  XWayland mitigations are no longer needed. Residual softness on such displays is more likely
+  subpixel (LCD) fringing than resampling; the Settings → Appearance "Text rendering"
+  option (Auto / Subpixel / Grayscale, on branch `night/polish-settings-ws`, pending
+  integration) is the lever. Source of the findings: `night/deps`.
 - **GUI feedback must be in-pixel.** Unlike a CLI there's no stdout; selection/active state
   must be rendered (flip a `selected` field and restyle). The spike only printed to stdout,
   which is why clicks looked inert when launched detached.
