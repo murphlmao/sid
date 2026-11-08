@@ -52,8 +52,8 @@ use sid_ui::{
     Badge, Button, ButtonSize, Card, ColumnWidth, ConfirmButton, ConnectionState, ContextMenu,
     Elevation, EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
     List, MenuItem, PANEL_FILTER_FLOOR, Row as UiRow, ScopeChip, StatusDot, StyledExt as _,
-    TextInput, Toast, TreeEvent, TreeNode, TreeState, Typography as _, bridge::SCRIM, caveat_line,
-    h_flex, scaled, sortable_th, theme, v_flex,
+    TextInput, Tipped as _, Toast, TreeEvent, TreeNode, TreeState, Typography as _, bridge::SCRIM,
+    caveat_line, h_flex, scaled, sortable_th, theme, v_flex,
 };
 
 /// Seeded into the SQL editor on first paint — works unmodified against every engine
@@ -276,7 +276,7 @@ pub struct DbTabState {
     right_click_target: Option<(String, Scope)>,
 }
 
-/// An in-progress inline rename (F2 / double-click the name) — the row's identity/origin
+/// An in-progress inline rename (F2 or the row's Rename menu item) — the row's identity/origin
 /// (needed for [`Store::rename_connection`]'s scope-qualified write) plus the live-edit
 /// [`TextInput`]. Only one row can be mid-rename at a time; starting a new one replaces
 /// this outright (see [`AppState::begin_rename`]).
@@ -1508,7 +1508,7 @@ impl AppState {
         // the `cx.notify()` it makes on every edit is the wiring — see
         // `network_tab.rs`'s "Filtering" doc section for why this pattern rather than
         // a callback.
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter results…"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter results…"));
         self.db._result_filter_sub = Some(cx.observe(&filter, |this: &mut Self, _filter, cx| {
             this.apply_result_filter(cx);
         }));
@@ -1965,7 +1965,7 @@ impl AppState {
         // Selecting a row is also this panel's one focus entry point — F2 afterwards
         // renames whatever just got selected (`begin_rename_active`). But a nested
         // control's own click fires *before* this row-level one and bubbles up to here:
-        // the name's double-click (`begin_rename`), the folder button
+        // the context menu's Rename (`begin_rename`), the folder button
         // (`begin_folder_edit`), and the ✎ button (`open_edit_db_form`) each grab focus
         // for their freshly-opened input/form — so only claim panel focus when none of
         // those started, or this handler would steal it straight back and the inline
@@ -2322,7 +2322,7 @@ impl AppState {
             div()
                 .p_2()
                 .text_meta(&t)
-                .child("loading schema…")
+                .child("Loading schema…")
                 .into_any_element()
         } else if let Some(err) = &self.db.schema_error {
             div()
@@ -2675,7 +2675,7 @@ impl AppState {
     /// [`DbConnection::folder`] via [`group_connections`] under a small
     /// `connections · N` / `+` header. Also the F2 target: focused on every row click
     /// (see [`Self::render_connection_row`]) so F2 with no text field focused reaches
-    /// [`Self::begin_rename_active`] — the double-click-a-name path (also wired in
+    /// [`Self::begin_rename_active`] — the context-menu Rename (also wired in
     /// `render_connection_row`) needs no focus of its own.
     fn connection_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let count = connections_count(self.db.connections.len());
@@ -2984,8 +2984,8 @@ impl AppState {
         // Name area — the live rename `TextInput` in place of the label while this row
         // is mid-rename (Enter commits, Escape cancels — bound directly on the wrapper
         // since `TextInput` itself claims neither key, same technique
-        // `DbConnForm::handle_key_down` uses for Tab); otherwise the plain
-        // double-click-armed label.
+        // `DbConnForm::handle_key_down` uses for Tab); otherwise the
+        // label (tooltip names F2).
         let is_renaming = self.db.renaming.as_ref().is_some_and(|r| r.id == conn.id);
         let name_area: AnyElement = if is_renaming {
             let input = self.db.renaming.as_ref().unwrap().input.clone();
@@ -3008,12 +3008,13 @@ impl AppState {
                 .child(TextInput::new(&input))
                 .into_any_element()
         } else {
-            let name_id = conn.id.clone();
-            let name_origin = origin.clone();
-            let name_text = display_name.clone();
             // Body, not the MEDIUM this used to be: the scale spends its one emphasis
             // weight on headings, and a 280px panel of connections is a list, not a
             // stack of headings. The active row is already `fg_strong` and filled.
+            //
+            // A double-click does NOT rename (it used to, with no hint): the row's own
+            // click already selects and opens the connection, so a double-click is just
+            // "open" again. Rename is F2, the row's context menu, and the tooltip says so.
             div()
                 .id(("db-conn-name", ix))
                 .min_w(px(0.))
@@ -3021,14 +3022,7 @@ impl AppState {
                 .text_body(&t)
                 .text_color(rgb(if is_active { t.fg_strong } else { t.fg }))
                 .child(display_name.clone())
-                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
-                    // Double-click (VS Code convention) starts the inline rename; a
-                    // single click here also fires the row's own `on_click` below
-                    // (selecting it) — harmless, same convention the action strip uses.
-                    if ev.click_count() >= 2 {
-                        this.begin_rename(&name_id, &name_origin, &name_text, window, cx);
-                    }
-                }))
+                .tip_with_key("Click to open. Rename with", "f2")
                 .into_any_element()
         };
 
@@ -3139,7 +3133,7 @@ impl AppState {
             };
 
             menu.item(
-                PopupMenuItem::new("open")
+                PopupMenuItem::new("Open")
                     .icon(Icon::Database.el())
                     .on_click({
                         let this = this.clone();
@@ -3153,7 +3147,7 @@ impl AppState {
                     }),
             )
             .item(
-                PopupMenuItem::new("rename")
+                PopupMenuItem::new("Rename")
                     .icon(Icon::Rename.el())
                     .on_click({
                         let this = this.clone();
@@ -3171,7 +3165,7 @@ impl AppState {
                     }),
             )
             .item(
-                PopupMenuItem::new("edit…")
+                PopupMenuItem::new("Edit…")
                     .icon(Icon::Settings.el())
                     .on_click({
                         let this = this.clone();
@@ -3280,7 +3274,7 @@ impl AppState {
             current_name.to_string()
         };
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("name");
+            let mut state = InputState::new(window, cx).placeholder("Connection name");
             state.set_value(seed, window, cx);
             state
         });
@@ -3333,7 +3327,8 @@ impl AppState {
     ) {
         self.db.renaming = None;
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("folder (blank = none)");
+            let mut state =
+                InputState::new(window, cx).placeholder("Folder (leave blank for none)");
             if let Some(f) = current {
                 state.set_value(f.to_string(), window, cx);
             }
@@ -4907,6 +4902,30 @@ mod describe_query_error_tests {
     fn offset_maps_to_line_and_column() {
         assert_eq!(position_at_offset("ab\ncde", 5), Position::new(1, 2));
         assert_eq!(position_at_offset("ab", 99), Position::new(0, 2));
+    }
+
+    #[test]
+    fn multibyte_offset_maps_to_character_column_and_hint() {
+        // Byte offsets in (what sid-db emits), character columns out (the editor's unit).
+        for (sql, needle) in [
+            ("SELECT 'h\u{e9}llo', x FROM", "x"),
+            ("SELECT '\u{65e5}\u{672c}', 1 FROM", "FROM"),
+            ("SELECT '\u{1f389}\u{1f389}', 1 FROM", "FROM"),
+        ] {
+            let off = sql.find(needle).unwrap();
+            let col = sql[..off].chars().count() as u32;
+            assert_eq!(position_at_offset(sql, off), Position::new(0, col), "{sql}");
+            let raw =
+                format!("query syntax error at offset {off}: syntax error at or near \"{needle}\"");
+            let v = describe_query_error(&raw, sql);
+            assert_eq!(v.offset, Some(off));
+            assert_eq!(
+                v.hint.as_deref(),
+                Some(format!("Check the SQL near \"{}\".", &sql[off..]).as_str())
+            );
+        }
+        // A mid-character offset floors to the character boundary instead of panicking.
+        assert_eq!(position_at_offset("\u{e9}x", 1), Position::new(0, 0));
     }
 }
 

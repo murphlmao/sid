@@ -670,6 +670,37 @@ mod tests {
         }
     }
 
+    /// SQLite reports a BYTE offset (Postgres a character index; sid-db converts it), so
+    /// both feed the editor the same unit. Multibyte text before the error must not skew it.
+    #[tokio::test]
+    async fn syntax_error_offset_is_a_byte_offset_after_multibyte_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = SqliteClient::factory()
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: dir.path().join("mb.sqlite").to_string_lossy().into_owned(),
+                password: None,
+                sqlite_mode: Some(SqliteMode::CreateNew),
+            })
+            .await
+            .expect("create new");
+        let sql = "select '\u{e9}\u{65e5}\u{1f389}', 1 selct nonsense";
+        match client.query_paged(sql, None, 100).await.unwrap_err() {
+            DbError::Syntax { offset, .. } => {
+                assert!(
+                    sql.is_char_boundary(offset),
+                    "offset {offset} splits a char"
+                );
+                let rest = &sql[offset..];
+                assert!(
+                    rest.starts_with("selct") || rest.starts_with("nonsense"),
+                    "{rest:?}"
+                );
+            }
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn query_paged_round_trips_rows_on_temp_file() {
         let dir = tempfile::tempdir().unwrap();

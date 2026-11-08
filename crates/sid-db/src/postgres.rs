@@ -271,7 +271,11 @@ impl DbClient for PostgresClient {
         let inner = self.inner.as_ref().ok_or(DbError::NotConnected)?.clone();
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
-        let rows_affected = guard.client.execute(sql, &[]).await.map_err(map_pg_error)?;
+        let rows_affected = guard
+            .client
+            .execute(sql, &[])
+            .await
+            .map_err(|e| map_pg_error_in(e, sql, 0))?;
         Ok(ExecResult {
             rows_affected,
             duration_ms: start.elapsed().as_millis() as u64,
@@ -313,7 +317,7 @@ impl DbClient for PostgresClient {
         // uncorrected offset can run past `sql.len()`. `adjust_wrapped_syntax_offset`
         // subtracts the wrapper prefix and clamps into the caller's original text.
         let fix_offset = |e: tokio_postgres::Error| -> DbError {
-            adjust_wrapped_syntax_offset(map_pg_error(e), WRAP_PREFIX.len(), sql.len())
+            map_pg_error_in(e, sql, WRAP_PREFIX.chars().count())
         };
         let start = std::time::Instant::now();
         let guard = inner.lock().await;
@@ -392,7 +396,7 @@ impl DbClient for PostgresClient {
         // position relative to the string it parsed (which carries the prefix),
         // and an uncorrected offset can run past the caller's own text.
         let fix_offset = |e: tokio_postgres::Error| -> DbError {
-            adjust_wrapped_syntax_offset(map_pg_error(e), PREFIX.len(), sql.len())
+            map_pg_error_in(e, sql, PREFIX.chars().count())
         };
         // Belt and braces behind `explain_option_injection`: plan inside a READ ONLY
         // transaction that is always rolled back, so even a plan-time side effect
@@ -715,28 +719,36 @@ pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
 }
 
 pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
+    // Internal catalogue queries: no user text to point into.
+    map_pg_error_in(e, "", 0)
+}
+
+/// Map a driver error, converting a syntax error's position into a 0-based BYTE offset
+/// into `user_sql`. `prefix_chars` is the length, in CHARACTERS, of whatever sid
+/// prepended (the `SELECT * FROM ( ` / `EXPLAIN ` wrapper) before sending it.
+pub(crate) fn map_pg_error_in(
+    e: tokio_postgres::Error,
+    user_sql: &str,
+    prefix_chars: usize,
+) -> DbError {
     if let Some(db_err) = e.as_db_error() {
         let code = db_err.code().code();
         // BUG 8: SQLSTATE class 42 covers more than syntax errors. Split off
-        // the common non-syntax members — 42P01 undefined_table, 42703
-        // undefined_column, 42883 undefined_function — into `DbError::Invalid`;
+        // the common non-syntax members (42P01 undefined_table, 42703
+        // undefined_column, 42883 undefined_function) into `DbError::Invalid`;
         // everything else in the class (including true syntax, 42601) keeps
         // the historical `DbError::Syntax` mapping below.
         if matches!(code, "42P01" | "42703" | "42883") {
             return DbError::Invalid(db_err.message().to_string());
         }
         if code.starts_with("42") {
+            let position = db_err.position().map(|p| match p {
+                tokio_postgres::error::ErrorPosition::Original(n) => *n,
+                tokio_postgres::error::ErrorPosition::Internal { position, .. } => *position,
+            });
             return DbError::Syntax {
-                offset: db_err
-                    .position()
-                    .map(|p| match p {
-                        tokio_postgres::error::ErrorPosition::Original(n) => {
-                            pg_position_to_offset(*n)
-                        }
-                        tokio_postgres::error::ErrorPosition::Internal { position, .. } => {
-                            pg_position_to_offset(*position)
-                        }
-                    })
+                offset: position
+                    .map(|n| pg_position_to_user_byte_offset(n, prefix_chars, user_sql))
                     .unwrap_or(0),
                 message: db_err.message().to_string(),
             };
@@ -746,28 +758,23 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
     DbError::Query(e.to_string())
 }
 
-/// Postgres reports error positions 1-based (`POSITION: 1` is the first
-/// character); `DbError::Syntax::offset` is 0-based. Convert once, here, so the
-/// wrapper-prefix adjustment and the UI's cursor/"near ..." hint line up.
-fn pg_position_to_offset(position: u32) -> usize {
-    (position as usize).saturating_sub(1)
-}
-
-/// Adjust a `DbError::Syntax` offset from being relative to `query_paged`'s
-/// rewritten `SELECT * FROM ( <sql> ) AS sid_sub LIMIT.. OFFSET..` wrapper
-/// back to the caller's original SQL text (BUG 5). Postgres reports the error
-/// position relative to whatever string it actually parsed — the wrapped
-/// one — so left uncorrected the offset can run past the end of (or point at
-/// unrelated bytes of) the SQL the caller actually wrote. Non-`Syntax` errors
-/// pass through unchanged.
-fn adjust_wrapped_syntax_offset(err: DbError, prefix_len: usize, original_len: usize) -> DbError {
-    match err {
-        DbError::Syntax { offset, message } => DbError::Syntax {
-            offset: offset.saturating_sub(prefix_len).min(original_len),
-            message,
-        },
-        other => other,
-    }
+/// Postgres reports an error `position` as a 1-based CHARACTER index (not bytes) into
+/// the string it parsed: the wrapped one (BUG 5), `prefix_chars` characters of sid's
+/// wrapper followed by the caller's `user_sql`. `DbError::Syntax::offset` is a 0-based
+/// BYTE offset into `user_sql` (what Rust slicing needs; the editor converts back to a
+/// character column). Convert in three explicit steps: 1-based to 0-based, drop the
+/// wrapper, then character index to byte offset (clamped to the end of `user_sql`).
+pub(crate) fn pg_position_to_user_byte_offset(
+    position: u32,
+    prefix_chars: usize,
+    user_sql: &str,
+) -> usize {
+    let char_idx = (position as usize).saturating_sub(1);
+    let user_char_idx = char_idx.saturating_sub(prefix_chars);
+    user_sql
+        .char_indices()
+        .nth(user_char_idx)
+        .map_or(user_sql.len(), |(byte, _)| byte)
 }
 
 /// Decode column `idx` as `Option<T>`, but keep NULL and decode-failure
@@ -890,77 +897,60 @@ mod tests {
         })
     }
 
+    const PFX: usize = "SELECT * FROM ( ".len(); // ASCII: chars == bytes
+
     #[test]
-    fn adjust_wrapped_syntax_offset_subtracts_prefix_and_clamps() {
-        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
-        // A raw offset comfortably past the prefix subtracts cleanly.
-        let err = DbError::Syntax {
-            offset: WRAP_PREFIX_LEN + 5,
-            message: "bad".into(),
-        };
-        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 100) {
-            DbError::Syntax { offset, .. } => assert_eq!(offset, 5),
-            other => panic!("expected Syntax, got {other:?}"),
-        }
+    fn position_inside_prefix_clamps_to_zero() {
+        assert_eq!(pg_position_to_user_byte_offset(3, PFX, "SELEC 1"), 0);
+        assert_eq!(pg_position_to_user_byte_offset(0, PFX, "SELEC 1"), 0);
     }
 
     #[test]
-    fn adjust_wrapped_syntax_offset_clamps_into_original_sql_bounds() {
-        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
-        // An offset that would land past the caller's original SQL (e.g. the
-        // wrapper's own trailing `) AS sid_sub LIMIT.. OFFSET..`) clamps to
-        // original_len rather than pointing out of bounds.
-        let err = DbError::Syntax {
-            offset: WRAP_PREFIX_LEN + 9999,
-            message: "bad".into(),
-        };
-        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 10) {
-            DbError::Syntax { offset, .. } => assert_eq!(offset, 10),
-            other => panic!("expected Syntax, got {other:?}"),
-        }
+    fn position_past_the_end_clamps_to_user_sql_len() {
+        assert_eq!(pg_position_to_user_byte_offset(9999, PFX, "SELEC 1"), 7);
     }
 
     #[test]
-    fn adjust_wrapped_syntax_offset_clamps_to_zero_when_offset_is_within_the_prefix() {
-        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
-        // An offset pointing INTO the wrapper prefix itself (before the
-        // caller's SQL even starts) saturates to 0, not a huge underflowed value.
-        let err = DbError::Syntax {
-            offset: 3,
-            message: "bad".into(),
-        };
-        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, 50) {
-            DbError::Syntax { offset, .. } => assert_eq!(offset, 0),
-            other => panic!("expected Syntax, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn pg_position_is_converted_from_one_based_and_points_at_the_right_char() {
-        // Real shape: `SELEC 1` wrapped as `SELECT * FROM ( SELEC 1 ) AS ...`;
-        // Postgres reports POSITION 17 for the `S` of `SELEC` (1-based).
-        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+    fn ascii_position_points_at_the_right_char() {
         let sql = "SELEC 1";
-        let raw = pg_position_to_offset(WRAP_PREFIX_LEN as u32 + 1);
-        let err = DbError::Syntax {
-            offset: raw,
-            message: "syntax error at or near \"SELEC\"".into(),
-        };
-        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, sql.len()) {
-            DbError::Syntax { offset, .. } => assert_eq!(&sql[offset..offset + 5], "SELEC"),
-            other => panic!("expected Syntax, got {other:?}"),
-        }
-        assert_eq!(pg_position_to_offset(0), 0);
-        assert_eq!(pg_position_to_offset(1), 0);
+        let off = pg_position_to_user_byte_offset(PFX as u32 + 1, PFX, sql);
+        assert_eq!(&sql[off..off + 5], "SELEC");
+    }
+
+    /// Position (1-based, chars, in the wrapped text) of the first occurrence of
+    /// `needle` in `user_sql`, as Postgres would report it.
+    fn pg_pos_of(user_sql: &str, needle: &str) -> u32 {
+        let byte = user_sql.find(needle).unwrap();
+        (PFX + user_sql[..byte].chars().count() + 1) as u32
     }
 
     #[test]
-    fn adjust_wrapped_syntax_offset_leaves_non_syntax_errors_untouched() {
-        let err = DbError::Query("boom".into());
-        match adjust_wrapped_syntax_offset(err, 17, 10) {
-            DbError::Query(msg) => assert_eq!(msg, "boom"),
-            other => panic!("expected Query passthrough, got {other:?}"),
+    fn multibyte_positions_convert_chars_to_bytes() {
+        for (sql, needle) in [
+            ("SELECT 'h\u{e9}llo', x FROM", "x"),
+            ("SELECT 'h\u{e9}llo', \u{65e5}\u{672c} FROM", "FROM"),
+            ("SELECT '\u{1f389}\u{1f389}', 1 FROM", "FROM"),
+            ("SELECT '\u{e9}\u{65e5}\u{1f389}' ,, 1", ",, 1"),
+        ] {
+            let pos = pg_pos_of(sql, needle);
+            let off = pg_position_to_user_byte_offset(pos, PFX, sql);
+            assert!(sql.is_char_boundary(off), "{sql}");
+            assert!(
+                sql[off..].starts_with(needle),
+                "{sql}: got {:?}",
+                &sql[off..]
+            );
         }
+    }
+
+    #[test]
+    fn multibyte_prefix_is_measured_in_chars_not_bytes() {
+        let prefix = "\u{e9}( ";
+        let sql = "\u{65e5}\u{672c} x";
+        let pos =
+            (prefix.chars().count() + sql[..sql.find('x').unwrap()].chars().count() + 1) as u32;
+        let off = pg_position_to_user_byte_offset(pos, prefix.chars().count(), sql);
+        assert_eq!(&sql[off..], "x");
     }
 
     #[test]
