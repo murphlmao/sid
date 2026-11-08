@@ -283,6 +283,19 @@ pub struct Settings {
     /// than an error. Absent in v1..v4 stores — defaults to `100`.
     #[serde(default = "default_ui_scale_percent")]
     pub ui_scale_percent: u16,
+    /// Skip UI animation (`sid_ui::motion::set_reduced`). Absent in v1..v5 stores --
+    /// defaults to `false` (motion on).
+    #[serde(default)]
+    pub reduce_motion: bool,
+    /// Whether sid may raise desktop notifications (long query finished while unfocused,
+    /// SSH session dropped, fetch/push done). Absent in v1..v5 stores -- `true`.
+    #[serde(default = "default_secret_backend_enabled")]
+    pub desktop_notifications: bool,
+    /// Name of the primary tab that was active at last exit (`"ssh"`, `"settings"`, ...);
+    /// empty = none remembered. A free string so the tab set can change without a schema
+    /// bump. Absent in v1..v5 stores -- empty.
+    #[serde(default)]
+    pub last_tab: String,
 }
 
 impl Default for Settings {
@@ -294,6 +307,9 @@ impl Default for Settings {
             secret_file_enabled: true,
             theme: default_theme(),
             ui_scale_percent: default_ui_scale_percent(),
+            reduce_motion: false,
+            desktop_notifications: true,
+            last_tab: String::new(),
         }
     }
 }
@@ -418,15 +434,51 @@ pub(crate) struct SettingsV4 {
     pub theme: String,
 }
 
-impl From<SettingsV4> for Settings {
+impl From<SettingsV4> for SettingsV5 {
     fn from(v: SettingsV4) -> Self {
-        Settings {
+        SettingsV5 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
             secret_file_enabled: v.secret_file_enabled,
             theme: v.theme,
             ui_scale_percent: default_ui_scale_percent(),
+        }
+    }
+}
+
+/// The version-5 on-disk shape of [`Settings`] (after `ui_scale_percent`, before
+/// `reduce_motion` / `desktop_notifications` / `last_tab`). Retained only to decode legacy
+/// redb values; `From<SettingsV5> for Settings` migrates it forward with motion on,
+/// notifications on and no remembered tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV5 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+}
+
+impl From<SettingsV5> for Settings {
+    fn from(v: SettingsV5) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: v.ui_scale_percent,
+            reduce_motion: false,
+            desktop_notifications: true,
+            last_tab: String::new(),
         }
     }
 }

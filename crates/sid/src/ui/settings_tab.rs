@@ -41,7 +41,9 @@ use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store};
 
 use crate::app::AppState;
 use crate::keymap::{self, Action, Chord, RebindOutcome};
-use sid_ui::{Card, Kbd, SegmentSelect, SegmentedControl, caveat_line, error_line, scaled, theme};
+use sid_ui::{
+    Card, Kbd, SegmentSelect, SegmentedControl, Switch, caveat_line, error_line, scaled, theme,
+};
 use sid_ui::{StyledExt as _, Typography as _};
 
 // ---- the screen's shape -----------------------------------------------------
@@ -50,11 +52,6 @@ use sid_ui::{StyledExt as _, Typography as _};
 /// narrow enough that it reads as navigation serving the content rather than as a
 /// peer of it.
 const RAIL_W: f32 = 220.;
-
-/// The widest a reading column gets, per the design system. Unlike the old
-/// centred column this is a *cap*, not a centring rule — the pane starts at the
-/// content gutter, so a wide window grows the empty space on one side only.
-const CONTENT_MAX_W: f32 = 880.;
 
 /// Below this window width the rail costs more than it orients: 220 + 880 no
 /// longer fit side by side, and a squeezed column under a rail reads worse than a
@@ -119,6 +116,11 @@ impl SettingsSection {
     }
 }
 
+/// The section names, in nav order -- the command palette's "Settings: ..." entries.
+pub(crate) fn section_labels() -> Vec<&'static str> {
+    SettingsSection::ALL.iter().map(|s| s.label()).collect()
+}
+
 /// How a nav click reaches `AppState`. `Rc` because both nav shapes hand the same
 /// handler to every item.
 type SectionSelect = Rc<dyn Fn(SettingsSection, &mut Window, &mut App)>;
@@ -172,12 +174,9 @@ impl RenderOnce for SettingsFrame {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .p_3()
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(scaled(CONTENT_MAX_W))
-                            .child(self.content),
-                    ),
+                    // No width cap (design v2 section 4.6): the cards fill the pane and the
+                    // sections that have two things to say lay them side by side.
+                    .child(div().w_full().child(self.content)),
             )
     }
 }
@@ -337,6 +336,13 @@ impl SettingsTabState {
         }
     }
 
+    /// The cached persisted [`Settings`] (read once at startup, refreshed after every
+    /// write) -- for callers outside this module that need a flag without touching the
+    /// store from `render`.
+    pub(crate) fn cached_settings(&self) -> &Settings {
+        &self.cached
+    }
+
     /// Whether a rebind capture is armed. `app.rs`'s root key handler asks this before
     /// it resolves anything — capture mode has to see chords the registry would
     /// otherwise claim (`Ctrl+2` switches tabs).
@@ -383,6 +389,20 @@ fn persist_default_scope(store: &Store, scope: DefaultScope) -> sid_store::Resul
 fn persist_file_browser_side(store: &Store, side: PanelSide) -> sid_store::Result<()> {
     let mut settings = store.settings()?;
     settings.file_browser_side = side;
+    store.set_settings(&settings)
+}
+
+/// Read-modify-write `Settings::reduce_motion`.
+fn persist_reduce_motion(store: &Store, on: bool) -> sid_store::Result<()> {
+    let mut settings = store.settings()?;
+    settings.reduce_motion = on;
+    store.set_settings(&settings)
+}
+
+/// Read-modify-write `Settings::desktop_notifications`.
+fn persist_desktop_notifications(store: &Store, on: bool) -> sid_store::Result<()> {
+    let mut settings = store.settings()?;
+    settings.desktop_notifications = on;
     store.set_settings(&settings)
 }
 
@@ -628,7 +648,6 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
     };
 
     Card::new()
-        .title(SettingsSection::Storage.label())
         .child(path_row("data directory", data_dir))
         .child(path_row("store file", store_path))
         .child(path_row("demo database", demo_db_path))
@@ -662,6 +681,12 @@ impl AppState {
             .flex_col()
             .gap_3()
             .children(self.settings.error.clone().map(error_line))
+            .child(
+                div()
+                    .text_display(&chrome)
+                    .text_color(rgb(chrome.fg_strong))
+                    .child(active.label()),
+            )
             .child(match active {
                 // The theme panel's active marker follows the LIVE theme (not the
                 // persisted name): identical in normal use (set_theme installs +
@@ -694,15 +719,61 @@ impl AppState {
         applied: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        Card::new()
-            .title(SettingsSection::Appearance.label())
-            .count(theme::THEME_NAMES.len())
+        let reduce_motion = self.settings.cached.reduce_motion;
+        let zoom = self.ui_scale;
+        let size = SegmentedControl::new("settings-interface-size")
+            .segments(["Smaller", "Default", "Larger"])
+            .selected(1)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                let next = match ev.index {
+                    0 => this.ui_scale.zoom_out(),
+                    2 => this.ui_scale.zoom_in(),
+                    _ => this.ui_scale.reset(),
+                };
+                this.set_ui_scale(next, cx);
+            }));
+        let themes = Card::new()
+            .child(div().text_heading(chrome).child("Theme"))
             .children(
                 theme::THEME_NAMES
                     .iter()
                     .enumerate()
                     .map(|(ix, &name)| self.theme_row(ix, name, chrome, applied, cx)),
+            );
+        let display = Card::new()
+            .child(div().text_heading(chrome).child("Display"))
+            .child(labeled_row(
+                chrome,
+                "Interface size",
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(size)
+                    .child(div().text_meta(chrome).child(format!("Now {}", zoom.label()))),
+            ))
+            .child(
+                Switch::new("settings-reduce-motion", reduce_motion)
+                    .label("Reduce motion")
+                    .on_toggle({
+                        let me = cx.entity();
+                        move |on, _w, app| me.update(app, |this, cx| this.set_reduce_motion(on, cx))
+                    }),
             )
+            .child(
+                div()
+                    .text_meta(chrome)
+                    .child("Skips fades and slides. Animation is on by default."),
+            );
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_3()
+            .items_start()
+            .child(div().flex_1().min_w(scaled(360.)).child(themes))
+            .child(div().flex_1().min_w(scaled(360.)).child(display))
     }
 
     /// One row per `theme::THEME_NAMES` entry: an active marker, the theme's name,
@@ -794,6 +865,11 @@ impl AppState {
     /// palette, persist the choice, and refresh every window so the switch is
     /// LIVE. `pub(crate)` so this module's tests can drive it directly, and so a
     /// future command-palette "switch theme" entry could reuse it.
+    /// Point the Settings screen at section `index` (see [`section_labels`]).
+    pub(crate) fn show_settings_section(&mut self, index: usize) {
+        self.settings.section = SettingsSection::from_index(index);
+    }
+
     pub(crate) fn set_theme(&mut self, name: &'static str, cx: &mut Context<Self>) {
         theme::install(name, cx);
         // Re-project the new palette onto gpui-component's theme so the borrowed
@@ -838,7 +914,22 @@ impl AppState {
         };
 
         Card::new()
-            .title(SettingsSection::Behaviour.label())
+            .child(
+                Switch::new("settings-desktop-notifications", settings.desktop_notifications)
+                    .label("Desktop notifications")
+                    .on_toggle({
+                        let me = cx.entity();
+                        move |on, _w, app| {
+                            me.update(app, |this, cx| this.set_desktop_notifications(on, cx))
+                        }
+                    }),
+            )
+            .child(
+                div().text_meta(chrome).child(
+                    "Tells you when a long query finishes while sid is in the background, \
+                     an SSH session drops, or a fetch or push completes.",
+                ),
+            )
             .child(labeled_row(
                 chrome,
                 "default scope for new items",
@@ -905,6 +996,31 @@ impl AppState {
         cx.notify();
     }
 
+    /// Reduce motion: apply to the live process (`sid_ui::motion`) and persist.
+    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        sid_ui::motion::set_reduced(on, cx);
+        match persist_reduce_motion(&self.store, on) {
+            Ok(()) => {
+                self.settings.cached.reduce_motion = on;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Couldn't save reduce motion: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Desktop notifications on/off: persisted, and mirrored for the notify call sites.
+    pub(crate) fn set_desktop_notifications(&mut self, on: bool, cx: &mut Context<Self>) {
+        match persist_desktop_notifications(&self.store, on) {
+            Ok(()) => {
+                self.settings.cached.desktop_notifications = on;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Couldn't save notifications: {e}")),
+        }
+        cx.notify();
+    }
+
     pub(crate) fn set_secret_keyring_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         match persist_secret_keyring_enabled(&self.store, enabled) {
             Ok(()) => {
@@ -948,9 +1064,9 @@ impl AppState {
         });
 
         Card::new()
-            .title(SettingsSection::Keyboard.label())
-            .count(rows.len())
-            .when_some(reset_all, Card::action)
+            .when_some(reset_all, |card, button| {
+                card.child(div().flex().flex_row().justify_end().child(button))
+            })
             .child(div().flex().flex_col().children(rows))
             .child(div().text_meta(chrome).child(
                 "shortcuts carry Ctrl; inside a focused terminal a letter chord \
@@ -1178,6 +1294,17 @@ mod tests {
             store.settings().unwrap().file_browser_side,
             PanelSide::Right
         );
+    }
+
+    #[test]
+    fn persist_reduce_motion_and_notifications_round_trip() {
+        let (_dir, store) = tmp_store();
+        assert!(store.settings().unwrap().desktop_notifications);
+        persist_reduce_motion(&store, true).unwrap();
+        persist_desktop_notifications(&store, false).unwrap();
+        let s = store.settings().unwrap();
+        assert!(s.reduce_motion);
+        assert!(!s.desktop_notifications);
     }
 
     #[test]
