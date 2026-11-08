@@ -183,6 +183,9 @@ pub struct DbTabState {
     /// results grid for the plan pane; the grid's own state is untouched underneath, so
     /// closing the plan restores it with its sort and filter intact.
     plan: Option<PlanView>,
+    /// Where a failed query's engine error pointed, as a byte offset into the editor
+    /// text; applied (cursor moved there) on the next frame, which has a `Window`.
+    error_cursor: Option<usize>,
     /// The most recently completed [`QueryPage`] — the source [`export_csv`] writes
     /// from. Kept as the raw domain type (not derived back out of `results`'s
     /// `gpui-component` delegate) so CSV export stays a pure function over data sid
@@ -716,6 +719,22 @@ struct PlanView {
 /// `detail` is the readable part, but which of an engine's plan columns a reader is
 /// allowed to see is not sid's call to make.
 fn plan_lines(page: &QueryPage) -> Vec<String> {
+    let col = |name: &str| page.columns.iter().position(|c| c.name == name);
+    // SQLite's `EXPLAIN QUERY PLAN`: id / parent / notused / detail. Only `detail` is
+    // readable; `id`/`parent` give the tree, drawn as indentation.
+    if let (Some(id), Some(parent), Some(detail)) = (col("id"), col("parent"), col("detail")) {
+        let mut depth_of: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        return page
+            .rows
+            .iter()
+            .map(|row| {
+                let get = |i: usize| row.values.get(i).map_or("", String::as_str);
+                let depth = depth_of.get(get(parent)).map_or(0, |d| d + 1);
+                depth_of.insert(get(id), depth);
+                format!("{}{}", "  ".repeat(depth), get(detail))
+            })
+            .collect();
+    }
     page.rows.iter().map(|row| row.values.join("  ")).collect()
 }
 
@@ -1221,6 +1240,7 @@ impl DbTabState {
             result_filter: None,
             _result_filter_sub: None,
             plan: None,
+            error_cursor: None,
             last_page: None,
             schema: None,
             schema_graph: None,
@@ -1401,6 +1421,11 @@ impl AppState {
     /// for `InputState::new`/`TableState::new`, which is why this can't happen in
     /// `DbTabState::new` (constructed before any window exists).
     fn ensure_query_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Some(offset), Some(sql)) = (self.db.error_cursor.take(), self.db.sql.clone()) {
+            let text = sql.read(cx).value().to_string();
+            let pos = position_at_offset(&text, offset);
+            sql.update(cx, |state, cx| state.set_cursor_position(pos, window, cx));
+        }
         if self.db.conn_focus.is_none() {
             self.db.conn_focus = Some(cx.focus_handle());
         }
@@ -1679,8 +1704,18 @@ impl AppState {
                     .gap_2()
                     .child(sql_editor)
                     .children(error_text.map(|e| {
-                        let (title, body) = friendly_failure(&e);
-                        Toast::danger(body).title(title)
+                        let editor_text = self
+                            .db
+                            .sql
+                            .as_ref()
+                            .map(|s| s.read(cx).value().to_string())
+                            .unwrap_or_default();
+                        let f = describe_query_error(&e, &editor_text);
+                        let body = match &f.hint {
+                            Some(h) => format!("{}\n{h}", f.body),
+                            None => f.body.clone(),
+                        };
+                        Toast::danger(body).title(f.title)
                     })),
             );
 
@@ -1754,8 +1789,8 @@ impl AppState {
             .flex_row()
             .flex_1()
             .min_h(px(0.))
-            .gap_2()
-            .p_3()
+            .gap(sid_ui::SECTION_GAP.len())
+            .p(sid_ui::PAGE_GUTTER.len())
             .hairline_t(&t)
             .child(self.left_panel(cx))
             .child(editor_and_results)
@@ -2057,14 +2092,13 @@ impl AppState {
                 .into_any_element()
         };
 
-        Card::panel("query plan")
-            .count(plan.lines.len())
+        Card::panel("Query plan")
             .flex_1()
             .min_h_0()
             .w_full()
             // The keyword is the SQL the engine was actually asked (`EXPLAIN` /
             // `EXPLAIN QUERY PLAN`), so it takes the family the plan body does.
-            .action(div().text_mono_meta(&t).child(plan.keyword.clone()))
+            .action(div().text_meta(&t).child(plan.keyword.to_lowercase()))
             .action(
                 IconButton::new("db-plan-close", Icon::Close, "Back to the results")
                     .small()
@@ -2368,7 +2402,17 @@ impl AppState {
             .ghost()
             .icon(Icon::Diagram)
             .disabled(self.db.schema.is_none())
-            .tooltip("open the relationships diagram in its own window")
+            .tooltip(if self.db.schema.is_some() {
+                "Open the relationships diagram in its own window"
+            } else if self.db.active_id.is_none() {
+                "Select a connection to see its diagram"
+            } else if self.db.schema_loading {
+                "Loading the schema, the diagram opens once it is ready"
+            } else if self.db.schema_error.is_some() {
+                "The schema could not be loaded, so there is no diagram"
+            } else {
+                "No schema loaded for this connection yet"
+            })
             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                 this.open_diagram_window(window, cx);
             }))
@@ -3672,7 +3716,14 @@ impl AppState {
                         this.db.client_for = Some(id);
                         this.apply_query_page(&page, cx);
                     }
-                    Err(e) => this.db.status = QueryStatus::Err(e),
+                    Err(e) => {
+                        this.db.error_cursor = this
+                            .db
+                            .last_sql
+                            .as_deref()
+                            .and_then(|sql| describe_query_error(&e, sql).offset);
+                        this.db.status = QueryStatus::Err(e);
+                    }
                 }
                 cx.notify();
             });
@@ -4465,6 +4516,89 @@ fn downloads_dir_for(home: Option<PathBuf>, userprofile: Option<PathBuf>) -> Pat
         .join("Downloads")
 }
 
+/// A failed query, mapped back onto the statement the user wrote.
+#[derive(Debug, PartialEq, Eq)]
+struct QueryErrorView {
+    title: &'static str,
+    body: String,
+    hint: Option<String>,
+    /// Byte offset into the user's statement the engine pointed at, when it did.
+    offset: Option<usize>,
+}
+
+/// Strip engine/driver plumbing from a query error so it speaks about the USER's text:
+/// the doubled `query failed:` prefix, the pagination wrapper rusqlite echoes
+/// (`... in SELECT * FROM ( <sql> ) LIMIT n OFFSET m at offset N`), and the
+/// `query syntax error at offset N:` shape (SQLite and Postgres both land there via
+/// `DbError::Syntax`, offsets already shifted back into the user's text by sid-db).
+fn describe_query_error(raw: &str, user_sql: &str) -> QueryErrorView {
+    let mut msg = raw.trim();
+    let mut offset: Option<usize> = None;
+    loop {
+        let lower = msg.to_ascii_lowercase();
+        if lower.starts_with("query failed:") {
+            msg = msg["query failed:".len()..].trim_start();
+        } else if lower.starts_with("query syntax error at offset ") {
+            let rest = &msg["query syntax error at offset ".len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                offset = Some(n);
+            }
+            msg = rest[digits.len()..].trim_start_matches(':').trim_start();
+        } else {
+            break;
+        }
+    }
+    let mut body = msg.to_string();
+    // A wrapper echo that reached us unmapped: cut it, keep the engine's own words.
+    for marker in [" in SELECT * FROM (", " in EXPLAIN QUERY PLAN "] {
+        if let Some(i) = body.find(marker) {
+            body = body[..i].to_string();
+        }
+    }
+    let lower = body.to_ascii_lowercase();
+    let syntax = offset.is_some() || lower.contains("syntax error");
+    if !syntax {
+        let (title, b) = friendly_failure(&body);
+        return QueryErrorView {
+            title,
+            body: b,
+            hint: None,
+            offset: None,
+        };
+    }
+    let offset = offset.map(|o| o.min(user_sql.len()));
+    let hint = Some(match offset {
+        Some(o) if user_sql.is_char_boundary(o) && o < user_sql.len() => {
+            let near: String = user_sql[o..]
+                .chars()
+                .take_while(|c| *c != '\n')
+                .take(24)
+                .collect();
+            format!("Check the SQL near \"{}\".", near.trim_end())
+        }
+        _ => "Check the SQL, usually the end of the statement.".to_string(),
+    });
+    QueryErrorView {
+        title: "Syntax error",
+        body,
+        hint,
+        offset,
+    }
+}
+
+/// Editor `Position` (line, character) for a byte offset into `text`.
+fn position_at_offset(text: &str, offset: usize) -> Position {
+    let mut o = offset.min(text.len());
+    while !text.is_char_boundary(o) {
+        o -= 1;
+    }
+    let before = &text[..o];
+    let line = before.matches('\n').count() as u32;
+    let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) as u32;
+    Position::new(line, col)
+}
+
 /// A readable (title, body) for a failed query/connect/plan. The raw driver message is
 /// always kept in the body; the `ANALYZE` refusal gets its own plain-language headline.
 fn friendly_failure(raw: &str) -> (&'static str, String) {
@@ -4534,6 +4668,60 @@ fn write_csv_export(conn_label: &str, csv: &str) -> Result<PathBuf, String> {
     let path = next_csv_export_path(&dir, conn_label);
     fs::write(&path, csv).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod describe_query_error_tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_syntax_error_drops_wrapper_and_points_into_user_text() {
+        let sql = "selct nonsense from";
+        let v = describe_query_error(
+            "query syntax error at offset 15: near \"from\": syntax error",
+            sql,
+        );
+        assert_eq!(v.title, "Syntax error");
+        assert_eq!(v.body, "near \"from\": syntax error");
+        assert_eq!(v.offset, Some(15));
+        assert_eq!(v.hint.as_deref(), Some("Check the SQL near \"from\"."));
+    }
+
+    #[test]
+    fn unmapped_sqlite_wrapper_echo_is_cut_and_prefix_deduped() {
+        let raw = "query failed: near \"from\": syntax error in SELECT * FROM ( selct nonsense from\n) LIMIT 100 OFFSET 0 at offset 31";
+        let v = describe_query_error(raw, "selct nonsense from");
+        assert_eq!(v.body, "near \"from\": syntax error");
+        assert!(!v.body.contains("LIMIT"));
+        assert_eq!(v.title, "Syntax error");
+        assert!(v.hint.is_some());
+    }
+
+    #[test]
+    fn postgres_syntax_error_shape() {
+        let sql = "SELECT * FORM t";
+        let v = describe_query_error(
+            "query syntax error at offset 9: syntax error at or near \"FORM\"",
+            sql,
+        );
+        assert_eq!(v.body, "syntax error at or near \"FORM\"");
+        assert_eq!(v.offset, Some(9));
+        assert_eq!(v.hint.as_deref(), Some("Check the SQL near \"FORM t\"."));
+    }
+
+    #[test]
+    fn non_syntax_errors_keep_one_prefix_only() {
+        let v = describe_query_error("query failed: no such table: nope", "select * from nope");
+        assert_eq!(v.title, "Query failed");
+        assert_eq!(v.body, "no such table: nope");
+        assert_eq!(v.offset, None);
+    }
+
+    #[test]
+    fn offset_maps_to_line_and_column() {
+        assert_eq!(position_at_offset("ab\ncde", 5), Position::new(1, 2));
+        assert_eq!(position_at_offset("ab", 99), Position::new(0, 2));
+    }
 }
 
 #[cfg(test)]
@@ -5831,15 +6019,31 @@ mod plan_view_tests {
     }
 
     #[test]
-    fn a_multi_column_plan_joins_its_columns_rather_than_dropping_any() {
-        // SQLite's `EXPLAIN QUERY PLAN` returns id/parent/notused/detail. `detail` is
-        // the readable part, but sid is not in the business of deciding which of an
-        // engine's plan columns the user is allowed to see.
+    fn a_sqlite_plan_is_an_indented_tree_of_detail_text() {
         let plan = page(
             &["id", "parent", "notused", "detail"],
-            &[&["3", "0", "0", "SCAN customers"]],
+            &[
+                &["2", "0", "0", "SCAN orders"],
+                &["5", "2", "0", "SEARCH c USING INDEX"],
+                &["9", "5", "0", "USE TEMP B-TREE"],
+                &["10", "0", "0", "SCAN x"],
+            ],
         );
-        assert_eq!(plan_lines(&plan), vec!["3  0  0  SCAN customers"]);
+        assert_eq!(
+            plan_lines(&plan),
+            vec![
+                "SCAN orders",
+                "  SEARCH c USING INDEX",
+                "    USE TEMP B-TREE",
+                "SCAN x"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_multi_column_plan_joins_its_columns() {
+        let plan = page(&["a", "b"], &[&["1", "x"]]);
+        assert_eq!(plan_lines(&plan), vec!["1  x"]);
     }
 
     #[test]
