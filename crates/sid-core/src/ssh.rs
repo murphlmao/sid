@@ -24,6 +24,8 @@ pub enum SshError {
         "host key for {0} changed — possible MITM; remove the entry from known_hosts to re-trust"
     )]
     HostKeyMismatch(String),
+    #[error("remote file is larger than the {0}-byte limit")]
+    TooLarge(u64),
     #[error("ssh operation failed: {0}")]
     Other(String),
 }
@@ -148,10 +150,32 @@ pub trait SftpSession: Send + Sync {
     /// `"."` differently per user, so the caller cannot assume any particular string.
     async fn canonicalize(&mut self, path: &str) -> Result<String, SshError>;
     async fn get(&mut self, path: &str) -> Result<Vec<u8>, SshError>;
+    /// Read at most `max_bytes`, stopping early with [`SshError::TooLarge`] as soon as
+    /// more arrive - the size a server reports in `stat` is not trustworthy. The default
+    /// reads everything then checks; implementations should stream and stop early.
+    async fn get_bounded(&mut self, path: &str, max_bytes: u64) -> Result<Vec<u8>, SshError> {
+        let b = self.get(path).await?;
+        if b.len() as u64 > max_bytes {
+            return Err(SshError::TooLarge(max_bytes));
+        }
+        Ok(b)
+    }
     async fn put(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError>;
+    /// Create `path` with `bytes`, failing if it already exists (`O_CREAT|O_EXCL`, so a
+    /// planted file or symlink is never written through). Default: unsupported, and
+    /// callers needing it must fall back to something that does not need a temp file.
+    async fn put_exclusive(&mut self, _path: &str, _bytes: &[u8]) -> Result<(), SshError> {
+        Err(SshError::Other("exclusive create not supported".into()))
+    }
     async fn remove_file(&mut self, path: &str) -> Result<(), SshError>;
     async fn mkdir(&mut self, path: &str) -> Result<(), SshError>;
     async fn stat(&mut self, path: &str) -> Result<Option<SftpEntry>, SshError>;
+    /// Rename `from` to `to`. Plain SFTP rename often refuses to replace an existing
+    /// `to`; callers needing replace semantics must be ready to fall back. Default:
+    /// unsupported, so existing impls compile unchanged.
+    async fn rename(&mut self, _from: &str, _to: &str) -> Result<(), SshError> {
+        Err(SshError::Other("sftp rename not supported".into()))
+    }
     async fn close(&mut self) -> Result<(), SshError>;
 }
 

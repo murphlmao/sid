@@ -45,5 +45,13 @@ keyring-core = "1"
 # block_on is runtime-independent. crypto-rust avoids an OpenSSL C dependency.
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
 
+# macOS Keychain / Windows Credential Manager — the same keyring-core store family as the
+# Linux zbus store above, registered at runtime by `install_default_backend()`.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
 [dev-dependencies]
 tempfile = "3"

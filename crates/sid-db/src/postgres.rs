@@ -913,6 +913,7 @@ mod tests {
         assert_eq!(tls_choice(&config), TlsChoice::Tls);
     }
 
+    #[cfg(unix)] // exercises a unix-socket directory host
     #[test]
     fn tls_choice_local_targets_are_plain() {
         for dsn in [

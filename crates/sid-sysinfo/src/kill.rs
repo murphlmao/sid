@@ -1,4 +1,3 @@
-use nix::errno::Errno;
 use sid_core::sys::{Pid, Signal, SysError};
 
 /// Send a signal to a process via `nix::sys::signal::kill`.
@@ -11,6 +10,7 @@ use sid_core::sys::{Pid, Signal, SysError};
 ///
 /// PID 0 is rejected explicitly (POSIX kill(2) treats 0 as "the whole
 /// process group", which is a footgun we don't want to expose).
+#[cfg(unix)]
 pub(crate) fn kill_process(pid: Pid, sig: Signal) -> Result<(), SysError> {
     if pid.as_u32() == 0 {
         return Err(SysError::InvalidInput(
@@ -32,6 +32,7 @@ pub(crate) fn kill_process(pid: Pid, sig: Signal) -> Result<(), SysError> {
         Signal::Hup => nix::sys::signal::Signal::SIGHUP,
     };
     let nix_pid = nix::unistd::Pid::from_raw(raw_pid);
+    use nix::errno::Errno;
     match nix::sys::signal::kill(nix_pid, nix_sig) {
         Ok(()) => Ok(()),
         Err(Errno::ESRCH) => Err(SysError::NotFound(format!("pid {}", pid.as_u32()))),
@@ -47,7 +48,53 @@ pub(crate) fn kill_process(pid: Pid, sig: Signal) -> Result<(), SysError> {
     }
 }
 
-#[cfg(test)]
+/// Reject pids no platform can address. Used by the non-unix path; the unix path keeps
+/// its own inline copy next to the `kill(2)` caveats it documents.
+#[cfg(not(unix))]
+fn checked_pid(pid: Pid) -> Result<u32, SysError> {
+    let raw = pid.as_u32();
+    if raw == 0 {
+        return Err(SysError::InvalidInput("refusing to signal pid 0".into()));
+    }
+    if i32::try_from(raw).is_err() {
+        return Err(SysError::NotFound(format!("pid {raw}")));
+    }
+    Ok(raw)
+}
+
+/// Windows has `TerminateProcess` and nothing else: there is no SIGINT/SIGHUP to deliver
+/// to an arbitrary process. `Term` and `Kill` both terminate; the other two are refused
+/// rather than silently escalated into a kill.
+#[cfg(not(unix))]
+pub(crate) fn signal_is_deliverable(sig: Signal) -> bool {
+    matches!(sig, Signal::Term | Signal::Kill)
+}
+
+/// Non-unix: terminate through `sysinfo`'s process handle (`TerminateProcess` on Windows).
+#[cfg(not(unix))]
+pub(crate) fn kill_process(pid: Pid, sig: Signal) -> Result<(), SysError> {
+    let raw = checked_pid(pid)?;
+    if !signal_is_deliverable(sig) {
+        return Err(SysError::InvalidInput(format!(
+            "{sig:?} cannot be delivered on this platform; only Term and Kill (terminate) are supported"
+        )));
+    }
+    let target = sysinfo::Pid::from_u32(raw);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
+    let Some(process) = system.process(target) else {
+        return Err(SysError::NotFound(format!("pid {raw}")));
+    };
+    if process.kill() {
+        Ok(())
+    } else {
+        Err(SysError::PermissionDenied(format!(
+            "cannot terminate pid {raw} (access denied or already exiting)"
+        )))
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -90,5 +137,34 @@ mod tests {
             matches!(err, SysError::NotFound(_)),
             "i32::MAX is a valid raw pid; failure must come from the syscall (ESRCH), not the overflow guard"
         );
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_tests {
+    use super::*;
+
+    #[test]
+    fn only_terminate_signals_are_deliverable() {
+        assert!(signal_is_deliverable(Signal::Term));
+        assert!(signal_is_deliverable(Signal::Kill));
+        assert!(!signal_is_deliverable(Signal::Int));
+        assert!(!signal_is_deliverable(Signal::Hup));
+    }
+
+    #[test]
+    fn rejects_pid_0() {
+        assert!(matches!(
+            kill_process(Pid::from_u32(0), Signal::Kill),
+            Err(SysError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_pid_overflowing_i32() {
+        assert!(matches!(
+            kill_process(Pid::from_u32(u32::MAX), Signal::Kill),
+            Err(SysError::NotFound(_))
+        ));
     }
 }

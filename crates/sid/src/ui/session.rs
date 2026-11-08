@@ -40,8 +40,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
 use sid_ui::{
-    InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale, bridge::SCRIM,
-    scaled, theme, v_flex,
+    Button, InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale,
+    bridge::SCRIM, scaled, theme, v_flex,
 };
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
@@ -140,6 +140,10 @@ pub enum SessionStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SshSessionEvent {
     ToggleDockSide,
+    /// A failed session's **Retry**: re-dial the same host with the same auth.
+    Retry,
+    /// A failed session's **Edit connection**: open the host form for its host.
+    EditConnection,
 }
 
 impl EventEmitter<SshSessionEvent> for SshSession {}
@@ -496,6 +500,7 @@ impl SshSession {
                 Err(err) => {
                     let _ = this.update(cx, |session, cx| {
                         session.status = SessionStatus::Failed(err);
+                        session.needs_focus = true;
                         cx.notify();
                     });
                     return;
@@ -2492,6 +2497,11 @@ impl SshSession {
         div()
             .size_full()
             .bg(default_bg)
+            // Inset so glyphs never sit flush against the pane edge (e.g. beside a
+            // right-docked file panel). The canvas below fills the *padded* box, so
+            // `grid_size` already works from the inner bounds and the last column
+            // can't clip.
+            .p(scaled(8.))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|session, event: &KeyDownEvent, window, _cx| {
                 if let Some(bytes) = key_to_bytes(&event.keystroke) {
@@ -2681,14 +2691,61 @@ impl Render for SshSession {
         }
         let content = match &self.status {
             SessionStatus::Connecting => message_pane("Connecting…", cx).into_any_element(),
-            SessionStatus::Failed(err) => {
-                message_pane(&format!("Connection failed: {err}"), cx).into_any_element()
-            }
+            SessionStatus::Failed(err) => self.failed_pane(err, cx).into_any_element(),
             SessionStatus::Closed => message_pane("Session closed.", cx).into_any_element(),
             SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
         };
         let overlay = self.preview_overlay(window, cx);
         div().size_full().child(content).children(overlay)
+    }
+}
+
+impl SshSession {
+    /// The failed-connect pane: the (good) error text plus **Retry** and **Edit connection**,
+    /// so a failure is never a dead end. Enter retries. The session's own focus handle is
+    /// tracked here (it is the terminal's handle when connected) so Enter works at once.
+    fn failed_pane(&self, err: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|_session, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "enter" {
+                    cx.emit(SshSessionEvent::Retry);
+                    window.prevent_default();
+                }
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(message_pane(&format!("Connection failed: {err}"), cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_center()
+                    .gap_2()
+                    .pb_6()
+                    .bg(rgb(t.bg))
+                    .child(
+                        Button::new("session-retry", "retry")
+                            .primary()
+                            .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
+                                cx.emit(SshSessionEvent::Retry);
+                            })),
+                    )
+                    .child(
+                        Button::new("session-edit", "edit connection").on_click(cx.listener(
+                            |_s, _ev: &ClickEvent, _w, cx| {
+                                cx.emit(SshSessionEvent::EditConnection);
+                            },
+                        )),
+                    ),
+            )
     }
 }
 

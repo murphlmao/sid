@@ -972,8 +972,8 @@ impl AppState {
             return;
         }
         let expanded = expand_tilde(trimmed, &home_dir());
-        if !Path::new(&expanded).exists() {
-            self.systems.pin_error = Some(format!("{expanded}: no such file"));
+        if let Some(msg) = pin_path_error(&expanded, pin_kind(Path::new(&expanded))) {
+            self.systems.pin_error = Some(msg);
             cx.notify();
             return;
         }
@@ -1327,6 +1327,32 @@ fn curated_candidates(home: &str) -> Vec<String> {
 /// filesystem.
 fn filter_existing<F: Fn(&str) -> bool>(candidates: &[String], exists: F) -> Vec<String> {
     candidates.iter().filter(|p| exists(p)).cloned().collect()
+}
+
+/// What a pin candidate path resolves to on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinKind {
+    Missing,
+    File,
+    Dir,
+}
+
+fn pin_kind(p: &Path) -> PinKind {
+    match std::fs::metadata(p) {
+        Err(_) => PinKind::Missing,
+        Ok(m) if m.is_dir() => PinKind::Dir,
+        Ok(_) => PinKind::File,
+    }
+}
+
+/// Inline refusal message for a pin candidate, or `None` when it may be pinned.
+/// Only files are pinnable: the config viewer reads a file, a directory has no content.
+fn pin_path_error(expanded: &str, kind: PinKind) -> Option<String> {
+    match kind {
+        PinKind::File => None,
+        PinKind::Missing => Some(format!("{expanded}: no such file")),
+        PinKind::Dir => Some(format!("{expanded}: is a directory — pin a file")),
+    }
 }
 
 /// Drop anything already in `pinned` from `curated` — the "common" list never repeats
@@ -1782,5 +1808,21 @@ mod tests {
     fn exclude_pinned_is_a_no_op_when_nothing_is_pinned() {
         let curated = vec!["/etc/hosts".to_string(), "/etc/fstab".to_string()];
         assert_eq!(exclude_pinned(&curated, &[]), curated);
+    }
+
+    #[test]
+    fn pin_refuses_directories_and_missing() {
+        assert!(
+            pin_path_error("/etc", PinKind::Dir)
+                .unwrap()
+                .contains("directory")
+        );
+        assert!(
+            pin_path_error("/nope", PinKind::Missing)
+                .unwrap()
+                .contains("no such file")
+        );
+        assert!(pin_path_error("/etc/hosts", PinKind::File).is_none());
+        assert_eq!(pin_kind(Path::new("/")), PinKind::Dir);
     }
 }

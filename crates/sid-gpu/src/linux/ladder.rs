@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use sid_core::gpu::RenderPath;
 
-use crate::LinuxGpuPreflight;
-use crate::icd::IcdManifest;
-use crate::probe::{self, ProbeOutcome};
+use crate::linux::LinuxGpuPreflight;
+use crate::linux::icd::IcdManifest;
+use crate::linux::probe::{self, ProbeOutcome};
 
 /// One rung's record — kept for `--gpu-report` and the failure diagnosis, not
 /// just the winner.
@@ -210,7 +210,7 @@ pub(crate) fn winning_path(attempt: &RungAttempt, is_vanilla_rung: bool) -> Rend
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::icd;
+    use crate::linux::icd;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 

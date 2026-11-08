@@ -1,10 +1,135 @@
-use sid_core::sys::{ListeningPort, Pid, Protocol, SocketState, SysError};
+use sid_core::sys::{Connection, ListeningPort, Pid, Protocol, SocketState, SysError};
 
 /// Whether a TCP socket in `state` counts as "listening" for our purposes. Pulled out
 /// as a pure function so the netstat2→`ListeningPort` state mapping is unit-testable
 /// without constructing a full `ProtocolSocketInfo` (which needs OS-sourced data).
 fn tcp_is_listen(state: netstat2::TcpState) -> bool {
     matches!(state, netstat2::TcpState::Listen)
+}
+
+/// Map a netstat2 TCP state to sid's coarse state plus a display label. Pure.
+pub(crate) fn map_tcp_state(state: netstat2::TcpState) -> (SocketState, &'static str) {
+    use netstat2::TcpState as T;
+    match state {
+        T::Established => (SocketState::Established, "ESTABLISHED"),
+        T::Listen => (SocketState::Listen, "LISTEN"),
+        T::SynSent => (SocketState::Other, "SYN_SENT"),
+        T::SynReceived => (SocketState::Other, "SYN_RECV"),
+        T::FinWait1 => (SocketState::Other, "FIN_WAIT1"),
+        T::FinWait2 => (SocketState::Other, "FIN_WAIT2"),
+        T::TimeWait => (SocketState::Other, "TIME_WAIT"),
+        T::Closed => (SocketState::Other, "CLOSED"),
+        T::CloseWait => (SocketState::Other, "CLOSE_WAIT"),
+        T::LastAck => (SocketState::Other, "LAST_ACK"),
+        T::Closing => (SocketState::Other, "CLOSING"),
+        _ => (SocketState::Other, "UNKNOWN"),
+    }
+}
+
+/// PID -> process name for `pids`, via a name-only refresh of just those PIDs (same
+/// contract as [`resolve_commands`]: no dead-process pruning).
+fn names_for(sys: &mut sysinfo::System, pids: &[Pid]) -> std::collections::HashMap<Pid, String> {
+    let sp: Vec<sysinfo::Pid> = pids
+        .iter()
+        .map(|p| sysinfo::Pid::from_u32(p.as_u32()))
+        .collect();
+    if sp.is_empty() {
+        return Default::default();
+    }
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&sp),
+        false,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    pids.iter()
+        .filter_map(|p| {
+            sys.process(sysinfo::Pid::from_u32(p.as_u32()))
+                .map(|pr| (*p, pr.name().to_string_lossy().into_owned()))
+        })
+        .collect()
+}
+
+/// List non-listening TCP connections with owning process names.
+pub(crate) fn list_connections(sys: &mut sysinfo::System) -> Result<Vec<Connection>, SysError> {
+    use netstat2::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo};
+
+    let af = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
+    let iter = netstat2::iterate_sockets_info(af, ProtocolFlags::TCP)
+        .map_err(|e| SysError::Other(format!("netstat2: {e}")))?;
+
+    let mut out = Vec::new();
+    for entry in iter {
+        let Ok(info) = entry else { continue };
+        let ProtocolSocketInfo::Tcp(t) = info.protocol_socket_info else {
+            continue;
+        };
+        if tcp_is_listen(t.state) {
+            continue;
+        }
+        let (state, label) = map_tcp_state(t.state);
+        out.push(Connection {
+            protocol: Protocol::Tcp,
+            state,
+            state_label: label.to_string(),
+            local_addr: t.local_addr.to_string(),
+            local_port: t.local_port,
+            remote_addr: t.remote_addr.to_string(),
+            remote_port: t.remote_port,
+            pid: info.associated_pids.into_iter().next().map(Pid::from_u32),
+            command: String::new(),
+        });
+    }
+    let pids = sid_core::sys::owner_pids(&out, |c| c.pid);
+    let names = names_for(sys, &pids);
+    for c in &mut out {
+        c.command = c
+            .pid
+            .and_then(|p| names.get(&p).cloned())
+            .unwrap_or_default();
+    }
+    out.sort_by(|a, b| {
+        (a.local_port, a.remote_port, &a.remote_addr).cmp(&(
+            b.local_port,
+            b.remote_port,
+            &b.remote_addr,
+        ))
+    });
+    Ok(out)
+}
+
+/// CPU + memory for just `pids` (refreshes only those).
+pub(crate) fn process_usage(
+    sys: &mut sysinfo::System,
+    pids: &[Pid],
+) -> Result<std::collections::HashMap<Pid, sid_core::sys::ProcUsage>, SysError> {
+    let sp: Vec<sysinfo::Pid> = pids
+        .iter()
+        .map(|p| sysinfo::Pid::from_u32(p.as_u32()))
+        .collect();
+    if sp.is_empty() {
+        return Ok(Default::default());
+    }
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&sp),
+        false,
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory(),
+    );
+    Ok(pids
+        .iter()
+        .filter_map(|p| {
+            sys.process(sysinfo::Pid::from_u32(p.as_u32())).map(|pr| {
+                (
+                    *p,
+                    sid_core::sys::ProcUsage {
+                        cpu_pct: pr.cpu_usage(),
+                        rss_bytes: pr.memory(),
+                    },
+                )
+            })
+        })
+        .collect())
 }
 
 /// Fill each row's `command` with its owning process's executable name.
@@ -148,6 +273,43 @@ mod tests {
             !row.command.is_empty(),
             "a row with a resolved PID must carry the owning process name"
         );
+    }
+
+    #[test]
+    fn tcp_state_mapping_labels() {
+        assert_eq!(
+            map_tcp_state(netstat2::TcpState::Established),
+            (SocketState::Established, "ESTABLISHED")
+        );
+        assert_eq!(
+            map_tcp_state(netstat2::TcpState::TimeWait).0,
+            SocketState::Other
+        );
+        assert_eq!(map_tcp_state(netstat2::TcpState::CloseWait).1, "CLOSE_WAIT");
+    }
+
+    /// Open a real loopback connection; both ends are ours, so the connection list must
+    /// contain it attributed to this process, and usage must resolve for our pid.
+    #[test]
+    fn established_loopback_connection_is_listed_with_owner_and_usage() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let c = std::net::TcpStream::connect(addr).unwrap();
+        let (_srv, _) = l.accept().unwrap();
+        let mut sys = sysinfo::System::new();
+        let conns = list_connections(&mut sys).unwrap();
+        let me = std::process::id();
+        let row = conns
+            .iter()
+            .find(|r| {
+                r.local_port == c.local_addr().unwrap().port() && r.remote_port == addr.port()
+            })
+            .expect("our client end should be listed");
+        assert_eq!(row.state, SocketState::Established);
+        assert_eq!(row.pid.map(|p| p.as_u32()), Some(me));
+        assert!(!row.command.is_empty());
+        let u = process_usage(&mut sys, &[Pid::from_u32(me)]).unwrap();
+        assert!(u[&Pid::from_u32(me)].rss_bytes > 0);
     }
 
     /// Load-bearing per the plan: the netstat→`ListeningPort` state mapping. Only

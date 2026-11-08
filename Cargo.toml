@@ -16,6 +16,7 @@ members = [
     "crates/sid-containers",
     "crates/sid-privfs",
     "crates/sid-mcp",
+    "crates/sid-os",
 ]
 
 [workspace.package]
@@ -41,12 +42,17 @@ sid-gpu = { path = "crates/sid-gpu" }
 sid-sysinfo = { path = "crates/sid-sysinfo" }
 sid-containers = { path = "crates/sid-containers" }
 sid-privfs = { path = "crates/sid-privfs" }
+sid-os = { path = "crates/sid-os" }
 
 # SSH — russh 0.65 (keys live in `russh::keys`; the standalone russh-keys crate
 # is obsolete and was dropped). Must stay >=0.61 to clear RUSTSEC-2026-0153/0154
 # (CryptoVec allocation hardening). russh-sftp is version-independent of russh.
 russh = "0.65"
 russh-sftp = "3"
+
+# Desktop notifications (`sid-os`): org.freedesktop.Notifications over the blocking zbus
+# API; same zbus 5 line already in the lock via sid-secrets.
+zbus = { version = "5.16", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
@@ -121,7 +127,7 @@ zeroize = "1"
 # renderer pin is exact here too: a looser `0.3` would let a future 0.3.x resolve for
 # sid while gpui-component holds 0.3.11, which cargo refuses rather than unifies.
 gpui = { package = "gpui-pre", version = "=0.3.11" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
 gpui-component = { version = "0.9.0", features = ["tree-sitter-languages"] }
 # The unstyled half of gpui-component, which the 0.6 split carved out. Already in the
 # lock as gpui-component's own dependency; named here for the one API the styled crate
