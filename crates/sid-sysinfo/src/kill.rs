@@ -80,7 +80,8 @@ pub(crate) fn kill_process(pid: Pid, sig: Signal) -> Result<(), SysError> {
         )));
     }
     let target = sysinfo::Pid::from_u32(raw);
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new()
+        .map_err(|e| SysError::Other(format!("System information isn't available: {e}")))?;
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
     let Some(process) = system.process(target) else {
         return Err(SysError::NotFound(format!("pid {raw}")));

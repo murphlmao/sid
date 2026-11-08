@@ -94,12 +94,16 @@ impl UserNames {
         if self.loaded.is_some_and(|t| t.elapsed() < USER_TTL) {
             return;
         }
-        let users = sysinfo::Users::new_with_refreshed_list();
-        self.names = users
-            .list()
-            .iter()
-            .map(|u| (u.id().to_string(), u.name().to_string()))
-            .collect();
+        // A failed load leaves an empty table (uids render raw) and is not retried
+        // until the TTL lapses.
+        self.names = sysinfo::Users::new_with_refreshed_list()
+            .map(|users| {
+                (&users)
+                    .into_iter()
+                    .map(|u| (u.id().to_string(), u.name().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         self.loaded = Some(std::time::Instant::now());
     }
 
@@ -162,7 +166,7 @@ mod tests {
 
     #[test]
     fn listed_processes_show_names_not_numbers_for_root() {
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().unwrap();
         let procs = list_processes(&mut sys, &mut UserNames::new()).unwrap();
         assert!(
             procs.iter().all(|p| p.user.as_deref() != Some("0")),
@@ -217,7 +221,7 @@ mod tests {
     /// `sysinfo` hands back. Loose bounds only — this runs on any dev box or CI runner.
     #[test]
     fn list_processes_returns_processes_not_tasks() {
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().unwrap();
         let procs = list_processes(&mut sys, &mut UserNames::new())
             .expect("list_processes should not error");
         assert!(!procs.is_empty(), "a real host always has some process");
@@ -240,7 +244,7 @@ mod tests {
     /// has a command line, so it is a fair fixed point.
     #[test]
     fn the_command_line_is_populated_on_first_sight() {
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().unwrap();
         let procs = list_processes(&mut sys, &mut UserNames::new())
             .expect("list_processes should not error");
         let me = std::process::id();
