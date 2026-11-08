@@ -71,7 +71,12 @@ sid_app_hermetic_env_args() {
     [[ -d "$HOME/.local/share/fonts" && ! -e "$base/home/.local/share/fonts" ]] \
         && ln -s "$HOME/.local/share/fonts" "$base/home/.local/share/fonts"
     [[ -d "$HOME/.fonts" && ! -e "$base/home/.fonts" ]] && ln -s "$HOME/.fonts" "$base/home/.fonts"
-    printf '%s\n' -u SSH_AUTH_SOCK -u DBUS_SESSION_BUS_ADDRESS "HOME=$base/home"
+    # Point the session bus at an address that cannot exist rather than unsetting it:
+    # with the variable unset, zbus falls back to $XDG_RUNTIME_DIR/bus and reaches the
+    # real session bus (and so the real keyring) anyway — which also made the status
+    # bar flip between "keyring" and "secrets in memory" across identical runs.
+    printf '%s\n' -u SSH_AUTH_SOCK "DBUS_SESSION_BUS_ADDRESS=unix:path=$base/no-session-bus" \
+        "HOME=$base/home"
 }
 
 # sid_app_wait_for_window PID TIMEOUT_SECS INTERVAL LOGFILE DETECT_FN [ARGS...]
