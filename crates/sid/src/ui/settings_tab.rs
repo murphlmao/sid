@@ -1307,10 +1307,10 @@ impl AppState {
         let custom_marker = (custom && !capturing).then(|| div().text_meta(chrome).child("custom"));
 
         let rebind = if capturing {
-            row_button(chrome, ("keymap-cancel", ix), "cancel", chrome.muted)
+            row_button(chrome, ("keymap-cancel", ix), "Cancel", chrome.muted)
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| this.cancel_rebind(cx)))
         } else {
-            row_button(chrome, ("keymap-rebind", ix), "rebind", chrome.muted).on_click(
+            row_button(chrome, ("keymap-rebind", ix), "Rebind", chrome.muted).on_click(
                 cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                     this.begin_rebind(action, cx)
                 }),
@@ -1318,7 +1318,7 @@ impl AppState {
         };
 
         let reset = (custom && !capturing).then(|| {
-            row_button(chrome, ("keymap-reset", ix), "reset", chrome.muted).on_click(cx.listener(
+            row_button(chrome, ("keymap-reset", ix), "Reset", chrome.muted).on_click(cx.listener(
                 move |this, _ev: &ClickEvent, _window, cx| this.reset_binding(action, cx),
             ))
         });
