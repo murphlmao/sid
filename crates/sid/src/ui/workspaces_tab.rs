@@ -637,7 +637,7 @@ impl TableDelegate for FleetDelegate {
         let ident =
             |ink: u32, s: SharedString| fleet_cell(t, TypeRole::Mono, ink, s).into_any_element();
         let words =
-            |ink: u32, s: SharedString| fleet_cell(t, TypeRole::Body, ink, s).into_any_element();
+            |ink: u32, s: SharedString| fleet_cell(t, TypeRole::Cell, ink, s).into_any_element();
 
         let content: AnyElement = match self.rows.get(row_ix) {
             None => div().into_any_element(),
@@ -2404,11 +2404,11 @@ mod tests {
         ))
         .text
         .clone();
-        let age = style_of(fleet_cell(&t, TypeRole::Body, t.fg, "3 days ago"))
+        let age = style_of(fleet_cell(&t, TypeRole::Cell, t.fg, "3 days ago"))
             .text
             .clone();
         assert_eq!(path.font_size, age.font_size, "one rung");
-        assert_eq!(path.font_size, Some(TypeRole::Body.length().into()));
+        assert_eq!(path.font_size, Some(TypeRole::Mono.length().into()));
         assert_eq!(
             path.font_family.as_deref(),
             Some(sid_ui::UI_MONO),

@@ -230,7 +230,9 @@ impl ConfirmButton {
             label: label.into(),
             armed_label: "confirm".into(),
             armed: false,
-            size: ButtonSize::Sm,
+            // A confirm control lives in a data-table row (kill, stop, restart), whose
+            // content box is 24px: v2's 32px small control would poke out of the row.
+            size: ButtonSize::Xs,
             icon: None,
             tooltip: None,
             on_press: None,

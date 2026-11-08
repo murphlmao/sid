@@ -81,8 +81,9 @@ pub use gpui_component::input::InputState;
 use crate::button::ButtonSize;
 use crate::focus;
 use crate::icon::Icon;
+use crate::metrics::{Radius, Rounded as _};
 use crate::theme::{self, Theme};
-use crate::typography::Typography as _;
+use crate::typography::{TypeRole, Typography as _};
 
 /// The narrowest a field is ever allowed to render.
 ///
@@ -434,8 +435,22 @@ fn paint(
         .bg(rgb(theme.well))
         // ...and the same for its type: the library sizes input text off its own `Size`
         // ladder, which has a 16px rung sid's scale does not.
-        .text_role(spec.size.role(), theme);
+        .text_role(field_role(spec.size), theme)
+        // v2 box: the same 32 / 36 / 44 a button of the same size is, so a filter and
+        // the refresh button beside it are one control tall. The library's `Medium` is
+        // 32px and its `Small` 24px; the instance style lands after its own.
+        .h(spec.size.edge())
+        .corners(Radius::Md);
     wrapper(spec.width, style).child(field)
+}
+
+/// The type a field's *text* sits on. Not [`ButtonSize::role`]: a button label is a
+/// control's words (medium weight), a field holds content the user typed (normal weight).
+fn field_role(size: ButtonSize) -> TypeRole {
+    match size {
+        ButtonSize::Xs | ButtonSize::Sm => TypeRole::Meta,
+        ButtonSize::Md | ButtonSize::Lg => TypeRole::Body,
+    }
 }
 
 /// The element that declares the width and owns Tab.
