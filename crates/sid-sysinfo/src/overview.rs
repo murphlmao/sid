@@ -14,35 +14,70 @@ pub(crate) fn overview(sys: &mut System) -> Result<SystemOverview, SysError> {
     sys.refresh_cpu_usage();
     sys.refresh_memory();
 
-    let hostname = System::host_name().unwrap_or_else(|| "unknown".to_string());
-    let kernel = System::kernel_version().unwrap_or_else(|| "unknown".to_string());
+    let hostname = System::host_name().unwrap_or_else(|_| "unknown".to_string());
+    let kernel = System::kernel_version().unwrap_or_else(|_| "unknown".to_string());
     let os = System::long_os_version()
-        .or_else(System::os_version)
-        .unwrap_or_else(|| std::env::consts::OS.to_string());
-    let uptime_secs = System::uptime();
-    let load = System::load_average();
+        .or_else(|_| System::os_version())
+        .unwrap_or_else(|_| std::env::consts::OS.to_string());
+    let uptime_secs = System::uptime().unwrap_or(0);
+    // Unsupported on Windows (and on probe failure): report zeros rather than failing.
+    let load = System::load_average().map(|l| (l.one, l.five, l.fifteen));
+    let (mem_cached, mem_buffers) = cached_and_buffers();
 
     let cpu_total_pct = sys.global_cpu_usage();
-    let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+    let cpu_per_core: Vec<f32> = sys.cpus().iter().map(|c| c.usage()).collect();
 
     Ok(SystemOverview {
         hostname,
         kernel,
         os,
         uptime_secs,
-        load_avg: (load.one, load.five, load.fifteen),
+        load_avg: load.unwrap_or((0.0, 0.0, 0.0)),
         cpu_total_pct,
         cpu_per_core,
         mem_total: sys.total_memory(),
         mem_used: sys.used_memory(),
+        mem_cached,
+        mem_buffers,
         swap_total: sys.total_swap(),
         swap_used: sys.used_swap(),
     })
 }
 
+/// Page cache + buffers in bytes. sysinfo doesn't expose these, so on Linux read
+/// `/proc/meminfo` (cache = `Cached` + `SReclaimable`); elsewhere `(0, 0)`.
+fn cached_and_buffers() -> (u64, u64) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(text) = std::fs::read_to_string("/proc/meminfo") {
+            return parse_meminfo(&text);
+        }
+    }
+    (0, 0)
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_meminfo(text: &str) -> (u64, u64) {
+    let kib = |key: &str| -> u64 {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))
+            .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+            .unwrap_or(0)
+            * 1024
+    };
+    (kib("Cached") + kib("SReclaimable"), kib("Buffers"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_meminfo_sums_cache_and_reads_buffers() {
+        let t = "MemTotal: 100 kB\nBuffers: 10 kB\nCached: 20 kB\nSReclaimable: 5 kB\n";
+        assert_eq!(parse_meminfo(t), (25 * 1024, 10 * 1024));
+        assert_eq!(parse_meminfo(""), (0, 0));
+    }
 
     /// Load-bearing mapping test: `overview()` must actually populate every field from
     /// the real host rather than silently defaulting — run against a real `System`
@@ -52,7 +87,7 @@ mod tests {
     /// this box" is a fair contract to pin.
     #[test]
     fn overview_reports_real_host_metrics() {
-        let mut sys = System::new();
+        let mut sys = System::new().unwrap();
         let first = overview(&mut sys).expect("overview should not error");
 
         assert!(!first.hostname.is_empty(), "hostname should never be blank");
@@ -84,7 +119,7 @@ mod tests {
     /// *something* non-empty to render rather than an empty line.
     #[test]
     fn overview_fields_are_never_blank() {
-        let mut sys = System::new();
+        let mut sys = System::new().unwrap();
         let ov = overview(&mut sys).expect("overview should not error");
         assert!(!ov.kernel.is_empty());
         assert!(!ov.os.is_empty());

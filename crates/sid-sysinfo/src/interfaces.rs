@@ -5,7 +5,8 @@ use sysinfo::Networks;
 /// from `System` and is rebuilt per-call — cheap relative to a full `System`
 /// refresh and avoids stale-counter issues.
 pub(crate) fn list_interfaces(_sys: &mut sysinfo::System) -> Result<Vec<NetInterface>, SysError> {
-    let mut nets = Networks::new_with_refreshed_list();
+    let mut nets = Networks::new_with_refreshed_list()
+        .map_err(|e| SysError::Other(format!("System information isn't available: {e}")))?;
     // A second refresh allows rx/tx delta-since-baseline; the absolute
     // counters we report are sysinfo's "total_received" / "total_transmitted".
     nets.refresh(true);
@@ -21,7 +22,7 @@ pub(crate) fn list_interfaces(_sys: &mut sysinfo::System) -> Result<Vec<NetInter
         let rx = data.total_received();
         let tx = data.total_transmitted();
         out.push(NetInterface {
-            name: name.to_string(),
+            name: name.to_string_lossy().into_owned(),
             addrs,
             rx_bytes: rx,
             tx_bytes: tx,

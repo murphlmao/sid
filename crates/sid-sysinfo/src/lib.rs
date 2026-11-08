@@ -54,7 +54,10 @@ mod processes;
 /// ```
 pub struct SysinfoProvider {
     /// Cached sysinfo handle. `&mut self` access makes refreshes serialized.
-    inner: sysinfo::System,
+    /// `None` when sysinfo couldn't initialise on this host; see `unavailable`.
+    inner: Option<sysinfo::System>,
+    /// Why `inner` is `None`; surfaced as the error of every sysinfo-backed probe.
+    unavailable: Option<String>,
     /// Cached uid -> username table (refreshed rarely, not per poll).
     users: processes::UserNames,
 }
@@ -71,14 +74,37 @@ impl SysinfoProvider {
     /// let _p = SysinfoProvider::new();
     /// ```
     pub fn new() -> Self {
-        let mut inner = sysinfo::System::new();
-        // Prime the CPU sampling baseline.
-        inner.refresh_cpu_usage();
+        let (inner, unavailable) = match sysinfo::System::new() {
+            Ok(mut s) => {
+                // Prime the CPU sampling baseline.
+                s.refresh_cpu_usage();
+                (Some(s), None)
+            }
+            Err(e) => (None, Some(e.to_string())),
+        };
         Self {
             inner,
+            unavailable,
             users: processes::UserNames::new(),
         }
     }
+
+    /// Why system information is unavailable on this host, if it is.
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable.as_deref()
+    }
+
+    fn sys(&mut self) -> Result<&mut sysinfo::System, SysError> {
+        let reason = self.unavailable.clone();
+        self.inner.as_mut().ok_or_else(|| unavail(reason))
+    }
+}
+
+fn unavail(reason: Option<String>) -> SysError {
+    SysError::Other(format!(
+        "System information isn't available: {}",
+        reason.as_deref().unwrap_or("unknown reason")
+    ))
 }
 
 impl Default for SysinfoProvider {
@@ -89,19 +115,21 @@ impl Default for SysinfoProvider {
 
 impl SysProvider for SysinfoProvider {
     fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
-        processes::list_processes(&mut self.inner, &mut self.users)
+        let reason = self.unavailable.clone();
+        let sys = self.inner.as_mut().ok_or_else(|| unavail(reason))?;
+        processes::list_processes(sys, &mut self.users)
     }
 
     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
-        ports::list_listening_ports(&mut self.inner)
+        ports::list_listening_ports(self.sys()?)
     }
 
     fn list_interfaces(&mut self) -> Result<Vec<NetInterface>, SysError> {
-        interfaces::list_interfaces(&mut self.inner)
+        interfaces::list_interfaces(self.sys()?)
     }
 
     fn overview(&mut self) -> Result<SystemOverview, SysError> {
-        overview::overview(&mut self.inner)
+        overview::overview(self.sys()?)
     }
 
     fn kill_process(&mut self, pid: Pid, sig: Signal) -> Result<(), SysError> {
@@ -113,11 +141,11 @@ impl SysProvider for SysinfoProvider {
     }
 
     fn list_connections(&mut self) -> Result<Vec<Connection>, SysError> {
-        ports::list_connections(&mut self.inner)
+        ports::list_connections(self.sys()?)
     }
 
     fn process_usage(&mut self, pids: &[Pid]) -> Result<HashMap<Pid, ProcUsage>, SysError> {
-        ports::process_usage(&mut self.inner, pids)
+        ports::process_usage(self.sys()?, pids)
     }
 }
 
