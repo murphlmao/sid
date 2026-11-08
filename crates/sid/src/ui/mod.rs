@@ -69,6 +69,12 @@ pub fn init(cx: &mut App) {
             ssh_import::ImportSubmit,
             Some(ssh_import::IMPORT_CONTEXT),
         ),
+        // Session modals (preview / edit conflict / no editor): Esc dismisses.
+        KeyBinding::new(
+            "escape",
+            session::SessionDialogCancel,
+            Some(session::SESSION_DIALOG_CONTEXT),
+        ),
         KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
         KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
         // Connect-time password prompt (round-D §A.4), scoped the same way.

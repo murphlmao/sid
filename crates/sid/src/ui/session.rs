@@ -39,6 +39,18 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod edit;
 
+gpui::actions!(
+    ssh_session,
+    [
+        /// Dismiss the preview / edit dialog (bound to `escape` in
+        /// [`SESSION_DIALOG_CONTEXT`]).
+        SessionDialogCancel,
+    ]
+);
+
+/// Key context of the session's modals (preview, conflict, no-editor).
+pub(crate) const SESSION_DIALOG_CONTEXT: &str = "SshSessionDialog";
+
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
 use sid_ui::component::ContextMenuExt as _;
@@ -405,6 +417,10 @@ pub struct SshSession {
     edit_cfg: sid_ssh::remote_edit::RemoteEditConfig,
     /// The file the context menu was last opened on (see [`Self::entry_context_menu`]).
     right_click_entry: Option<SftpEntry>,
+    /// Focus target for the modal layer, so Esc reaches [`SessionDialogCancel`].
+    dialog_focus: FocusHandle,
+    /// Whether a modal was up last render (to move focus in and back out once).
+    dialog_was_up: bool,
 }
 
 impl SshSession {
@@ -460,6 +476,8 @@ impl SshSession {
                 editor_launcher: edit::default_launcher(),
                 edit_cfg: sid_ssh::remote_edit::RemoteEditConfig::new(),
                 right_click_entry: None,
+                dialog_focus: cx.focus_handle(),
+                dialog_was_up: false,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -2756,7 +2774,7 @@ impl SshSession {
                 session.close_preview(cx);
             }))
             .child(body);
-        Some(modal::overlay(window, panel))
+        Some(modal::overlay(window, self.esc_wrap(panel, cx)))
     }
 }
 
@@ -2772,6 +2790,15 @@ impl Render for SshSession {
             SessionStatus::Closed => self.closed_pane(cx).into_any_element(),
             SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
         };
+        // Modals take focus when they appear (so Esc closes them) and hand it back to the
+        // terminal / pane when they go, never leaving a dropped handle as the focus target.
+        let dialog_up = self.preview.is_some() || self.edit_dialog.is_some();
+        if dialog_up && !self.dialog_was_up {
+            window.focus(&self.dialog_focus, cx);
+        } else if !dialog_up && self.dialog_was_up {
+            window.focus(&self.focus_handle, cx);
+        }
+        self.dialog_was_up = dialog_up;
         let overlay = self.preview_overlay(window, cx);
         let dialog = self.edit_dialog_layer(window, cx);
         let toast = self.toast_layer(cx);
