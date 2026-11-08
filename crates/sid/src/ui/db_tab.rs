@@ -3500,9 +3500,32 @@ impl AppState {
         let generation = self.db.query_generation;
         cx.notify();
 
+        let started = std::time::Instant::now();
+        let conn_name = conn.name.clone();
         cx.spawn(async move |this, cx| {
             let outcome = run_first_page(factory, conn, secret, cached, sql).await;
+            let took = started.elapsed();
             let _ = this.update(cx, |this, cx| {
+                // A long query that finished while sid is in the background: tell the
+                // user (chrome's desktop-notification seam; gated by the Settings switch).
+                if took.as_millis() >= crate::app::LONG_QUERY_MS {
+                    let (title, body) = match &outcome {
+                        Ok(_) => (
+                            "Query finished",
+                            format!("{conn_name}: done in {:.1}s", took.as_secs_f32()),
+                        ),
+                        Err(_) => (
+                            "Query failed",
+                            format!("{conn_name}: failed after {:.1}s", took.as_secs_f32()),
+                        ),
+                    };
+                    this.desktop_notify(
+                        title,
+                        body,
+                        sid_core::notify::Urgency::Normal,
+                        cx.active_window().is_some(),
+                    );
+                }
                 if this.db.query_generation != generation {
                     // Stale: the user switched connections (or started a newer run)
                     // while this query was in flight — its result must not land under
