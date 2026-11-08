@@ -12,5 +12,6 @@ pub mod keyscan;
 pub mod known_hosts;
 pub mod sftp;
 pub mod shell;
+pub mod ssh_config;
 
 pub use client::{DEFAULT_DIAL_TIMEOUT, RusshClient, RusshClientFactory};
