@@ -103,7 +103,13 @@ const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
 /// `view`'s size cap: anything bigger is "download instead", never rendered inline.
-const PREVIEW_MAX_BYTES: usize = 1024 * 1024;
+const PREVIEW_MAX_BYTES: u64 = 1024 * 1024;
+
+/// `⭳ download`'s size cap. A download is buffered in memory before it is written
+/// (`SftpSession` has no streaming read yet), so without a cap a hostile or simply huge
+/// remote file could take the whole app down. Read through `get_bounded`, which stops at
+/// the cap instead of trusting the size the server reports.
+const DOWNLOAD_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The dedicated, process-lifetime Tokio runtime backing every `sid-ssh` call. Built once on
 /// first use and driven forever on its own thread — gpui's foreground executor only ever awaits
@@ -903,10 +909,13 @@ impl SshSession {
 
     // ---- per-file actions (P5.3) -----------------------------------------------------------
 
-    /// `⭳ download`: fetch `name` (a file in the current directory) and write it to
-    /// `$HOME/Downloads/<name>`. `name` is untrusted (a malicious or compromised SFTP server
-    /// controls `list()` results), so the local write path is derived via [`safe_local_name`]
-    /// rather than from `name` directly — see that function's doc comment.
+    /// `⭳ download`: fetch `name` (a file in the current directory, at most
+    /// [`DOWNLOAD_MAX_BYTES`]) and write it to a **new** file in `$HOME/Downloads` —
+    /// `<name>`, or `<name> (1)`, `(2)`, … if that exists (see [`create_unique`]); an
+    /// existing download is never overwritten. `name` is untrusted (a malicious or
+    /// compromised SFTP server controls `list()` results), so the local write path is
+    /// derived via [`safe_local_name`] rather than from `name` directly — see that
+    /// function's doc comment.
     fn download(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(sftp) = self.sftp.clone() else {
             return;
@@ -915,27 +924,46 @@ impl SshSession {
         self.file_error = None;
         cx.spawn(async move |this, cx| {
             let result: Result<PathBuf, String> = async {
-                let local_name = safe_local_name(&name)
-                    .ok_or_else(|| format!("refusing unsafe remote filename: {name:?}"))?;
+                let local_name = safe_local_name(&name).ok_or_else(|| {
+                    format!("refusing unsafe remote filename: {}", display_name(&name))
+                })?;
                 let bytes = ssh_runtime()
-                    .spawn(async move { sftp.lock().await.get(&remote_path).await })
+                    .spawn(async move {
+                        sftp.lock()
+                            .await
+                            .get_bounded(&remote_path, DOWNLOAD_MAX_BYTES)
+                            .await
+                    })
                     .await
                     .map_err(|e| format!("download task panicked: {e}"))?
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| match e {
+                        SshError::TooLarge(_) => format!(
+                            "{}: larger than {} — too big to download here; use scp/sftp",
+                            display_name(&name),
+                            human_size(DOWNLOAD_MAX_BYTES)
+                        ),
+                        e => e.to_string(),
+                    })?;
                 let dir = downloads_dir();
                 std::fs::create_dir_all(&dir)
                     .map_err(|e| format!("create {}: {e}", dir.display()))?;
-                let dest = dir.join(&local_name);
+                let (dest, mut file) = create_unique(&dir, &local_name)
+                    .map_err(|e| format!("create in {}: {e}", dir.display()))?;
                 // Defense in depth: `safe_local_name` already guarantees a bare, single
-                // component, but re-check the joined path never left `dir` before writing.
+                // component, but re-check the created path never left `dir`.
                 if dest.parent() != Some(dir.as_path()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&dest);
                     return Err(format!(
                         "refusing unsafe download destination: {}",
                         dest.display()
                     ));
                 }
-                std::fs::write(&dest, &bytes)
-                    .map_err(|e| format!("write {}: {e}", dest.display()))?;
+                if let Err(e) = std::io::Write::write_all(&mut file, &bytes) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&dest); // never leave a truncated copy
+                    return Err(format!("write {}: {e}", dest.display()));
+                }
                 Ok(dest)
             }
             .await;
@@ -952,7 +980,8 @@ impl SshSession {
 
     /// `view`: fetch `name` and, if it's small enough (<= [`PREVIEW_MAX_BYTES`]) and valid
     /// UTF-8, show it read-only in the preview overlay. Never renders raw bytes: too-large or
-    /// non-UTF-8 content gets a notice pointing at `⭳ download` instead.
+    /// non-UTF-8 content gets a notice pointing at `⭳ download` instead. The read is bounded
+    /// (`get_bounded`): an oversized file is abandoned at the cap, never buffered whole.
     // ponytail: text preview only; no image/hex viewer yet.
     fn view(&mut self, name: String, cx: &mut Context<Self>) {
         let Some(sftp) = self.sftp.clone() else {
@@ -961,21 +990,27 @@ impl SshSession {
         let remote_path = abs_remote_path(&self.path, &name);
         cx.spawn(async move |this, cx| {
             let result = ssh_runtime()
-                .spawn(async move { sftp.lock().await.get(&remote_path).await })
+                .spawn(async move {
+                    sftp.lock()
+                        .await
+                        .get_bounded(&remote_path, PREVIEW_MAX_BYTES)
+                        .await
+                })
                 .await;
+            let shown = display_name(&name);
             let content = match result {
-                Ok(Ok(bytes)) if bytes.len() > PREVIEW_MAX_BYTES => PreviewContent::Notice(
-                    format!("{name}: too large to preview (> 1 MiB) — download instead"),
-                ),
+                Ok(Err(SshError::TooLarge(_))) => PreviewContent::Notice(format!(
+                    "{shown}: too large to preview (> 1 MiB) — download instead"
+                )),
                 Ok(Ok(bytes)) => match String::from_utf8(bytes) {
                     Ok(text) => PreviewContent::Text(text),
                     Err(_) => {
-                        PreviewContent::Notice(format!("{name}: binary file — download instead"))
+                        PreviewContent::Notice(format!("{shown}: binary file — download instead"))
                     }
                 },
-                Ok(Err(e)) => PreviewContent::Notice(format!("{name}: {e}")),
+                Ok(Err(e)) => PreviewContent::Notice(format!("{shown}: {e}")),
                 Err(join_err) => {
-                    PreviewContent::Notice(format!("{name}: view task panicked: {join_err}"))
+                    PreviewContent::Notice(format!("{shown}: view task panicked: {join_err}"))
                 }
             };
             let _ = this.update(cx, |session, cx| {
@@ -1067,12 +1102,73 @@ fn filter_hidden(entries: &[SftpEntry], show_hidden: bool) -> Vec<&SftpEntry> {
 /// This is the one thing standing between a hostile/compromised SFTP server and writing
 /// outside the local downloads directory: `list()` results are attacker-controlled data, and a
 /// name like `"../../.bashrc"` must never reach `downloads_dir().join(name)` as-is.
+///
+/// Control and bidi-override characters are replaced with `_` too: a saved
+/// `invoice\u{202E}fdp.exe` would otherwise show up in a file manager as `invoiceexe.pdf`.
 fn safe_local_name(remote_name: &str) -> Option<String> {
     let comp = std::path::Path::new(remote_name).file_name()?.to_str()?;
     if comp.is_empty() || comp == "." || comp == ".." {
         return None;
     }
-    Some(comp.to_string())
+    Some(
+        comp.chars()
+            .map(|c| if is_deceptive_char(c) { '_' } else { c })
+            .collect(),
+    )
+}
+
+/// Characters a remote name must never get to render as-is: C0/C1 controls and DEL
+/// (terminal-style escapes, line breaks inside a row) and the Unicode bidi controls,
+/// whose overrides reorder what follows them (`evil\u{202E}txt.exe` *displays* as
+/// `evilexe.txt`).
+fn is_deceptive_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// A remote (server-controlled) name or path as it may be shown: every
+/// [`is_deceptive_char`] replaced with U+FFFD, so the user sees that something was there
+/// rather than its effect. Display only — the raw name is still what SFTP calls use.
+fn display_name(remote: &str) -> String {
+    remote
+        .chars()
+        .map(|c| if is_deceptive_char(c) { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Create a file that did not exist: `dir/name`, else `dir/<stem> (1)<.ext>`, `(2)`, ….
+/// `create_new` is `O_CREAT|O_EXCL`, so an existing file is never truncated and a planted
+/// symlink is never followed — a name that is taken (by anything) is simply skipped.
+fn create_unique(dir: &std::path::Path, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    // `.bashrc` is all stem; `a.tar.gz` numbers as `a.tar (1).gz`.
+    let (stem, ext) = match name.rfind('.') {
+        Some(0) | None => (name, ""),
+        Some(i) => name.split_at(i),
+    };
+    for n in 0..1000u32 {
+        let candidate = if n == 0 {
+            name.to_string()
+        } else {
+            format!("{stem} ({n}){ext}")
+        };
+        let path = dir.join(candidate);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{name}: 1000 copies already downloaded"),
+    ))
 }
 
 /// The user's `Downloads` directory: `$HOME/Downloads`. No XDG `user-dirs.dirs` parsing —
@@ -1359,7 +1455,8 @@ fn path_crumbs(path: &str) -> Vec<Crumb> {
         acc.push('/');
         acc.push_str(part);
         crumbs.push(Crumb {
-            label: part.to_string(),
+            // The path is the server's answer to `canonicalize`/a listing — display-safe it.
+            label: display_name(part),
             target: Some(acc.clone()),
         });
     }
@@ -2055,7 +2152,11 @@ impl SshSession {
             .child(self.sidebar_header(cx))
             .child(self.toolbar(crumb_budget(width), cx))
             .when_some(self.file_error.clone(), |el, msg| {
-                el.child(status_line(&format!("file panel: {msg}"), cx))
+                // SFTP errors carry server-written text (status messages, paths).
+                el.child(status_line(
+                    &format!("file panel: {}", display_name(&msg)),
+                    cx,
+                ))
             })
             .child(
                 uniform_list(
@@ -2347,6 +2448,8 @@ impl SshSession {
         let t = theme::active(cx).clone();
         let (fg, muted, selection, accent) = (t.fg, t.muted, t.selection, t.accent);
         let name = entry.name.clone();
+        // What the row *shows*; `name` (raw) is what the SFTP actions are called with.
+        let shown = display_name(&name);
         let is_dir = entry.is_dir;
         let glyph = if is_dir { "▸" } else { "·" };
         let size = if is_dir {
@@ -2360,9 +2463,9 @@ impl SshSession {
         // The full name plus the facts the row had to drop, so a truncated row is never
         // the only place a file's identity lives.
         let tooltip: SharedString = if is_dir {
-            format!("{name}\nmodified {mtime}").into()
+            format!("{shown}\nmodified {mtime}").into()
         } else {
-            format!("{name}\n{size} · modified {mtime}").into()
+            format!("{shown}\n{size} · modified {mtime}").into()
         };
 
         let action_button = |id: (&'static str, usize), label: &'static str, width: Pixels| {
@@ -2443,7 +2546,7 @@ impl SshSession {
                     .min_w(px(0.))
                     .clamp_one_line()
                     .text_color(rgb(fg))
-                    .child(name)
+                    .child(shown)
                     .tip(tooltip.clone()),
             )
             .when(plan.show_size, |row| {
@@ -2739,7 +2842,7 @@ impl SshSession {
                                                 .min_w(px(0.))
                                                 .text_title(&t)
                                                 .clamp_one_line()
-                                                .child(preview.name.clone()),
+                                                .child(display_name(&preview.name)),
                                         )
                                         .child(
                                             div()
@@ -3346,6 +3449,69 @@ mod path_tests {
         assert_eq!(safe_local_name(".."), None);
         assert_eq!(safe_local_name("."), None);
         assert_eq!(safe_local_name(""), None);
+    }
+
+    #[test]
+    fn a_bidi_override_or_control_char_never_reaches_a_saved_filename() {
+        assert_eq!(
+            safe_local_name("invoice\u{202E}fdp.exe").as_deref(),
+            Some("invoice_fdp.exe")
+        );
+        assert_eq!(safe_local_name("a\u{1b}[31mb").as_deref(), Some("a_[31mb"));
+    }
+
+    #[test]
+    fn a_remote_name_is_displayed_with_its_controls_made_visible() {
+        assert_eq!(display_name("evil\u{202E}txt.exe"), "evil\u{FFFD}txt.exe");
+        assert_eq!(
+            display_name("two\nlines\u{2066}"),
+            "two\u{FFFD}lines\u{FFFD}"
+        );
+        assert_eq!(display_name("plain-ü.txt"), "plain-ü.txt");
+    }
+
+    #[test]
+    fn a_crumb_never_shows_a_raw_control_char() {
+        let crumbs = path_crumbs("/home/a\u{202E}b");
+        assert_eq!(crumbs.last().unwrap().label, "a\u{FFFD}b");
+        assert_eq!(
+            crumbs.last().unwrap().target.as_deref(),
+            Some("/home/a\u{202E}b"),
+            "navigation still uses the real path"
+        );
+    }
+
+    #[test]
+    fn a_download_never_overwrites_it_numbers_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.csv"), "mine").unwrap();
+        let (first, _) = create_unique(dir.path(), "report.csv").unwrap();
+        assert_eq!(first, dir.path().join("report (1).csv"));
+        let (second, _) = create_unique(dir.path(), "report.csv").unwrap();
+        assert_eq!(second, dir.path().join("report (2).csv"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("report.csv")).unwrap(),
+            "mine"
+        );
+        let (dotfile, _) = create_unique(dir.path(), ".bashrc").unwrap();
+        assert_eq!(dotfile, dir.path().join(".bashrc"));
+        let (again, _) = create_unique(dir.path(), ".bashrc").unwrap();
+        assert_eq!(again, dir.path().join(".bashrc (1)"));
+    }
+
+    /// A symlink planted at the download name (pointing at, say, `~/.bashrc`) is a taken
+    /// name, not a write target.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_at_the_download_name_is_never_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("notes.txt")).unwrap();
+        let (dest, mut file) = create_unique(dir.path(), "notes.txt").unwrap();
+        std::io::Write::write_all(&mut file, b"downloaded").unwrap();
+        assert_eq!(dest, dir.path().join("notes (1).txt"));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
     }
 
     #[test]
