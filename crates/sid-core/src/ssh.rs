@@ -152,6 +152,12 @@ pub trait SftpSession: Send + Sync {
     async fn remove_file(&mut self, path: &str) -> Result<(), SshError>;
     async fn mkdir(&mut self, path: &str) -> Result<(), SshError>;
     async fn stat(&mut self, path: &str) -> Result<Option<SftpEntry>, SshError>;
+    /// Rename `from` to `to`. Plain SFTP rename often refuses to replace an existing
+    /// `to`; callers needing replace semantics must be ready to fall back. Default:
+    /// unsupported, so existing impls compile unchanged.
+    async fn rename(&mut self, _from: &str, _to: &str) -> Result<(), SshError> {
+        Err(SshError::Other("sftp rename not supported".into()))
+    }
     async fn close(&mut self) -> Result<(), SshError>;
 }
 

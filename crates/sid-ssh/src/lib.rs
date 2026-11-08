@@ -10,6 +10,7 @@ pub mod auth;
 pub mod client;
 pub mod keyscan;
 pub mod known_hosts;
+pub mod remote_edit;
 pub mod sftp;
 pub mod shell;
 pub mod ssh_config;

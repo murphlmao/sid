@@ -63,6 +63,13 @@ impl FakeEditorLauncher {
     pub fn new() -> Self {
         Self::default()
     }
+    /// A fake whose handles are hand-off style (not awaitable), like `xdg-open`.
+    pub fn hand_off() -> Self {
+        Self {
+            hand_off: true,
+            ..Self::default()
+        }
+    }
     /// Paths passed to `open`, in order.
     pub fn opened(&self) -> Vec<PathBuf> {
         self.opened.lock().unwrap().clone()
@@ -127,10 +134,7 @@ mod tests {
 
     #[test]
     fn hand_off_handles_refuse_to_wait() {
-        let l = FakeEditorLauncher {
-            hand_off: true,
-            ..Default::default()
-        };
+        let l = FakeEditorLauncher::hand_off();
         let mut h = l.open(Path::new("x")).unwrap();
         assert!(!h.awaitable());
         assert!(matches!(h.wait(), Err(EditorError::NotAwaitable)));
