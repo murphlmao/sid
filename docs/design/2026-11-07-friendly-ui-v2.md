@@ -298,8 +298,9 @@ secondary; `compact()` for small panels), `Badge` (6px corner, pills stay pills)
 
 New: `Tree` (expand/collapse, keyboard nav, selection, lazy children), `ContextMenu`
 (sid-styled builder over `PopupMenu`, icons, danger items, headings), `Checkbox`,
-`Switch`, `Skeleton` (line / block / rows, pulsing), `CountPill`, `motion`, `metrics`,
-`copy`. `Tipped` already covers tooltips; it gains `tip_with_key`.
+`Switch`, `Skeleton` (line / block / rows, pulsing), `motion`, `metrics`,
+`copy`. `Tipped` already covers tooltips; it gains `tip_with_key`. A count pill is
+`Badge::count(n).pill()` — no new type.
 
 ---
 
