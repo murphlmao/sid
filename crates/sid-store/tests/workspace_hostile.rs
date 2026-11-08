@@ -64,7 +64,10 @@ fn fifo_config_is_refused_without_hanging() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".sid")).unwrap();
     let p = dir.path().join(".sid/config.toml");
-    let st = std::process::Command::new("mkfifo").arg(&p).status().unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(&p)
+        .status()
+        .unwrap();
     assert!(st.success());
     assert!(WorkspaceStore::new(dir.path()).load().is_err());
 }

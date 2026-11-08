@@ -152,8 +152,11 @@ impl WorkspaceStore {
         }
         let file = std::fs::File::open(&path)?;
         let mut text = String::new();
-        std::io::Read::read_to_string(&mut std::io::Read::take(file, MAX_CONFIG_BYTES + 1), &mut text)
-            .map_err(StoreError::Io)?;
+        std::io::Read::read_to_string(
+            &mut std::io::Read::take(file, MAX_CONFIG_BYTES + 1),
+            &mut text,
+        )
+        .map_err(StoreError::Io)?;
         if text.len() as u64 > MAX_CONFIG_BYTES {
             return Err(StoreError::Storage(format!(
                 "{} is larger than {MAX_CONFIG_BYTES} bytes; refusing to load",
