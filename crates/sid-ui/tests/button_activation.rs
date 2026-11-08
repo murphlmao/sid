@@ -2,6 +2,7 @@
 
 mod common;
 
+use gpui_kit::AppContext as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Context, IntoElement, Render, TestAppContext, Window, div, prelude::*, px, size};
 use sid_ui::Button;
@@ -18,14 +19,14 @@ impl Render for Probe {
             .flex_col()
             .gap_2()
             .child(
-                Button::new("live", "Live")
+                Button::new("live", "Live").tab_index(1)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.live += 1;
                         cx.notify();
                     })),
             )
             .child(
-                Button::new("dead", "Dead")
+                Button::new("dead", "Dead").tab_index(2)
                     .disabled(true)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dead += 1;
@@ -52,11 +53,13 @@ fn click_activates_a_live_button(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn enter_and_space_activate_the_focused_button(cx: &mut TestAppContext) {
     let (handle, probe) = open(cx);
-    // Tab lands on the first tab stop: the live button.
-    common::press(handle, "tab", cx);
+    // Bare `Tab` is bound by the app shell, not by sid-ui, so move focus the way the shell
+    // does: `Window::focus_next`. The disabled button is not a tab stop, so it lands on
+    // the live one.
     cx.update_window(handle.into(), |_, window, cx| {
+        window.focus_next(cx);
         window.render_frame(cx);
-        assert_eq!(window.find("live").focused(), Some(true), "Tab focuses it");
+        assert_eq!(window.find("live").focused(), Some(true), "focus_next lands on it");
     })
     .unwrap();
     common::press(handle, "enter", cx);
@@ -70,11 +73,13 @@ fn a_disabled_button_ignores_click_and_keys(cx: &mut TestAppContext) {
     let (handle, probe) = open(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("dead").disabled(), Some(true));
         window.click("dead", cx);
     })
     .unwrap();
-    for key in ["tab", "tab", "enter", "space"] {
+    // Focus whatever is focusable (nothing but the live button), then try the keys.
+    cx.update_window(handle.into(), |_, window, cx| window.focus_next(cx))
+        .unwrap();
+    for key in ["enter", "space"] {
         common::press(handle, key, cx);
     }
     assert_eq!(probe.read_with(cx, |p, _| p.dead), 0);

@@ -1388,7 +1388,7 @@ impl AppState {
     /// field is what gives up width, not the title beside it (`card.rs`'s
     /// `header_actions`).
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div().children(self.network.filter.clone().map(|f| {
+        div().flex().min_w_0().children(self.network.filter.clone().map(|f| {
             TextInput::new(&f)
                 .small()
                 .fixed(px(240.))

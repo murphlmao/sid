@@ -1669,7 +1669,7 @@ impl AppState {
                 // (120px) once the header is squeezed, so it is *this* that gives up
                 // width at a 700px window (this pane is only ~390px wide there), not
                 // the `RESULTS` title beside it (`card.rs`'s `header_actions`).
-                div().children(self.db.result_filter.clone().map(|f| {
+                div().flex().min_w_0().children(self.db.result_filter.clone().map(|f| {
                     TextInput::new(&f)
                         .small()
                         .fixed(px(160.))

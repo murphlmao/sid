@@ -38,3 +38,31 @@ emoji, and `gpui_component::` in `crates/sid/src` outside `main.rs`. Visual chec
 - A gpui-component widget not threaded through the bridge renders in the library's stock theme
   (looks like a missing style). `sid_ui::Kbd` draws its own chip for this reason.
 - Hygiene allowlists must have no dead entries (tests enforce it) — delete entries when fixed.
+
+## UI interaction tests
+Assert behaviour (focus, keys, clicks, geometry) instead of eyeballing PNGs. `gpui-kit` is a
+DEV-dependency here only (`gpui_kit::test::TestWindowExt`: `find/click/press/input/hover/within`
+over a real headless window; no compositor). It cannot see pixels or colour — `sid-cap.sh` stays
+the tool for ink/contrast/themes. Run: `just ui-test` (files: `crates/sid-ui/tests/*.rs`).
+- Make a component findable: `.id(..).test_support()` BEFORE `.track_focus(..)`/`.tab_index(..)`
+  (`sid_ui::TestSupportExt`; no-op in shipping builds). Library-backed widgets (Button, inputs)
+  are already findable by the id you give them; `TextInput`/`SearchInput` take `.test_id("x")`.
+- Use `tests/common/mod.rs`: `open_window(cx, size, |window, cx| entity)` (init + theme + bridge +
+  `Root`) and `press(handle, "shift-tab", cx)` (real keymap, then settles deferred work).
+- Bare `Tab` is bound by the app shell, not sid-ui. Inside a `Modal`/`TextInput` Tab works; for a
+  loose button call `window.focus_next(cx)`.
+- Import kit types explicitly (never `use gpui_kit::*`: its `test` macro shadows `#[test]`).
+- `lib.rs` has `extern crate gpui as gpui_kit;` — gpui's derive macros emit `gpui_kit::` paths
+  once the dev-dep exists; keep it.
+- Write each test RED first: break the behaviour, watch it fail, restore.
+
+```rust
+mod common;
+use gpui_kit::{AppContext as _, TestAppContext, test::TestWindowExt as _, px, size};
+#[gpui_kit::test]
+fn click_counts(cx: &mut TestAppContext) {
+    let (handle, probe) = common::open_window(cx, size(px(400.), px(300.)), |_, cx| cx.new(|_| Probe::default()));
+    cx.update_window(handle.into(), |_, w, cx| w.click("live", cx)).unwrap();
+    assert_eq!(probe.read_with(cx, |p, _| p.clicks), 1);
+}
+```

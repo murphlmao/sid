@@ -37,6 +37,13 @@
 //!   theme-aware shadows; [`metrics`] names every spacing, radius and control height;
 //!   [`motion`] names every duration and honours reduced motion.
 
+// gpui's derive macros (`IntoElement`, ...) look in this crate's Cargo.toml for `gpui-kit`
+// and, finding the dev-dependency, emit `gpui_kit::` paths into every shipping build too.
+// Alias gpui itself under that name so they resolve without making `gpui-kit` a normal
+// dependency (the facade re-exports `gpui::*`, so the paths are identical).
+#[allow(unused_extern_crates)]
+extern crate gpui as gpui_kit;
+
 pub mod action_cell;
 pub mod badge;
 pub mod bridge;

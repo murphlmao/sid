@@ -40,6 +40,7 @@ pub fn open_window<V: Render>(
 
 /// Sends one key through the real keymap and lets deferred focus work settle.
 pub fn press(handle: WindowHandle<Root>, key: &str, cx: &mut TestAppContext) {
+    use gpui_kit::AppContext as _;
     use gpui_kit::test::TestWindowExt as _;
     cx.update_window(handle.into(), |_, window, cx| window.press(key, cx))
         .unwrap();
