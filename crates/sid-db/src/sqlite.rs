@@ -161,7 +161,6 @@ impl DbClient for SqliteClient {
                 let mut stmt = guard.prepare(&wrapped).map_err(map_rusqlite_error)?;
                 let columns: Vec<Column> = stmt
                     .columns()
-                    .iter()
                     .map(|c| Column {
                         name: c.name().to_string(),
                         ty: rusqlite_type_to_column_type(
@@ -234,7 +233,6 @@ impl DbClient for SqliteClient {
                 // with no declared type, and a plan is read, not calculated with.
                 let columns: Vec<Column> = stmt
                     .columns()
-                    .iter()
                     .map(|c| Column {
                         name: c.name().to_string(),
                         ty: ColumnType::Text,
