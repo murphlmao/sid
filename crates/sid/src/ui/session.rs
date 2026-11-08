@@ -487,8 +487,8 @@ impl SshSession {
     pub fn reject_host_key(&mut self, cx: &mut Context<Self>) {
         if self.awaiting_host_key.take().is_some() {
             self.status = SessionStatus::Failed(
-                "host key not trusted — nothing was sent to the server. Retry to see the \
-                 fingerprint again."
+                "host key not trusted — no password or key was offered to the server. Retry \
+                 to see the fingerprint again."
                     .into(),
             );
             self.needs_focus = true;

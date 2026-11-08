@@ -1023,7 +1023,8 @@ fn unlock_prompt_layer(
                         .child(e)
                 }))
                 .child(div().text_meta(theme).text_color(rgb(theme.muted)).child(
-                    "your sudo password — held in memory while this file is open, \
+                    "your sudo password — held in memory only while you edit this file \
+                             (forgotten after 5 idle minutes or when you leave System), \
                              never written to disk or the keyring",
                 ))
                 .child(
