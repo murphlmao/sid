@@ -161,6 +161,10 @@ fn paths_escaping_the_repo_are_refused() {
     std::fs::remove_file(outside).unwrap();
 }
 
+// Unix-only: the fixture needs a tracked file literally named `a*.txt`, and Windows
+// filesystems reject `*` and `?` in names — so the pathspec-glob bug this pins cannot
+// arise there in the first place.
+#[cfg(unix)]
 #[test]
 fn discard_treats_the_path_literally_not_as_a_glob() {
     let (dir, repo) = seeded();
