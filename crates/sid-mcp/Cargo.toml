@@ -24,6 +24,7 @@ syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 regex = "1"
 toml = "0.8"
+url = "2"
 walkdir = "2"
 base64 = "0.22"
 tempfile = { workspace = true }

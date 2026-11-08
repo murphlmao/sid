@@ -4,13 +4,12 @@
 //! redb file is never opened in place. Instead we take a shared look at it — try an
 //! exclusive advisory lock (redb's own lock; failing means a running sid holds it),
 //! copy the bytes to a temp dir while holding it, and open the *copy*. Secret values
-//! are never read: entities carry only an opaque `secret_ref`, and DSNs are redacted
-//! of inline passwords as defence in depth.
+//! are never read: entities carry only an opaque `secret_ref`, and connection strings
+//! are never emitted at all - only parsed non-secret facts (see [`super::dsn`]).
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use serde_json::{Value, json};
 use sid_store::{GlobalStore, WorkspaceStore};
 
@@ -29,14 +28,6 @@ pub fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".local/share"))
         .unwrap_or_else(|| PathBuf::from(".local/share"))
-}
-
-/// Strip inline passwords from a connection string.
-pub fn redact_dsn(dsn: &str) -> String {
-    let url = Regex::new(r"(://[^:/@\s]+:)[^@\s]+@").unwrap();
-    let kv = Regex::new(r"(?i)(password\s*=\s*)\S+").unwrap();
-    let s = url.replace_all(dsn, "${1}***@");
-    kv.replace_all(&s, "${1}***").into_owned()
 }
 
 /// Copy `src` to a temp dir under an exclusive advisory lock; fail clearly if locked.
@@ -69,11 +60,29 @@ fn host_json(h: &sid_store::Host) -> Value {
 }
 
 fn conn_json(c: &sid_store::DbConnection) -> Value {
-    let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
-    if let Some(d) = v.get("dsn").and_then(Value::as_str) {
-        v["dsn"] = Value::String(redact_dsn(d));
-    }
-    v
+    // The connection string is never emitted, redacted or not: only parsed,
+    // non-secret facts, plus the opaque `secret_ref`.
+    let kind = serde_json::to_value(c.kind).unwrap_or(Value::Null);
+    let file_kind = matches!(
+        kind.as_str().map(str::to_ascii_lowercase).as_deref(),
+        Some("sqlite" | "redb")
+    );
+    let f = super::dsn::dsn_facts(&c.dsn, file_kind);
+    json!({
+        "id": c.id,
+        "name": c.name,
+        "kind": kind,
+        "folder": c.folder,
+        "secret_ref": c.secret_ref,
+        "scheme": f.scheme,
+        "host": f.host,
+        "port": f.port,
+        "database": f.database,
+        "user": f.user,
+        "file": f.file,
+        "has_inline_password": f.has_inline_password,
+        "dsn_unparsed": f.unparsed,
+    })
 }
 
 /// Build the dump.
@@ -169,17 +178,43 @@ mod tests {
         }
     }
 
+    /// (stored DSN, password fragments that must never reach the output)
+    const PW_CASES: &[(&str, &[&str])] = &[
+        (
+            "postgres://bob:p@ss:w0rd@db:5433/app",
+            &["p@ss", "ss:w0rd", "w0rd"],
+        ),
+        ("postgres://bob:s3cr%40t%21@db/app", &["s3cr", "%40t"]),
+        (
+            "host=db user=bob password='a b c' dbname=app",
+            &["a b", "b c", "'a"],
+        ),
+        ("host=db password=it\\'s\\ fine user=bob", &["fine", "it's"]),
+        (
+            "postgres://db/app?sslmode=require&password=hunter2",
+            &["hunter2"],
+        ),
+    ];
+
     #[test]
-    fn dsn_redaction() {
-        assert_eq!(
-            redact_dsn("postgres://bob:hunter2@db/x"),
-            "postgres://bob:***@db/x"
-        );
-        assert_eq!(
-            redact_dsn("host=a password=hunter2 user=b"),
-            "host=a password=*** user=b"
-        );
-        assert_eq!(redact_dsn("sqlite:///tmp/x.db"), "sqlite:///tmp/x.db");
+    fn no_password_fragment_ever_reaches_the_output() {
+        for (dsn, fragments) in PW_CASES {
+            let c = DbConnection {
+                id: "c".into(),
+                dsn: (*dsn).into(),
+                secret_ref: Some("keyring:ref".into()),
+                kind: Default::default(),
+                name: "c".into(),
+                folder: None,
+            };
+            let out = conn_json(&c).to_string();
+            for frag in *fragments {
+                assert!(!out.contains(frag), "{dsn}: leaked {frag:?} in {out}");
+            }
+            assert!(!out.contains("\"dsn\""), "no dsn field: {out}");
+            assert!(out.contains("keyring:ref"));
+            assert!(out.contains("\"has_inline_password\":true"), "{dsn}: {out}");
+        }
     }
 
     #[test]
@@ -207,7 +242,7 @@ mod tests {
 
         let v = inspect(d.path(), Some(ws.path())).unwrap();
         let text = v.to_string();
-        assert!(!text.contains("topsecret"));
+        assert!(!text.contains("topsecret") && !text.contains("postgres://"));
         assert!(text.contains("keyring:abc"), "secret_ref is shown");
         let hosts = v["hosts"].as_array().unwrap();
         assert_eq!(hosts.len(), 3);
