@@ -3510,8 +3510,14 @@ impl AppState {
                 // user (chrome's desktop-notification seam; gated by the Settings switch).
                 if took.as_millis() >= crate::app::LONG_QUERY_MS {
                     let (title, body) = match &outcome {
-                        Ok(_) => ("Query finished", format!("{conn_name}: done in {:.1}s", took.as_secs_f32())),
-                        Err(_) => ("Query failed", format!("{conn_name}: failed after {:.1}s", took.as_secs_f32())),
+                        Ok(_) => (
+                            "Query finished",
+                            format!("{conn_name}: done in {:.1}s", took.as_secs_f32()),
+                        ),
+                        Err(_) => (
+                            "Query failed",
+                            format!("{conn_name}: failed after {:.1}s", took.as_secs_f32()),
+                        ),
                     };
                     this.desktop_notify(
                         title,

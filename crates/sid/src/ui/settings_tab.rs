@@ -751,7 +751,11 @@ impl AppState {
                     .items_center()
                     .gap_3()
                     .child(size)
-                    .child(div().text_meta(chrome).child(format!("Now {}", zoom.label()))),
+                    .child(
+                        div()
+                            .text_meta(chrome)
+                            .child(format!("Now {}", zoom.label())),
+                    ),
             ))
             .child(
                 Switch::new("settings-reduce-motion", reduce_motion)
@@ -915,21 +919,22 @@ impl AppState {
 
         Card::new()
             .child(
-                Switch::new("settings-desktop-notifications", settings.desktop_notifications)
-                    .label("Desktop notifications")
-                    .on_toggle({
-                        let me = cx.entity();
-                        move |on, _w, app| {
-                            me.update(app, |this, cx| this.set_desktop_notifications(on, cx))
-                        }
-                    }),
+                Switch::new(
+                    "settings-desktop-notifications",
+                    settings.desktop_notifications,
+                )
+                .label("Desktop notifications")
+                .on_toggle({
+                    let me = cx.entity();
+                    move |on, _w, app| {
+                        me.update(app, |this, cx| this.set_desktop_notifications(on, cx))
+                    }
+                }),
             )
-            .child(
-                div().text_meta(chrome).child(
-                    "Tells you when a long query finishes while sid is in the background, \
+            .child(div().text_meta(chrome).child(
+                "Tells you when a long query finishes while sid is in the background, \
                      an SSH session drops, or a fetch or push completes.",
-                ),
-            )
+            ))
             .child(labeled_row(
                 chrome,
                 "default scope for new items",

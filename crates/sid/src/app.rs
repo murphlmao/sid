@@ -12,8 +12,8 @@
 
 use gpui::{
     Anchor, ClickEvent, Context, Div, ElementId, Entity, FocusHandle, KeyDownEvent, Pixels,
-    SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, point,
-    prelude::*, px, rgb, rgba,
+    SharedString, Stateful, Subscription, Window, anchored, canvas, deferred, div, prelude::*, px,
+    rgb,
 };
 use sid_core::notify::{Notification, Notifier, Urgency};
 use sid_secrets::{SecretId, SecretStore};
@@ -39,7 +39,7 @@ use sid_ui::{
     BadgeTone, Button, Elevation, Icon, IconButton, Kbd, Modal, Radius, Rounded as _, ScopeChip,
     ScopeOrigin, Segment, SegmentSelect, SegmentedControl, StatusBar, StatusDot, StatusItem,
     StyledExt as _, Theme, Tipped as _, Typography as _, UiScale,
-    bridge::{SCRIM, contrast_ink, pressed_of},
+    bridge::{contrast_ink, pressed_of},
     modal, scaled, theme,
     toolbar::count_label,
 };
@@ -262,7 +262,12 @@ pub(crate) fn should_notify(enabled: bool, user_is_looking: bool) -> bool {
 fn ssh_config_exists() -> bool {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .is_some_and(|home| std::path::Path::new(&home).join(".ssh").join("config").is_file())
+        .is_some_and(|home| {
+            std::path::Path::new(&home)
+                .join(".ssh")
+                .join("config")
+                .is_file()
+        })
 }
 
 /// The zoom the app opens at (GitHub #4): the persisted `Settings.ui_scale_percent`,

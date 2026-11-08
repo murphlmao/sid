@@ -535,7 +535,8 @@ mod tests {
     #[test]
     fn a_recent_nudge_never_beats_a_better_text_match() {
         let recent = vec!["a:x".to_string()];
-        let nudged = fuzzy_score("set", "Offset thing").unwrap() + recency_bonus(&recent, "a:x", false);
+        let nudged =
+            fuzzy_score("set", "Offset thing").unwrap() + recency_bonus(&recent, "a:x", false);
         let exact_prefix = fuzzy_score("set", "Settings").unwrap();
         assert!(exact_prefix > nudged);
     }

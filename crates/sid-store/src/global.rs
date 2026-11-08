@@ -461,9 +461,9 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     })?;
     let from_v4 = |v: SettingsV4| Settings::from(SettingsV5::from(v));
     match version {
-        1 => Ok(from_v4(SettingsV4::from(SettingsV3::from(SettingsV2::from(
-            decode_versioned::<SettingsV1>(bytes)?.1,
-        ))))),
+        1 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
+            SettingsV2::from(decode_versioned::<SettingsV1>(bytes)?.1),
+        )))),
         2 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
             decode_versioned::<SettingsV2>(bytes)?.1,
         )))),
@@ -1029,6 +1029,7 @@ mod tests {
                 secret_file_enabled: true,
                 theme: "cosmos".into(),
                 ui_scale_percent: 125,
+                ..Default::default()
             })
             .unwrap();
         let raw = store
