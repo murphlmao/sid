@@ -106,6 +106,22 @@ pub struct DbSection {
     pub connection: Vec<DbConnection>,
 }
 
+/// Upper bound on a workspace config we will read (a hostile repo can commit anything).
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// `Ok(false)` if `path` is absent; `Err` unless it is a regular file (no symlink/FIFO/device).
+fn check_regular(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => Ok(true),
+        Ok(_) => Err(StoreError::Storage(format!(
+            "{} is a symlink or not a regular file; refusing to use it",
+            path.display()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(StoreError::Io(e)),
+    }
+}
+
 /// Reads/writes a single workspace's `.sid/config.toml`.
 pub struct WorkspaceStore {
     root: PathBuf,
@@ -131,12 +147,36 @@ impl WorkspaceStore {
     /// this is not an error.
     pub fn load(&self) -> Result<WorkspaceConfig> {
         let path = self.config_path();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).map_err(|e| StoreError::Decode {
-                version: 0,
-                msg: format!("toml {}: {e}", path.display()),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(WorkspaceConfig::default()),
+        if !self.check_sid_dir()? || !check_regular(&path)? {
+            return Ok(WorkspaceConfig::default());
+        }
+        let file = std::fs::File::open(&path)?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::Read::take(file, MAX_CONFIG_BYTES + 1), &mut text)
+            .map_err(StoreError::Io)?;
+        if text.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(StoreError::Storage(format!(
+                "{} is larger than {MAX_CONFIG_BYTES} bytes; refusing to load",
+                path.display()
+            )));
+        }
+        // Do not echo the offending line: a hostile file's content must not reach the UI.
+        toml::from_str(&text).map_err(|e| StoreError::Decode {
+            version: 0,
+            msg: format!("toml {}: {}", path.display(), e.message()),
+        })
+    }
+
+    /// `Ok(false)` if `.sid` is absent; `Err` if it is a symlink / not a directory.
+    fn check_sid_dir(&self) -> Result<bool> {
+        let dir = self.root.join(".sid");
+        match std::fs::symlink_metadata(&dir) {
+            Ok(m) if m.is_dir() => Ok(true),
+            Ok(_) => Err(StoreError::Storage(format!(
+                "{} is a symlink or not a directory; refusing to use it",
+                dir.display()
+            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(StoreError::Io(e)),
         }
     }
@@ -144,13 +184,19 @@ impl WorkspaceStore {
     /// Save the config, creating `.sid/` if needed.
     pub fn save(&self, cfg: &WorkspaceConfig) -> Result<()> {
         let dir = self.root.join(".sid");
-        std::fs::create_dir_all(&dir)?;
+        if !self.check_sid_dir()? {
+            std::fs::create_dir_all(&dir)?;
+        }
+        let target = dir.join("config.toml");
+        check_regular(&target)?;
         let text =
             toml::to_string_pretty(cfg).map_err(|e| StoreError::Encode(format!("toml: {e}")))?;
-        // Atomic write: a crash or I/O error must never truncate the committed file.
-        let tmp = dir.join("config.toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, dir.join("config.toml"))?;
+        // Atomic write via an O_EXCL, randomly named temp file: a crash must never
+        // truncate the committed file, and a planted `config.toml.tmp` symlink is
+        // never followed.
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+        std::io::Write::write_all(&mut tmp, text.as_bytes())?;
+        tmp.persist(&target).map_err(|e| StoreError::Io(e.error))?;
         Ok(())
     }
 
