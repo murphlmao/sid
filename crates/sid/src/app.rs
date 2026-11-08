@@ -895,9 +895,7 @@ impl AppState {
             |carried| {
                 let mut moved = host.clone();
                 moved.secret_ref = carried.map(String::from);
-                self.store
-                    .write_host(&moved, to)
-                    .map_err(|e| e.to_string())
+                self.store.write_host(&moved, to).map_err(|e| e.to_string())
             },
         )
         .err()

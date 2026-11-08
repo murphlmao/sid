@@ -1220,7 +1220,9 @@ mod tests {
     }
 
     fn wkey(ns: &str, r: &str) -> String {
-        sid_secrets::SecretId::for_workspace(ns, r).as_str().to_string()
+        sid_secrets::SecretId::for_workspace(ns, r)
+            .as_str()
+            .to_string()
     }
 
     fn ws(id: &str) -> Scope {

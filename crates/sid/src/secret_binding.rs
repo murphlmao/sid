@@ -119,10 +119,7 @@ pub(crate) fn fetch(
 }
 
 /// `None` when `want` is (or just became) the key's binding; otherwise why not.
-fn verdict(
-    bindings: &GlobalStore,
-    want: &SecretBinding,
-) -> Result<Option<String>, String> {
+fn verdict(bindings: &GlobalStore, want: &SecretBinding) -> Result<Option<String>, String> {
     let read = |bindings: &GlobalStore| {
         bindings
             .secret_binding(&want.key)
@@ -736,7 +733,15 @@ mod tests {
     #[test]
     fn promoting_never_overwrites_a_colliding_global_secret() {
         let f = fixture();
-        save(&f.secrets, &f.bindings, &Scope::Global, "r", GOOD, b"global-pw").unwrap();
+        save(
+            &f.secrets,
+            &f.bindings,
+            &Scope::Global,
+            "r",
+            GOOD,
+            b"global-pw",
+        )
+        .unwrap();
         save(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD, b"ws-pw").unwrap();
         relocate(
             &f.secrets,
@@ -814,10 +819,7 @@ mod tests {
         run(EVIL, "r");
         // Success.
         run(GOOD, "r");
-        assert_eq!(
-            *seen.borrow(),
-            vec![None, None, Some("r-new".to_string())]
-        );
+        assert_eq!(*seen.borrow(), vec![None, None, Some("r-new".to_string())]);
     }
 
     #[test]

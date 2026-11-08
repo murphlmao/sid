@@ -692,11 +692,20 @@ mod tests {
     fn host_recents_are_keyed_by_origin_and_alias() {
         let w = sid_store::Scope::Workspace(sid_store::WorkspaceId("/w".into()));
         let g = sid_store::Scope::Global;
-        assert_ne!(host_recent_key('h', &w, "vps"), host_recent_key('h', &g, "vps"));
-        assert_ne!(host_recent_key('h', &g, "vps"), host_recent_key('c', &g, "vps"));
+        assert_ne!(
+            host_recent_key('h', &w, "vps"),
+            host_recent_key('h', &g, "vps")
+        );
+        assert_ne!(
+            host_recent_key('h', &g, "vps"),
+            host_recent_key('c', &g, "vps")
+        );
         // A workspace host cannot inherit a global recent of the same alias.
         let recent = vec![host_recent_key('h', &g, "vps")];
-        assert_eq!(recency_bonus(&recent, &host_recent_key('h', &w, "vps"), true), 0);
+        assert_eq!(
+            recency_bonus(&recent, &host_recent_key('h', &w, "vps"), true),
+            0
+        );
         assert!(recency_bonus(&recent, &host_recent_key('h', &g, "vps"), true) > 0);
     }
 
