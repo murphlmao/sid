@@ -153,6 +153,13 @@ pub struct SystemsTabState {
     /// whenever it finds it not running, which is exactly "the tab just (re)became
     /// active" since the loop only ever stops itself while inactive.
     refresh_loop_running: bool,
+    /// Bumped each time a loop is (re)started; a loop whose generation is stale exits,
+    /// so a resume can replace a loop that is mid-way through a long background sleep.
+    loop_gen: u64,
+    /// Whether introspection polls while the System tab is hidden or sid is unfocused.
+    background: BackgroundRefresh,
+    /// Whether the window-activation observer has been registered.
+    activation_observed: bool,
     /// Which of `[Processes] [Config files]` is showing. Purely a view choice — both
     /// sub-views keep their own state loaded whichever one is on screen, so switching
     /// back never costs a re-probe.
@@ -207,6 +214,9 @@ impl SystemsTabState {
             loaded: false,
             refreshing: false,
             refresh_loop_running: false,
+            loop_gen: 0,
+            background: BackgroundRefresh::default(),
+            activation_observed: false,
             sub_view: SystemSubView::default(),
             overview: None,
             history: UsageHistory::default(),
@@ -640,7 +650,8 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.ensure_systems_widgets(window, cx);
-        if !self.systems.loaded {
+        let first_load = !self.systems.loaded;
+        if first_load {
             self.systems.loaded = true;
             self.refresh_systems(cx);
         }
@@ -652,9 +663,23 @@ impl AppState {
         // `SystemsTabState::refresh_loop_running`'s doc comment: the loop only ever
         // clears this itself while the tab is inactive, so "not running" here always
         // means "the tab just (re)became active."
-        if !self.systems.refresh_loop_running {
+        // Only a focused window restarts / refreshes from render: an unfocused one is
+        // hibernating (or on its slow background cadence) and must not re-probe on every
+        // repaint; focus return goes through the activation observer instead.
+        let focused = window.is_window_active();
+        if !focused {
+            // Nothing to do: the loop (if any) owns the cadence.
+        } else if !self.systems.refresh_loop_running {
             self.systems.refresh_loop_running = true;
             self.start_systems_refresh_loop(cx);
+            // Coming back to the tab (not the very first load, already in flight):
+            // refresh immediately instead of waiting a tick.
+            if !first_load {
+                self.refresh_systems_inner(false, cx);
+            }
+        } else if !first_load && self.systems.history.is_stale(Instant::now()) {
+            // A background loop is alive but slower than the foreground cadence.
+            self.refresh_systems_inner(false, cx);
         }
 
         let theme = theme::active(cx).clone();
@@ -775,6 +800,21 @@ impl AppState {
     /// file…" input on first paint of the Systems tab. Idempotent (checked every
     /// render) — mirrors `network_tab.rs`'s `ensure_network_widgets`.
     fn ensure_systems_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.systems.activation_observed {
+            self.systems.activation_observed = true;
+            // Focus returning to sid while System is the visible tab: refresh at once
+            // and resume the foreground cadence (the loop idles itself when unfocused
+            // under `BackgroundRefresh::Off`).
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                if window.is_window_active()
+                    && this.active_tab() == Tab::System
+                    && this.systems.loaded
+                {
+                    this.resume_systems_refresh(cx);
+                }
+            })
+            .detach();
+        }
         if self.systems.table.is_none() {
             let provider = self.systems.provider.clone();
             let table = cx.new(|cx| TableState::new(ProcessesDelegate::new(provider), window, cx));
@@ -870,7 +910,7 @@ impl AppState {
                         let mut err = None;
                         match overview_res {
                             Ok(overview) => {
-                                this.systems.history.record(&overview);
+                                this.systems.history.record(&overview, Instant::now());
                                 this.systems.overview = Some(overview);
                             }
                             Err(e) => err = Some(e.to_string()),
@@ -911,29 +951,42 @@ impl AppState {
     /// stops (without rescheduling itself) the instant that check fails, rather than
     /// refreshing one more time off-tab.
     fn start_systems_refresh_loop(&mut self, cx: &mut Context<Self>) {
-        /// Unfocused ticks per probe — see the gate in the loop body.
-        const UNFOCUSED_TICK_DIVISOR: u32 = 5;
+        self.systems.loop_gen += 1;
+        let generation = self.systems.loop_gen;
         cx.spawn(async move |this, cx| {
-            let mut unfocused_ticks = 0u32;
             loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-                let keep_going = this.update(cx, |state, cx| {
-                    if state.active_tab() != Tab::System {
+                // Decide the next wait; `None` means truly idle: no timer, no probe,
+                // no repaint until something calls `resume_systems_refresh`.
+                let wait = this.update(cx, |state, cx| {
+                    if state.systems.loop_gen != generation {
+                        return None;
+                    }
+                    let wait = next_tick(
+                        state.active_tab() == Tab::System,
+                        cx.active_window().is_some(),
+                        state.systems.background,
+                    );
+                    if wait.is_none() {
                         state.systems.refresh_loop_running = false;
+                    }
+                    wait
+                });
+                let Ok(Some(wait)) = wait else { break };
+                cx.background_executor().timer(wait).await;
+                let keep_going = this.update(cx, |state, cx| {
+                    if state.systems.loop_gen != generation {
                         return false;
                     }
-                    // No sid window has keyboard focus (behind another app, other
-                    // workspace): probe at a fifth of the rate. The probe is the
-                    // heaviest item in the app (0.6-2.5G instructions a tick) and a
-                    // glance at an unfocused dashboard only needs a slowly-moving
-                    // number; the first tick after focus returns refreshes at once.
-                    if cx.active_window().is_none() {
-                        unfocused_ticks += 1;
-                        if !unfocused_ticks.is_multiple_of(UNFOCUSED_TICK_DIVISOR) {
-                            return true;
-                        }
-                    } else {
-                        unfocused_ticks = 0;
+                    // Re-decide after the sleep: visibility/focus may have changed.
+                    if next_tick(
+                        state.active_tab() == Tab::System,
+                        cx.active_window().is_some(),
+                        state.systems.background,
+                    )
+                    .is_none()
+                    {
+                        state.systems.refresh_loop_running = false;
+                        return false;
                     }
                     // Silent: the tick is nobody's click. See `refresh_systems_inner`.
                     state.refresh_systems_inner(false, cx);
@@ -945,6 +998,33 @@ impl AppState {
             }
         })
         .detach();
+    }
+
+    /// Refresh immediately and restart the loop at the foreground cadence (focus
+    /// returned). Replaces any loop mid-way through a slow sleep.
+    fn resume_systems_refresh(&mut self, cx: &mut Context<Self>) {
+        self.systems.refresh_loop_running = true;
+        self.start_systems_refresh_loop(cx);
+        self.refresh_systems_inner(false, cx);
+    }
+
+    /// Set how introspection behaves while System is hidden or sid is unfocused. Default
+    /// [`BackgroundRefresh::Off`]; the persisted Settings control will call this.
+    #[allow(dead_code)]
+    pub(crate) fn set_background_refresh(
+        &mut self,
+        policy: BackgroundRefresh,
+        cx: &mut Context<Self>,
+    ) {
+        if self.systems.background == policy {
+            return;
+        }
+        self.systems.background = policy;
+        if self.systems.loaded {
+            // Re-evaluate the schedule under the new policy (idles if now `Off`).
+            self.systems.refresh_loop_running = true;
+            self.start_systems_refresh_loop(cx);
+        }
     }
 }
 
@@ -1493,8 +1573,9 @@ impl AppState {
             )
         };
         let mem_line = format!(
-            "{} used · {} available · {} total",
+            "{} used · {} cached · {} available · {} total",
             humanize_bytes(ov.mem_used),
+            humanize_bytes(ov.mem_cached),
             humanize_bytes(ov.mem_total.saturating_sub(ov.mem_used)),
             humanize_bytes(ov.mem_total)
         );
@@ -1536,6 +1617,9 @@ impl AppState {
 const HISTORY_CAP: usize = 120;
 /// How many bars a sparkline draws; a longer history is averaged down into this many.
 const SPARK_BARS: usize = 60;
+/// Below this many samples a sparkline shows its "Collecting…" state instead of a
+/// mostly-empty full-width chart.
+const MIN_SPARK_SAMPLES: usize = 8;
 
 /// Rolling utilisation (0..=1) for the three overview cards.
 #[derive(Default)]
@@ -1543,10 +1627,56 @@ struct UsageHistory {
     cpu: VecDeque<f32>,
     mem: VecDeque<f32>,
     swap: VecDeque<f32>,
+    last_at: Option<Instant>,
+}
+
+/// A sample older than this means the poll paused (hidden / unfocused / slow background
+/// cadence); the history is dropped rather than drawn as a falsely continuous line.
+const HISTORY_GAP: Duration = Duration::from_secs(7);
+/// The foreground System cadence.
+const FOREGROUND_TICK: Duration = Duration::from_secs(2);
+
+/// What introspection does while the System tab is hidden or sid has no focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum BackgroundRefresh {
+    /// No timers, no probes, no repaints (the default).
+    #[default]
+    Off,
+    /// Probe at this interval (constructed by the Settings control once it lands).
+    #[allow(dead_code)]
+    Every(Duration),
+}
+
+/// The pure scheduling decision: how long until the next probe, or `None` to idle.
+/// Visible and focused always polls at the foreground cadence.
+fn next_tick(visible: bool, focused: bool, policy: BackgroundRefresh) -> Option<Duration> {
+    if visible && focused {
+        return Some(FOREGROUND_TICK);
+    }
+    match policy {
+        BackgroundRefresh::Off => None,
+        BackgroundRefresh::Every(d) => Some(d),
+    }
 }
 
 impl UsageHistory {
-    fn record(&mut self, ov: &SystemOverview) {
+    /// True when the last sample is old enough that a refresh is due at the foreground
+    /// cadence.
+    fn is_stale(&self, now: Instant) -> bool {
+        self.last_at
+            .is_some_and(|t| now.duration_since(t) > FOREGROUND_TICK * 2)
+    }
+
+    fn record(&mut self, ov: &SystemOverview, now: Instant) {
+        if self
+            .last_at
+            .is_some_and(|t| now.duration_since(t) > HISTORY_GAP)
+        {
+            self.cpu.clear();
+            self.mem.clear();
+            self.swap.clear();
+        }
+        self.last_at = Some(now);
         push_sample(&mut self.cpu, ov.cpu_total_pct / 100.0, HISTORY_CAP);
         push_sample(
             &mut self.mem,
@@ -1598,7 +1728,43 @@ fn downsample(samples: &VecDeque<f32>, bars: usize) -> Vec<f32> {
 /// A small history bar chart `height` px tall (the cards pass a taller one beside the
 /// CPU card's per-core strip so all three cards end level): always [`SPARK_BARS`] slots so the newest sample sits at
 /// the right edge and the chart fills the card; unfilled slots on the left are blank.
-fn sparkline(theme: &Theme, samples: &VecDeque<f32>, height: f32) -> impl IntoElement + use<> {
+fn sparkline(theme: &Theme, samples: &VecDeque<f32>, height: f32) -> AnyElement {
+    if samples.len() < MIN_SPARK_SAMPLES {
+        // Too little history for a meaningful chart: draw what exists at a sane bar
+        // width, left-aligned, under a faint centred "Collecting…" label.
+        let bars = samples.iter().map(|&v| {
+            div()
+                .flex_none()
+                .w(px(8.))
+                .h(relative(v.max(0.04)))
+                .rounded_sm()
+                .bg(rgb(MeterTone::of(v).color(theme)))
+        });
+        return div()
+            .relative()
+            .w_full()
+            .flex_none()
+            .h(scaled(height))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .gap_px()
+                    .children(bars),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().text_meta(theme).child("Collecting\u{2026}")),
+            )
+            .into_any_element();
+    }
     let values = downsample(samples, SPARK_BARS);
     let blanks = SPARK_BARS - values.len();
     div()
@@ -1618,6 +1784,7 @@ fn sparkline(theme: &Theme, samples: &VecDeque<f32>, height: f32) -> impl IntoEl
                 .rounded_sm()
                 .bg(rgb(tone))
         }))
+        .into_any_element()
 }
 
 /// Case-insensitive filter over the processes table: name/command/user substring, or
@@ -1727,6 +1894,48 @@ mod tests {
             parent: None,
             user: user.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn next_tick_decisions() {
+        use BackgroundRefresh::*;
+        let d = Duration::from_secs(30);
+        assert_eq!(next_tick(true, true, Off), Some(FOREGROUND_TICK));
+        assert_eq!(next_tick(true, true, Every(d)), Some(FOREGROUND_TICK));
+        assert_eq!(next_tick(false, true, Off), None);
+        assert_eq!(next_tick(true, false, Off), None);
+        assert_eq!(next_tick(false, false, Off), None);
+        assert_eq!(next_tick(false, true, Every(d)), Some(d));
+        assert_eq!(next_tick(true, false, Every(d)), Some(d));
+        assert_eq!(BackgroundRefresh::default(), Off);
+    }
+
+    #[test]
+    fn history_drops_samples_across_a_pause() {
+        let ov = SystemOverview {
+            hostname: String::new(),
+            kernel: String::new(),
+            os: String::new(),
+            uptime_secs: 0,
+            load_avg: (0.0, 0.0, 0.0),
+            cpu_total_pct: 50.0,
+            cpu_per_core: vec![],
+            mem_total: 10,
+            mem_used: 5,
+            mem_cached: 0,
+            mem_buffers: 0,
+            swap_total: 0,
+            swap_used: 0,
+        };
+        let t0 = Instant::now();
+        let mut h = UsageHistory::default();
+        h.record(&ov, t0);
+        h.record(&ov, t0 + Duration::from_secs(2));
+        assert_eq!(h.cpu.len(), 2);
+        h.record(&ov, t0 + Duration::from_secs(60));
+        assert_eq!(h.cpu.len(), 1, "a long pause restarts the history");
+        assert!(h.is_stale(t0 + Duration::from_secs(70)));
+        assert!(!h.is_stale(t0 + Duration::from_secs(61)));
     }
 
     #[test]

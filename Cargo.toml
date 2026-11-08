@@ -94,13 +94,9 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # Network tab (`sid-sysinfo`) — process/interface/socket enumeration + signal delivery.
-# sysinfo is HELD at 0.39 (latest 0.40): 0.40 makes every constructor and static query
-# fallible (`System::new()`, `Networks`/`Users::new_with_refreshed_list()`, `uptime()`,
-# `load_average()` all return `Result`) and drops `Users::list()`, which reaches past
-# compile fallout into `SysinfoProvider::new()`'s infallible public signature — a
-# design call for whoever next owns this crate, not a version bump. 0.39 is also what
-# sets the workspace rust-version (1.95).
-sysinfo = { version = "0.39", default-features = false, features = ["system", "network", "disk", "user"] }
+# sysinfo 0.40: constructors and static queries are fallible (`Result`); `SysinfoProvider`
+# keeps an infallible `new()` and reports the failure from each probe call instead.
+sysinfo = { version = "0.40", default-features = false, features = ["system", "network", "disk", "user"] }
 netstat2 = "0.11"
 nix = { version = "0.31", features = ["signal", "process"] }
 

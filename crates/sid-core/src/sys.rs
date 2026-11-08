@@ -185,6 +185,8 @@ pub struct NetInterface {
 ///     cpu_per_core: vec![10.0, 15.0],
 ///     mem_total: 1_024,
 ///     mem_used: 512,
+///     mem_cached: 128,
+///     mem_buffers: 0,
 ///     swap_total: 0,
 ///     swap_used: 0,
 /// };
@@ -210,6 +212,10 @@ pub struct SystemOverview {
     pub mem_total: u64,
     /// Used RAM, in bytes.
     pub mem_used: u64,
+    /// Page-cache RAM (reclaimable), in bytes; 0 where the platform doesn't report it.
+    pub mem_cached: u64,
+    /// Buffer RAM, in bytes; 0 where the platform doesn't report it.
+    pub mem_buffers: u64,
     /// Total swap, in bytes (0 if no swap is configured).
     pub swap_total: u64,
     /// Used swap, in bytes.
@@ -281,6 +287,8 @@ pub enum SysError {
 ///             cpu_per_core: vec![],
 ///             mem_total: 0,
 ///             mem_used: 0,
+///             mem_cached: 0,
+///             mem_buffers: 0,
 ///             swap_total: 0,
 ///             swap_used: 0,
 ///         })
@@ -623,6 +631,8 @@ mod tests {
                     mem_used: 0,
                     swap_total: 0,
                     swap_used: 0,
+                    mem_cached: 0,
+                    mem_buffers: 0,
                 })
             }
         }

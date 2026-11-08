@@ -256,7 +256,7 @@ mod tests {
     fn owning_process_name_resolves_on_a_cold_system_handle() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap().port();
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().unwrap();
 
         let ports = list_listening_ports(&mut sys).unwrap();
 
@@ -296,7 +296,7 @@ mod tests {
         let addr = l.local_addr().unwrap();
         let c = std::net::TcpStream::connect(addr).unwrap();
         let (_srv, _) = l.accept().unwrap();
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().unwrap();
         let conns = list_connections(&mut sys).unwrap();
         let me = std::process::id();
         let row = conns
