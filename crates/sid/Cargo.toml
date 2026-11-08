@@ -52,6 +52,9 @@ sid-core.workspace = true
 # `sid_core::privfs`, never named here.
 sid-privfs.workspace = true
 sid-ssh.workspace = true
+# SFTP edit-in-place: the one crate allowed to name `sid-os`'s concrete
+# `LinuxEditorLauncher` (constructed in `ui/session/edit.rs`, behind `sid_core::editor`).
+sid-os.workspace = true
 sid-term.workspace = true
 # Workspaces tab (track U): the one crate allowed to name `sid-git`'s concrete
 # `Git2Provider` — see `crates/sid/src/git_registry.rs`.

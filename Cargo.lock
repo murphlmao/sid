@@ -7638,6 +7638,7 @@ dependencies = [
  "sid-db",
  "sid-git",
  "sid-gpu",
+ "sid-os",
  "sid-privfs",
  "sid-secrets",
  "sid-ssh",

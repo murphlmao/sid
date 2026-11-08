@@ -27,8 +27,8 @@ use gpui::{
     App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, IntoElement, KeyDownEvent,
     Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
-    ShapedLine, SharedString, Size, TextRun, UnderlineStyle, Window, anchored, canvas, deferred,
-    div, fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
+    ShapedLine, SharedString, Size, TextRun, UnderlineStyle, Window, canvas, div, fill, font,
+    point, prelude::*, px, rgb, uniform_list,
 };
 use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
@@ -37,11 +37,15 @@ use sid_store::{Host, PanelSide};
 use sid_term::Vt100Screen;
 use tokio::sync::Mutex as AsyncMutex;
 
+mod edit;
+
 use crate::ssh_connect::connect_params;
 use crate::ui::is_field_submit;
+use sid_ui::component::ContextMenuExt as _;
 use sid_ui::{
-    Button, InputState, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale,
-    bridge::SCRIM, scaled, theme, v_flex,
+    Badge, BadgeTone, Button, CheckState, Checkbox, ContextMenu, EmptyState, Icon, IconButton,
+    InputState, MenuItem, Modal, Row, StyledExt as _, TextInput, Tipped, Typography as _, UiScale,
+    h_flex, modal, scaled, theme, v_flex,
 };
 
 /// The **terminal grid's** monospace family — kitty parity (Murphy's terminal font, confirmed
@@ -378,6 +382,25 @@ pub struct SshSession {
     /// updates to every live session via [`Self::set_dock_side`] when the header's
     /// `⇄ dock` control flips the (global, persisted) setting — see [`SshSessionEvent`].
     dock_side: PanelSide,
+
+    // ---- edit-in-place (SFTP "Edit") -----------------------------------------------------
+    /// The host's alias, for "Saved <name> to <host>".
+    host_label: String,
+    /// Remote files currently open in the user's editor. See [`edit`].
+    edits: Vec<edit::ActiveEdit>,
+    /// The conflict / no-editor dialog, if one is up.
+    edit_dialog: Option<edit::EditDialog>,
+    /// A transient notice ("Saved x to host"); `toast_seq` identifies it for auto-dismiss.
+    toast: Option<edit::SessionToast>,
+    toast_seq: u64,
+    /// Whether the save-poll task is alive.
+    edit_poll_running: bool,
+    /// The user's editor, behind the core trait (the concrete impl is named in
+    /// [`edit::default_launcher`] only).
+    editor_launcher: Arc<dyn sid_core::editor::EditorLauncher>,
+    edit_cfg: sid_ssh::remote_edit::RemoteEditConfig,
+    /// The file the context menu was last opened on (see [`Self::entry_context_menu`]).
+    right_click_entry: Option<SftpEntry>,
 }
 
 impl SshSession {
@@ -424,6 +447,15 @@ impl SshSession {
                 goto_input: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/go")),
                 preview: None,
                 dock_side,
+                host_label: host.alias.clone(),
+                edits: Vec::new(),
+                edit_dialog: None,
+                toast: None,
+                toast_seq: 0,
+                edit_poll_running: false,
+                editor_launcher: edit::default_launcher(),
+                edit_cfg: sid_ssh::remote_edit::RemoteEditConfig::new(),
+                right_click_entry: None,
             };
             session.start_connect(host, secret, known_hosts_path, cx);
             session
@@ -732,7 +764,19 @@ impl SshSession {
         let shell = self.shell.take();
         let sftp = self.sftp.take();
         let client = self.client.take();
+        // Unsaved edits get one last upload before the SFTP channel goes away.
+        let edits = self.take_edits_for_flush();
+        let flush_sftp = sftp.clone();
         ssh_runtime().spawn(async move {
+            if !edits.is_empty() {
+                match flush_sftp {
+                    Some(s) => {
+                        let mut guard = s.lock().await;
+                        edit::flush_and_close(edits, Some(&mut **guard)).await;
+                    }
+                    None => edit::flush_and_close(edits, None).await,
+                }
+            }
             if let Some(shell) = shell {
                 let _ = shell.lock().await.close().await;
             }
@@ -1931,25 +1975,34 @@ impl SshSession {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx);
-        let (bg, border, muted) = (t.bg, t.border, t.muted);
+        let (bg, border) = (t.bg, t.border);
         if self.sidebar_collapsed {
+            // The strip that brings the panel back: one chevron pointing the way the
+            // panel will open (toward the terminal).
+            let (icon, tip) = match self.dock_side {
+                PanelSide::Left => (Icon::ChevronRight, "Show files"),
+                PanelSide::Right => (Icon::ChevronLeft, "Show files"),
+            };
             return div()
-                .id("session-sidebar-expand")
-                .w(scaled(20.))
+                .w(scaled(44.))
                 .h_full()
+                .flex_none()
                 .flex()
-                .pt_1()
-                .justify_center()
-                .cursor_pointer()
+                .flex_col()
+                .items_center()
+                .pt_2()
                 .bg(rgb(bg))
                 .border_r_1()
+                .border_l_1()
                 .border_color(rgb(border))
-                .text_color(rgb(muted))
-                .child("»")
-                .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
-                    session.sidebar_collapsed = false;
-                    cx.notify();
-                }))
+                .child(
+                    IconButton::new("session-sidebar-expand", icon, tip)
+                        .small()
+                        .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                            session.sidebar_collapsed = false;
+                            cx.notify();
+                        })),
+                )
                 .into_any_element();
         }
 
@@ -1973,166 +2026,143 @@ impl SshSession {
                 el.child(status_line(&format!("file panel: {msg}"), cx))
             })
             .child(
-                uniform_list(
-                    "session-sftp-entries",
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _win, cx| {
-                        let visible = this.visible_entries();
-                        range
-                            .map(|ix| this.entry_row(visible[ix], ix, plan, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1(),
+                div()
+                    .id("session-sftp-list")
+                    .flex_1()
+                    .min_h(px(0.))
+                    // Right-click defaults to "no row" in the capture phase; a row's own
+                    // bubble-phase handler then sets it back — same shape as the SSH
+                    // home grid's single context menu.
+                    .capture_any_mouse_down(cx.listener(
+                        |session, ev: &MouseDownEvent, _window, _cx| {
+                            if ev.button == MouseButton::Right {
+                                session.right_click_entry = None;
+                            }
+                        },
+                    ))
+                    .child(
+                        uniform_list(
+                            "session-sftp-entries",
+                            count,
+                            cx.processor(move |this, range: std::ops::Range<usize>, _win, cx| {
+                                let visible = this.visible_entries();
+                                range
+                                    .map(|ix| this.entry_row(visible[ix], ix, plan, cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .size_full(),
+                    )
+                    .context_menu(self.entry_context_menu(cx)),
             )
             .into_any_element()
     }
 
-    /// The sidebar's title row (ssh-v3): a "Files" label plus the `⇄ dock` control that
-    /// flips which side of the terminal this panel renders on. Doesn't touch `Store`
-    /// itself — clicking it just emits [`SshSessionEvent::ToggleDockSide`]; `AppState`
-    /// persists the flip to `Settings.file_browser_side` and fans it out to every open
-    /// session tab (see [`Self::set_dock_side`]).
+    /// The sidebar's title row: a "Files" heading, the dock flip, and the collapse
+    /// chevron. Doesn't touch `Store` itself — the dock control just emits
+    /// [`SshSessionEvent::ToggleDockSide`]; `AppState` persists the flip to
+    /// `Settings.file_browser_side` and fans it out to every open session tab (see
+    /// [`Self::set_dock_side`]).
     fn sidebar_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let (border, muted, selection) = (t.border, t.muted, t.selection);
-        let label = match self.dock_side {
-            PanelSide::Left => "⇄ dock right",
-            PanelSide::Right => "⇄ dock left",
+        let (dock_label, collapse_icon) = match self.dock_side {
+            PanelSide::Left => ("Dock right", Icon::ChevronLeft),
+            PanelSide::Right => ("Dock left", Icon::ChevronRight),
         };
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
+        h_flex()
+            .w_full()
+            .flex_none()
             .justify_between()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(rgb(border))
-            .child(div().text_label(&t).child("FILES"))
+            .gap_2()
+            .px_3()
+            .py_2()
+            .hairline_b(&t)
+            .child(div().text_heading(&t).child("Files"))
             .child(
-                div()
-                    .id("session-dock-toggle")
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_meta(&t)
-                    .cursor_pointer()
-                    .text_color(rgb(muted))
-                    .hover(|s| s.bg(rgb(selection)))
-                    .child(label)
-                    .on_click(cx.listener(|_session, _ev: &ClickEvent, _window, cx| {
-                        cx.emit(SshSessionEvent::ToggleDockSide);
-                    })),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("session-dock-toggle", dock_label)
+                            .ghost()
+                            .small()
+                            .tooltip("Move the file panel to the other side of the terminal")
+                            .on_click(cx.listener(|_session, _ev: &ClickEvent, _window, cx| {
+                                cx.emit(SshSessionEvent::ToggleDockSide);
+                            })),
+                    )
+                    .child(
+                        IconButton::new("session-sidebar-collapse", collapse_icon, "Hide files")
+                            .small()
+                            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                                session.sidebar_collapsed = true;
+                                cx.notify();
+                            })),
+                    ),
             )
     }
 
     /// Toolbar: three stacked rows, each of which fits the sidebar's *floor* width on its
-    /// own with no overlap — cramming the breadcrumb, path field, nav icons, and entry
-    /// count onto fewer, wider rows is what caused them to pile on top of each other at
-    /// 320px. `crumb_budget` is [`crumb_budget`] of the live width, handed down to the
-    /// breadcrumb so its elision follows the panel instead of a constant.
+    /// own with no overlap. `crumb_budget` is [`crumb_budget`] of the live width, handed
+    /// down to the breadcrumb so its elision follows the panel instead of a constant.
     ///
-    /// - Row 1: the breadcrumb (flexes, wraps onto multiple lines if long) plus the `«`
-    ///   collapse control (fixed).
+    /// - Row 1: the breadcrumb (one line, elided to fit).
     /// - Row 2: the go-to-path field (flexes) plus `Go` (fixed).
-    /// - Row 3: `↑ up` / `⟳ refresh` / the hidden-files toggle on the left, the entry count
-    ///   right-aligned.
+    /// - Row 3: Up / Refresh icon buttons and the "Show hidden" checkbox on the left, the
+    ///   entry count right-aligned.
     fn toolbar(&self, crumb_budget: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let (border, muted, selection, accent, fg_strong) =
-            (t.border, t.muted, t.selection, t.accent, t.fg_strong);
-        let icon_button = |id: (&'static str, usize), label: String| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .text_meta(&t)
-                .cursor_pointer()
-                .text_color(rgb(muted))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
-        let up = icon_button(("session-up", 0), "↑".to_string())
+        let up = IconButton::new("session-up", Icon::ArrowUp, "Up one folder")
+            .small()
             .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.go_up(cx)));
-        let refresh = icon_button(("session-refresh", 0), "⟳".to_string())
+        let refresh = IconButton::new("session-refresh", Icon::Refresh, "Refresh")
+            .small()
             .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| session.refresh(cx)));
-        let hidden_mark = if self.show_hidden { "☑" } else { "☐" };
-        let hidden_toggle = icon_button(
-            ("session-hidden-toggle", 0),
-            format!("{hidden_mark} hidden"),
+        let this = cx.entity();
+        let hidden = Checkbox::new(
+            "session-hidden-toggle",
+            CheckState::from_bool(self.show_hidden),
         )
-        .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
-            session.show_hidden = !session.show_hidden;
-            cx.notify();
-        }));
-        let go = div()
-            .id("session-goto-go")
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_body(&t)
-            .cursor_pointer()
-            .bg(rgb(accent))
-            .text_color(rgb(fg_strong))
-            .child("Go")
+        .label("Show hidden")
+        .on_toggle(move |state, _window, cx| {
+            this.update(cx, |session, cx| {
+                session.show_hidden = state.is_lit();
+                cx.notify();
+            });
+        });
+        let go = Button::new("session-goto-go", "Go")
+            .primary()
+            .small()
             .on_click(
                 cx.listener(|session, _ev: &ClickEvent, _window, cx| session.goto_submit(cx)),
             );
-        let collapse = div()
-            .id("session-sidebar-collapse")
-            .px_2()
-            .cursor_pointer()
-            .text_color(rgb(muted))
-            .child("«")
-            .on_click(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
-                session.sidebar_collapsed = true;
-                cx.notify();
-            }));
         let count = self.visible_entries().len();
 
-        div()
-            .flex()
-            .flex_col()
-            .border_b_1()
-            .border_color(rgb(border))
+        v_flex()
+            .w_full()
+            .flex_none()
+            .hairline_b(&t)
             .child(
-                // Row 1: breadcrumb + collapse.
+                // Row 1: breadcrumb. `min_w(0)` on the wrapper as well as on the
+                // breadcrumb inside it: the breadcrumb's own clip only bounds *its*
+                // children, and this flex item would still refuse to shrink below its
+                // content width and shove its neighbours out of the fixed-width sidebar.
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .pt_1()
-                    // `min_w(0)` on the wrapper as well as on the breadcrumb inside it:
-                    // the breadcrumb's own clip only bounds *its* children, and this
-                    // flex item would still refuse to shrink below its content width and
-                    // shove `collapse` out of the fixed-width sidebar.
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .child(self.breadcrumb(crumb_budget, cx)),
-                    )
-                    .child(collapse),
+                    .w_full()
+                    .min_w(px(0.))
+                    .px_3()
+                    .pt_2()
+                    .child(self.breadcrumb(crumb_budget, cx)),
             )
             .child(
-                // Row 2: go-to-path field + Go.
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .px_1()
-                    .py_1()
-                    // Enter submits, same as clicking `Go`. `sid_ui::TextInput` declares
-                    // its own width and the library's single-line `Input` propagates an
-                    // unhandled Enter (see `sid_ui::input`'s module doc), so this ancestor
-                    // `on_key_down` still gets first look — the technique `db_tab`'s
-                    // inline rename rows use for the same shape (one field, one button
-                    // beside it).
+                // Row 2: go-to-path field + Go. Enter submits, same as clicking `Go`:
+                // `sid_ui::TextInput` declares its own width and the library's single-line
+                // `Input` propagates an unhandled Enter (see `sid_ui::input`'s module
+                // doc), so this ancestor `on_key_down` still gets first look.
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
                     .child(
                         v_flex()
                             .id("session-goto-field")
@@ -2146,29 +2176,130 @@ impl SshSession {
                             }))
                             .child(TextInput::new(&self.goto_input)),
                     )
-                    .child(go),
+                    .child(div().flex_none().child(go)),
             )
             .child(
                 // Row 3: up / refresh / hidden toggle (left) — entry count (right).
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                h_flex()
+                    .w_full()
                     .justify_between()
-                    .px_1()
-                    .pb_1()
+                    .gap_2()
+                    .px_2()
+                    .pb_2()
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
+                        h_flex()
                             .gap_1()
                             .child(up)
                             .child(refresh)
-                            .child(hidden_toggle),
+                            .child(div().pl_2().child(hidden)),
                     )
-                    .child(div().text_meta(&t).child(format!("{count} entries"))),
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_meta(&t)
+                            .child(format!("{count} items")),
+                    ),
             )
+    }
+
+    /// The sidebar's single right-click menu. What it offers depends on which row the
+    /// click landed on ([`Self::right_click_entry`], reset by the list's capture handler
+    /// and set again by the row's own handler): a file gets Preview / Edit / Download /
+    /// Copy path, a folder gets Open / Copy path, empty space gets the view options.
+    /// Nothing here is destructive — SFTP delete/rename is not offered yet; when it is,
+    /// it goes last via `ContextMenu::danger_item`.
+    fn entry_context_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(
+        sid_ui::component::PopupMenu,
+        &mut Window,
+        &mut Context<sid_ui::component::PopupMenu>,
+    ) -> sid_ui::component::PopupMenu
+    + use<> {
+        let this = cx.entity();
+        move |menu, _window, cx| {
+            let (entry, editing, dir, show_hidden) = {
+                let s = this.read(cx);
+                let editing = s
+                    .right_click_entry
+                    .as_ref()
+                    .is_some_and(|e| s.is_editing_name(&e.name));
+                (
+                    s.right_click_entry.clone(),
+                    editing,
+                    s.path.clone(),
+                    s.show_hidden,
+                )
+            };
+            let mut m = ContextMenu::new();
+            match entry {
+                Some(e) if e.is_dir => {
+                    let (a, b) = (this.clone(), this.clone());
+                    let name = e.name.clone();
+                    let path = abs_remote_path(&dir, &e.name);
+                    m = m
+                        .item(
+                            MenuItem::new("open").icon(Icon::FolderOpen).on_select(
+                                move |_w, cx| a.update(cx, |s, cx| s.enter_dir(&name, cx)),
+                            ),
+                        )
+                        .item(MenuItem::new("copy path").icon(Icon::Copy).on_select(
+                            move |_w, cx| b.update(cx, |s, cx| s.copy_path(path.clone(), cx)),
+                        ));
+                }
+                Some(e) => {
+                    let (a, b, c, d) = (this.clone(), this.clone(), this.clone(), this.clone());
+                    let (n1, n2, n3) = (e.name.clone(), e.name.clone(), e.name.clone());
+                    let path = abs_remote_path(&dir, &e.name);
+                    let edit_item = if editing {
+                        let rp = path.clone();
+                        MenuItem::new("stop editing")
+                            .icon(Icon::Close)
+                            .on_select(move |_w, cx| c.update(cx, |s, cx| s.stop_edit(&rp, cx)))
+                    } else {
+                        MenuItem::new("edit")
+                            .icon(Icon::Rename)
+                            .on_select(move |_w, cx| {
+                                c.update(cx, |s, cx| s.start_edit(n3.clone(), cx))
+                            })
+                    };
+                    m = m
+                        .item(
+                            MenuItem::new("preview")
+                                .icon(Icon::Eye)
+                                .on_select(move |_w, cx| {
+                                    a.update(cx, |s, cx| s.view(n1.clone(), cx))
+                                }),
+                        )
+                        .item(edit_item)
+                        .item(MenuItem::new("download").icon(Icon::Export).on_select(
+                            move |_w, cx| b.update(cx, |s, cx| s.download(n2.clone(), cx)),
+                        ))
+                        .item(MenuItem::new("copy path").icon(Icon::Copy).on_select(
+                            move |_w, cx| d.update(cx, |s, cx| s.copy_path(path.clone(), cx)),
+                        ));
+                }
+                None => {
+                    let (a, b) = (this.clone(), this.clone());
+                    m = m
+                        .item(
+                            MenuItem::new("refresh")
+                                .icon(Icon::Refresh)
+                                .on_select(move |_w, cx| a.update(cx, |s, cx| s.refresh(cx))),
+                        )
+                        .item(MenuItem::new("show hidden").checked(show_hidden).on_select(
+                            move |_w, cx| {
+                                b.update(cx, |s, cx| {
+                                    s.show_hidden = !s.show_hidden;
+                                    cx.notify();
+                                })
+                            },
+                        ));
+                }
+            }
+            m.apply(menu, cx)
+        }
     }
 
     /// Clickable breadcrumb of the current path's segments — root first, then each component
@@ -2260,10 +2391,11 @@ impl SshSession {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let (fg, muted, selection, accent) = (t.fg, t.muted, t.selection, t.accent);
+        let (fg, muted) = (t.fg, t.muted);
         let name = entry.name.clone();
         let is_dir = entry.is_dir;
-        let glyph = if is_dir { "▸" } else { "·" };
+        let is_editing = !is_dir && self.is_editing_name(&name);
+        let icon = if is_dir { Icon::Folder } else { Icon::File };
         let size = if is_dir {
             "—".to_string()
         } else {
@@ -2280,54 +2412,36 @@ impl SshSession {
             format!("{name}\n{size} · modified {mtime}").into()
         };
 
-        let action_button = |id: (&'static str, usize), label: &'static str, width: Pixels| {
-            div()
-                .id(id)
-                .w(width)
-                .flex()
-                .justify_center()
-                .rounded_md()
-                .text_meta(&t)
-                .cursor_pointer()
-                .text_color(rgb(accent))
-                .hover(|s| s.bg(rgb(selection)))
-                .child(label)
-        };
-
-        // Files get `view` + `⭳ download`; directories don't (nothing to fetch or preview).
-        // The cluster is `row_metrics::ACTIONS` wide either way — see the doc comment.
+        // Files get Edit + Download; both kinds get Copy path. The cluster is
+        // `row_metrics::ACTIONS` wide either way (3 x 24px Xs buttons + 2 gaps) — see the
+        // constant's doc comment. Nested buttons consume their own clicks, so they never
+        // also trigger the row's click.
         let file_buttons = (!is_dir).then(|| {
-            let view_name = name.clone();
+            let edit_name = name.clone();
             let download_name = name.clone();
-            div()
-                .flex()
-                .flex_row()
+            h_flex()
                 .gap_1()
                 .child(
-                    action_button(("session-view", ix), "view", px(32.)).on_click(cx.listener(
-                        move |session, _ev: &ClickEvent, _window, cx| {
-                            cx.stop_propagation();
-                            session.view(view_name.clone(), cx)
-                        },
-                    )),
+                    IconButton::new(("session-edit", ix), Icon::Rename, "Edit in your editor")
+                        .size(sid_ui::ButtonSize::Xs)
+                        .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                            session.start_edit(edit_name.clone(), cx)
+                        })),
                 )
                 .child(
-                    action_button(("session-download", ix), "⭳", px(20.)).on_click(cx.listener(
-                        move |session, _ev: &ClickEvent, _window, cx| {
-                            cx.stop_propagation();
+                    IconButton::new(("session-download", ix), Icon::Export, "Download")
+                        .size(sid_ui::ButtonSize::Xs)
+                        .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
                             session.download(download_name.clone(), cx)
-                        },
-                    )),
+                        })),
                 )
         });
 
-        // `⧉ copy path` applies to files *and* directories.
-        let copy_path_button = action_button(("session-copy-path", ix), "⧉", px(20.)).on_click(
-            cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
-                cx.stop_propagation();
+        let copy_path_button = IconButton::new(("session-copy-path", ix), Icon::Copy, "Copy path")
+            .size(sid_ui::ButtonSize::Xs)
+            .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
                 session.copy_path(abs_path.clone(), cx);
-            }),
-        );
+            }));
 
         let meta_column = |text: String, width: Pixels| {
             div()
@@ -2340,26 +2454,39 @@ impl SshSession {
         };
 
         let enter_name = name.clone();
+        let view_name = name.clone();
+        let entry_for_menu = entry.clone();
         Row::new(("session-entry", ix))
+            .compact()
             .text_body(&t)
             .leading(
                 div()
                     .w(plan.scale.scale_px(row_metrics::GLYPH))
                     .text_color(rgb(muted))
-                    .child(glyph),
+                    .child(icon.el().size(plan.scale.scale_px(row_metrics::GLYPH))),
             )
             .child(
-                // `clamp_one_line`, never gpui's `truncate()` — see
-                // [`sid_ui::StyledExt::clamp_one_line`]. Under `truncate()` the ellipsis
-                // never landed and the row's own clip cut the name mid-glyph, hard against
-                // the size column: `a-very-long-remot—`, `this-is-an-extreme0 B`.
-                div()
-                    .id(("session-entry-name", ix))
+                h_flex()
+                    .gap_2()
                     .min_w(px(0.))
-                    .clamp_one_line()
-                    .text_color(rgb(fg))
-                    .child(name)
-                    .tip(tooltip.clone()),
+                    .child(
+                        // `clamp_one_line`, never gpui's `truncate()` — see
+                        // [`sid_ui::StyledExt::clamp_one_line`].
+                        div()
+                            .id(("session-entry-name", ix))
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_color(rgb(fg))
+                            .child(name)
+                            .tip(tooltip.clone()),
+                    )
+                    .when(is_editing, |el| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .child(Badge::new("editing").tone(BadgeTone::Accent).pill()),
+                        )
+                    }),
             )
             .when(plan.show_size, |row| {
                 row.meta(meta_column(size, plan.scale.scale_px(row_metrics::SIZE)))
@@ -2377,11 +2504,20 @@ impl SshSession {
                     .children(file_buttons)
                     .child(copy_path_button),
             )
-            .when(is_dir, |row| {
-                row.on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+            // Folders open; files preview. Right-click records which row it landed on for
+            // the list's single context menu.
+            .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+                if is_dir {
                     session.enter_dir(&enter_name, cx);
-                }))
-            })
+                } else {
+                    session.view(view_name.clone(), cx);
+                }
+            }))
+            .on_secondary_mouse_down(cx.listener(
+                move |session, _ev: &MouseDownEvent, _window, _cx| {
+                    session.right_click_entry = Some(entry_for_menu.clone());
+                },
+            ))
     }
 
     /// Paint the terminal grid: one `shape_line` call per row (gpui shapes a whole
@@ -2585,101 +2721,34 @@ impl SshSession {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let t = theme::active(cx).clone();
-        let (muted, surface, border, selection) = (t.muted, t.surface, t.border, t.selection);
         let preview = self.preview.clone()?;
-        let viewport = window.viewport_size();
 
         let body = match preview.content {
             PreviewContent::Text(text) => div()
                 .id("session-preview-body")
-                .flex_1()
+                .h(scaled(360.))
                 .overflow_y_scroll()
-                .p_3()
                 // A remote file's contents: monospace body text, like every other data
                 // surface in the app (the terminal beside it keeps its own font).
                 .text_mono(&t)
                 .child(text)
                 .into_any_element(),
             PreviewContent::Notice(msg) => div()
-                .flex_1()
-                .p_3()
                 .text_body(&t)
-                .text_color(rgb(muted))
+                .text_color(rgb(t.muted))
                 .child(msg)
                 .into_any_element(),
         };
 
-        Some(
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .bg(rgba(SCRIM))
-                        .child(
-                            div()
-                                .w(scaled(640.))
-                                .h(scaled(480.))
-                                .flex()
-                                .flex_col()
-                                .bg(rgb(surface))
-                                .border_1()
-                                .border_color(rgb(border))
-                                .rounded_md()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .px_3()
-                                        .py_2()
-                                        .border_b_1()
-                                        .border_color(rgb(border))
-                                        // A remote file name is arbitrary length and the
-                                        // modal is a fixed 640px, so the name has to be
-                                        // the part that gives: `flex_1 + min_w(0)` lets
-                                        // it shrink (a flex item's default min-width is
-                                        // its content, which would push both the name
-                                        // and the close button out through the modal's
-                                        // border), and `clamp_one_line` then cuts it
-                                        // with a real ellipsis instead of a hard clip.
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .text_title(&t)
-                                                .clamp_one_line()
-                                                .child(preview.name.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("session-preview-close")
-                                                .flex_none()
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_md()
-                                                .cursor_pointer()
-                                                .text_color(rgb(muted))
-                                                .hover(|s| s.bg(rgb(selection)))
-                                                .child("✕ close")
-                                                .on_click(cx.listener(
-                                                    |session, _ev: &ClickEvent, _window, cx| {
-                                                        session.close_preview(cx);
-                                                    },
-                                                )),
-                                        ),
-                                )
-                                .child(body),
-                        ),
-                ),
-            )
-            .with_priority(1),
-        )
+        // A remote file name is arbitrary length; `Modal` clamps its title to one line
+        // with a real ellipsis, so the name is the part that gives.
+        let panel = Modal::new("session-preview", preview.name.clone())
+            .width(px(640.))
+            .on_dismiss(cx.listener(|session, _ev: &ClickEvent, _window, cx| {
+                session.close_preview(cx);
+            }))
+            .child(body);
+        Some(modal::overlay(window, panel))
     }
 }
 
@@ -2690,26 +2759,35 @@ impl Render for SshSession {
             window.focus(&self.focus_handle, cx);
         }
         let content = match &self.status {
-            SessionStatus::Connecting => message_pane("Connecting…", cx).into_any_element(),
+            SessionStatus::Connecting => self.connecting_pane(cx).into_any_element(),
             SessionStatus::Failed(err) => self.failed_pane(err, cx).into_any_element(),
-            SessionStatus::Closed => message_pane("Session closed.", cx).into_any_element(),
+            SessionStatus::Closed => self.closed_pane(cx).into_any_element(),
             SessionStatus::Connected => self.render_split(window, cx).into_any_element(),
         };
         let overlay = self.preview_overlay(window, cx);
-        div().size_full().child(content).children(overlay)
+        let dialog = self.edit_dialog_layer(window, cx);
+        let toast = self.toast_layer(cx);
+        div()
+            .size_full()
+            .relative()
+            .child(content)
+            .children(overlay)
+            .children(dialog)
+            .children(toast)
     }
 }
 
 impl SshSession {
-    /// The failed-connect pane: the (good) error text plus **Retry** and **Edit connection**,
-    /// so a failure is never a dead end. Enter retries. The session's own focus handle is
-    /// tracked here (it is the terminal's handle when connected) so Enter works at once.
+    /// The failed-connect pane: ONE centred block — icon, "Couldn't connect to <alias>",
+    /// the error as the body, then **Retry** (primary) and **Edit connection** beside it,
+    /// so a failure is never a dead end and the buttons sit right under the words that
+    /// explain them. Enter retries. The session's own focus handle is tracked here (it is
+    /// the terminal's handle when connected) so Enter works at once.
     fn failed_pane(&self, err: &str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx);
         div()
             .size_full()
-            .flex()
-            .flex_col()
+            .bg(rgb(t.bg))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|_session, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "enter" {
@@ -2718,34 +2796,58 @@ impl SshSession {
                 }
             }))
             .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(message_pane(&format!("Connection failed: {err}"), cx)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_center()
-                    .gap_2()
-                    .pb_6()
-                    .bg(rgb(t.bg))
-                    .child(
-                        Button::new("session-retry", "retry")
+                EmptyState::new(format!("Couldn't connect to {}", self.host_label))
+                    .icon(Icon::Warning)
+                    .guidance(err.to_string())
+                    .action(
+                        Button::new("session-retry", "Retry")
                             .primary()
+                            .size(sid_ui::ButtonSize::Lg)
+                            .icon(Icon::Refresh)
                             .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
                                 cx.emit(SshSessionEvent::Retry);
                             })),
                     )
-                    .child(
-                        Button::new("session-edit", "edit connection").on_click(cx.listener(
-                            |_s, _ev: &ClickEvent, _w, cx| {
+                    .secondary(
+                        Button::new("session-edit", "Edit connection")
+                            .size(sid_ui::ButtonSize::Lg)
+                            .icon(Icon::Rename)
+                            .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
                                 cx.emit(SshSessionEvent::EditConnection);
-                            },
-                        )),
+                            })),
                     ),
             )
+    }
+
+    /// The connecting state: a calm centred block. There is deliberately no Cancel here:
+    /// the connect task has no cancellation handle (closing the tab drops the session and
+    /// abandons the attempt), so the tab's own close control is the way out.
+    fn connecting_pane(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        div().size_full().bg(rgb(t.bg)).child(
+            EmptyState::new(format!("Connecting to {}", self.host_label))
+                .icon(Icon::Spinner)
+                .guidance("Checking the host and signing in. This usually takes a moment."),
+        )
+    }
+
+    /// The closed state: the session ended (disconnected or the connection dropped).
+    fn closed_pane(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = theme::active(cx);
+        div().size_full().bg(rgb(t.bg)).child(
+            EmptyState::new("Session closed")
+                .icon(Icon::Terminal)
+                .guidance(format!("The connection to {} has ended.", self.host_label))
+                .action(
+                    Button::new("session-reconnect", "Reconnect")
+                        .primary()
+                        .size(sid_ui::ButtonSize::Lg)
+                        .icon(Icon::Refresh)
+                        .on_click(cx.listener(|_s, _ev: &ClickEvent, _w, cx| {
+                            cx.emit(SshSessionEvent::Retry);
+                        })),
+                ),
+        )
     }
 }
 
@@ -2788,57 +2890,6 @@ fn key_to_bytes(keystroke: &Keystroke) -> Option<Vec<u8>> {
     }
 
     keystroke.key_char.as_ref().map(|s| s.as_bytes().to_vec())
-}
-
-/// The whole-tab message a session paints instead of a terminal: connecting, closed, or
-/// the connect error.
-///
-/// **The text block is a separate, shrinkable child, and it has to be.** This used to
-/// hand the string straight to a `justify_center` row, which put the text in as a flex
-/// item whose min-width is `auto` — i.e. its *content* width. A flex item that cannot
-/// shrink below its content does not wrap; it overflows, and because the row centres it
-/// the overflow goes out **both** edges at once. `Connection failed: connect failed:
-/// failed to lookup address information: Name or service not known` on a 640px-wide
-/// window rendered as `…ction failed: connect failed: failed to lookup address
-/// information: Name or service not…`, sentence-ends amputated on the left and the right
-/// with no ellipsis anywhere — the exact "text jumping out of bounds" report, reached by
-/// double-clicking a host card (double-click connects) on a host that won't answer.
-///
-/// `min_w(0)` restores the ability to shrink, which is what gives the text a real wrap
-/// width and lets it wrap to as many lines as it needs; `max_w` keeps it to a reading
-/// measure on a wide window instead of one 1900px line; `px_6` keeps it off the frame.
-fn message_pane(text: &str, cx: &App) -> impl IntoElement {
-    let t = theme::active(cx);
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px_6()
-        // The backstop: whatever the text does, it stops at the pane's edge.
-        .overflow_hidden()
-        .bg(rgb(t.bg))
-        // Monospace, because this pane stands where the terminal would be — but muted,
-        // because it is a status, not output. Ink is the one part of a role a call site
-        // may re-decide.
-        .text_mono(t)
-        .text_color(rgb(t.muted))
-        .child(
-            // gpui reports a text element's MIN-content width as its FULL single-line
-            // width (`elements/text.rs` only derives a wrap width from an
-            // `AvailableSpace::Definite`), so a bare string is a flex item with an
-            // automatic minimum it can never shrink below. Centred, that means a long
-            // message overflows *both* sides: "Connection failed: connect failed: failed
-            // to lookup address information: No address associated with hostname" ran off
-            // the left and right edges of an 800px window with its first letters painted
-            // outside the app. `min_w(0)` drops that floor, which is what finally hands
-            // the text a definite width — and therefore a wrap width — to lay out inside.
-            div()
-                .min_w(px(0.))
-                .max_w(scaled(720.))
-                .text_center()
-                .child(text.to_string()),
-        )
 }
 
 fn status_line(text: &str, cx: &App) -> impl IntoElement {
