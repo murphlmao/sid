@@ -88,7 +88,7 @@ pub struct ParsedConfig {
 
 /// Parse the config file at `path`; includes resolve relative to its directory.
 pub fn parse_file(path: &Path, env: &ImportEnv) -> std::io::Result<ParsedConfig> {
-    let text = std::fs::read_to_string(path)?;
+    let text = read_bounded(path, MAX_FILE_BYTES)?;
     let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut p = Parser::new(base, env.clone());
     p.visited
@@ -116,13 +116,21 @@ struct Block {
     source: String,
 }
 
-/// Read a regular file, refusing anything over `max` bytes.
-fn read_bounded(path: &Path, max: u64) -> std::io::Result<String> {
+/// Read a regular file, refusing anything over `max` bytes. Non-regular files (FIFOs,
+/// devices, directories) are refused before `open`, which could block on a FIFO, and
+/// again on the opened handle to close the check/open race.
+pub fn read_bounded(path: &Path, max: u64) -> std::io::Result<String> {
     use std::io::Read;
+    let not_regular = || std::io::Error::other("not a regular file");
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
     let mut text = String::new();
-    std::fs::File::open(path)?
-        .take(max + 1)
-        .read_to_string(&mut text)?;
+    file.take(max + 1).read_to_string(&mut text)?;
     if text.len() as u64 > max {
         return Err(std::io::Error::other(format!("larger than {max} bytes")));
     }
@@ -891,5 +899,18 @@ mod tests {
         assert_eq!(find_duplicate(cand(&p, "fresh"), "me", &existing), None);
         let other_port = vec![host("renamed", "deploy", "web.example", 2200)];
         assert_eq!(find_duplicate(web, "me", &other_port), None);
+    }
+
+    #[test]
+    fn read_bounded_refuses_directories_and_oversize() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(read_bounded(d.path(), 100).is_err());
+        let f = d.path().join("f");
+        std::fs::write(&f, "x".repeat(101)).unwrap();
+        assert!(read_bounded(&f, 100).is_err());
+        assert_eq!(read_bounded(&f, 101).unwrap().len(), 101);
+        // The top-level config is bounded too.
+        std::fs::write(&f, "#".repeat(MAX_FILE_BYTES as usize + 1)).unwrap();
+        assert!(parse_file(&f, &env_in(d.path())).is_err());
     }
 }
