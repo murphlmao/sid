@@ -46,9 +46,11 @@ Chrome: app-wide `StatusBar`; command-palette hub (current-tab actions and recen
 
 ## Open
 
-1. Waiting on Murphy: making the CI `gate` job a required check, keeping fetch/push on
-   the CLI, SFTP keep-server-copy semantics, and an async keyring probe (status bar
-   "checking…") which needs a design decision.
+1. Waiting on Murphy: an async keyring probe (the status bar can't show "checking…" because the
+   probe runs synchronously before the window opens), and the Workspaces umbrella tree (member repos
+   would need to be stored as data). Decided 2026-11-08: CI `gate` stays advisory; fetch/push stay
+   on the hardened git CLI; SFTP "keep server copy" backs local edits up; violet accent; background
+   refresh Off by default.
 2. QA sweep (`design/2026-11-08-qa-sweep.md`): every finding is fixed (each annotated with its commit).
    Still worth doing: a full visual re-sweep (every tab x 4 themes x 1920/1280, live SFTP
    edit-in-place incl. a server stop mid-edit, keyboard-only pass) since the fixes landed.
