@@ -14,6 +14,7 @@
 
 pub mod command_palette;
 pub mod config_editor;
+pub mod connect_error;
 pub mod db_conn_form;
 pub mod db_diagram;
 pub mod db_tab;

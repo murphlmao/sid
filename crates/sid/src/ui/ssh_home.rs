@@ -842,6 +842,14 @@ impl AppState {
                     .child(div().text_body(&t).text_color(rgb(t.muted)).child(body))
             };
 
+        let know_card =
+            |id: &'static str, icon: Icon, title: &'static str, body: &'static str| -> GridCard {
+                GridCard::new(id)
+                    .child(icon.el().size(scaled(20.)).text_color(rgb(t.accent)))
+                    .child(div().text_heading(&t).child(title))
+                    .child(div().text_body(&t).text_color(rgb(t.muted)).child(body))
+            };
+
         let add = start_card(
             "ssh-start-add",
             Icon::Add,
@@ -895,6 +903,35 @@ impl AppState {
                     .child(add)
                     .child(import)
                     .child(keys),
+            )
+            .child(
+                div()
+                    .mt(sid_ui::SECTION_GAP.len())
+                    .text_heading(&t)
+                    .child("What a session gives you"),
+            )
+            .child(
+                CardGrid::new()
+                    .min_col(px(320.))
+                    .max_col(px(640.))
+                    .child(know_card(
+                        "ssh-know-files",
+                        Icon::Folder,
+                        "Files beside the terminal",
+                        "Every session opens with an SFTP panel next to the shell. Browse, preview, upload and rename without leaving the tab.",
+                    ))
+                    .child(know_card(
+                        "ssh-know-edit",
+                        Icon::Rename,
+                        "Edit remote files locally",
+                        "Open a remote file in your own editor; saving writes it back to the server.",
+                    ))
+                    .child(know_card(
+                        "ssh-know-secrets",
+                        Icon::User,
+                        "Secrets stay in your keyring",
+                        "Passwords and key passphrases live in the OS keyring. Saved connections only hold a reference to them.",
+                    )),
             )
             .into_any_element()
     }
