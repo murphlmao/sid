@@ -55,14 +55,15 @@ pub const CRITICAL_AT: f32 = 0.90;
 /// broken probe look identical. Anything strictly positive gets at least this much.
 pub const MIN_VISIBLE: f32 = 0.02;
 
-/// The track's height, and the bar's.
-const BAR_HEIGHT: f32 = 6.0;
+/// The track's height, and the bar's. v2: 8px pill (v1: a 6px hairline-ish bar that
+/// read as a progress indicator, not a gauge).
+const BAR_HEIGHT: f32 = 8.0;
 
-/// One sub-bar in a [`Meter::segments`] strip.
-const SEGMENT_WIDTH: f32 = 5.0;
+/// One sub-bar in a [`Meter::segments`] strip. v2: 8px (v1's 5px read as a dashed line).
+const SEGMENT_WIDTH: f32 = 8.0;
 
 /// The height of a [`Meter::segments`] sub-bar.
-const SEGMENT_HEIGHT: f32 = 20.0;
+const SEGMENT_HEIGHT: f32 = 28.0;
 
 /// How loaded a meter is. Derived from the value by [`MeterTone::of`] unless a caller
 /// overrides it with [`Meter::tone`] — a meter whose high end is *good* (free disk,
@@ -284,8 +285,13 @@ impl RenderOnce for Meter {
             )
             .when(self.bar, |this| {
                 this.child(
-                    track(&theme)
-                        .child(div().h_full().rounded_sm().bg(rgb(fill)).w(relative(width))),
+                    track(&theme).child(
+                        div()
+                            .h_full()
+                            .rounded_full()
+                            .bg(rgb(fill))
+                            .w(relative(width)),
+                    ),
                 )
             })
             .when_some(self.note, |this, note| {
@@ -313,8 +319,8 @@ fn track(theme: &Theme) -> gpui::Div {
     div()
         .w_full()
         .h(scaled(BAR_HEIGHT))
-        .rounded_sm()
-        .bg(rgb(theme.border))
+        .rounded_full()
+        .bg(rgb(theme.selection))
 }
 
 /// One sub-bar of a [`Meter::segments`] strip: a fixed-height track filled from the
@@ -327,7 +333,7 @@ fn segment_bar(theme: &Theme, fraction: f32) -> impl IntoElement + use<> {
         .h(scaled(SEGMENT_HEIGHT))
         .justify_end()
         .rounded_sm()
-        .bg(rgb(theme.border))
+        .bg(rgb(theme.selection))
         .child(
             div()
                 .w_full()
