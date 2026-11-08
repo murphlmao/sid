@@ -6,7 +6,7 @@ landmines live in [`HANDOFF.md`](HANDOFF.md); binding rules in [`../CLAUDE.md`](
 ## Crate graph
 
 Edges derived from each `crates/*/Cargo.toml` (`sid-X --> sid-Y` = X depends on Y).
-`sid-core` and `sid-secrets` and `sid-ui` depend on no other sid crate.
+`sid-core`, `sid-secrets` and `sid-ui` depend on no other sid crate.
 
 ```mermaid
 graph TD
@@ -24,8 +24,11 @@ graph TD
     svc[sid-svcctl]
     cont[sid-containers]
     priv[sid-privfs]
+    os[sid-os - editor + notify]
+    mcp[sid-mcp - dev tooling server]
 
-    sid --> ui & core & store & secrets & ssh & term & db & git & gpu & sys & svc & cont & priv
+    sid --> ui & core & store & secrets & ssh & term & db & git & gpu & sys & svc & cont & priv & os
+    mcp --> store
     store --> core & secrets
     db --> core & store
     ssh --> core & term
@@ -36,11 +39,14 @@ graph TD
     svc --> core
     cont --> core
     priv --> core
+    os --> core
 ```
 
 Rule of thumb: arrows point at `sid-core` (traits). Only `sid` sees concrete types, and it
 names them in a handful of composition points (below). `sid-db -> sid-store` exists only
-for the read-only `RedbBrowseClient` over an opened `GlobalStore`.
+for the read-only `RedbBrowseClient` over an opened `GlobalStore`. `sid-mcp` is not part of
+the app: it is a stdio MCP server for working on this repo (`.mcp.json`), depends only on
+`sid-store` (read-only, for `store_inspect`) and never names gpui or an adapter crate.
 
 ## Seam table
 
@@ -52,11 +58,13 @@ Trait (owned by `sid-core` unless noted) -> impl crate -> where the app construc
 | `term::TerminalScreen` | `Vt100Screen` (`sid-term`) | `ui/session.rs` (`Box::new(Vt100Screen::new(..))`) |
 | `keys::IdentityScan` | `LocalIdentities` (`sid-ssh`); `StaticIdentities` is the core test double | `ui/host_form.rs` (`LocalIdentities::from_env()`) |
 | `db::DbClient`, `db::DbClientDescriptor` | `PostgresClient`, `SqliteClient`, `RedbBrowseClient`, `*Descriptor` (`sid-db`) | `db_registry.rs` (`DbRegistry`, one `register(factory, descriptor)` per `DbKind`) |
-| `git::GitProvider` | `Git2Provider` (`sid-git`) | `git_registry.rs` (`Git2Provider::factory()`) |
+| `git::GitProvider` | `Git2Provider` (`sid-git`); fetch/push of network remotes shell out to the `git` CLI (`crates/sid-git/src/cli.rs`: argv only, non-interactive env, 90 s timeout, process-group kill, capped output), local remotes stay on libgit2 | `git_registry.rs` (`Git2Provider::factory()`) |
 | `sys::SysProvider` | `SysinfoProvider` (`sid-sysinfo`) | `ui/network_tab.rs`, `ui/systems_tab.rs` |
 | `svc::ServiceProvider` | `SvcctlProvider` (`sid-svcctl`) | `ui/network_tab.rs` |
 | `containers::ContainerProvider`, `KubeProvider` | `DockerCliProvider`, `KubectlCliProvider` (`sid-containers`) | `ui/network_tab.rs` |
 | `privfs::PrivilegedFs` | `SudoPrivilegedFs` (`sid-privfs`) | `ui/config_editor.rs` (a `OnceLock`'d `Arc<dyn PrivilegedFs>`) |
+| `editor::EditorLauncher` (+ `EditorHandle`, `LaunchPolicy`) — `sid_core::editor` | `LinuxEditorLauncher` (`sid-os`: `$VISUAL`/`$EDITOR`, terminal vs GUI, `xdg-open` fallback) | not yet wired in `crates/sid` (lands with SFTP edit-in-place) |
+| `notify::Notifier` — `sid_core::notify` | `DbusNotifier` (`sid-os`, `org.freedesktop.Notifications` via zbus) | `app.rs` (`AppState::notifier: Arc<dyn Notifier>`) |
 | `gpu::GpuPreflight` | `LinuxGpuPreflight` (`sid-gpu`) | `main.rs` (before gpui starts) |
 | `sid_secrets::SecretStore`, `KeyringBackend` (owned by `sid-secrets`) | `KeyringStore<OsKeyringBackend>`, `MemorySecretStore`, dormant `EncryptedFileStore` | `app.rs::open_secrets` -> `AppState::secrets: Box<dyn SecretStore>` |
 
@@ -96,9 +104,16 @@ Trait (owned by `sid-core` unless noted) -> impl crate -> where the app construc
   (`Global | Workspace(WorkspaceId)`); `ViewFilters` (collapse duplicates, hide-global)
   are view-only over a lossless store. Promote/demote refuse with `StoreError::Conflict`
   rather than overwrite.
+- **Secret bindings** (`secret_bindings` redb table in `GlobalStore`; `SECRET_BINDING_VERSION`):
+  every stored secret is bound to the layer and the endpoint fingerprint it was saved for.
+  `crates/sid/src/secret_binding.rs::fetch` only returns a secret to a record that still has
+  that layer and endpoint (else `Bound::Withheld` and a re-prompt); workspace secrets are
+  keyed per workspace. Bindings live in the uncommitted global store, never in TOML.
 - Secrets: records hold only an opaque `SecretId` (`secret_ref`); bytes live behind
   `sid_secrets::SecretStore`. `crates/sid-store/tests/secret_boundary.rs` guards that no
-  secret reaches redb/TOML.
+  secret reaches redb/TOML. Unknown SSH host keys are refused by `sid-ssh`
+  (`SshError::HostKeyUnknown`) until the user picks "Trust and connect"
+  (`crates/sid/src/ui/host_key_prompt.rs`).
 
 ## Recipes
 
@@ -160,3 +175,15 @@ Trait (owned by `sid-core` unless noted) -> impl crate -> where the app construc
    `text_xs()/text_sm()/text_size()/font_weight()/font_family()`, no `.truncate(`, no emoji.
    If wrapping a gpui-component widget, thread it through `bridge.rs` or it renders unthemed.
 4. Callers in `crates/sid` use the `sid_ui` re-export, never `gpui_component::`.
+
+## Testing
+
+Gate and commands: root `CLAUDE.md` / `just gate`. Per-crate unit and integration tests;
+`#[ignore]`d Docker tests via `just test-ssh` / `just test-db`; captures via `scripts/sid-cap.sh`.
+
+**UI interaction tests** (`just ui-test`): `gpui-kit` is a dev-dependency of `sid-ui` only; its
+`TestWindowExt` (`find/click/press/input/hover`) drives a real headless window with no compositor.
+Tests live in `crates/sid-ui/tests/` (`button_activation`, `focus_trap`, `text_input_editing`,
+`tree_keyboard`, `fill_table_floor`) on the shared `tests/common/mod.rs`. They assert
+focus, keys, clicks and geometry — not pixels or colour (that stays with `sid-cap.sh`).
+Details in `crates/sid-ui/CLAUDE.md`.

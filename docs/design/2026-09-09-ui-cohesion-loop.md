@@ -1,5 +1,14 @@
 # UI cohesion loop — checklist
 
+> **Closing note (2026-11-08).** This loop is finished; the live docs moved on. Current state:
+> [`../HANDOFF.md`](../HANDOFF.md). Successor work, all 2026-11-07:
+> [`2026-11-07-friendly-ui-v2.md`](2026-11-07-friendly-ui-v2.md) (design system v2 spec and per-tab
+> rollout), [`2026-11-07-perf-pass.md`](2026-11-07-perf-pass.md), and
+> [`2026-11-07-night-sprint-handoff.md`](2026-11-07-night-sprint-handoff.md). Statements below about
+> gpui-pre 0.3.4, "no motion" and "no shadows" are history; the renderer is now gpui-pre 0.3.11.
+> Boxes ticked on 2026-11-08 are annotated in place (CI move, close #1); the table-frame-cost
+> item is still open. Nothing else here was rewritten.
+
 **Date:** 2026-09-09
 **Status:** proposal, awaiting go. Once approved this file is the loop's source of truth:
 each iteration takes the first unchecked item, works it on its own branch, gates it
@@ -23,7 +32,7 @@ read as one application". The gaps below are visible in today's captures.
 
 - [x] `sudo pacman -S sway wtype` — installed by Murphy 2026-09-09 19:34; `scripts/sid-cap.sh`
       has been the loop's capture harness since.
-- [ ] Optional: a GitHub token with `workflow` scope so `docs/ci/github-actions-ci.yml`
+- [x] (done: CI lives in `.github/workflows/ci.yml`, 2026-11-07) Optional: a GitHub token with `workflow` scope so `docs/ci/github-actions-ci.yml`
       can move to `.github/workflows/` (blocked since July).
 
 ## 1. GPUI base: keep it, but move off the frozen pin
@@ -292,7 +301,7 @@ Every item is gated by before/after captures in all four themes and a
 | 3 | std ctrl operations in fields (ctrl+backspace, ctrl+shift+arrows, Tab) | **done** 2026-09-09: every field is a `sid-ui` input; old widget deleted | finish the migration, then verify in every form |
 | 4 | ctrl `+` / `-` zoom | **merged** (`p4-zoom`, 2026-09-09) | one scale factor for the whole UI including the terminal grid (reflows cells), persisted in `Settings`, clamped 50–200%, ctrl+0 resets |
 
-- [ ] Close #1 (needs a GitHub token or Murphy; the GitHub MCP connector failed to
+- [x] (closed 2026-11-07 with #2–#4, per the night sprint handoff) Close #1 (needed a GitHub token or Murphy; the GitHub MCP connector failed to
       authenticate this session and `gh` is not installed).
 - [x] #3 done 2026-09-09: twelve call sites (not three) migrated to `sid_ui` inputs across
       every tab, both forms, the palette, the password prompt and the config editor;
@@ -313,7 +322,7 @@ Every item is gated by before/after captures in all four themes and a
 
 ## 4. Backlog carried from the July resume doc
 
-- [ ] Table frame cost: ~26% of cell builds are discarded by gpui each frame
+- [ ] (still open 2026-11-08; see `2026-11-07-perf-pass.md`) Table frame cost: ~26% of cell builds are discarded by gpui each frame
       (`docs/design/2026-07-27-table-frame-cost.md`). Started 2026-09-09 and dropped when the
       org spend limit hit; re-verify against gpui-pre 0.3.4 / `DataTable` before optimising.
       Lowest priority on this list: perf, not cohesion.
@@ -326,7 +335,7 @@ Every item is gated by before/after captures in all four themes and a
 - [x] `docs/HANDOFF.md` rewritten from the current tree 2026-09-09 (219 lines; verified 51
       suites / 1580 tests; per-tab shipped/gaps table; today's round indexed; landmines carried
       forward plus today's).
-- [ ] CI: `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml` (blocked on token scope).
+- [x] (done 2026-11-07: `.github/workflows/ci.yml`, linux/macos/windows) CI: `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml` (blocked on token scope).
 
 ## Deliberately not on the list
 

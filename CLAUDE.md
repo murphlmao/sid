@@ -33,7 +33,7 @@ Project plugin: `.claude/plugins/sid-dev/` (skills `sid-gate`, `sid-capture`,
      `gpui_component::` is further confined to `main.rs` (hygiene test in
      `crates/sid-ui/tests/hygiene.rs`); elsewhere go through `sid_ui`.
    - OS-integration points — keyring, PTY, editor-launch, clipboard, notifications — are
-     traits with a Linux/Wayland impl; other platforms are cfg-gated slots.
+     traits with a Linux/Wayland impl (`sid-os` holds editor-launch + notifications); other platforms are cfg-gated slots.
    - The point is swappability. If a concrete crate name (`redb`, `russh`, `git2`,
      `rusqlite`, `tokio_postgres`, `sysinfo`, `vt100`, `nix`, ...) leaks into `sid-core`,
      that's a bug. A PreToolUse hook (`.claude/hooks/adapter-violation.sh`) blocks it.
@@ -73,6 +73,7 @@ nice -n 10 cargo test --workspace -j 3
 
 Or `just gate` / the `sid-gate` skill. One `sid-privfs` sudo test can flake under parallel
 threads — rerun it alone. Docker-backed `#[ignore]`d tests: `just test-ssh`, `just test-db`.
+Headless UI interaction tests (gpui-kit, focus/keys/clicks, no compositor): `just ui-test`.
 
 ## Visual verification
 
@@ -96,7 +97,8 @@ the `sid-capture` skill. `SID_GALLERY=1` mounts the component gallery instead of
 ## Previously deferred — now un-deferred (2026-11-07)
 
 Murphy un-deferred these; they are being built and are no longer off-limits:
-the **MCP server** (`crates/sid-mcp`), the **`.claude` plugin** (`.claude/`, this repo's
+the **MCP server** (`crates/sid-mcp`, wired by `.mcp.json` as the `sid` server: crate_map, find_symbol,
+adapter_check, gate, capture_ui, backlog, docs_index, ... — prefer it for orientation), the **`.claude` plugin** (`.claude/`, this repo's
 `sid-dev`), **CI** (`.github/workflows/ci.yml`; the old draft is `docs/ci/`), and
 **Mac/Windows support** (cfg-gated platform adapters behind the existing traits). Each
 still gets its own design pass — keep them lean and behind the adapter seams.

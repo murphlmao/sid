@@ -1,239 +1,131 @@
 # sid — Handoff / Start Here
 
 **You are picking up an in-progress GPUI rebuild of `sid`.** This is the single
-orientation doc: current state, where things stand tab by tab, where the landmines are.
+orientation doc: current state, tab by tab, what is open, where the landmines are. The
+resume point for the last session is
+[`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md).
 
-**Last verified:** 2026-09-09, `main` @ `066baa2`. `cargo test --workspace`: **51 test
-suites, 1580 tests passing, 0 failed** (expect ~51/~1577 — a handful of tests were added
-same-day, that's normal drift). `cargo fmt --all --check` and
-`cargo clippy --workspace --all-targets -- -D warnings` both clean.
+**Last verified:** 2026-11-08, branch `night/wrap-2026-11-07` @ `b948145` (this refresh
+lives on `night/docs-refresh`). The **combined gate for the wrap branch is pending** — it
+merges `night/sec-binding`, `night/perf` and `night/db-polish` onto main without one. Last
+gated state: `main @ 0fa6dbe: 75 suites / 1924 tests`, 0 failed (fmt, clippy `-D warnings`,
+test; rustc 1.96, Linux).
 
 ## What sid is (30 seconds)
 
 An integrated developer **ops-cockpit** — SSH/SFTP, Database, Network, Workspaces,
 System, Settings — as a native **GPUI** desktop app, run locally. Built in **vertical
-slices**: one tab taken to daily-use quality before the next. SSH/SFTP is the spearhead.
-The binding rules (adapter pattern, attributive layered scope, secrets-never-committed,
-what's deliberately deferred) live in [`../CLAUDE.md`](../CLAUDE.md) — read them, they're
-invariants, not suggestions.
+slices**; SSH/SFTP is the spearhead. The binding rules (adapter pattern, attributive
+layered scope, secrets-never-committed) live in [`../CLAUDE.md`](../CLAUDE.md) — they are
+invariants, not suggestions. Mac/Windows are being added behind cfg-gated platform
+adapters; the MCP server, `.claude` plugin and CI are un-deferred and built.
 
 ## Read order
 
 1. [`../CLAUDE.md`](../CLAUDE.md) — the binding ruleset.
-2. [`design/2026-06-27-gpui-rebuild-design.md`](design/2026-06-27-gpui-rebuild-design.md) — North Star: the reframe, the layered-scope model, code disposition.
-3. [`../.interface-design/system.md`](../.interface-design/system.md) — design law. In three lines: semantic tokens only (`crates/sid-ui/src/theme.rs`), depth via borders/surface shifts not shadows, one top chrome bar; type is three sizes/two weights/one mono family named by role (`crates/sid-ui/src/typography.rs`), enforced by a hygiene test that bans raw `text_xs()`/`font_weight()` calls outside it; one list per fact, `accent` means "engage" and is used sparingly.
-4. [`design/2026-09-09-ui-cohesion-loop.md`](design/2026-09-09-ui-cohesion-loop.md) — today's checklist and the loop's own source of truth going forward; its **Log** section is the changelog for 2026-09-09, its **Blocked** section is what needs Murphy.
-5. [`design/2026-07-27-session-resume.md`](design/2026-07-27-session-resume.md) — the prior state (pre-cohesion-loop) and the landmine list this file carries forward.
-6. This file's **Where things stand** and **Open** sections, below, for what's next.
+2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — crate graph, seam table, runtime model, recipes.
+3. [`../.interface-design/system.md`](../.interface-design/system.md) — design law (v2); spec and per-tab rollout guide in [`design/2026-11-07-friendly-ui-v2.md`](design/2026-11-07-friendly-ui-v2.md).
+4. [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md) — what landed, what is ungated, next steps, pending decisions.
+5. [`design/2026-11-07-perf-pass.md`](design/2026-11-07-perf-pass.md) — frame-cost method and what is left.
+6. `crates/<crate>/CLAUDE.md` — per-crate invariants and how to test.
+7. History only: `design/2026-09-09-ui-cohesion-loop.md` (annotated), `design/2026-06-27-gpui-rebuild-design.md` (North Star).
 
 ## Where things stand
 
+Renderer is `gpui-pre` 0.3.11 + `gpui-component` 0.9 (root `Cargo.toml`). Design system v2 is
+in `sid-ui`; every tab was rolled onto it on 2026-11-07.
+
 | Tab | Shipped | Known gaps |
 |:--|:--|:--|
-| **SSH/SFTP** | MobaXterm-style multi-tab shell (home + per-connection sessions); folder-grouped tree with inline quick-connect "add this host" (#2); SFTP browser (download/upload, traversal-guarded); terminal fidelity A/B-matched to kitty; `ctrl +/-/0` zoom incl. terminal reflow (#4); on the shared panel/toolbar vocabulary end to end. | Config editor's focus trap can leak a sudo password into the file body (open security item, see Open); the session-tab chrome and Settings rail item still hand-roll their own focus ring instead of the shared helper. |
-| **Database** | Query editor (Run/Explain) + left schema tree + relationships diagram (pop-out window, draggable, FK-labelled) + CSV export + query history; connections folder-grouped left; demo SQLite seeded with an FK-rich schema; hardened Postgres/TimescaleDB value decoding; on the panel vocabulary (`QUERY`/`RESULTS`/`QUERY PLAN` as sibling panels). | ~26% of table cell builds are discarded by gpui every frame (perf backlog, lowest priority, not yet re-measured against gpui-pre 0.3.4); the diagram's pop-out window can't be `grim`-captured by the harness (a verification gap, not a user-facing one). |
-| **Network** | `Ports`/`Services` (systemd)/`Interfaces`/`Docker`/`Kubernetes` sub-tabs, sortable tables, two-click kill-by-pid; on the panel vocabulary, with fetch errors now actually rendered (`error_line`, previously invisible). | No CPU/mem columns or established-connections view — July's inc-2 backlog, not picked back up. |
-| **Workspaces** | Workspace list with a live git chip; add/rename/armed-unregister; Repo detail (Overview/Branches-with-checkout/Status/Log); Umbrella fleet table (verified over ~40 real repos); on the panel vocabulary (`WORKSPACES` sidebar + per-shape detail panels). | Mutation ceiling is still checkout only — commit/diff/stash/other actions are unbuilt (v2; the archived POC is the reference). |
-| **System** | CPU/mem/swap `StatCluster`; sortable process table with kill and a Command-column fallback to the process name for unreadable cmdlines; pinned config-file manager with a sudo-elevated, no-shell editor. | Pin/kill icon-only buttons weren't re-audited in the icon-only pass; shares the config-editor focus-trap bug above. |
-| **Settings** | 220px section rail (Appearance/Behaviour/Keyboard/Storage) collapsing to a `SegmentedControl` below ~900 design px; live theme switching across four palettes (`cosmos-light` now AA-contrast-checked by a guard test); full keymap rebinding UI (validate/reserve/conflict/reset, persisted); keyring status as an `InlineNotice`. | The rail's active-item ring is still hand-rolled instead of calling the shared `focus_ring` helper. |
+| **SSH/SFTP** | Multi-tab shell (home + per-connection sessions); host groups as a `Tree`; import from `~/.ssh/config` (`ui/ssh_import.rs`, from the home header, empty state and a first-run banner); quick-connect add; SFTP browser (bounded view/download, no-overwrite downloads, display-safe remote names); secret bindings (`secret_binding.rs`) and the unknown-host-key "Trust and connect" prompt (`ui/host_key_prompt.rs`); terminal fidelity A/B-matched to kitty; zoom incl. terminal reflow. | Session v2, SFTP edit-in-place UI, keep-server-copy backup and Esc on modals sit on `night/ssh-session` (conflicts with sec-binding in `ui/session.rs`; its tip does not compile, last green `18175d4`). Downloads over 256 MiB are refused (no streaming read on `SftpSession`). `EditorLauncher` (`sid-os`) is not yet wired into `crates/sid`. |
+| **Database** | Query editor (Run/Explain), schema `Tree` (select vs activate fixed, table/column icons, folder headers), relationships diagram, CSV export, query history, empty states, error toasts; hardened Postgres/TimescaleDB decoding. | Only gated as part of the pending wrap gate. Table frame cost (per-cell wrapper div ~11% of a frame, perf-pass doc). The diagram pop-out window cannot be captured by the harness. |
+| **Network** | Ports / Services / Interfaces / Docker / Kubernetes / **Connections** sub-tabs (Connections has kill), CPU/mem columns, friendlier empty states. | Table frame cost (shared with Database). |
+| **Workspaces** | v2: changes, diff, commit, stash, branches, paged log, fetch/push via the git CLI (`crates/sid-git/src/cli.rs`); Umbrella fleet table; pin-a-directory. UI in `crates/sid/src/ui/workspaces/` (`model.rs`, `ops.rs`, `views.rs`). | Log badges live on `night/polish-settings-ws`. The git CLI honours repo config and runs hooks, unlike libgit2 — hardening review not yet done (see Open). |
+| **System** | CPU/mem/swap with history sparklines, sortable process table with kill, pinned config-file manager with sudo-elevated no-shell editor (focus-trap sudo-password leak is **fixed**: `config_editor.rs::trap_owner`); unfocused probe runs ~5x slower (perf). | No "cached" memory in the overview; no "collecting…" state for empty sparklines at launch; narrower `ProcessRefreshKind` not done; unfocused interval (10 s) awaits Murphy's call. |
+| **Settings** | Section rail (Appearance / Behaviour / Keyboard / Storage), four palettes (cosmos, void, dusk, cosmos-light), keymap rebinding UI, zoom, reduce motion, desktop notifications, last-tab restore (Settings v6), keyring status. | "Text rendering" option (Auto / Subpixel / Grayscale), Settings v7, theme swatch cards, palette recents are on `night/polish-settings-ws` (conflicts with `secret_bindings` in `crates/sid-store/src/{global.rs,lib.rs}`; keep both, re-check the v6 to v7 migration test). |
 
-## Today's UI cohesion round (2026-09-09)
-
-Full detail — the spec, the gate results, and every branch's own log entry — lives in
-[`design/2026-09-09-ui-cohesion-loop.md`](design/2026-09-09-ui-cohesion-loop.md); this is
-the index.
-
-- **gpui-pre 0.3.4 upgrade.** `gpui` 0.2.2 → `gpui-pre` 0.3.4 + `gpui-pre-platform` +
-  `gpui-component` 0.6.1 + `gpui-kit-assets` 0.6.1 — a registry-only jump, 29 files, zero
-  of the ~450 `div()` call sites touched. Upstream fixed `truncate()`'s cache bug (sid
-  still bans the literal — see Landmines); `Column.width` stays `Pixels`-only.
-- **Zoom** (GitHub #4): `ctrl +`/`ctrl -`/`ctrl 0`, one scale factor for the whole UI
-  including the SSH terminal grid (it reflows cells, not just fonts), persisted, clamped
-  50–200%.
-- **App-wide status bar:** `sid_ui::StatusBar` — keyring state in words, open SSH session
-  count, `db: <name>`, zoom % when ≠100%, frame ms under `SID_PERF`. Retires the old
-  top-right `!` badge.
-- **One panel vocabulary + one toolbar contract:** every region on every tab is now a
-  `Card::panel` whose header *is* the toolbar row; two real bugs (an invisible Network
-  fetch error, a mislabelled Workspaces button) surfaced and were fixed along the way.
-- **Focus ring + modal Tab-trap:** one `StyledExt::focus_ring` helper everywhere;
-  `Modal` now traps Tab at both ends (gpui-component 0.6.1's `focus_trap`).
-- **Settings rail:** 220px section nav replacing the old flat list, collapsing below
-  ~900px.
-- **cosmos-light pass:** measured contrast fixes (`warning`/`success`/`muted` all now
-  ≥4.5:1 on `surface`), guarded by a new theme test.
-- **Icons:** `gpui-kit-assets`' full 1830-glyph Lucide catalog wired in; real bin/pencil
-  icons replace stand-ins.
-- **Text-input retirement** (GitHub #3): the 946-line `crates/sid/src/ui/text_input.rs`
-  is deleted (net −1049 lines); every field across every tab and form is a `sid-ui` input.
-- **Quick-connect add** (GitHub #2): typing `user@host` and pressing Enter on an unknown
-  host opens a prefilled add-connection form instead of dialling ad-hoc.
+Chrome (sprint handoff): app-wide `StatusBar`, command-palette hub, `?` shortcut modal.
 
 ## Open
 
-Unchecked items from the checklist (§ numbers refer to
-[`design/2026-09-09-ui-cohesion-loop.md`](design/2026-09-09-ui-cohesion-loop.md)):
+Order and detail are in the sprint handoff; in short:
 
-- §0 (Murphy): `sudo pacman -S sway wtype`; optional a GitHub token with `workflow` scope.
-- §2: ~~the config-editor focus-trap security item~~ — closed, see the security batch
-  below; the focus follow-ups list (Settings rail ring, `chrome_tab`, config editor save/close
-  tab stops); an SSH-home empty state for zero hosts (note: `ssh_home.rs::home_empty_state`
-  already renders one with an "add connection" action — worth re-checking whether this
-  item is actually still open before picking it up); the light-theme follow-ups
-  (`app.rs`'s `gpu_status_badge` hard-coded ink, `PopupMenu` popover-on-surface, the
-  un-derived modal scrim); the final six-tabs × four-themes gate.
-- §3: close GitHub #1 (fixed in July, still open on GitHub) — needs `gh` or Murphy.
-- §4 backlog: the table-frame-cost perf item (lowest priority); `sid-shot.sh`'s dead
-  Hyprland placement code (port to `hyprctl eval` or delete it); this rewrite of
-  `docs/HANDOFF.md` (now done by this commit — the checklist box ticks on the loop's next
-  pass, not this one); the CI file's move into `.github/workflows/` (blocked on token
-  scope).
-
-**Security batch `night/sec-binding` (2026-11-07):**
-
-- Closed: the config-editor focus-trap sudo-password leak — fixed in code (one trap owner,
-  `config_editor.rs::trap_owner`) and confirmed at runtime with `sid-cap.sh` + mock-sudo:
-  0444 file → unlock prompt → `Tab` ×6 → `x` lands in the password field, no dirty marker.
-- Closed: H2 (a committed `secret_ref` redirected to another endpoint: secrets are bound to
-  layer + endpoint in the global store, `crates/sid/src/secret_binding.rs`), M1 (unknown
-  SSH host keys need "Trust and connect", `ui/host_key_prompt.rs`), bounded SFTP
-  view/download + no-overwrite downloads + display-safe remote names, config-editor
-  exclusive temp files / bounded read / FIFO refusal, and the sudo password's lifetime
-  (dropped on leaving System and after 5 idle minutes).
-- Open: global secrets saved before bindings existed bind on first use, so a global record
-  tampered with before that first connect still sends once. Workspace secrets saved before
-  per-workspace keys re-prompt once; their old bare keyring entry is left behind (sid never
-  deletes a bare key through a workspace record — it could be someone's global secret).
-- Open: downloads over 256 MiB are refused (no streaming read on `SftpSession` yet).
-- Open: `GlobalStore::record_host_command` must never be wired from raw terminal keystrokes.
-- The "Where things stand" table above still lists the focus-trap bug for SSH/SFTP and
-  System; it is closed (that table was outside this branch's edit scope).
-
-**Blocked** (from the checklist's own Blocked section):
-
-- Closing GitHub #1/#2 needs Murphy: `gh` isn't installed and the GitHub MCP connector
-  fails to authenticate.
-- Murphy's Hyprland rule routing sid to workspace 4 lives in
-  `~/dotfiles/config/hypr/hyprland.lua` (applied live via `hyprctl eval`) but is
-  uncommitted in the dotfiles repo.
+1. Gate `night/wrap-2026-11-07`; merge `night/ssh-session`, `night/polish-settings-ws`,
+   `night/ci-fix` one at a time (type-check after every textual merge); gate; fast-forward `main`.
+2. Second adversarial security review (planned, not run): `crates/sid-git/src/cli.rs`
+   (consider `-c core.hooksPath=/dev/null`, `--no-verify`, `protocol.ext.allow=never`, a
+   `core.sshCommand` override), the remote-edit UI, the import dialog, the committed hook.
+3. sysinfo 0.40 (fallible constructors) — held back, as is zbus 6 (keyring store still on 5).
+4. QA sweep: every tab x 4 themes x 1920/1280, keyboard-only pass, live docker sshd/postgres.
+5. Perf leftovers: per-cell wrapper div in tables, narrower `ProcessRefreshKind`.
+6. Security leftovers from `night/sec-binding`: global secrets saved before bindings existed
+   bind on first use (a global record tampered with before that first connect still sends
+   once); workspace secrets saved before per-workspace keys re-prompt once and leave a bare
+   keyring entry behind; `GlobalStore::record_host_command` must never be wired from raw keystrokes.
+7. Waiting on Murphy: D5 accent (cosmos red primary reads as danger), unfocused System
+   refresh interval, SFTP keep-server-copy semantics, making the CI `gate` job a required
+   check, keeping fetch/push on the git CLI.
 
 ## Crates and key files
 
-14 workspace members. `sid` is the **only** crate allowed to name GPUI (CLAUDE.md rule 1).
+16 workspace members (root `Cargo.toml`). Only `sid` and `sid-ui` may name GPUI.
 
 | Crate | What it is |
 |:--|:--|
-| `sid` | The GPUI frontend — the app shell, all six tabs, the single `AppState` entity. |
-| `sid-ui` | The component crate: the design system, compiled (~30 modules — buttons, badges, cards, panels, tables, inputs, type scale, theme bridge, gallery). |
-| `sid-store` | The layered, attributive store: global (redb) + per-workspace `.sid/config.toml`. |
-| `sid-secrets` | The secret-storage adapter seam — keyring, in-memory fallback, a dormant encrypted-file backend. |
-| `sid-core` | The pure trait seam (ssh/term/db/git/sys/gpu/svc/containers/privfs) — no concrete deps, no GPUI. |
-| `sid-ssh` | `russh`-backed `SshClient` impl (fail-closed known-hosts, deadlock-free shell). |
-| `sid-term` | `vt100`-backed styled terminal screen. |
-| `sid-db` | `DbClient` impls: Postgres (`tokio-postgres`), SQLite (`rusqlite`), redb-browse. |
-| `sid-git` | `git2`-backed `GitProvider` impl (the only crate allowed to name `git2`). |
-| `sid-gpu` | Linux GPU pre-flight — probes renderer init in a subprocess so a driver crash can't take down the app. |
-| `sid-sysinfo` | Composed `SysProvider`: `sysinfo` + `netstat2` + `nix` for processes/interfaces/ports/kill. |
-| `sid-svcctl` | CLI-shelling `ServiceProvider` impl (`systemctl`). |
-| `sid-containers` | CLI-shelling `ContainerProvider`/`KubeProvider` impls (`docker`, `kubectl`). |
-| `sid-privfs` | `sudo`-backed `PrivilegedFs` impl for editing root-owned config files. |
+| `sid` | GPUI frontend — app shell, six tabs, the single `AppState` entity. |
+| `sid-ui` | The design system, compiled — tokens, type roles, metrics, motion, components, gallery, headless interaction tests. |
+| `sid-store` | Layered attributive store: global redb + per-workspace `.sid/config.toml`; includes the `secret_bindings` table. |
+| `sid-secrets` | Secret-storage seam — keyring, in-memory fallback, dormant encrypted-file backend. |
+| `sid-core` | Pure trait seam (ssh/term/db/git/sys/gpu/svc/containers/privfs/editor/notify) — no concrete deps. |
+| `sid-ssh` | `russh` `SshClient` (fail-closed known-hosts) and the `~/.ssh/config` parser. |
+| `sid-term` | `vt100`-backed terminal screen. |
+| `sid-db` | `DbClient` impls: Postgres, SQLite, redb-browse. |
+| `sid-git` | `git2` `GitProvider` plus the `git` CLI path for fetch/push (`cli.rs`). |
+| `sid-gpu` | GPU pre-flight in a subprocess. |
+| `sid-sysinfo` | `SysProvider`: sysinfo + netstat2 + nix. |
+| `sid-svcctl` | `systemctl` `ServiceProvider`. |
+| `sid-containers` | `docker` / `kubectl` providers. |
+| `sid-privfs` | `sudo`-backed `PrivilegedFs`. |
+| `sid-os` | OS-integration impls: `LinuxEditorLauncher`, `DbusNotifier`; other platforms are empty slots. |
+| `sid-mcp` | MCP server (stdio, `rmcp`) with tools for working on this repo; configured by `.mcp.json`. |
 
-Key files:
+Key files: `crates/sid/src/app.rs` (AppState, `Tab`, render-from-cache), `keymap.rs`,
+`secret_binding.rs`, `ssh_connect.rs`; `crates/sid-ui/src/{theme,typography,metrics,motion,bridge}.rs`;
+`crates/sid-store/src/{store,composer,global}.rs`; `.interface-design/system.md`; `justfile`;
+`.github/workflows/ci.yml` (linux/macos/windows); `.claude/plugins/sid-dev/` (skills + agents).
 
-- `crates/sid/src/app.rs` — the single `AppState` entity; `Tab` (6 variants); renders
-  from a cache, I/O only in event handlers, never in `render`.
-- `crates/sid/src/keymap.rs` — `Action`, `ALL_ACTIONS`, `default_bindings()`, and the
-  rebind policy (`REBINDABLE_KEYS`, `resolve_rebind`) behind Settings → Keyboard.
-- `crates/sid-ui/src/theme.rs` — the token source (bg/surface/well/border/fg/muted/
-  accent/success/warning/danger/selection + `ansi[16]`), four built-in palettes.
-- `crates/sid-ui/src/typography.rs` — the role-based type scale + its hygiene ratchet.
-- `crates/sid-ui/src/bridge.rs` — projects sid's palette onto gpui-component's own
-  theming layer; `contrast_ink` derives a filled swatch's label ink.
-- `crates/sid-store/src/store.rs` / `composer.rs` — the scoped read/write facade and the
-  attributive union + `ViewFilters`.
-- `.interface-design/system.md` — the design law (see Read order above).
-- `scripts/sid-cap.sh`, `scripts/sid-shot.sh`, `scripts/lib/sid-app.sh` — capture/input
-  harnesses (see Testing & workflow).
+## Landmines (things that already bit us)
 
-## Landmines (things that already bit us — carried forward, don't re-learn these)
-
-- gpui reports a text element's **min-content width as its full string width**, so
-  `flex_1` alone never shrinks text. Fix trio: `min_w(0)` + `.clamp_one_line()` +
-  `flex_none()` on the sibling that must not grow.
-- gpui's `truncate()` bug (measured-layout cache pinning `wrap_width` to `None`) is
-  **fixed upstream as of gpui-pre 0.3.4** — but `tests/hygiene.rs` still bans the literal
-  `.truncate(` call regardless of the upstream fix. Keep using
-  `sid_ui::StyledExt::clamp_one_line()`; it never depended on the broken path anyway.
-- `h_flex()` centres on the cross axis: a `flex_1` table beside a sized sibling resolves
-  to **zero height** (header paints, no rows). Use `div().flex().flex_row().min_h(0)`.
-- `FillTable` measures in prepaint and its widths land on the *next* layout pass; it
-  schedules that frame itself (`Window::on_next_frame`) because `Window::refresh` is a
-  no-op mid-draw. `Column.width` is still `Pixels`-only in gpui-component 0.6.1.
-- gpui-pre 0.3.4's own `tab_group()` only **renumbers** tab stops — it doesn't wrap Tab
-  at the ends. Wrapping needs gpui-component 0.6.1's `FocusTrapElement::focus_trap`
-  (keep the trap's `FocusHandle` in `use_keyed_state` if the caller is a `RenderOnce`
-  with no lifecycle, same trick `Modal` uses).
-- A `gpui-component` widget that isn't threaded through `sid_ui::bridge` (e.g. `Kbd`)
-  renders through the library's own **unconfigured** theme, not sid's tokens — it looks
-  like a missing style, not a missing bridge call. `sid_ui::Kbd` now draws its own chip
-  and keeps the library only as a key-name formatter.
-- Writing an executable and exec'ing it from concurrent tests hits `ETXTBSY` — a `fork`
-  in another thread momentarily inherits the write descriptor. Write test scripts once,
-  before any spawn.
-- `cargo build | tail` hides the exit code — check `$pipestatus`.
+- gpui reports a text element's **min-content width as its full string width**: use
+  `min_w(0)` + `.clamp_one_line()` + `flex_none()` on the sibling that must not grow.
+- `tests/hygiene.rs` bans the literal `.truncate(`; use `sid_ui::StyledExt::clamp_one_line()`.
+- `h_flex()` centres on the cross axis: a `flex_1` table beside a sized sibling resolves to
+  zero height. Use `div().flex().flex_row().min_h(0)`.
+- `FillTable` widths land on the next frame (`Window::on_next_frame`); `Column.width` is `Pixels`-only.
+- `tab_group()` only renumbers tab stops; wrapping Tab needs gpui-component's `focus_trap`.
+  Two traps registered on one surface race — keep a single owner (`config_editor.rs::trap_owner`).
+- A gpui-component widget not threaded through `sid_ui::bridge` renders unthemed.
+- Typography and colours only via sid-ui roles and tokens (hygiene test).
+- **Parallel branches produce semantic conflicts** (git2 0.21 `Result` getters, duplicate fns):
+  always type-check after a clean textual merge.
+- ETXTBSY when tests write then exec scripts concurrently; write them once before spawning.
+- `cargo ... | tail` hides exit codes (zsh `${pipestatus[1]}`).
 - postcard is positional: `#[serde(default)]` only, never `skip_serializing_if`.
-- `hyprctl keyword` (and legacy two-arg `dispatch`) is **rejected by Murphy's Lua-parsed
-  Hyprland config** — it exits 0 and silently does nothing, which is why `sid-shot.sh`'s
-  placement/headless-monitor rules were failing behind an `|| true` for weeks unnoticed.
-  Use `scripts/sid-cap.sh` (its own hermetic headless sway compositor, no Hyprland
-  dependency) instead of `sid-shot.sh` on this machine.
-- Never put worktrees or cargo build targets under `/tmp` — on this machine it's a 16GB
-  tmpfs, and a cargo target dir there evicts RAM.
-- Agents must work in their own worktree under `~/vcs/sid-wt/<branch>` — during the
-  2026-09-09 spend-limit outage one agent was caught editing `main`'s own worktree by
-  mistake; its changes had to be moved and `main` restored by hand.
-- This repo's commits carry **no trailers** — not `Co-Authored-By`, not anything else.
-  Check the last ten commits before inventing a convention.
+- `hyprctl keyword` is rejected by Murphy's Lua Hyprland config (silent no-op): use
+  `scripts/sid-cap.sh`, not `sid-shot.sh`.
+- Never put worktrees or cargo targets under `/tmp` (16GB tmpfs).
+- Commits carry **no trailers**.
 
-## Testing & workflow
+## Testing and workflow
 
-- **Gate** (every merge to `main`): `cargo fmt --all --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
-  (51 suites / ~1580 tests as of this doc). Visual/UI changes additionally need
-  before/after captures in all four themes and, ideally, an
-  `interface-design:design-review` pass on the touched screen.
-- **`scripts/sid-cap.sh`** is the primary capture *and* input harness — its own hermetic
-  headless `sway` compositor (needs `sway` + `wtype`), so it works while the session is
-  locked, off-screen, and in parallel across agents. Builds `sid` itself by default
-  (`--no-build` to skip). Recipes:
-  - `--tab ssh|database|network|workspaces|system|settings` (`SID_START_TAB`)
-  - `--theme cosmos|void|dusk|cosmos-light` (`SID_THEME`)
-  - `--size WxH` (virtual output size, default `1920x1080`)
-  - `--click X,Y` (repeatable) / `--dclick X,Y` (a true double-click inside gpui's 400ms
-    window, issued as one driver command — two `--click`s can never trigger a
-    `click_count() >= 2` handler) / `--rclick X,Y` (context menus)
-  - `--drag X1,Y1,X2,Y2[,STEPS]` — put it **last** in a run; the synthetic mouse-up
-    doesn't clear the app's drag state, so a later pointer action would re-drag it
-  - `--scroll X,Y,N` — park the pointer and turn the wheel N notches; the only way to
-    reach the foot of a scrolling tab (Settings, System) without activating a row
-  - `--key KEYS` (chords like `ctrl+shift+t`) — needs a prior pointer **click** (motion
-    alone doesn't trigger the compositor's keyboard-focus handoff on a headless seat)
-  - `--type TEXT` (needs `wtype`), `--env KEY=VALUE`, `--xdg DIR` (a prepared hermetic
-    store), `--real` (the live store instead of the hermetic demo), `--keep`, `--tree`
-  - `SID_UI_SCALE` env var — per-run zoom override for captures, same lever as
-    `ctrl +`/`ctrl -`.
-- **`scripts/sid-shot.sh`** (the older live-Hyprland harness) currently **cannot capture
-  at all** on Murphy's Hyprland — see the `hyprctl keyword` landmine above. Prefer
-  `sid-cap.sh`.
-- **Docker fixtures:** `scripts/test-ssh.sh` (sshd), `scripts/test-integration.sh`
-  (Postgres), `scripts/test-db-matrix.sh` (Postgres + TimescaleDB) bring up
-  `docker/docker-compose.test.yml` services and run the `#[ignore]`d integration tests
-  against them; `scripts/test-smoke-headless.sh` is the Xvfb+Lavapipe launch-survives
-  smoke.
-- **Worktree convention:** every branch of work happens in its own `git worktree` under
-  `~/vcs/sid-wt/<branch>` — never under `/tmp`, never in another branch's worktree. Leave
-  no worktree with uncommitted changes at the end of an iteration.
-- **Commits:** no trailers (see Landmines); push gate-green units. Match the phrasing
-  style of the last ten commits rather than inventing a new convention.
-- **Salvage source:** the archived TUI is read-only at `murphlmao/sid-poc`. Crib
-  adapters/view logic; don't carry scaffolding wholesale.
+- **Gate:** `just gate`, or `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (CLAUDE.md has the niced forms). One `sid-privfs` sudo test can flake in parallel; rerun alone.
+- **UI interaction tests:** `just ui-test` — headless gpui-kit harness, files in `crates/sid-ui/tests/`
+  (focus trap, button activation, text input editing, tree keys, FillTable floor). Sees behaviour, not pixels.
+- **Captures:** `scripts/sid-cap.sh --tab <tab> --theme <theme> --size WxH --out x.png` (private headless sway;
+  needs `sway` + `wtype`; honours `SID_CARGO=<wrapper>`). `just cap`, `just gallery`; frame cost: `just perf`.
+- **Docker fixtures:** `just test-ssh`, `just test-db` (`#[ignore]`d tests).
+- **MCP:** `just mcp` runs `sid-mcp` (crate_map, find_symbol, adapter_check, gate, capture_ui, backlog, docs_index, recent_commits, store_inspect).
+- **Worktrees** under `~/vcs/sid-wt/<branch>` or the harness one; conventional commits, no trailers; push gate-green
+  units; never force-push; merge `origin/main` in, don't rebase.
+- **Salvage source:** the archived TUI at `murphlmao/sid-poc` (read-only).

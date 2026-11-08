@@ -8,7 +8,9 @@ in their own crates. No GPUI, no concrete dependency — ever.
 (`TerminalScreen`), `db` (`DbClient`, `DbClientDescriptor`, `DbKind`), `git` (`GitProvider`),
 `sys` (`SysProvider`), `svc` (`ServiceProvider`), `containers` (`ContainerProvider`,
 `KubeProvider`), `privfs` (`PrivilegedFs`, `Passphrase`), `gpu` (`GpuPreflight`, `RenderPath`),
-`keys` (`IdentityScan`, `StaticIdentities`, auth preference helpers).
+`keys` (`IdentityScan`, `StaticIdentities`, auth preference helpers), `editor`
+(`EditorLauncher`, `EditorHandle`, `LaunchPolicy`, `FakeEditorLauncher`), `notify`
+(`Notifier`, `Notification`, `FakeNotifier`) — the last two are implemented by `sid-os`.
 
 ## Invariants
 - `Cargo.toml` stays free of concrete crates (redb, russh, git2, rusqlite, tokio-postgres,
