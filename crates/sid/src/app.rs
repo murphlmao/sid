@@ -369,14 +369,16 @@ pub struct AppState {
 }
 
 /// One live SSH session tab (ssh-v3): the entity, its `user@host` display label, which
-/// saved (alias, origin) row it was opened from (if any — `None` for an ephemeral
-/// quick-connect that was never saved, so the home tree's live-dot only tracks saved
-/// hosts), and the subscription that lets its `⇄ dock` toggle — fired as an event,
+/// saved (alias, origin) row it was opened from (every connection is a saved one now —
+/// ad-hoc dialling was retired — so the home tree's live-dot tracks them all; `Option`
+/// is kept for the type's sake and for tests), the dialled [`Host`], and the subscription that lets its `⇄ dock` toggle — fired as an event,
 /// since `SshSession` never touches `Store` itself — reach [`AppState::on_session_event`].
 pub(crate) struct SshTab {
     pub(crate) label: SharedString,
     pub(crate) session: Entity<SshSession>,
     pub(crate) source: Option<(String, Scope)>,
+    /// The dialled host, kept so a failed tab can **Retry** / **Edit connection**.
+    host: Host,
     _dock_toggle: Subscription,
 }
 
@@ -723,12 +725,13 @@ impl AppState {
 
     // ---- SSH multi-session tabs (ssh-v3) ----------------------------------------
 
-    /// connect (or quick-connect): resolve `host`'s secret and, if it's concretely
+    /// connect: resolve `host`'s secret and, if it's concretely
     /// available (or none is needed), open a new, independent [`SshSession`] and switch
     /// to it — ssh-v3 makes every session fully independent, so connecting a second (or
     /// third, …) host no longer disconnects any other open tab. `source` identifies
-    /// which saved (alias, origin) row this came from, for the home tree's live-dot —
-    /// `None` for an ephemeral quick-connect host that was never saved.
+    /// which saved (alias, origin) row this came from, for the home tree's live-dot.
+    /// Every connection is a saved one (the quick-connect box saves first), so the home
+    /// callers always pass `Some`.
     ///
     /// Round-D §A.4: a `Password`-auth host with nothing concretely resolvable (missing
     /// entirely, or a dangling `secret_ref`) opens the connect-time password prompt
@@ -764,6 +767,7 @@ impl AppState {
     ) {
         let label: SharedString = format!("{}@{}", host.user, host.host).into();
         let known_hosts_path = data_dir().join("known_hosts");
+        let dialled = host.clone();
         let session = SshSession::open(
             host,
             secret,
@@ -772,11 +776,12 @@ impl AppState {
             window,
             cx,
         );
-        let dock_toggle = cx.subscribe(&session, Self::on_session_event);
+        let dock_toggle = cx.subscribe_in(&session, window, Self::on_session_event);
         self.ssh_sessions.push(SshTab {
             label,
             session,
             source,
+            host: dialled,
             _dock_toggle: dock_toggle,
         });
         self.active_session = Some(self.ssh_sessions.len() - 1);
@@ -859,18 +864,41 @@ impl AppState {
         }
     }
 
-    /// Routes every [`SshSessionEvent`] a live session fires. Currently just the `⇄
-    /// dock` toggle; `SshSession` never touches `Store` itself (see that event's doc
+    /// Routes every [`SshSessionEvent`] a live session fires: the `⇄
+    /// dock` toggle, and a failed tab's Retry / Edit connection. `SshSession` never touches `Store` itself (see that event's doc
     /// comment), so persisting the flip and fanning it out to every other open tab is
     /// this method's job.
     fn on_session_event(
         &mut self,
-        _session: Entity<SshSession>,
+        session: &Entity<SshSession>,
         event: &SshSessionEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             SshSessionEvent::ToggleDockSide => self.toggle_dock_side(cx),
+            SshSessionEvent::Retry | SshSessionEvent::EditConnection => {
+                let Some(ix) = self.ssh_sessions.iter().position(|t| &t.session == session) else {
+                    return;
+                };
+                let (host, source) = {
+                    let tab = &self.ssh_sessions[ix];
+                    (tab.host.clone(), tab.source.clone())
+                };
+                if matches!(event, SshSessionEvent::Retry) {
+                    // Drop the dead tab and dial afresh (new tab, same host + auth).
+                    self.close_session(ix, window, cx);
+                    self.connect_host(host, source, window, cx);
+                } else if let Some((alias, origin)) = source {
+                    // Prefer the saved record (it may have been edited since the dial).
+                    let host = self
+                        .hosts
+                        .iter()
+                        .find(|a| a.item.alias == alias && a.origin == origin)
+                        .map_or(host, |a| a.item.clone());
+                    self.open_edit_form(host, origin, window, cx);
+                }
+            }
         }
     }
 
