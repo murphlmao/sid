@@ -1812,7 +1812,7 @@ mod tests {
     #[test]
     fn curated_candidates_are_all_tilde_expanded() {
         let candidates = curated_candidates("/home/murphy");
-        assert_eq!(candidates.len(), CURATED_TEMPLATES.len());
+        assert_eq!(candidates.len(), curated_templates().len());
         assert!(candidates.contains(&"/home/murphy/.ssh/config".to_string()));
         assert!(candidates.contains(&"/etc/fstab".to_string()));
         assert!(!candidates.iter().any(|p| p.starts_with('~')));

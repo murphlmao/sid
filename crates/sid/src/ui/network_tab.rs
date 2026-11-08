@@ -104,8 +104,7 @@ use sid_ui::{
     ActionCell, Badge, BadgeTone, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
     PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl, StyledExt as _, Switch,
-    TextInput, Toast, Typography as _, caveat_line, h_flex, scaled, sortable_th,
-    v_flex,
+    TextInput, Toast, Typography as _, caveat_line, h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the Network tab's segmented control.
@@ -1684,7 +1683,10 @@ impl AppState {
             .unwrap_or(0);
 
         self.sub_view_panel(NetSubTab::Ports, count, refreshing, None, cx)
-            .children(notice_row("Couldn't read ports", self.network.error.clone()))
+            .children(notice_row(
+                "Couldn't read ports",
+                self.network.error.clone(),
+            ))
             .child(table_pane(table.as_ref(), empty))
             .children(notice_row("Couldn't stop that process", kill_error))
             // One Meta-role line naming *why* some rows have no `kill` button — the
@@ -1755,7 +1757,10 @@ impl AppState {
             // are disjoint unit sets, so `SYSTEM SERVICES · 12` and `USER SERVICES · 3`
             // are counts of different things and the header has to say which.
             .title(format!("{} services", svc_scope_label(scope)))
-            .children(notice_row("Couldn't read services", self.network.svc_error.clone()))
+            .children(notice_row(
+                "Couldn't read services",
+                self.network.svc_error.clone(),
+            ))
             .child(table_pane(table.as_ref(), empty))
             .children(notice_row("That service action failed", action_error))
             .into_any_element()
@@ -1816,7 +1821,10 @@ impl AppState {
         };
 
         self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
-            .children(notice_row("Couldn't read containers", self.network.docker_error.clone()))
+            .children(notice_row(
+                "Couldn't read containers",
+                self.network.docker_error.clone(),
+            ))
             .child(body)
             .into_any_element()
     }
@@ -1863,7 +1871,10 @@ impl AppState {
             .kube_context_control(cx)
             .map(IntoElement::into_any_element);
         self.sub_view_panel(NetSubTab::Kubernetes, count, refreshing, secondary, cx)
-            .children(notice_row("Couldn't read pods", self.network.kube_error.clone()))
+            .children(notice_row(
+                "Couldn't read pods",
+                self.network.kube_error.clone(),
+            ))
             .child(body)
             .into_any_element()
     }
@@ -2162,7 +2173,11 @@ impl AppState {
                             Ok(ports) => {
                                 if let Some(table) = &table {
                                     table.update(cx, |state, cx| {
-                                        state.delegate_mut().set_ports(ports, usage.clone(), cpu_ready);
+                                        state.delegate_mut().set_ports(
+                                            ports,
+                                            usage.clone(),
+                                            cpu_ready,
+                                        );
                                         state.refresh(cx);
                                     });
                                 }
@@ -3931,7 +3946,7 @@ mod tests {
     fn a_filtered_empty_table_names_the_query() {
         let got = empty_guidance("  zzz  ", "nothing is listening");
         assert!(got.contains("zzz"), "{got}");
-        assert!(got.contains("clear the filter"), "{got}");
+        assert!(got.contains("Clear the filter"), "{got}");
     }
 
     #[test]
