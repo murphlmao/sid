@@ -90,7 +90,7 @@ use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
     FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, Segment,
-    SegmentSelect, SegmentedControl, StatCluster, StyledExt as _, TextInput, Typography as _,
+    SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput, Toast, Typography as _,
     h_flex, scaled, sortable_th, v_flex,
 };
 
@@ -305,7 +305,7 @@ impl ProcessesDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("cpu", "CPU%").descending(),
-                    ColumnWidth::Fixed(70.),
+                    ColumnWidth::Fixed(84.),
                 ),
                 (
                     Column::new("mem", "Mem").sortable(),
@@ -327,11 +327,14 @@ impl ProcessesDelegate {
                 // grow because it is the column whose content is genuinely unbounded.
                 (
                     Column::new("cmd", "Command").sortable(),
-                    ColumnWidth::grow().weight(2.5).min_width(240.),
+                    ColumnWidth::grow().weight(2.5).min_width(226.),
                 ),
+                // Usernames (not numeric uids) land here now, up to 32 characters: a
+                // modest grower that holds a 120px floor and shows the whole name on
+                // a wide window, ellipsised (see the cell) on a narrow one.
                 (
                     Column::new("user", "User").sortable(),
-                    ColumnWidth::Min(120.),
+                    ColumnWidth::grow().weight(0.5).min_width(120.),
                 ),
                 // Wide enough for the armed state's "confirm" label plus the cell's own
                 // padding — the idle "kill" chip is narrower, but a control that resizes
@@ -591,6 +594,9 @@ impl TableDelegate for ProcessesDelegate {
                     proc.user.clone().unwrap_or_else(|| "—".to_string()).into();
                 div()
                     .px_2()
+                    .min_w(px(0.))
+                    .whitespace_normal()
+                    .clamp_one_line()
                     .text_mono(&theme)
                     .text_color(rgb(theme.muted))
                     .child(label)
@@ -608,7 +614,7 @@ impl TableDelegate for ProcessesDelegate {
                         ConfirmButton::new(button_id, "kill")
                             .armed(armed)
                             .armed_label("confirm")
-                            .tooltip("send SIGTERM to this process")
+                            .tooltip("Ask this process to stop (SIGTERM)")
                             .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                                 let outcome =
                                     this.delegate_mut().kill_arm.press(pid, Instant::now());
@@ -649,10 +655,10 @@ impl AppState {
         }
 
         let theme = theme::active(cx).clone();
-        let overview = self.overview_cluster();
+        let overview = self.overview_cluster(cx);
         let sub_view = self.systems.sub_view;
         let body: AnyElement = match sub_view {
-            SystemSubView::Processes => self.processes_view(&theme, cx),
+            SystemSubView::Processes => self.processes_view(cx),
             SystemSubView::ConfigFiles => self.config_files_view(&theme, cx),
         };
         let editor_overlay = self.config_editor_overlay(window, cx);
@@ -708,7 +714,7 @@ impl AppState {
     /// holds a sentence is not a count" defect `network_tab.rs` already fixed for Ports.
     /// The probe error now renders as its own line in the body, same shape as the kill
     /// error already did.
-    fn processes_view(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn processes_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let filter = self.systems.filter.clone();
         let refreshing = self.systems.refreshing;
         let proc_count = self
@@ -725,7 +731,7 @@ impl AppState {
         let probe_error = self.systems.error.clone();
         let table = self.systems.table.clone();
 
-        Card::panel("processes")
+        Card::panel("Processes")
             .count(proc_count)
             // `size_full`, not `flex_1` (what `network_tab.rs`'s `sub_view_panel` uses):
             // that panel sits directly inside a `v_flex`, where `flex_1` has a flex
@@ -744,15 +750,13 @@ impl AppState {
                     .children(filter.map(|f| TextInput::new(&f).small())),
             )
             .action(
-                Button::new("systems-refresh", "refresh")
-                    .small()
-                    .icon(Icon::Refresh)
+                IconButton::new("systems-refresh", Icon::Refresh, "Refresh (F5)")
                     .loading(refreshing)
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.refresh_systems(cx);
                     })),
             )
-            .children(probe_error.map(|e| error_line(theme, e)))
+            .children(probe_error.map(|e| error_toast("Couldn't read processes", e)))
             .children(table.map(|t| {
                 div()
                     .flex_1()
@@ -760,7 +764,7 @@ impl AppState {
                     .w_full()
                     .child(FillTable::new(&t).stripe(true))
             }))
-            .children(kill_error.map(|e| error_line(theme, e)))
+            .children(kill_error.map(|e| error_toast("Couldn't stop that process", e)))
             .into_any_element()
     }
 
@@ -928,23 +932,44 @@ impl AppState {
 /// tilde-expand ([`expand_tilde`]) and existence-filter ([`filter_existing`]) before
 /// rendering — this is just the template list, so it's a plain data constant rather
 /// than something that needs its own test.
-const CURATED_TEMPLATES: &[&str] = &[
-    "/etc/fstab",
-    "/etc/hosts",
-    "/etc/environment",
-    "/etc/pacman.conf",
-    "/etc/ssh/sshd_config",
-    "/etc/ssh/ssh_config",
-    "/etc/sudoers",
+const COMMON_TEMPLATES: &[&str] = &[
     "~/.ssh/config",
     "~/.gitconfig",
     "~/.zshrc",
     "~/.bashrc",
     "~/.profile",
-    "~/.config/hypr/hyprland.conf",
     "~/.config/kitty/kitty.conf",
+];
+
+/// System files present on every unix (Linux and macOS).
+#[cfg(unix)]
+const UNIX_TEMPLATES: &[&str] = &[
+    "/etc/hosts",
+    "/etc/ssh/sshd_config",
+    "/etc/ssh/ssh_config",
+    "/etc/sudoers",
+];
+
+/// Linux-only: distro files and the Wayland desktop configs this cockpit's author uses.
+#[cfg(target_os = "linux")]
+const LINUX_TEMPLATES: &[&str] = &[
+    "/etc/fstab",
+    "/etc/environment",
+    "/etc/pacman.conf",
+    "~/.config/hypr/hyprland.conf",
     "~/.config/waybar/config.jsonc",
 ];
+
+/// The curated templates for this OS, system files first, then the home-relative ones.
+fn curated_templates() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = Vec::new();
+    #[cfg(unix)]
+    v.extend_from_slice(UNIX_TEMPLATES);
+    #[cfg(target_os = "linux")]
+    v.extend_from_slice(LINUX_TEMPLATES);
+    v.extend_from_slice(COMMON_TEMPLATES);
+    v
+}
 
 impl AppState {
     /// Re-read the pinned list from the store and re-filter the curated candidates
@@ -1039,10 +1064,14 @@ impl AppState {
             })
             .collect();
 
-        let pin_error = self.systems.pin_error.clone().map(|e| error_line(theme, e));
+        let pin_error = self
+            .systems
+            .pin_error
+            .clone()
+            .map(|e| error_toast("Couldn't pin that file", e));
         let pin_input = self.systems.pin_input.clone();
 
-        Card::panel("config files")
+        Card::panel("Config files")
             .count(pinned_count + common_count)
             // See `processes_view`'s comment on why `size_full`, not `flex_1`: this
             // panel sits in the same plain `div().flex_1()` wrapper.
@@ -1251,24 +1280,15 @@ impl AppState {
     }
 }
 
-/// An inline failure notice: the registry's error glyph, then the message.
-///
-/// Both of this tab's error lines used to open with a literal `✗` — a Dingbats codepoint
-/// drawn by whatever the text font happened to have, at whatever weight, with no size or
-/// colour relationship to the type beside it. [`Icon::Error`] is a bundled Lucide SVG
-/// that inherits both.
-/// The message is a flex item that has to be *allowed* to shrink: gpui text measures the
-/// same under `MinContent` as under `MaxContent`, so without `min_w(0)` the line's
-/// automatic minimum size is the whole error string and it neither wraps nor clips — an
-/// OS error walks straight out of whichever panel it was rendered into.
-fn error_line(theme: &Theme, message: String) -> impl IntoElement + use<> {
-    h_flex()
-        .gap_1p5()
-        .py_1()
-        .text_meta(theme)
-        .text_color(rgb(theme.danger))
-        .child(Icon::Error.small())
-        .child(div().flex_1().min_w(px(0.)).child(message))
+/// A danger `Toast` strip for a failure in a panel body: what happened as the title, the
+/// raw error beneath. `flex_none` + padding so it never eats the table's height and
+/// sits clear of the panel edge.
+fn error_toast(title: &'static str, message: String) -> impl IntoElement + use<> {
+    div()
+        .flex_none()
+        .px_3()
+        .pt_2()
+        .child(Toast::danger(message).title(title))
 }
 
 /// One of the two config-file lists, as a bounded card.
@@ -1294,10 +1314,15 @@ fn config_list_card(
         .min_w_0()
 }
 
-/// `$HOME`, falling back to `/tmp` — no `dirs` crate for one env-var read, matching
-/// `db_tab.rs`'s `downloads_dir`/`session.rs`'s `downloads_dir` convention.
+/// The user's home: `$HOME`, else `%USERPROFILE%` (Windows), else the platform temp dir -
+/// the same env pattern as `app::data_dir`, so no `/tmp` literal on any OS.
 fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Tilde-expand a leading `~` (home-relative) component: `~/x` -> `{home}/x`, a bare
@@ -1316,8 +1341,8 @@ fn expand_tilde(path: &str, home: &str) -> String {
 /// [`CURATED_TEMPLATES`], tilde-expanded against `home`. Does no I/O — callers
 /// existence-filter with [`filter_existing`] before rendering.
 fn curated_candidates(home: &str) -> Vec<String> {
-    CURATED_TEMPLATES
-        .iter()
+    curated_templates()
+        .into_iter()
         .map(|p| expand_tilde(p, home))
         .collect()
 }
@@ -1379,16 +1404,19 @@ impl AppState {
     ///
     /// It carries no refresh control of its own: the screen has exactly one, in the
     /// Processes toolbar, and the overview re-probes itself every 2 seconds regardless.
-    fn overview_cluster(&self) -> AnyElement {
-        let refreshing = self.systems.refreshing;
+    fn overview_cluster(&self, cx: &App) -> AnyElement {
         let Some(ov) = self.systems.overview.as_ref() else {
-            return StatCluster::new()
-                .title("system")
-                .summary(if refreshing {
-                    "probing…"
-                } else {
-                    "no system overview yet"
-                })
+            // Probing: three skeleton cards in the shape the real ones will take.
+            return div()
+                .flex()
+                .flex_row()
+                .gap_3()
+                .children((0..3usize).map(|ix| {
+                    Card::new()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Skeleton::rows(("sys-skel", ix), 3))
+                }))
                 .into_any_element();
         };
 
@@ -1431,12 +1459,22 @@ impl AppState {
             Meter::new("Swap", 0.0).hide_bar().note("none configured")
         };
 
-        StatCluster::new()
-            .title("system")
-            .summary(summary)
-            .stat(cpu)
-            .stat(memory)
-            .stat(swap)
+        // Host facts as one Meta line, then CPU / Memory / Swap as three cards in a row.
+        let theme = theme::active(cx).clone();
+        let card = |m: Meter| Card::new().flex_1().min_w_0().child(m);
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(div().text_meta(&theme).child(summary))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_3()
+                    .child(card(cpu))
+                    .child(card(memory))
+                    .child(card(swap)),
+            )
             .into_any_element()
     }
 }
@@ -1774,7 +1812,7 @@ mod tests {
     #[test]
     fn curated_candidates_are_all_tilde_expanded() {
         let candidates = curated_candidates("/home/murphy");
-        assert_eq!(candidates.len(), CURATED_TEMPLATES.len());
+        assert_eq!(candidates.len(), curated_templates().len());
         assert!(candidates.contains(&"/home/murphy/.ssh/config".to_string()));
         assert!(candidates.contains(&"/etc/fstab".to_string()));
         assert!(!candidates.iter().any(|p| p.starts_with('~')));
