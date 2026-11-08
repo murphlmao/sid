@@ -2123,7 +2123,7 @@ impl AppState {
                             // be pointing at a control that is disabled.
                             "Click one of sid's store tables on the left to list its rows."
                         } else {
-                            "Write a query above, or click a table in the schema tree."
+                            "Write a query above, or double-click a table in the schema tree."
                         })
                         .icon(Icon::Terminal)
                         .secondary(
@@ -2661,7 +2661,8 @@ impl AppState {
                         div()
                             .min_w(px(0.))
                             .clamp_one_line()
-                            .text_meta(&t)
+                            .text_heading(&t)
+                            .text_color(rgb(t.fg))
                             .child(name),
                     )
                     .meta(Badge::count(count))
