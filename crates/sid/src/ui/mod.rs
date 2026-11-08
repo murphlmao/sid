@@ -23,6 +23,7 @@ pub mod password_prompt;
 pub mod session;
 pub mod settings_tab;
 pub mod ssh_home;
+pub mod ssh_import;
 pub mod systems_tab;
 pub mod workspaces_tab;
 
@@ -56,6 +57,18 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", host_form::FormCancel, Some("HostForm")),
         KeyBinding::new("enter", host_form::FormSubmit, Some("HostForm")),
         // DB connection form bindings (W4), scoped the same way as the host form's.
+        // SSH config import dialog. Plain Enter toggles the focused checkbox, so submit
+        // is ctrl-enter.
+        KeyBinding::new(
+            "escape",
+            ssh_import::ImportCancel,
+            Some(ssh_import::IMPORT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "ctrl-enter",
+            ssh_import::ImportSubmit,
+            Some(ssh_import::IMPORT_CONTEXT),
+        ),
         KeyBinding::new("escape", db_conn_form::DbFormCancel, Some("DbConnForm")),
         KeyBinding::new("enter", db_conn_form::DbFormSubmit, Some("DbConnForm")),
         // Connect-time password prompt (round-D §A.4), scoped the same way.
