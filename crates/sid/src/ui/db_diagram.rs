@@ -1103,15 +1103,15 @@ mod layout_tests {
     }
 
     #[test]
-    fn higher_degree_tables_sort_first_and_land_at_the_top() {
-        let inputs = vec![input("low", 0, 3), input("high", 5, 3)];
+    fn higher_degree_tables_sort_first_within_a_layer() {
+        // Two parentless tables share layer 0; the hub (degree 5) takes the top slot.
+        let inputs = vec![input("low", 1, 3), input("high", 5, 3)];
         let positions = compute_initial_layout(&inputs);
         assert_eq!(
             positions[&"high".to_string()],
             point(px(MARGIN), px(MARGIN))
         );
         assert!(positions[&"low".to_string()].y > positions[&"high".to_string()].y);
-        // Same column (degree-sorted stack), not side by side.
         assert_eq!(
             positions[&"low".to_string()].x,
             positions[&"high".to_string()].x
