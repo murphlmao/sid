@@ -58,12 +58,12 @@ Trait (owned by `sid-core` unless noted) -> impl crate -> where the app construc
 | `term::TerminalScreen` | `Vt100Screen` (`sid-term`) | `ui/session.rs` (`Box::new(Vt100Screen::new(..))`) |
 | `keys::IdentityScan` | `LocalIdentities` (`sid-ssh`); `StaticIdentities` is the core test double | `ui/host_form.rs` (`LocalIdentities::from_env()`) |
 | `db::DbClient`, `db::DbClientDescriptor` | `PostgresClient`, `SqliteClient`, `RedbBrowseClient`, `*Descriptor` (`sid-db`) | `db_registry.rs` (`DbRegistry`, one `register(factory, descriptor)` per `DbKind`) |
-| `git::GitProvider` | `Git2Provider` (`sid-git`); fetch/push of network remotes shell out to the `git` CLI (`crates/sid-git/src/cli.rs`: argv only, non-interactive env, 90 s timeout, process-group kill, capped output), local remotes stay on libgit2 | `git_registry.rs` (`Git2Provider::factory()`) |
+| `git::GitProvider` | `Git2Provider` (`sid-git`); fetch/push of network remotes shell out to the `git` CLI (`crates/sid-git/src/cli.rs`: argv only, non-interactive env, 90 s timeout, process-group kill, capped output; hardened against repo config: scrubbed `GIT_*` env, `GIT_ALLOW_PROTOCOL=ssh::https`, hooks/fsmonitor/askPass neutralised via `-c`, `ext::`/http/git remotes refused), local remotes stay on libgit2 | `git_registry.rs` (`Git2Provider::factory()`) |
 | `sys::SysProvider` | `SysinfoProvider` (`sid-sysinfo`) | `ui/network_tab.rs`, `ui/systems_tab.rs` |
 | `svc::ServiceProvider` | `SvcctlProvider` (`sid-svcctl`) | `ui/network_tab.rs` |
 | `containers::ContainerProvider`, `KubeProvider` | `DockerCliProvider`, `KubectlCliProvider` (`sid-containers`) | `ui/network_tab.rs` |
 | `privfs::PrivilegedFs` | `SudoPrivilegedFs` (`sid-privfs`) | `ui/config_editor.rs` (a `OnceLock`'d `Arc<dyn PrivilegedFs>`) |
-| `editor::EditorLauncher` (+ `EditorHandle`, `LaunchPolicy`) — `sid_core::editor` | `LinuxEditorLauncher` (`sid-os`: `$VISUAL`/`$EDITOR`, terminal vs GUI, `xdg-open` fallback) | not yet wired in `crates/sid` (lands with SFTP edit-in-place) |
+| `editor::EditorLauncher` (+ `EditorHandle`, `LaunchPolicy`) — `sid_core::editor` | `LinuxEditorLauncher` (`sid-os`: `$VISUAL`/`$EDITOR`, terminal vs GUI, `xdg-open` fallback) | `ui/session/edit.rs` (`default_launcher()`, policy `EditorOnly`; SFTP edit-in-place) |
 | `notify::Notifier` — `sid_core::notify` | `DbusNotifier` (`sid-os`, `org.freedesktop.Notifications` via zbus) | `app.rs` (`AppState::notifier: Arc<dyn Notifier>`) |
 | `gpu::GpuPreflight` | `LinuxGpuPreflight` (`sid-gpu`) | `main.rs` (before gpui starts) |
 | `sid_secrets::SecretStore`, `KeyringBackend` (owned by `sid-secrets`) | `KeyringStore<OsKeyringBackend>`, `MemorySecretStore`, dormant `EncryptedFileStore` | `app.rs::open_secrets` -> `AppState::secrets: Box<dyn SecretStore>` |
@@ -88,6 +88,24 @@ Trait (owned by `sid-core` unless noted) -> impl crate -> where the app construc
   gpui-light; user overrides are `KeyBinding`s in the store. `ui::init` binds form-scoped keys.
 - Pre-gpui startup (`--gpu-probe`, `--gpu-report` argv modes) runs before anything touches
   the store or secrets.
+- **Background-refresh / hibernation policy.** Introspection (System sampling) does no
+  background work unless the user opts in. `ui/systems_tab.rs::next_tick(visible, focused,
+  BackgroundRefresh)` is the one scheduling decision: visible and focused polls at the 2 s
+  foreground cadence; otherwise `BackgroundRefresh::Off` (the default) returns no timer, no
+  probe and no repaint, and `Every(d)` probes at the user's interval. The setting is
+  `Settings::background_refresh_secs` (v8, `0` = Off), edited in Settings → Behaviour and
+  seeded at startup (`app.rs`, `seed_background`). A warmup tick after the tab opens never
+  turns an idle decision into work. Live external connections (SSH sessions, DB
+  connections) are exempt; render still never probes.
+- **Hardening notes (security review #2).** The git CLI path (`sid-git/src/cli.rs`) treats
+  repo-local config as hostile: scrubbed `GIT_*` env, pinned `GIT_ALLOW_PROTOCOL`, hooks,
+  fsmonitor and askPass neutralised with `-c` (the user's own credential helpers and
+  `core.sshCommand` are re-added), `ext::`/http/git remotes refused, local pushes through
+  libgit2; consequently a repo's hooks do not run for sid's fetch/push. Remote edit
+  (`sid-ssh/src/remote_edit.rs`, driven by `ui/session/edit.rs`) is bounded, exclusive-create,
+  shell-inert in local names, SHA-256 conflict-checked, and every exit goes through
+  `close_or_preserve` (backups under the data dir); see `crates/sid-ssh/CLAUDE.md`.
+  Hostile text is neutralised at display (`sid_core::text::is_deceptive` and its mirrors).
 
 ## Store: layering, attribution, secrets-by-ref
 

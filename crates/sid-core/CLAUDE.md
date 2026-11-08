@@ -11,6 +11,7 @@ in their own crates. No GPUI, no concrete dependency — ever.
 `keys` (`IdentityScan`, `StaticIdentities`, auth preference helpers), `editor`
 (`EditorLauncher`, `EditorHandle`, `LaunchPolicy`, `FakeEditorLauncher`), `notify`
 (`Notifier`, `Notification`, `FakeNotifier`) — the last two are implemented by `sid-os`.
+`text` (`is_deceptive(char)`: bidi and zero-width characters that change how text displays; used by `sid-os` notification sanitising. `sid-ui::toast` mirrors it (sid-ui cannot depend on core), and `sid-git` (`cli.rs`) and `crates/sid/src/ui/session.rs` keep local equivalents — keep them in step).
 
 ## Invariants
 - `Cargo.toml` stays free of concrete crates (redb, russh, git2, rusqlite, tokio-postgres,

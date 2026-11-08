@@ -18,6 +18,8 @@ Global redb + per-workspace committed `.sid/config.toml`, composed attributively
   bump `*_VERSION` in `global.rs`, keep every old `decode_*` arm, add a migration test.
 - New write paths get a `StoreError::Conflict` guard + test (promote/demote model it).
 - Workspace config is TOML and diffable; never put it in redb.
+- `Settings` is at `SETTINGS_VERSION` 8 (v7 added `text_rendering`, `palette_recents`, `import_banner_dismissed`; v8 added `background_refresh_secs`, `0` = Off). `palette_recents` ids are opaque and keyed by origin + alias (pre-origin entries read as global); a v6/v7 decode must default the new fields (migration tests in `global.rs`).
+- A secret binding's layer is derived from the key itself (`bind_secret_if_unbound`: bare = global, `sid-ws:<len>:<id>:<ref>` = that workspace); a record origin that disagrees is `StoreError::CrossLayerBinding`.
 
 ## Test
 `nice -n 10 cargo test -p sid-store -j 3` — `tests/`: `compose.rs`, `compose_proptest.rs`,
