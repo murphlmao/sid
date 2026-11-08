@@ -42,6 +42,20 @@ sid_app_setup_xdg() {
     export XDG_DATA_HOME="$base/data" XDG_STATE_HOME="$base/state" XDG_CONFIG_HOME="$base/config"
 }
 
+# sid_app_hermetic_env_args REAL BASE_DIR
+#
+# REAL != 1: prints (one per line) the `env` arguments that cut the child sid off from
+# the user's real credentials: no ssh-agent, no session D-Bus (so no Secret Service /
+# keyring), and a throwaway HOME (no ~/.ssh, no ~/.config). The app then falls back to
+# its in-memory secret store. REAL == 1: prints nothing (unchanged behaviour).
+# Usage: mapfile -t X < <(sid_app_hermetic_env_args "$REAL" "$dir"); env "${X[@]}" cmd
+sid_app_hermetic_env_args() {
+    local real="$1" base="$2"
+    [[ "$real" -eq 1 ]] && return 0
+    mkdir -p "$base/home"
+    printf '%s\n' -u SSH_AUTH_SOCK -u DBUS_SESSION_BUS_ADDRESS "HOME=$base/home"
+}
+
 # sid_app_wait_for_window PID TIMEOUT_SECS INTERVAL LOGFILE DETECT_FN [ARGS...]
 #
 # Polls DETECT_FN (called as `DETECT_FN PID [ARGS...]`) until it exits 0, PID

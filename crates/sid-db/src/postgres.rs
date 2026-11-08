@@ -76,7 +76,11 @@ pub(crate) fn tls_choice(config: &tokio_postgres::Config) -> TlsChoice {
     use tokio_postgres::config::SslMode;
     let hosts = config.get_hosts();
     // Empty host list → treat as non-local (fail safe: never assume plaintext).
-    let all_local = !hosts.is_empty() && hosts.iter().all(is_local_host);
+    // `hostaddr` overrides the dial target (tokio-postgres connects to it when set), so
+    // every hostaddr must be loopback too — else `host=localhost hostaddr=<remote>` would
+    // go plaintext to a remote box.
+    let addrs_local = config.get_hostaddrs().iter().all(|a| a.is_loopback());
+    let all_local = !hosts.is_empty() && hosts.iter().all(is_local_host) && addrs_local;
     if all_local {
         // Loopback / unix-socket: plaintext is safe (no network to eavesdrop).
         // Honor an explicit TLS request (`require`/`verify-*`); otherwise plaintext.
@@ -91,6 +95,34 @@ pub(crate) fn tls_choice(config: &tokio_postgres::Config) -> TlsChoice {
         // could weaponize it. Fails closed.
         TlsChoice::Tls
     }
+}
+
+/// `EXPLAIN` must only ever describe a plan. Postgres treats `EXPLAIN ANALYZE ...` and
+/// `EXPLAIN (ANALYZE ...) ...` as "run it for real", so editor text that begins with
+/// those option forms would turn the plan affordance into execution. Returns the
+/// refusal reason, or `None` when the text is safe to prefix with `EXPLAIN `.
+pub(crate) fn explain_option_injection(sql: &str) -> Option<&'static str> {
+    use crate::lexer::{TokenKind, tokenize};
+    let mut toks = tokenize(sql)
+        .into_iter()
+        .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Comment));
+    let first = toks.next()?;
+    let word = first.text.to_ascii_uppercase();
+    if word == "(" {
+        return Some("EXPLAIN refused: text starts with an option list `(`");
+    }
+    let is_analyze = |w: &str| matches!(w, "ANALYZE" | "ANALYSE");
+    if is_analyze(&word) {
+        return Some("EXPLAIN refused: ANALYZE would execute the statement");
+    }
+    if word == "VERBOSE" {
+        if let Some(n) = toks.next() {
+            if is_analyze(&n.text.to_ascii_uppercase()) {
+                return Some("EXPLAIN refused: ANALYZE would execute the statement");
+            }
+        }
+    }
+    None
 }
 
 fn is_local_host(host: &tokio_postgres::config::Host) -> bool {
@@ -345,6 +377,9 @@ impl DbClient for PostgresClient {
         // seed SQL ends in `;`, and a `; --` paste artifact would otherwise sit
         // between the keyword and the statement it modifies.
         let stripped = crate::lexer::strip_trailing_trivia(sql);
+        if let Some(reason) = explain_option_injection(stripped) {
+            return Err(DbError::Query(reason.into()));
+        }
         const PREFIX: &str = "EXPLAIN ";
         let statement = format!("{PREFIX}{stripped}");
         // `query` (extended protocol), not `simple_query`: it refuses to run more
@@ -360,49 +395,62 @@ impl DbClient for PostgresClient {
         let fix_offset = |e: tokio_postgres::Error| -> DbError {
             adjust_wrapped_syntax_offset(map_pg_error(e), PREFIX.len(), sql.len())
         };
-        let rows = guard
+        // Belt and braces behind `explain_option_injection`: plan inside a READ ONLY
+        // transaction that is always rolled back, so even a plan-time side effect
+        // cannot persist.
+        guard
             .client
-            .query(&statement, &[])
+            .batch_execute("BEGIN READ ONLY")
             .await
-            .map_err(fix_offset)?;
-        let columns: Vec<Column> = match rows.first() {
-            Some(r) => r
-                .columns()
-                .iter()
-                .map(|c| Column {
-                    name: c.name().to_string(),
-                    ty: pg_type_to_column_type(c.type_()),
-                })
-                .collect(),
-            None => guard
+            .map_err(map_pg_error)?;
+        let res: Result<QueryPage, DbError> = async {
+            let rows = guard
                 .client
-                .prepare(&statement)
+                .query(&statement, &[])
                 .await
-                .map_err(fix_offset)?
-                .columns()
-                .iter()
-                .map(|c| Column {
-                    name: c.name().to_string(),
-                    ty: pg_type_to_column_type(c.type_()),
-                })
-                .collect(),
-        };
-        let rows_out: Vec<Row> = rows
-            .iter()
-            .map(|r| Row {
-                values: (0..r.columns().len())
-                    .map(|i| render_pg_value(r, i))
+                .map_err(fix_offset)?;
+            let columns: Vec<Column> = match rows.first() {
+                Some(r) => r
+                    .columns()
+                    .iter()
+                    .map(|c| Column {
+                        name: c.name().to_string(),
+                        ty: pg_type_to_column_type(c.type_()),
+                    })
                     .collect(),
+                None => guard
+                    .client
+                    .prepare(&statement)
+                    .await
+                    .map_err(fix_offset)?
+                    .columns()
+                    .iter()
+                    .map(|c| Column {
+                        name: c.name().to_string(),
+                        ty: pg_type_to_column_type(c.type_()),
+                    })
+                    .collect(),
+            };
+            let rows_out: Vec<Row> = rows
+                .iter()
+                .map(|r| Row {
+                    values: (0..r.columns().len())
+                        .map(|i| render_pg_value(r, i))
+                        .collect(),
+                })
+                .collect();
+            Ok(QueryPage {
+                columns,
+                rows: rows_out,
+                // A plan is returned whole: there is nothing to page through, and a
+                // cursor would offer a "next page" that came back empty.
+                next_cursor: None,
+                duration_ms: start.elapsed().as_millis() as u64,
             })
-            .collect();
-        Ok(QueryPage {
-            columns,
-            rows: rows_out,
-            // A plan is returned whole: there is nothing to page through, and a
-            // cursor would offer a "next page" that came back empty.
-            next_cursor: None,
-            duration_ms: start.elapsed().as_millis() as u64,
-        })
+        }
+        .await;
+        let _ = guard.client.batch_execute("ROLLBACK").await;
+        res
     }
 
     async fn schema_introspect(&self) -> Result<SchemaInfo, DbError> {
@@ -886,6 +934,44 @@ mod tests {
             DbError::Query(msg) => assert_eq!(msg, "boom"),
             other => panic!("expected Query passthrough, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn explain_rejects_option_forms_that_execute() {
+        for q in [
+            "ANALYZE DELETE FROM t",
+            "analyse delete from t",
+            "(ANALYZE) DELETE FROM t",
+            "  /* c */ ( analyze true ) delete from t",
+            "VERBOSE ANALYZE delete from t",
+            "-- x\nANALYZE delete from t",
+        ] {
+            assert!(explain_option_injection(q).is_some(), "{q}");
+        }
+        for q in [
+            "SELECT 1",
+            "delete from t",
+            "WITH a AS (select 1) select * from a",
+            "VERBOSE select 1",
+            "",
+        ] {
+            assert!(explain_option_injection(q).is_none(), "{q}");
+        }
+    }
+
+    #[test]
+    fn tls_choice_hostaddr_bypass_is_tls() {
+        for dsn in [
+            "host=localhost hostaddr=203.0.113.9 sslmode=disable",
+            "host=/run/postgresql hostaddr=203.0.113.9 sslmode=disable",
+        ] {
+            let config: tokio_postgres::Config = dsn.parse().expect("parse");
+            assert_eq!(tls_choice(&config), TlsChoice::Tls, "{dsn}");
+        }
+        let ok: tokio_postgres::Config = "host=localhost hostaddr=127.0.0.1 sslmode=disable"
+            .parse()
+            .unwrap();
+        assert_eq!(tls_choice(&ok), TlsChoice::Plain);
     }
 
     #[test]

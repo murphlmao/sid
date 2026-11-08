@@ -88,7 +88,18 @@ pub fn parse_kv(s: &str) -> Option<Vec<(String, String)>> {
 /// file-based (sqlite / redb), so a bare path is a database file.
 pub fn dsn_facts(dsn: &str, file_kind: bool) -> DsnFacts {
     let mut f = DsnFacts::default();
-    if dsn.contains("://") {
+    if let Some((_, rest)) = dsn.split_once("://") {
+        // tokio-postgres splits userinfo at the first `@` anywhere; `url::Url` ends the
+        // authority at the first `/`, `?` or `#`. An `@` after one of those makes the two
+        // parsers disagree (password `/s3cret` vs database `s3cret@db/app`), so emit no
+        // facts rather than a wrong split.
+        if let Some(i) = rest.find(['/', '?', '#'])
+            && rest[i..].contains('@')
+        {
+            f.unparsed = true;
+            f.has_inline_password = true;
+            return f;
+        }
         let Ok(u) = url::Url::parse(dsn) else {
             f.unparsed = true;
             f.has_inline_password = true; // unknown: assume the worst
@@ -111,6 +122,13 @@ pub fn dsn_facts(dsn: &str, file_kind: bool) -> DsnFacts {
                 k.contains("password") || k == "passwd"
             });
     } else if let Some(kv) = parse_kv(dsn).filter(|kv| !kv.is_empty()) {
+        // A `;` or `=` inside a value means the string is not really libpq key/value
+        // (e.g. `host=db;password=x`): another parser would split it differently.
+        if kv.iter().any(|(_, v)| v.contains(';') || v.contains('=')) {
+            f.unparsed = true;
+            f.has_inline_password = true;
+            return f;
+        }
         for (k, v) in kv {
             match k.as_str() {
                 "host" | "hostaddr" => f.host = Some(v),
@@ -159,6 +177,21 @@ mod tests {
             Some("/home/u/app.db")
         );
         assert!(!dsn_facts("postgres://db/app", false).has_inline_password);
+    }
+
+    #[test]
+    fn parser_differential_cases_emit_no_facts() {
+        for d in [
+            "postgres://bob:/s3cret@db/app",
+            "postgres://bob:5432/s3cret@db/app",
+            "postgres://db/app?x=1@y",
+            "host=db;password=x",
+            "host=db dbname=a=b",
+        ] {
+            let f = dsn_facts(d, false);
+            assert!(f.unparsed && f.has_inline_password, "{d}: {f:?}");
+            assert_eq!((f.host, f.database, f.user), (None, None, None), "{d}");
+        }
     }
 
     #[test]
