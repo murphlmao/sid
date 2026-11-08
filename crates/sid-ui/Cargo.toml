@@ -26,3 +26,6 @@ gpui-kit-assets.workspace = true
 # a ZWJ emoji sequence is one unit instead of several. Same crate the library's own
 # `InputState` uses, so the two cannot disagree about where a word ends.
 unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

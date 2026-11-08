@@ -95,3 +95,6 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 # `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`
 # on disk — same pattern `sid-store`/`sid-db` already use in their own tests.
 tempfile.workspace = true
+
+[lints]
+workspace = true
