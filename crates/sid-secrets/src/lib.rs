@@ -80,6 +80,21 @@ impl SecretId {
     }
 }
 
+impl SecretId {
+    /// The workspace namespace a key was built for: `Some(ns)` for a well-formed
+    /// `sid-ws:<len>:<ns>:<ref>` key, `None` for a bare (global) key. A reserved-prefix
+    /// key that does not parse is `Some("")`-free: it returns `None` only for non-prefixed
+    /// input, and `Err(())` is avoided by treating malformed as an empty, never-matching
+    /// namespace via [`Self::is_namespaced`] at the call site.
+    pub fn workspace_of(raw: &str) -> Option<&str> {
+        let rest = raw.strip_prefix(WORKSPACE_KEY_PREFIX)?;
+        let (len, rest) = rest.split_once(':')?;
+        let len: usize = len.parse().ok()?;
+        let ns = rest.get(..len)?;
+        rest[len..].starts_with(':').then_some(ns)
+    }
+}
+
 /// The reserved prefix of a workspace-namespaced keyring key — see
 /// [`SecretId::for_workspace`].
 const WORKSPACE_KEY_PREFIX: &str = "sid-ws:";

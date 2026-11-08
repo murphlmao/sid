@@ -147,6 +147,31 @@ pub(crate) struct PaletteState {
     selection: usize,
 }
 
+/// Recents key for a host row: origin + alias, so a workspace host that shares an alias
+/// with a global one can never hijack (or inherit) the global's "recent" standing.
+/// `kind` is `h` (connect) or `c` (copy address). Spellings: `hg:<alias>` (global) and
+/// `hw:<len>:<workspace id>:<alias>` (length-prefixed, so ids containing `:` stay
+/// unambiguous). The pre-origin spelling `h:<alias>` is read as global — see
+/// [`migrate_recent_key`].
+fn host_recent_key(kind: char, origin: &sid_store::Scope, alias: &str) -> String {
+    match origin {
+        sid_store::Scope::Global => format!("{kind}g:{alias}"),
+        sid_store::Scope::Workspace(id) => {
+            format!("{kind}w:{}:{}:{alias}", id.as_str().len(), id.as_str())
+        }
+    }
+}
+
+/// Upgrade a persisted recents key from before origins were part of it: `h:<alias>` and
+/// `c:<alias>` named a host by alias alone, which can only have been the global one for
+/// the purposes of ranking, so they become `hg:` / `cg:`. Every other key is unchanged.
+pub(crate) fn migrate_recent_key(key: &str) -> String {
+    match key.split_once(':') {
+        Some((kind @ ("h" | "c"), alias)) => format!("{kind}g:{alias}"),
+        _ => key.to_string(),
+    }
+}
+
 /// Score added to a recently used entry. With an empty query every entry scores 0, so
 /// this alone orders them most-recent-first; with a query it is a nudge that breaks ties
 /// between comparable matches, not enough to beat a better text match.
@@ -241,7 +266,9 @@ impl AppState {
                     } else {
                         format!("{}@{}:{}", h.user, h.host, h.port)
                     };
-                    cx.write_to_clipboard(ClipboardItem::new_string(addr));
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        crate::ui::session::clipboard_safe(&addr),
+                    ));
                 }
             }
             PaletteTarget::Session(ix) => self.activate_session(ix, window, cx),
@@ -366,7 +393,7 @@ impl AppState {
                 push(
                     PaletteEntry {
                         target: PaletteTarget::Connection(ix),
-                        key: format!("h:{}", a.item.alias),
+                        key: host_recent_key('h', &a.origin, &a.item.alias),
                         icon: Icon::Terminal,
                         label: label.into(),
                         subtitle: Some(format!("{}@{}", a.item.user, a.item.host).into()),
@@ -383,7 +410,7 @@ impl AppState {
                 push(
                     PaletteEntry {
                         target: PaletteTarget::CopyAddress(ix),
-                        key: format!("c:{}", a.item.alias),
+                        key: host_recent_key('c', &a.origin, &a.item.alias),
                         icon: Icon::Copy,
                         label: copy_label.into(),
                         subtitle: Some(format!("{}@{}", a.item.user, a.item.host).into()),
@@ -660,6 +687,47 @@ pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_recents_are_keyed_by_origin_and_alias() {
+        let w = sid_store::Scope::Workspace(sid_store::WorkspaceId("/w".into()));
+        let g = sid_store::Scope::Global;
+        assert_ne!(
+            host_recent_key('h', &w, "vps"),
+            host_recent_key('h', &g, "vps")
+        );
+        assert_ne!(
+            host_recent_key('h', &g, "vps"),
+            host_recent_key('c', &g, "vps")
+        );
+        // A workspace host cannot inherit a global recent of the same alias.
+        let recent = vec![host_recent_key('h', &g, "vps")];
+        assert_eq!(
+            recency_bonus(&recent, &host_recent_key('h', &w, "vps"), true),
+            0
+        );
+        assert!(recency_bonus(&recent, &host_recent_key('h', &g, "vps"), true) > 0);
+    }
+
+    #[test]
+    fn clipboard_text_loses_control_and_bidi_chars() {
+        use crate::ui::session::clipboard_safe;
+        assert_eq!(
+            clipboard_safe("ev\u{1b}[31mil\u{202E}@h\n:22\u{7f}"),
+            "ev[31mil@h:22"
+        );
+        assert_eq!(clipboard_safe("root@host:22"), "root@host:22");
+    }
+
+    #[test]
+    fn legacy_alias_only_recents_migrate_to_global() {
+        assert_eq!(migrate_recent_key("h:vps"), "hg:vps");
+        assert_eq!(migrate_recent_key("c:vps"), "cg:vps");
+        assert_eq!(migrate_recent_key("a:settings"), "a:settings");
+        assert_eq!(migrate_recent_key("hg:vps"), "hg:vps");
+        let g = sid_store::Scope::Global;
+        assert_eq!(migrate_recent_key("h:vps"), host_recent_key('h', &g, "vps"));
+    }
 
     #[test]
     fn recent_entries_rank_first_on_an_empty_query_most_recent_leading() {

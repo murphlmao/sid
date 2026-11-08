@@ -359,13 +359,27 @@ impl GlobalStore {
     /// two first uses cannot both win; the loser gets [`StoreError::Conflict`] and must
     /// re-read rather than assume its endpoint was recorded.
     ///
-    /// `key_scope` is the layer the caller derived `b.key` for (a bare key is global; a
-    /// workspace-namespaced key belongs to that workspace). First use may only bind a key
-    /// to its own layer: `b.scope != key_scope` is [`StoreError::CrossLayerBinding`]. A
+    /// The key's layer is derived from the key itself (a bare key is global; a
+    /// `sid-ws:<len>:<id>:<ref>` key belongs to that workspace). First use may only bind
+    /// a key to its own layer: a record origin that differs is [`StoreError::CrossLayerBinding`]. A
     /// hostile committed workspace record naming a bare (global-format) key must never be
     /// able to claim the victim's global secret for itself.
-    pub fn bind_secret_if_unbound(&self, b: &SecretBinding, key_scope: &Scope) -> Result<()> {
-        if &b.scope != key_scope {
+    pub fn bind_secret_if_unbound(&self, b: &SecretBinding) -> Result<()> {
+        // The key's own spelling decides its layer; the caller's claim is only compared.
+        let key_scope = if sid_secrets::SecretId::is_namespaced(&b.key) {
+            match sid_secrets::SecretId::workspace_of(&b.key) {
+                Some(ns) => Scope::Workspace(crate::scope::WorkspaceId(ns.into())),
+                None => {
+                    return Err(StoreError::CrossLayerBinding(format!(
+                        "key `{}` is spelled like a workspace key but is malformed",
+                        b.key
+                    )));
+                }
+            }
+        } else {
+            Scope::Global
+        };
+        if b.scope != key_scope {
             return Err(StoreError::CrossLayerBinding(format!(
                 "key `{}` belongs to {key_scope:?}, the record to {:?}",
                 b.key, b.scope
@@ -1205,6 +1219,12 @@ mod tests {
         }
     }
 
+    fn wkey(ns: &str, r: &str) -> String {
+        sid_secrets::SecretId::for_workspace(ns, r)
+            .as_str()
+            .to_string()
+    }
+
     fn ws(id: &str) -> Scope {
         Scope::Workspace(WorkspaceId(id.into()))
     }
@@ -1228,10 +1248,7 @@ mod tests {
         let store = GlobalStore::open(&path).unwrap();
         assert_eq!(store.secret_binding("ssh-a-1").unwrap(), None);
         store
-            .bind_secret_if_unbound(
-                &binding("ssh-a-1", Scope::Global, "ssh:password:a@h:22"),
-                &Scope::Global,
-            )
+            .bind_secret_if_unbound(&binding("ssh-a-1", Scope::Global, "ssh:password:a@h:22"))
             .unwrap();
         assert!(store.secret_binding("ssh-a-1").unwrap().is_some());
     }
@@ -1292,16 +1309,14 @@ mod tests {
     fn first_use_binding_refuses_to_overwrite_an_existing_one() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
-        let original = binding("k", ws("/w"), "ssh:password:alice@good:22");
-        store.bind_secret_if_unbound(&original, &ws("/w")).unwrap();
+        let k = wkey("/w", "k");
+        let original = binding(&k, ws("/w"), "ssh:password:alice@good:22");
+        store.bind_secret_if_unbound(&original).unwrap();
         let err = store
-            .bind_secret_if_unbound(
-                &binding("k", ws("/w"), "ssh:password:alice@evil:22"),
-                &ws("/w"),
-            )
+            .bind_secret_if_unbound(&binding(&k, ws("/w"), "ssh:password:alice@evil:22"))
             .unwrap_err();
         assert!(matches!(err, StoreError::Conflict(_)), "{err:?}");
-        assert_eq!(store.secret_binding("k").unwrap(), Some(original));
+        assert_eq!(store.secret_binding(&k).unwrap(), Some(original));
     }
 
     #[test]
@@ -1309,7 +1324,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         store
-            .bind_secret_if_unbound(&binding("k", Scope::Global, "old"), &Scope::Global)
+            .bind_secret_if_unbound(&binding("k", Scope::Global, "old"))
             .unwrap();
         let new = binding("k", Scope::Global, "new");
         store.rebind_secret(&new).unwrap();
@@ -1326,21 +1341,33 @@ mod tests {
     fn first_use_binding_never_crosses_layers() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        // A workspace record + a bare (global) key: refused.
         let claim = binding("ssh-a-1", ws("/w"), "alice@evil:22 (password)");
+        let err = store.bind_secret_if_unbound(&claim).unwrap_err();
+        assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
+        // Workspace A's record + workspace B's key: refused.
+        let kb = wkey("/w/b", "k");
         let err = store
-            .bind_secret_if_unbound(&claim, &Scope::Global)
+            .bind_secret_if_unbound(&binding(&kb, ws("/w/a"), "e"))
             .unwrap_err();
         assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
-        // Nor one workspace's key for another.
+        // A global record + a workspace key: refused.
         let err = store
-            .bind_secret_if_unbound(&binding("k", ws("/w/b"), "e"), &ws("/w/a"))
+            .bind_secret_if_unbound(&binding(&kb, Scope::Global, "e"))
             .unwrap_err();
         assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
-        assert_eq!(
-            store.secret_binding("ssh-a-1").unwrap(),
-            None,
-            "nothing written"
-        );
-        assert_eq!(store.secret_binding("k").unwrap(), None);
+        // A malformed reserved-prefix key: refused.
+        let err = store
+            .bind_secret_if_unbound(&binding("sid-ws:99:x:y", ws("x"), "e"))
+            .unwrap_err();
+        assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
+        assert_eq!(store.secret_binding("ssh-a-1").unwrap(), None);
+        assert_eq!(store.secret_binding(&kb).unwrap(), None);
+        // Matching layer binds.
+        let ka = wkey("/w/a", "k");
+        store
+            .bind_secret_if_unbound(&binding(&ka, ws("/w/a"), "e"))
+            .unwrap();
+        assert!(store.secret_binding(&ka).unwrap().is_some());
     }
 }
