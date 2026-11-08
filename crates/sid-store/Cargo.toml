@@ -19,3 +19,6 @@ tempfile = "3"
 sid-secrets = { path = "../sid-secrets" }
 tempfile = "3"
 proptest.workspace = true
+
+[lints]
+workspace = true

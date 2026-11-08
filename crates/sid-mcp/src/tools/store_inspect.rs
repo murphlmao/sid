@@ -45,7 +45,10 @@ fn snapshot(src: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {
     }
     let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let dst = dir.path().join("store.redb");
-    std::fs::copy(src, &dst).map_err(|e| format!("snapshot copy: {e}"))?;
+    // Copy through the locked handle: Windows locks are mandatory, so a second handle
+    // (`fs::copy`) cannot read the file while we hold the lock.
+    let mut out = File::create(&dst).map_err(|e| format!("snapshot copy: {e}"))?;
+    std::io::copy(&mut &f, &mut out).map_err(|e| format!("snapshot copy: {e}"))?;
     drop(f); // releases the lock
     Ok((dir, dst))
 }

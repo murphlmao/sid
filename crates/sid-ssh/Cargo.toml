@@ -21,3 +21,6 @@ getrandom.workspace = true
 [dev-dependencies]
 sid-term.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -1980,7 +1980,10 @@ mod tests {
         let candidates = curated_candidates("/home/murphy");
         assert_eq!(candidates.len(), curated_templates().len());
         assert!(candidates.contains(&"/home/murphy/.ssh/config".to_string()));
+        #[cfg(target_os = "linux")] // LINUX_TEMPLATES only
         assert!(candidates.contains(&"/etc/fstab".to_string()));
+        #[cfg(unix)]
+        assert!(candidates.contains(&"/etc/hosts".to_string()));
         assert!(!candidates.iter().any(|p| p.starts_with('~')));
     }
 
