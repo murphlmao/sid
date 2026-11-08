@@ -111,7 +111,7 @@ instrument-sized. Zoom remains the user's lever on top.
 
 | Role | Helper | Size | Weight | Ink | For |
 |---|---|---|---|---|---|
-| Display | `.text_display(&t)` | **22** | Semibold 600 | `fg_strong` | one per screen: the page heading |
+| Display | `.text_display(&t)` | **22** | Semibold 600 | `fg_strong` | where a big heading adds information: Settings section titles, full empty states, detail-pane headings (never a data tab's page title — D1) |
 | Title | `.text_title(&t)` | **18** | Semibold 600 | `fg_strong` | modal titles, detail-pane headings |
 | Heading | `.text_heading(&t)` | **15** | Semibold 600 | `fg_strong` | card/panel headers, group headers, emphasised row titles |
 | Body | `.text_body(&t)` | **15** | Normal 400 | `fg` | rows, values, fields, copy |
@@ -290,7 +290,7 @@ padding, shadow, Heading-role header + count pill, 52px panel header), `Row` (44
 min, compact 36, accent marker when selected), `Modal` (16px radius, overlay shadow,
 rise-in), `Toast` (an *inline* strip, so 8px radius and no shadow; Heading title,
 Body message, rise-in keyed by its message), `EmptyState` (v2 shape: 22px icon on a
-48px soft disc, Title headline, Body guidance, the caller's Lg primary button, optional
+48px soft disc, Display headline, Body guidance, the caller's Lg primary button, optional
 secondary; `compact()` for small panels), `Badge` (6px corner, pills stay pills),
 `SegmentedControl` (track = the button of its size; a white chip on the light track),
 `GridCard` (12px radius, 16px padding, Surface shadow, 16px grid gap), `Toolbar`
@@ -321,9 +321,11 @@ before/after with `scripts/sid-cap.sh` at 1920x1080 and 1280x800 in `cosmos` and
 the sizes, radii, shadows and sentence case; what is left is what only the screen knows.
 
 ### 4.0 Rules that apply to every tab
-1. **One Display heading per screen**, top-left of the content, with the screen's primary
-   action (Lg or Md primary button, icon + label) on the same line, right-aligned. Use
-   `.text_display(&t)`. Example: `SSH hosts            [+ Add connection]`.
+1. **No page heading on data tabs** (D1: the tab strip already names the screen). The
+   screen's primary action (Md primary button, icon + label) lives in the header of the
+   panel it acts on. `Display` (`.text_display(&t)`) is spent only where it adds
+   information: Settings section titles, full-pane empty states (`EmptyState` already
+   does it), and detail-pane headings (a selected workspace's name).
 2. Outer padding `metrics::PAGE_GUTTER` (20); gaps between panels
    `metrics::SECTION_GAP` (16) — replace `p_3()`/`gap_2()` at the tab root.
 3. Replace ad-hoc empty text (`div().text_meta(..).child("no … yet")`) with `EmptyState`
@@ -345,8 +347,8 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
    BASE, cx, el)` so switching tabs settles instead of snapping.
 
 ### 4.1 SSH / SFTP — `ssh_home.rs`, `session.rs`, `host_form.rs`, `password_prompt.rs`
-- **Home header**: replace the `Card::panel("connections")` wrapper (L630) with a page
-  header row: `Display "SSH hosts"` + count pill, then the quick-connect field (Md,
+- **Home header**: keep `Card::panel("connections")` (L630) — its header now renders
+  `Connections` + a count pill automatically. In it: the quick-connect field (Md,
   `FieldWidth::Fill`, max 480) and `[+ Add connection]` (primary, Md, icon Add). Drop the
   red header `connect` button (L988): Enter in the field connects; the field's trailing
   hint says so.
@@ -357,9 +359,12 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   padding (automatic). Inside `GridCard` (L1407): alias in `Heading`, `user@host:port`
   in `Mono`, the scope chip as a pill top-right, and the actions row as
   `Button "Connect"` (Md, primary, icon Terminal) + IconButtons Md for SFTP/Edit.
-- **Folders** (hand-rolled caret L1194–1241, `collapsed_folders`): folder group headers
-  become `Heading` + count pill with a ChevronDown/Right IconButton; keep the grid layout
-  inside each folder (a `Tree` is wrong here — the cards are the content).
+- **Host groups → `Tree`** (D2; hand-rolled caret L1194–1241, `collapsed_folders`): a
+  `Tree` sidebar (~240px, `Card::panel("groups")`) lists folders → hosts; selecting a
+  folder scrolls/filters the card grid to it, activating a host connects. The **card grid
+  stays** — Murphy chose the Termius-style grid; the tree is navigation beside it, and
+  `collapsed_folders` becomes the tree's expansion state. Group headers inside the grid
+  become `Heading` + count pill.
 - **Context menu** (`row_context_menu` L819): move to `ContextMenu`; labels already
   sentence-case via the component; `Delete` as `danger_item` after a separator; `Edit…`,
   `Assign folder…` keep the ellipsis.
@@ -370,18 +375,16 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
 - **Session** (`session.rs`): the SFTP sidebar's hand-rolled glyph buttons (`↑`, `⟳`,
   `☑/☐ hidden`, `«`, `»`, `✕ close` — L1943–2083, L2659) become `IconButton`s
   (ArrowUp, Refresh, ChevronsLeft/Right, Close) and a `Checkbox` labelled `Show hidden`.
-  `"FILES"` (L2007) → `Heading "Files"`. The file list → `Tree` with lazy children
-  (directories load on expand — `TreeEvent::LoadChildren`), replacing the
-  navigate-into-directory model only if Murphy agrees (decision D2 below); otherwise keep
-  rows and just adopt `Row::compact()`.
+  `"FILES"` (L2007) → `Heading "Files"`. The file list **stays navigate-into-folder**
+  (D2): keep its rows and adopt `Row::compact()` (36px) — not a `Tree`.
 - **Host form / password prompt**: titles already sentence-case through `Modal`; rewrite
   the keyring hint (`host_form.rs` L333, `password_prompt.rs` L127) to "There's no system
   keyring, so sid will keep this password for this session only." Radio marks
   (`host_form.rs` L833) → `Radio` (exists).
 
 ### 4.2 Database — `db_tab.rs`, `db_conn_form.rs`, `db_diagram.rs`
-- Page header: `Display "Databases"` + `[+ Add connection]` primary; the sidebar's own
-  `+` IconButton (L2533) goes.
+- The connections panel header (L2529) carries `[+ Add connection]` (Md, icon Add) in
+  place of its bare `+` IconButton (L2533). No page heading (D1).
 - **Schema** (`schema_tree_rows` L1011, toggles L2350–2368): replace with `Tree` — schema
   → table → column, lazy table children (`LoadChildren` fires the column probe), column
   type in the row meta (`MonoMeta`), `Icon::Table`/`Icon::Columns` leading icons.
@@ -403,11 +406,12 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   (L654–661) → `Radio`.
 
 ### 4.3 Network — `network_tab.rs`
-- Page header: `Display "Network"`; the sub-nav `SegmentedControl` (L1367) moves onto
-  the header line at Md size (it is the page's primary navigation).
+- The sub-nav `SegmentedControl` (L1367) stays above the panel at Md size (36px now) —
+  it is the screen's primary navigation. No page heading (D1).
 - Panel title (L1336) is the sub-tab label → automatic Heading. `refresh` (L1412) →
   IconButton Md with tooltip `Refresh (F5)` in the panel header.
-- `kill` ConfirmButtons (L668) stay `Sm` (32px now) — the table is an instrument.
+- `kill` ConfirmButtons (L668) are `ButtonSize::Xs` by default now (the table row's
+  24px content box) — nothing to do.
 - Empty states (L1448–1719): already `EmptyState`; rewrite headlines/guidance to
   sentence case with a next step, e.g. `Docker isn't installed` / `Install Docker and
   start the daemon to see containers here.` + `[Open docs]` only if a link action exists.
@@ -417,14 +421,14 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   action if privfs supports it.
 
 ### 4.4 Workspaces — `workspaces_tab.rs`
-- Page header: `Display "Workspaces"` + `[+ Add workspace]` primary; remove the panel's
-  small `add` (L1425) and refresh (L1415 → IconButton Md in the header).
+- The workspaces panel header: `[+ Add workspace]` (Md primary) replaces the small `add`
+  (L1425); refresh (L1415) → IconButton Md with `tip_with_key`. No page heading (D1).
 - List rows (L1665): name first (`Heading`), path second (`MonoMeta`), counts as meta;
   the `no git` badge moves to the row's meta slot, after the name. `Row::compact()` is
   wrong here — keep 44px.
-- Detail pane: when a workspace is selected the pane header is `Title` with the name and
-  the branch badge; the sub-tab segmented control (Overview/Branches/Status/Log) sits on
-  that line.
+- Detail pane: when a workspace is selected its header is the workspace name in
+  `Display` (D1: a detail-pane heading adds information) with the branch badge; the
+  sub-tab segmented control (Overview/Branches/Status/Log) sits on that line.
 - Scope items (`Card::section("Scope items")`, L1934): remove the 880px cap (L1935);
   hosts and connections become a two-column card grid at wide widths.
 - Repos (fleet, L2355) → `Tree` (repo → branches) if it nests; otherwise keep the table.
@@ -434,12 +438,13 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
 - Log errors rendered as danger text cells → a `Toast::danger` above the log.
 
 ### 4.5 System — `systems_tab.rs`
-- Page header: `Display "System"` + host facts line in `Meta` under it (user · OS ·
-  kernel · uptime · load), replacing the `SYSTEM` StatCluster title (L1360/L1409).
+- The `system` StatCluster (L1360/L1409) keeps its card; its header renders `System`
+  as a Heading automatically, with the host facts line (user · OS · kernel · uptime ·
+  load) in `Meta` under it. No page heading (D1).
 - Meters (`Meter`): the component change makes them 8px tall with 12px radius ends; the
   tab should lay CPU / Memory / Swap as three cards in a row (`Card::new()` each, Heading
   title, big value in `Title`), not one card.
-- Sub-nav (L686) → page header line, Md.
+- Sub-nav (L686) stays above the processes panel at Md size.
 - Config files: hand-rolled list rows in `config_list_card` (L1282+) → `Row`; pinned /
   common as two `Card::panel`s side by side at wide widths. Pin input `max_w(420)`
   (L1057) is fine.
@@ -451,11 +456,13 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
 - **Remove `CONTENT_MAX_W`** (L57/L178): at wide widths lay the section cards in a
   two-column grid (Appearance + Behaviour | Keyboard + Storage) instead of an 880px
   column beside a void.
-- Page header: `Display "Settings"`; the rail (`RAIL_W`) keeps its accent marker.
+- Section titles (`Appearance`, `Behaviour`, `Keyboard`, `Storage`) are `Display` (D1:
+  on a settings page the section title is the information); the rail (`RAIL_W`) keeps
+  its accent marker.
 - Appearance: theme rows become selectable cards (swatch strip + name) in a 2x2 grid;
   drop the `· 4` count (`Card::title` with no `.count`).
-- **Add a `Reduce motion` `Switch`** under Appearance wired to `motion::set_reduced` and
-  persisted (`Settings` store field → entity version bump + migration test, per the
+- **Add a `Reduce motion` `Switch`** (D3: motion is on by default) under Appearance,
+  wired to `motion::set_reduced` and persisted (`Settings` store field → entity version bump + migration test, per the
   postcard rule). Add `Interface size` (the existing zoom) as a segmented control beside
   it so "bigger" is discoverable.
 - Behaviour: the three SegmentedControls (L541–565) stay; boolean settings (if any land)
@@ -477,6 +484,11 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
 - **Startup** (`main.rs`): call `sid_ui::motion::init(cx)` explicitly beside
   `theme::install` (which calls it today so `SID_REDUCED_MOTION` already works).
 - **Cheat sheet** (L1415–1445): `Modal` instead of the hand-built overlay; `Kbd` rows.
+- **Scrims**: the hand-built overlays (`app.rs` L1450, `command_palette.rs` L241,
+  `config_editor.rs` L667/L896, `db_tab.rs` L1319, `session.rs`) paint
+  `rgba(bridge::SCRIM)`; switch each to `rgba(bridge::scrim(&t))`, the palette-derived
+  scrim `modal::overlay` already uses (same 66% black on dark, a lighter tinted scrim on
+  cosmos-light). Then `SCRIM` can be deleted along with its hygiene exemption.
 - **Command palette** (`command_palette.rs`): use `Elevation::Floating` + `Radius::Lg`,
   `motion::enter(.., Enter::Rise, FAST)`, result rows as `Row::compact()` with icon +
   label + Kbd; empty → `EmptyState::compact()` ("No matches"). Keep the hand-built
@@ -486,16 +498,22 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   password to view and edit it. The password is used for this file only and never
   saved." + `[Unlock with sudo]` Lg.
 
-### 4.8 Decisions for Murphy
-- **D1 — Page headings.** v2 adds a 22px Display heading per screen. It costs ~56px of
-  height; it is the single biggest "friendly" lever after sizes. OK to roll out?
-- **D2 — SFTP as a tree.** The SFTP sidebar could become an expandable `Tree` (lazy
-  directories) instead of navigate-into-folder. Different interaction model; Murphy's
-  call.
-- **D3 — Reduce motion default.** Motion is on by default with a Settings switch. Default
-  off instead?
-- **D4 — cosmos-light cards.** v2 makes light-theme cards white on a grey desk (the
-  universal light-UI convention) — the inverse of v1. Confirm.
-- **D5 — Red primary.** In cosmos the accent (and so every primary button) is red. v2
-  keeps that; a friendlier option is a violet/indigo accent for cosmos with red kept for
-  danger only. Palette identity question, not done.
+### 4.8 Decisions (Murphy, 2026-11-07)
+- **D1 — Page headings: no.** Data tabs get no per-screen Display heading; the tab strip
+  already names the screen. Display is used only where it adds information — Settings
+  section titles, full-pane empty states, detail-pane headings. Baked into §4.0 rule 1
+  and each tab section above; `EmptyState` already uses Display for its headline.
+- **D2 — Trees: host groups and DB schema, not SFTP.** SFTP stays navigate-into-folder
+  tonight. `Tree` goes to SSH host groups (a sidebar beside the card grid) and the DB
+  schema (and DB connection folders).
+- **D3 — Motion on by default**, with a Settings "Reduce motion" switch
+  (`motion::set_reduced`) and `SID_REDUCED_MOTION` for the environment.
+- **D4 — Yes:** cosmos-light cards are white on a grey desk.
+- **D5 — Red accent stays for now**; Murphy will decide from captures. The swap is one
+  token: `accent` in the palette function (`theme.rs`). Everything that "engages" —
+  primary buttons, the focus ring and halo, selected-row markers, checkbox/switch on,
+  the active tab underline, the library's ring — derives from it. Two tests pin the
+  current choice and move with it: `cosmos_ansi_red_is_the_galaxy_accent` (the terminal's
+  red stays red; that test would be relaxed, not the ANSI slot changed) and
+  `accent_and_danger_are_distinguishable_in_every_palette` (which a violet accent passes
+  more easily than red does).

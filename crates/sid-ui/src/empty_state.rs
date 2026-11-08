@@ -11,7 +11,7 @@
 //! and turns them up:
 //!
 //! - a 22px icon on a soft `selection` disc, so the glyph is an object, not a smudge;
-//! - the headline in the **Title** role (18px semibold), sentence case — the component
+//! - the headline in the **Display** role (22px semibold), sentence case — the component
 //!   owns the casing (`"no saved connections"` renders `No saved connections`);
 //! - the guidance in **Body** (15px), still one line's worth;
 //! - the action as given — the convention is a `Lg` primary button with an icon — plus an
@@ -19,7 +19,11 @@
 //!
 //! [`EmptyState::compact`] is the same shape at panel scale (Body headline, Meta
 //! guidance, a 32px disc) for the small boxes inside a sidebar — the schema list, the
-//! history list — where a Title headline would shout.
+//! history list — where a Display headline would shout.
+//!
+//! Display here is deliberate (Murphy, 2026-11-07, decision D1): data tabs get no page
+//! heading, because the tab strip already names the screen — Display is spent where it
+//! adds information, and an empty pane's one sentence is exactly that.
 
 use gpui::{
     AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div,
@@ -154,7 +158,7 @@ impl RenderOnce for EmptyState {
                         if compact {
                             this.text_body(&theme)
                         } else {
-                            this.text_title(&theme)
+                            this.text_display(&theme)
                         }
                     })
                     .child(sentence_case(&self.headline)),

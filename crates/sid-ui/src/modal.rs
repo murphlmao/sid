@@ -11,7 +11,7 @@
 //! This module is that shape, typed once, in two pieces:
 //!
 //! - [`overlay`] — the **host**: a viewport-filling, click-occluding scrim that centres
-//!   its child and paints above everything else. It owns [`crate::bridge::SCRIM`], so no
+//!   its child and paints above everything else. It owns [`crate::bridge::scrim`], so no
 //!   call site needs the one exempt hex literal in the design system.
 //! - [`Modal`] — the **panel**: a header (title, dismiss), a body that scrolls when the
 //!   fields outrun the window, and a footer carrying the keyboard contract on the left
@@ -84,7 +84,6 @@ use gpui::{
 };
 use gpui_component::FocusTrapElement as _;
 
-use crate::bridge::SCRIM;
 use crate::button::{ButtonSize, IconButton};
 use crate::copy::sentence_case;
 use crate::elevation::Elevation;
@@ -194,19 +193,38 @@ pub fn panel_geometry(preferred: Pixels, viewport: Size<Pixels>, scale: UiScale)
 pub fn overlay<C: IntoElement>(window: &Window, child: C) -> impl IntoElement + use<C> {
     let viewport = window.viewport_size();
     deferred(
-        anchored().position(point(px(0.), px(0.))).child(
-            div()
-                .occlude()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(viewport.width)
-                .h(viewport.height)
-                .bg(rgba(SCRIM))
-                .child(child),
-        ),
+        anchored()
+            .position(point(px(0.), px(0.)))
+            .child(ScrimLayer {
+                viewport,
+                child: child.into_any_element(),
+            }),
     )
     .with_priority(OVERLAY_PRIORITY)
+}
+
+/// The scrim itself: a viewport-sized, click-occluding layer in the palette's own scrim
+/// ([`crate::bridge::scrim`]). An element rather than a bare `div` only because the
+/// colour is read from the active theme, and [`overlay`] has a window but no app.
+#[derive(IntoElement)]
+struct ScrimLayer {
+    viewport: Size<Pixels>,
+    child: AnyElement,
+}
+
+impl RenderOnce for ScrimLayer {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let scrim = crate::bridge::scrim(theme::active(cx));
+        div()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(self.viewport.width)
+            .h(self.viewport.height)
+            .bg(rgba(scrim))
+            .child(self.child)
+    }
 }
 
 /// A modal panel: header, body, footer.

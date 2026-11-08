@@ -17,8 +17,10 @@ instrument-sized.
 ## Tokens
 `crates/sid-ui/src/theme.rs` is the single source of colour: bg / surface / well /
 border / fg / fg_strong / muted / faint / accent / success / warning / danger /
-selection / shadow (+ ansi[16] for the terminal). No raw hex in UI code except
-`sid_ui::bridge::SCRIM` (the theme-agnostic modal scrim). Four palettes: cosmos, void,
+selection / shadow (+ ansi[16] for the terminal). No raw hex in UI code except the
+legacy `sid_ui::bridge::SCRIM`; new overlays use `bridge::scrim(&t)`, derived from the
+palette's `shadow` ink. `accent` is one token per palette — swapping cosmos's red is a
+one-line change, and everything that engages follows it. Four palettes: cosmos, void,
 dusk, cosmos-light. In light palettes cards (`surface`) are *lighter* than the canvas.
 
 `crates/sid-ui/src/metrics.rs` is the single source of measurement: `Space` (4px grid:
@@ -43,8 +45,10 @@ alphas live in `elevation.rs`. Never hand-type a `shadow(..)` — name a rung.
 
 ## Structure rules
 - ONE top chrome bar: wordmark · tabs · (right) scope switcher · warning badge.
-- **One Display heading per screen** (22px semibold), with the screen's primary action
-  (icon + label) on the same line, right-aligned.
+- **No page heading on data tabs** — the tab strip already names the screen (Murphy, D1).
+  A screen's primary action (icon + label) sits in the header of the panel it acts on.
+  `Display` is spent only where it adds information: Settings section titles, full-pane
+  empty states, a detail pane's subject (a selected workspace's name).
 - **Wide screens fill with surfaces** — card grids, side-by-side panes, multi-column card
   layouts. Never a narrow reading column beside a void (Murphy vetoed the 880px cap);
   data tables are full-width.
@@ -55,8 +59,9 @@ alphas live in `elevation.rs`. Never hand-type a `shadow(..)` — name a rung.
 - Rows: `Row` — 44px comfortable (default), 36px `compact()` for sidebars; hover =
   `selection` fill; selected = `selection` + a 3px accent marker on the leading edge;
   primary action inline, everything else in the right-click `ContextMenu`.
-- Nested data (host groups, schemas, repo trees) is a `Tree` (32px rows, chevrons,
-  arrow-key navigation, lazy children), not hand-rolled carets.
+- Nested navigation (SSH host groups, DB schemas and connection folders) is a `Tree`
+  (32px rows, chevrons, arrow-key navigation, lazy children), not hand-rolled carets. The
+  SFTP browser stays navigate-into-folder.
 - `accent` means "engage": primary buttons, selected markers, checkbox/switch on, focus
   halo, active tab, links. Never a wash over large areas. Orientation badges (origin,
   counts) are `faint`/`muted`.
@@ -69,7 +74,7 @@ measurement — `tests/hygiene.rs` fails the build on `text_xs()` / `text_sm()` 
 
 | Role | Helper | Size | Weight | Ink | For |
 |---|---|---|---|---|---|
-| Display | `.text_display(&t)` | 22 | semibold | `fg_strong` | the screen's page heading (one per screen) |
+| Display | `.text_display(&t)` | 22 | semibold | `fg_strong` | Settings section titles, full-pane empty states, detail-pane subjects — never a data tab's title |
 | Title | `.text_title(&t)` | 18 | semibold | `fg_strong` | modal titles, detail-pane headings |
 | Heading | `.text_heading(&t)` | 15 | semibold | `fg_strong` | card/panel/group headers, emphasised row titles |
 | Body | `.text_body(&t)` | 15 | normal | `fg` | rows, values, fields, copy |
