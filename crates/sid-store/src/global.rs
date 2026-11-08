@@ -21,7 +21,7 @@ use crate::entities::{
     SettingsV3, SettingsV4,
 };
 use crate::error::{Result, StoreError};
-use crate::scope::WorkspaceMeta;
+use crate::scope::{Scope, WorkspaceMeta};
 
 const HOSTS: TableDefinition<&str, &[u8]> = TableDefinition::new("hosts");
 const CONNECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("connections");
@@ -358,7 +358,19 @@ impl GlobalStore {
     /// saved before bindings existed. Check and insert run in one write transaction, so
     /// two first uses cannot both win; the loser gets [`StoreError::Conflict`] and must
     /// re-read rather than assume its endpoint was recorded.
-    pub fn bind_secret_if_unbound(&self, b: &SecretBinding) -> Result<()> {
+    ///
+    /// `key_scope` is the layer the caller derived `b.key` for (a bare key is global; a
+    /// workspace-namespaced key belongs to that workspace). First use may only bind a key
+    /// to its own layer: `b.scope != key_scope` is [`StoreError::CrossLayerBinding`]. A
+    /// hostile committed workspace record naming a bare (global-format) key must never be
+    /// able to claim the victim's global secret for itself.
+    pub fn bind_secret_if_unbound(&self, b: &SecretBinding, key_scope: &Scope) -> Result<()> {
+        if &b.scope != key_scope {
+            return Err(StoreError::CrossLayerBinding(format!(
+                "key `{}` belongs to {key_scope:?}, the record to {:?}",
+                b.key, b.scope
+            )));
+        }
         let bytes = encode_versioned(SECRET_BINDING_VERSION, b)?;
         self.with_write("commit", |txn| {
             let mut tbl = write_table(txn, SECRET_BINDINGS, "open secret_bindings")?;
@@ -1074,7 +1086,7 @@ mod tests {
 
     // ---- secret bindings (H2: a committed secret_ref must not be redirectable) ----
 
-    use crate::scope::{Scope, WorkspaceId};
+    use crate::scope::WorkspaceId;
 
     fn binding(key: &str, scope: Scope, endpoint: &str) -> SecretBinding {
         SecretBinding {
@@ -1107,7 +1119,10 @@ mod tests {
         let store = GlobalStore::open(&path).unwrap();
         assert_eq!(store.secret_binding("ssh-a-1").unwrap(), None);
         store
-            .bind_secret_if_unbound(&binding("ssh-a-1", Scope::Global, "ssh:password:a@h:22"))
+            .bind_secret_if_unbound(
+                &binding("ssh-a-1", Scope::Global, "ssh:password:a@h:22"),
+                &Scope::Global,
+            )
             .unwrap();
         assert!(store.secret_binding("ssh-a-1").unwrap().is_some());
     }
@@ -1169,9 +1184,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         let original = binding("k", ws("/w"), "ssh:password:alice@good:22");
-        store.bind_secret_if_unbound(&original).unwrap();
+        store.bind_secret_if_unbound(&original, &ws("/w")).unwrap();
         let err = store
-            .bind_secret_if_unbound(&binding("k", ws("/w"), "ssh:password:alice@evil:22"))
+            .bind_secret_if_unbound(
+                &binding("k", ws("/w"), "ssh:password:alice@evil:22"),
+                &ws("/w"),
+            )
             .unwrap_err();
         assert!(matches!(err, StoreError::Conflict(_)), "{err:?}");
         assert_eq!(store.secret_binding("k").unwrap(), Some(original));
@@ -1182,13 +1200,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         store
-            .bind_secret_if_unbound(&binding("k", Scope::Global, "old"))
+            .bind_secret_if_unbound(&binding("k", Scope::Global, "old"), &Scope::Global)
             .unwrap();
         let new = binding("k", Scope::Global, "new");
         store.rebind_secret(&new).unwrap();
         assert_eq!(store.secret_binding("k").unwrap(), Some(new));
         assert!(store.unbind_secret("k").unwrap());
         assert!(!store.unbind_secret("k").unwrap());
+        assert_eq!(store.secret_binding("k").unwrap(), None);
+    }
+
+    /// Review finding (H2 via the legacy fallback): a workspace record naming a bare,
+    /// global-format key must not be able to first-use-bind it to the workspace — that
+    /// is the victim's global secret being claimed by a committed file.
+    #[test]
+    fn first_use_binding_never_crosses_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let claim = binding("ssh-a-1", ws("/w"), "alice@evil:22 (password)");
+        let err = store
+            .bind_secret_if_unbound(&claim, &Scope::Global)
+            .unwrap_err();
+        assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
+        // Nor one workspace's key for another.
+        let err = store
+            .bind_secret_if_unbound(&binding("k", ws("/w/b"), "e"), &ws("/w/a"))
+            .unwrap_err();
+        assert!(matches!(err, StoreError::CrossLayerBinding(_)), "{err:?}");
+        assert_eq!(
+            store.secret_binding("ssh-a-1").unwrap(),
+            None,
+            "nothing written"
+        );
         assert_eq!(store.secret_binding("k").unwrap(), None);
     }
 }

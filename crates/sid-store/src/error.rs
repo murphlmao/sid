@@ -21,6 +21,11 @@ pub enum StoreError {
     /// destination layer — refused, to keep the store lossless.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A first-use secret binding asked to bind a keyring key to a layer the key was not
+    /// derived for (e.g. a workspace record naming a global-format key). Refused:
+    /// trust-on-first-use must never cross layers.
+    #[error("cross-layer secret binding refused: {0}")]
+    CrossLayerBinding(String),
     /// An underlying I/O error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
