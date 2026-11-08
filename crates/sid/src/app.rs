@@ -2118,6 +2118,8 @@ impl Render for AppState {
         // cost (element construction), `total=` is the whole frame including gpui's
         // layout/prepaint/paint, which is where scroll lag actually lives.
         let perf_start = std::env::var_os("SID_PERF").map(|_| std::time::Instant::now());
+        // Glyph antialiasing follows the Settings preference + this window's scale factor.
+        self.sync_text_rendering(window, cx);
 
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),

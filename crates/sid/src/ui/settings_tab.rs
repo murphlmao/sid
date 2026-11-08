@@ -37,11 +37,13 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, KeyDownEvent, Keystroke, Pixels, Window, div, prelude::*,
     px, rgb,
 };
-use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store};
+use sid_store::{DefaultScope, KeyBinding, PanelSide, Settings, Store, TextRendering};
 
 use crate::app::AppState;
 use crate::keymap::{self, Action, Chord, RebindOutcome};
-use sid_ui::{Card, Kbd, SegmentSelect, SegmentedControl, caveat_line, error_line, scaled, theme};
+use sid_ui::{
+    Card, Kbd, SegmentSelect, SegmentedControl, Switch, caveat_line, error_line, scaled, theme,
+};
 use sid_ui::{StyledExt as _, Typography as _};
 
 // ---- the screen's shape -----------------------------------------------------
@@ -50,11 +52,6 @@ use sid_ui::{StyledExt as _, Typography as _};
 /// narrow enough that it reads as navigation serving the content rather than as a
 /// peer of it.
 const RAIL_W: f32 = 220.;
-
-/// The widest a reading column gets, per the design system. Unlike the old
-/// centred column this is a *cap*, not a centring rule — the pane starts at the
-/// content gutter, so a wide window grows the empty space on one side only.
-const CONTENT_MAX_W: f32 = 880.;
 
 /// Below this window width the rail costs more than it orients: 220 + 880 no
 /// longer fit side by side, and a squeezed column under a rail reads worse than a
@@ -172,12 +169,7 @@ impl RenderOnce for SettingsFrame {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .p_3()
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(scaled(CONTENT_MAX_W))
-                            .child(self.content),
-                    ),
+                    .child(div().w_full().child(self.content)),
             )
     }
 }
@@ -306,7 +298,7 @@ fn section_strip(
 /// No form, no modal — every control on this screen is a direct,
 /// read-modify-write control.
 pub struct SettingsTabState {
-    cached: Settings,
+    pub(crate) cached: Settings,
     error: Option<String>,
     /// The persisted keybinding overrides, cached under the same rule as [`Self::cached`]
     /// (loaded once, refreshed after every successful write — render never reads the
@@ -509,6 +501,51 @@ fn row_button(
         .child(label)
 }
 
+const TEXT_RENDERING: [(TextRendering, &str); 3] = [
+    (TextRendering::Auto, "Auto"),
+    (TextRendering::Subpixel, "Subpixel"),
+    (TextRendering::Grayscale, "Grayscale"),
+];
+
+fn text_rendering_selector(current: TextRendering, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-text-rendering")
+        .segments(TEXT_RENDERING.map(|(_, label)| label))
+        .selected(selected_index(&TEXT_RENDERING, &current))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(mode, _)) = TEXT_RENDERING.get(ev.index) {
+                this.set_text_rendering(mode, cx);
+            }
+        }))
+}
+
+fn text_rendering_hint(mode: TextRendering) -> &'static str {
+    match mode {
+        TextRendering::Auto => {
+            "Softer grayscale edges on fractionally scaled displays, crisp subpixel otherwise."
+        }
+        TextRendering::Subpixel => {
+            "Sharpest on 100% and 200% displays; can look fuzzy at 125%-175%."
+        }
+        TextRendering::Grayscale => "Even edges at any scale, slightly lighter than subpixel.",
+    }
+}
+
+/// What gpui should be told for `pref` on a window with `scale` (pure, so the Auto rule
+/// is tested without a window). Auto = grayscale when the scale is fractional.
+pub(crate) fn resolve_text_mode(pref: TextRendering, scale: f32) -> gpui::TextRenderingMode {
+    match pref {
+        TextRendering::Subpixel => gpui::TextRenderingMode::Subpixel,
+        TextRendering::Grayscale => gpui::TextRenderingMode::Grayscale,
+        TextRendering::Auto => {
+            if (scale - scale.round()).abs() > 0.01 {
+                gpui::TextRenderingMode::Grayscale
+            } else {
+                gpui::TextRenderingMode::Subpixel
+            }
+        }
+    }
+}
+
 /// The Behaviour panel's option lists, each as one `(value, label)` table. One list
 /// per control so the labels and the values cannot drift: the segmented control
 /// reports an index back into the same array it was built from.
@@ -629,12 +666,11 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
 
     Card::new()
         .title(SettingsSection::Storage.label())
-        .child(path_row("data directory", data_dir))
-        .child(path_row("store file", store_path))
-        .child(path_row("demo database", demo_db_path))
+        .child(path_row("Data directory", data_dir))
+        .child(path_row("Store file", store_path))
+        .child(path_row("Demo database", demo_db_path))
         .child(caveat_line(
-            "the encrypted-file secret vault is dormant (round D §A) — keyring or \
-             in-memory only",
+            "Secrets are kept in your OS keyring, or in memory if no keyring is available.",
         ))
 }
 
@@ -694,21 +730,58 @@ impl AppState {
         applied: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        Card::new()
-            .title(SettingsSection::Appearance.label())
-            .count(theme::THEME_NAMES.len())
-            .children(
-                theme::THEME_NAMES
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, &name)| self.theme_row(ix, name, chrome, applied, cx)),
-            )
+        let cards: Vec<_> = theme::THEME_NAMES
+            .iter()
+            .enumerate()
+            .map(|(ix, &name)| self.theme_card(ix, name, chrome, applied, cx))
+            .collect();
+        let themes = Card::new()
+            .title("Theme")
+            .child(div().grid().grid_cols(2).gap_3().children(cards));
+
+        let settings = self.settings.cached.clone();
+        let display = Card::new()
+            .title("Display")
+            .child(labeled_row(
+                chrome,
+                "Text rendering",
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.))
+                    .gap_1p5()
+                    .child(text_rendering_selector(settings.text_rendering, cx))
+                    .child(
+                        div()
+                            .text_meta(chrome)
+                            .child(text_rendering_hint(settings.text_rendering)),
+                    ),
+            ))
+            .child(
+                Switch::new("settings-reduce-motion", settings.reduce_motion)
+                    .label("Reduce motion")
+                    .on_toggle({
+                        let this = cx.entity();
+                        move |on, _window, cx| {
+                            this.update(cx, |state, cx| state.set_reduce_motion(on, cx));
+                        }
+                    }),
+            );
+
+        // Two columns when there is room, so a wide window fills with cards rather than
+        // growing a void beside one column.
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_3()
+            .child(div().flex_1().min_w(scaled(360.)).child(themes))
+            .child(div().flex_1().min_w(scaled(360.)).child(display))
     }
 
-    /// One row per `theme::THEME_NAMES` entry: an active marker, the theme's name,
-    /// and five small swatches previewing its own palette (bg, surface, accent,
-    /// success, danger). Clicking anywhere on the row applies it.
-    fn theme_row(
+    /// One selectable card per `theme::THEME_NAMES` entry: a mini preview painted in
+    /// the theme's own bg / surface / accent / fg, then its name. Clicking applies it.
+    fn theme_card(
         &self,
         ix: usize,
         name: &'static str,
@@ -718,74 +791,140 @@ impl AppState {
     ) -> impl IntoElement + use<> {
         let palette = theme::by_name(name);
         let active = name == applied;
-        let swatch = |color: u32| {
-            div()
-                .w(scaled(16.))
-                .h(scaled(16.))
-                .rounded_md()
-                .bg(rgb(color))
-                .border_1()
-                // `chrome.border` (the row's own hairline) is a token step from
-                // `selection`/`well` by design — right for separating panels, too
-                // close to read as a ring once a near-black `bg`/`surface` swatch
-                // (void: 0x000000/0x0a0a0a) sits on the `selection`-filled active
-                // row (0x161616): a 1px, 12-of-255 step disappears at that size.
-                // `faint` is a token step further from both row fills in every
-                // built-in, dark or light, so the ring reads without a per-palette
-                // branch.
-                .border_color(rgb(chrome.faint))
-        };
+        // The preview: a window-shaped miniature. `faint` ring so a near-black preview
+        // still reads against a near-black card (void).
+        let preview = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .h(scaled(64.))
+            .rounded_md()
+            .bg(rgb(palette.bg))
+            .border_1()
+            .border_color(rgb(chrome.faint))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .w(scaled(18.))
+                            .h(scaled(6.))
+                            .rounded_sm()
+                            .bg(rgb(palette.accent)),
+                    )
+                    .child(
+                        div()
+                            .w(scaled(34.))
+                            .h(scaled(6.))
+                            .rounded_sm()
+                            .bg(rgb(palette.fg)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .rounded_sm()
+                    .bg(rgb(palette.surface))
+                    .p_1()
+                    .child(
+                        div()
+                            .w(scaled(52.))
+                            .h(scaled(5.))
+                            .rounded_sm()
+                            .bg(rgb(palette.muted)),
+                    ),
+            );
 
         div()
-            .id(("theme-row", ix))
+            .id(("theme-card", ix))
             .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_2()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .min_w(px(0.))
             .rounded_md()
             .cursor_pointer()
-            // `well`, not `surface`: the row lives inside a `surface` panel now, and
-            // surface-on-surface is an invisible row.
             .bg(rgb(if active {
                 chrome.selection
             } else {
                 chrome.well
             }))
-            // `selection` fill (above) plus the accent dot below are the row's two
-            // active markers; an accent hairline on top of both was a third, and
-            // `accent` means "engage" — spent here on a static row, it stopped
-            // meaning anything. Every row keeps the same hairline `border`.
             .border_1()
-            .border_color(rgb(chrome.border))
-            .child(
-                div()
-                    .w(scaled(14.))
-                    .text_color(rgb(if active { chrome.accent } else { chrome.faint }))
-                    .child(if active { "●" } else { "○" }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .text_body(chrome)
-                    .text_color(rgb(if active { chrome.fg_strong } else { chrome.fg }))
-                    .child(name),
-            )
+            .border_color(rgb(if active { chrome.accent } else { chrome.border }))
+            .hover(|s| s.bg(rgb(chrome.selection)))
+            .child(preview)
             .child(
                 div()
                     .flex()
                     .flex_row()
+                    .items_center()
                     .gap_2()
-                    .child(swatch(palette.bg))
-                    .child(swatch(palette.surface))
-                    .child(swatch(palette.accent))
-                    .child(swatch(palette.success))
-                    .child(swatch(palette.danger)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .clamp_one_line()
+                            .text_body(chrome)
+                            .text_color(rgb(if active { chrome.fg_strong } else { chrome.fg }))
+                            .child(name),
+                    )
+                    .children(active.then(|| {
+                        div()
+                            .flex_none()
+                            .text_meta(chrome)
+                            .text_color(rgb(chrome.accent))
+                            .child("In use")
+                    })),
             )
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.set_theme(name, cx);
             }))
+    }
+
+    pub(crate) fn set_text_rendering(&mut self, mode: TextRendering, cx: &mut Context<Self>) {
+        let saved = self.store.settings().and_then(|mut s| {
+            s.text_rendering = mode;
+            self.store.set_settings(&s)
+        });
+        match saved {
+            Ok(()) => {
+                self.settings.cached.text_rendering = mode;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Could not save text rendering: {e}")),
+        }
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        sid_ui::motion::set_reduced(on, cx);
+        let saved = self.store.settings().and_then(|mut s| {
+            s.reduce_motion = on;
+            self.store.set_settings(&s)
+        });
+        match saved {
+            Ok(()) => {
+                self.settings.cached.reduce_motion = on;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Could not save reduce motion: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Keep gpui's glyph antialiasing in step with the preference and the window's
+    /// CURRENT scale factor (so moving the window to another output re-evaluates
+    /// `Auto`). Cheap enough to call every render: it only writes on a change.
+    pub(crate) fn sync_text_rendering(&self, window: &Window, cx: &mut App) {
+        let mode = resolve_text_mode(self.settings.cached.text_rendering, window.scale_factor());
+        if cx.text_rendering_mode() != mode {
+            cx.set_text_rendering_mode(mode);
+        }
     }
 
     /// Switch the active theme (round-E §C.1): install it as the process-wide
@@ -841,17 +980,17 @@ impl AppState {
             .title(SettingsSection::Behaviour.label())
             .child(labeled_row(
                 chrome,
-                "default scope for new items",
+                "Default scope for new items",
                 default_scope_selector(settings.default_scope, cx),
             ))
             .child(labeled_row(
                 chrome,
-                "file browser side",
+                "File browser side",
                 file_browser_side_selector(settings.file_browser_side, cx),
             ))
             .child(labeled_row(
                 chrome,
-                "secret keyring",
+                "Secret keyring",
                 div()
                     .flex()
                     .flex_col()
@@ -867,7 +1006,7 @@ impl AppState {
                     .child(
                         div()
                             .text_meta(chrome)
-                            .child("changes take effect on restart"),
+                            .child("Takes effect the next time sid starts."),
                     )
                     .child(backend),
             ))
@@ -1151,6 +1290,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp dir");
         let store = Store::open(&dir.path().join("store.redb")).expect("open tmp store");
         (dir, store)
+    }
+
+    #[test]
+    fn auto_text_rendering_goes_grayscale_only_on_fractional_scales() {
+        use gpui::TextRenderingMode::{Grayscale, Subpixel};
+        assert_eq!(resolve_text_mode(TextRendering::Auto, 1.0), Subpixel);
+        assert_eq!(resolve_text_mode(TextRendering::Auto, 2.0), Subpixel);
+        assert_eq!(resolve_text_mode(TextRendering::Auto, 1.5667), Grayscale);
+        assert_eq!(resolve_text_mode(TextRendering::Subpixel, 1.5667), Subpixel);
+        assert_eq!(resolve_text_mode(TextRendering::Grayscale, 1.0), Grayscale);
     }
 
     #[test]

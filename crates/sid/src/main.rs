@@ -121,6 +121,10 @@ fn main() {
                     .unwrap_or_else(|_| "cosmos".into())
             });
             sid_ui::theme::install(&theme_name, cx);
+            // Persisted "Reduce motion" (the SID_REDUCED_MOTION env only ever adds to it).
+            if store.settings().map(|s| s.reduce_motion).unwrap_or(false) {
+                sid_ui::motion::set_reduced(true, cx);
+            }
             // Window title: names the window in bars / `hyprctl clients` (it was empty).
             // "sid (dev)" when launched from a Claude Code session (`CLAUDECODE` is set
             // there) — the hook murphy's Hyprland rule keys on to park dev launches on

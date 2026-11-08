@@ -766,6 +766,18 @@ pub struct WorkspacesTabState {
 }
 
 impl WorkspacesTabState {
+    /// Detail sub-view names in segmented-control order, for the command palette.
+    pub(crate) fn view_labels() -> [&'static str; 4] {
+        DetailSubTab::ALL.map(DetailSubTab::label)
+    }
+
+    /// Switch the detail sub-view to the one at `ix` (palette navigation).
+    pub(crate) fn show_view(&mut self, ix: usize) {
+        if let Some(&tab) = DetailSubTab::ALL.get(ix) {
+            self.sub_tab = tab;
+        }
+    }
+
     /// The add-path input is built eagerly here (needs `window`, like the fleet's
     /// `TableState`) — same as `ssh_home::HomeTabState::new`'s quick-connect box.
     pub(crate) fn new(window: &mut Window, cx: &mut Context<AppState>) -> Self {

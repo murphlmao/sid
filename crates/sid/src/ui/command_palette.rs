@@ -21,6 +21,10 @@ use gpui::{
 
 use crate::app::AppState;
 use crate::keymap::{self, Action};
+use crate::ui::{
+    network_tab::NetworkTabState, systems_tab::SystemsTabState, workspaces_tab::WorkspacesTabState,
+};
+use sid_store::PALETTE_RECENTS_CAP;
 use sid_ui::{InputState, Kbd, StyledExt as _, TextInput, Typography as _, bridge::SCRIM, theme};
 
 /// How many matches the palette shows at once — plenty for the v1 candidate set
@@ -41,6 +45,99 @@ enum PaletteTarget {
     Connection(usize),
     /// Index into `AppState::ssh_sessions`.
     Session(usize),
+    /// Jump straight to a tab's sub-view, or run a Database action.
+    Nav(NavTarget),
+}
+
+/// A navigation / tab-action entry. Each dispatches through the same handlers the tab's
+/// own controls use (`PrimaryTab` + the tab's `show_view`, or the DB tab's run/explain/
+/// export methods) — the palette adds no behaviour of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavTarget {
+    /// Network sub-view by segmented-control index.
+    Network(usize),
+    /// System sub-view by index.
+    System(usize),
+    /// Workspaces detail sub-view by index.
+    Workspaces(usize),
+    /// A Database tab action.
+    Db(DbAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbAction {
+    Run,
+    Explain,
+    Export,
+}
+
+impl NavTarget {
+    /// The stable id recents are persisted under. On disk — never rename.
+    fn key(self) -> String {
+        match self {
+            NavTarget::Network(i) => format!("nav:net:{i}"),
+            NavTarget::System(i) => format!("nav:sys:{i}"),
+            NavTarget::Workspaces(i) => format!("nav:ws:{i}"),
+            NavTarget::Db(DbAction::Run) => "nav:db:run".into(),
+            NavTarget::Db(DbAction::Explain) => "nav:db:explain".into(),
+            NavTarget::Db(DbAction::Export) => "nav:db:export".into(),
+        }
+    }
+}
+
+/// Every navigation entry as `(target, label, hint)`, in display order.
+fn nav_candidates() -> Vec<(NavTarget, String, &'static str)> {
+    let mut out = Vec::new();
+    for (i, l) in NetworkTabState::view_labels().iter().enumerate() {
+        out.push((
+            NavTarget::Network(i),
+            format!("Network: {l}"),
+            "Network view",
+        ));
+    }
+    for (i, l) in SystemsTabState::view_labels().iter().enumerate() {
+        out.push((NavTarget::System(i), format!("System: {l}"), "System view"));
+    }
+    for (i, l) in WorkspacesTabState::view_labels().iter().enumerate() {
+        out.push((
+            NavTarget::Workspaces(i),
+            format!("Workspaces: {l}"),
+            "Workspace view",
+        ));
+    }
+    out.push((
+        NavTarget::Db(DbAction::Run),
+        "Database: Run query".into(),
+        "Database action",
+    ));
+    out.push((
+        NavTarget::Db(DbAction::Explain),
+        "Database: Explain query".into(),
+        "Database action",
+    ));
+    out.push((
+        NavTarget::Db(DbAction::Export),
+        "Database: Export results".into(),
+        "Database action",
+    ));
+    out
+}
+
+/// Move `key` to the front of `recents` (dedup), capped at [`PALETTE_RECENTS_CAP`].
+pub(crate) fn push_recent(recents: &mut Vec<String>, key: &str) {
+    recents.retain(|k| k != key);
+    recents.insert(0, key.to_string());
+    recents.truncate(PALETTE_RECENTS_CAP);
+}
+
+/// Score adjustment from recency: with no query, recents lead (most recent first);
+/// with a query, they only nudge ties and near-ties.
+fn recent_bonus(recents: &[String], key: &str, query_empty: bool) -> i32 {
+    match recents.iter().position(|k| k == key) {
+        None => 0,
+        Some(rank) if query_empty => 1_000 - rank as i32,
+        Some(rank) => 30 - rank as i32,
+    }
 }
 
 /// One filtered/scored row, rebuilt fresh from `AppState`'s live data on every
@@ -48,6 +145,8 @@ enum PaletteTarget {
 /// this costs nothing worth caching).
 struct PaletteEntry {
     target: PaletteTarget,
+    /// Stable id for recents; `None` for entries that are not remembered (open sessions).
+    key: Option<String>,
     label: SharedString,
     subtitle: Option<SharedString>,
     shortcut: Option<SharedString>,
@@ -118,10 +217,13 @@ impl AppState {
     /// `Enter`: run whatever the selected row does, then close. A no-op if nothing is
     /// selected (e.g. the query matches nothing).
     pub(crate) fn palette_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(target) = self.palette_selected_target(cx) else {
+        let Some((target, key)) = self.palette_selected_target(cx) else {
             return;
         };
         self.close_palette(cx);
+        if let Some(key) = key {
+            self.remember_palette_entry(&key);
+        }
         match target {
             PaletteTarget::Action(action) => self.dispatch_action(action, window, cx),
             PaletteTarget::Connection(ix) => {
@@ -131,16 +233,61 @@ impl AppState {
                 }
             }
             PaletteTarget::Session(ix) => self.activate_session(ix, window, cx),
+            PaletteTarget::Nav(nav) => self.run_nav(nav, window, cx),
         }
     }
 
-    fn palette_selected_target(&self, cx: &Context<Self>) -> Option<PaletteTarget> {
+    fn run_nav(&mut self, nav: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
+        // Tab numbers per `Action::PrimaryTab`: 2 Database, 3 Network, 4 Workspaces, 5 System.
+        match nav {
+            NavTarget::Network(i) => {
+                self.dispatch_action(Action::PrimaryTab(3), window, cx);
+                self.network.show_view(i);
+            }
+            NavTarget::System(i) => {
+                self.dispatch_action(Action::PrimaryTab(5), window, cx);
+                self.systems.show_view(i);
+            }
+            NavTarget::Workspaces(i) => {
+                self.dispatch_action(Action::PrimaryTab(4), window, cx);
+                self.workspaces.show_view(i);
+            }
+            NavTarget::Db(act) => {
+                self.dispatch_action(Action::PrimaryTab(2), window, cx);
+                match act {
+                    DbAction::Run => self.run_query(window, cx),
+                    DbAction::Explain => self.explain_query(cx),
+                    DbAction::Export => self.export_csv(cx),
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Persist `key` as most-recent. A write failure only costs the memory of the
+    /// recent, so it is logged rather than surfaced.
+    fn remember_palette_entry(&mut self, key: &str) {
+        push_recent(&mut self.settings.cached.palette_recents, key);
+        let recents = self.settings.cached.palette_recents.clone();
+        let saved = self.store.settings().and_then(|mut s| {
+            s.palette_recents = recents;
+            self.store.set_settings(&s)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not save palette recents: {e}");
+        }
+    }
+
+    fn palette_selected_target(
+        &self,
+        cx: &Context<Self>,
+    ) -> Option<(PaletteTarget, Option<String>)> {
         let palette = self.palette.as_ref()?;
         let query = palette.query.read(cx).value().to_string();
         let entries = self.palette_entries(&query);
         entries
             .get(palette.selection.min(entries.len().saturating_sub(1)))
-            .map(|e| e.target)
+            .map(|e| (e.target, e.key.clone()))
     }
 
     // ---- candidate list + fuzzy filter (rebuilt live, not cached) ------------------
@@ -154,12 +301,17 @@ impl AppState {
         // is the one resolution point every consumer goes through).
         let bindings = self.effective_bindings();
         let mut entries = Vec::new();
+        let recents = &self.settings.cached.palette_recents;
+        let empty = query.trim().is_empty();
 
         for &action in keymap::ALL_ACTIONS {
             let label = action.label();
+            let key = format!("action:{}", action.id());
             if let Some(score) = fuzzy_score(query, label) {
+                let score = score + recent_bonus(recents, &key, empty);
                 entries.push(PaletteEntry {
                     target: PaletteTarget::Action(action),
+                    key: Some(key),
                     label: label.into(),
                     subtitle: None,
                     shortcut: keymap::primary_shortcut(action, &bindings).map(Into::into),
@@ -169,9 +321,12 @@ impl AppState {
         }
 
         for (ix, a) in self.hosts.iter().enumerate() {
+            let key = format!("conn:{}", a.item.alias);
             if let Some(score) = fuzzy_score(query, &a.item.alias) {
+                let score = score + recent_bonus(recents, &key, empty);
                 entries.push(PaletteEntry {
                     target: PaletteTarget::Connection(ix),
+                    key: Some(key),
                     label: a.item.alias.clone().into(),
                     subtitle: Some(format!("connect — {}@{}", a.item.user, a.item.host).into()),
                     shortcut: None,
@@ -184,8 +339,24 @@ impl AppState {
             if let Some(score) = fuzzy_score(query, &tab.label) {
                 entries.push(PaletteEntry {
                     target: PaletteTarget::Session(ix),
+                    key: None,
                     label: tab.label.clone(),
                     subtitle: Some("open session tab".into()),
+                    shortcut: None,
+                    score,
+                });
+            }
+        }
+
+        for (nav, label, hint) in nav_candidates() {
+            let key = nav.key();
+            if let Some(score) = fuzzy_score(query, &label) {
+                let score = score + recent_bonus(recents, &key, empty);
+                entries.push(PaletteEntry {
+                    target: PaletteTarget::Nav(nav),
+                    key: Some(key),
+                    label: label.into(),
+                    subtitle: Some(hint.into()),
                     shortcut: None,
                     score,
                 });
@@ -398,6 +569,51 @@ pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recents_dedup_move_to_front_and_cap() {
+        let mut r = Vec::new();
+        for i in 0..25 {
+            push_recent(&mut r, &format!("k{i}"));
+        }
+        assert_eq!(r.len(), PALETTE_RECENTS_CAP);
+        assert_eq!(r[0], "k24");
+        push_recent(&mut r, "k10");
+        assert_eq!(r[0], "k10");
+        assert_eq!(r.iter().filter(|k| *k == "k10").count(), 1);
+        assert_eq!(r.len(), PALETTE_RECENTS_CAP);
+    }
+
+    #[test]
+    fn recents_lead_an_empty_query_and_only_nudge_a_typed_one() {
+        let r = vec!["a".to_string(), "b".to_string()];
+        assert!(recent_bonus(&r, "a", true) > recent_bonus(&r, "b", true));
+        assert_eq!(recent_bonus(&r, "zzz", true), 0);
+        assert!(recent_bonus(&r, "a", false) < 100);
+    }
+
+    #[test]
+    fn nav_entries_cover_every_sub_view_and_db_action() {
+        let labels: Vec<String> = nav_candidates().into_iter().map(|c| c.1).collect();
+        for want in [
+            "Network: Ports",
+            "Network: Connections",
+            "Network: Services",
+            "Network: Interfaces",
+            "Network: Docker",
+            "Network: Kubernetes",
+            "System: Processes",
+            "System: Config files",
+            "Database: Run query",
+            "Database: Explain query",
+            "Database: Export results",
+        ] {
+            assert!(labels.iter().any(|l| l == want), "missing {want}");
+        }
+        let keys: std::collections::HashSet<_> =
+            nav_candidates().into_iter().map(|c| c.0.key()).collect();
+        assert_eq!(keys.len(), labels.len(), "nav keys are unique");
+    }
 
     #[test]
     fn empty_query_matches_everything_with_baseline_score() {
