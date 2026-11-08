@@ -53,7 +53,8 @@ pub fn build_args(req: &Request, out: &Path) -> Result<Built, String> {
     let xyn = Regex::new(r"^\d{1,5},\d{1,5},-?\d{1,4}$").unwrap();
     let drag = Regex::new(r"^\d{1,5},\d{1,5},\d{1,5},\d{1,5}(,\d{1,3})?$").unwrap();
     let size = Regex::new(r"^\d{3,5}x\d{3,5}$").unwrap();
-    let scale = Regex::new(r"^\d+(\.\d+)?$").unwrap();
+    let scale = Regex::new(r"^\d{1,2}(\.\d{1,3})?$").unwrap();
+    let secs = Regex::new(r"^\d{1,2}(\.\d{1,2})?$").unwrap();
 
     let mut a: Vec<String> = Vec::new();
     let mut env = Vec::new();
@@ -70,8 +71,13 @@ pub fn build_args(req: &Request, out: &Path) -> Result<Built, String> {
         a.extend(["--theme".into(), t.clone()]);
     }
     if let Some(s) = &req.size {
-        if !size.is_match(s) {
-            return Err(format!("size `{s}` must look like 1920x1080"));
+        let dims_ok = size.is_match(s)
+            && s.split('x')
+                .all(|d| d.parse::<u32>().is_ok_and(|n| (1..=4096).contains(&n)));
+        if !dims_ok {
+            return Err(format!(
+                "size `{s}` must look like 1920x1080 (each side at most 4096)"
+            ));
         }
         a.extend(["--size".into(), s.clone()]);
     }
@@ -95,7 +101,7 @@ pub fn build_args(req: &Request, out: &Path) -> Result<Built, String> {
             "drag" => ("--drag", drag.is_match(v)),
             "key" => ("--key", !v.is_empty() && !v.starts_with('-')),
             "type" => ("--type", !v.is_empty()),
-            "sleep" => ("--sleep", scale.is_match(v)),
+            "sleep" => ("--sleep", secs.is_match(v)),
             other => return Err(format!("unknown action kind `{other}`")),
         };
         if !ok {
@@ -203,6 +209,37 @@ mod tests {
             kind: k.into(),
             value: v.into(),
         }
+    }
+
+    #[test]
+    fn oversize_args_are_rejected() {
+        let out = Path::new("/x.png");
+        for r in [
+            Request {
+                size: Some("9999x1000".into()),
+                ..Default::default()
+            },
+            Request {
+                size: Some("1000x4097".into()),
+                ..Default::default()
+            },
+            Request {
+                scale: Some("123456789".into()),
+                ..Default::default()
+            },
+            Request {
+                actions: vec![act("sleep", "99999999")],
+                ..Default::default()
+            },
+        ] {
+            assert!(build_args(&r, out).is_err(), "{r:?}");
+        }
+        let ok = Request {
+            size: Some("4096x4096".into()),
+            scale: Some("1.25".into()),
+            ..Default::default()
+        };
+        assert!(build_args(&ok, out).is_ok());
     }
 
     #[test]
