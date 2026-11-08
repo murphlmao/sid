@@ -66,14 +66,14 @@
 //! `FG_DIM→muted`, `ACTIVE_BG→selection`, `BRAND→accent`, `DANGER→danger`, `WARN→warning`).
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, rgb,
+    MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
@@ -89,9 +89,9 @@ use sid_ui::component::{
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
-    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, Segment,
-    SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput, Toast, Typography as _,
-    h_flex, scaled, sortable_th, v_flex,
+    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, MeterTone, Row,
+    Segment, SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput, Toast,
+    Typography as _, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -158,6 +158,8 @@ pub struct SystemsTabState {
     /// back never costs a re-probe.
     sub_view: SystemSubView,
     overview: Option<SystemOverview>,
+    /// Rolling CPU / memory / swap utilisation (0..=1) behind the overview sparklines.
+    history: UsageHistory,
     error: Option<String>,
     /// The processes table. Lazily built by `ensure_systems_widgets` (needs `window`,
     /// which isn't available from `SystemsTabState::new`) — mirrors `NetworkTabState::
@@ -207,6 +209,7 @@ impl SystemsTabState {
             refresh_loop_running: false,
             sub_view: SystemSubView::default(),
             overview: None,
+            history: UsageHistory::default(),
             error: None,
             table: None,
             filter: None,
@@ -866,7 +869,10 @@ impl AppState {
                     Ok((overview_res, procs_res)) => {
                         let mut err = None;
                         match overview_res {
-                            Ok(overview) => this.systems.overview = Some(overview),
+                            Ok(overview) => {
+                                this.systems.history.record(&overview);
+                                this.systems.overview = Some(overview);
+                            }
                             Err(e) => err = Some(e.to_string()),
                         }
                         match procs_res {
@@ -1181,21 +1187,7 @@ impl AppState {
         let open_path = PathBuf::from(path.to_string());
         let menu_path = path.to_string();
 
-        h_flex()
-            .id(id)
-            .w_full()
-            .justify_between()
-            .gap_2()
-            .row_padding()
-            .cursor_pointer()
-            .hover_fill(theme)
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
-                    this.systems.config_right_click_target = Some(menu_path.clone());
-                    cx.notify();
-                }),
-            )
+        Row::new(id)
             .child(
                 v_flex()
                     .min_w_0()
@@ -1203,11 +1195,18 @@ impl AppState {
                         div()
                             .text_body(theme)
                             .text_color(rgb(theme.fg_strong))
+                            .clamp_one_line()
                             .child(file_name),
                     )
-                    .child(div().text_mono_meta(theme).child(path.to_string())),
+                    .child(
+                        div()
+                            .text_mono_meta(theme)
+                            .min_w_0()
+                            .clamp_one_line()
+                            .child(path.to_string()),
+                    ),
             )
-            .child(
+            .action(
                 IconButton::new(("cfg-toggle", id.1), icon, tooltip)
                     .small()
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
@@ -1222,6 +1221,10 @@ impl AppState {
                         }
                     })),
             )
+            .on_secondary_mouse_down(cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                this.systems.config_right_click_target = Some(menu_path.clone());
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                 this.open_config_editor(open_path.clone(), window, cx);
             }))
@@ -1461,7 +1464,39 @@ impl AppState {
 
         // Host facts as one Meta line, then CPU / Memory / Swap as three cards in a row.
         let theme = theme::active(cx).clone();
-        let card = |m: Meter| Card::new().flex_1().min_w_0().child(m);
+        let hist = &self.systems.history;
+        let card = |m: Meter, samples: &VecDeque<f32>, line: String, chart_h: f32| {
+            Card::new().flex_1().min_w_0().child(
+                v_flex()
+                    .flex_1()
+                    .w_full()
+                    .gap_2()
+                    .child(div().flex_none().child(m))
+                    .child(sparkline(&theme, samples, chart_h))
+                    .child(div().text_meta(&theme).clamp_one_line().child(line)),
+            )
+        };
+        let mem_line = format!(
+            "{} used · {} available · {} total",
+            humanize_bytes(ov.mem_used),
+            humanize_bytes(ov.mem_total.saturating_sub(ov.mem_used)),
+            humanize_bytes(ov.mem_total)
+        );
+        let swap_line = if ov.swap_total > 0 {
+            format!(
+                "{} used · {} free",
+                humanize_bytes(ov.swap_used),
+                humanize_bytes(ov.swap_total.saturating_sub(ov.swap_used))
+            )
+        } else {
+            "Add a swap file or partition to give memory some headroom.".to_string()
+        };
+        let cpu_line = format!(
+            "load {:.2} · {} logical {}",
+            ov.load_avg.0,
+            cores,
+            if cores == 1 { "core" } else { "cores" }
+        );
         v_flex()
             .w_full()
             .gap_2()
@@ -1471,15 +1506,103 @@ impl AppState {
                     .flex()
                     .flex_row()
                     .gap_3()
-                    .child(card(cpu))
-                    .child(card(memory))
-                    .child(card(swap)),
+                    .child(card(cpu, &hist.cpu, cpu_line, 56.))
+                    .child(card(memory, &hist.mem, mem_line, 112.))
+                    .child(card(swap, &hist.swap, swap_line, 112.)),
             )
             .into_any_element()
     }
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
+
+/// How many samples the overview keeps per metric (about four minutes at the 2s tick).
+const HISTORY_CAP: usize = 120;
+/// How many bars a sparkline draws; a longer history is averaged down into this many.
+const SPARK_BARS: usize = 60;
+
+/// Rolling utilisation (0..=1) for the three overview cards.
+#[derive(Default)]
+struct UsageHistory {
+    cpu: VecDeque<f32>,
+    mem: VecDeque<f32>,
+    swap: VecDeque<f32>,
+}
+
+impl UsageHistory {
+    fn record(&mut self, ov: &SystemOverview) {
+        push_sample(&mut self.cpu, ov.cpu_total_pct / 100.0, HISTORY_CAP);
+        push_sample(
+            &mut self.mem,
+            Meter::ratio(ov.mem_used, ov.mem_total),
+            HISTORY_CAP,
+        );
+        push_sample(
+            &mut self.swap,
+            Meter::ratio(ov.swap_used, ov.swap_total),
+            HISTORY_CAP,
+        );
+    }
+}
+
+/// Append to a bounded ring, evicting the oldest. Non-finite values are stored as 0 and
+/// the rest clamped to 0..=1 so a bad probe can't blow the chart's height.
+fn push_sample(buf: &mut VecDeque<f32>, value: f32, cap: usize) {
+    let v = if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    buf.push_back(v);
+    while buf.len() > cap {
+        buf.pop_front();
+    }
+}
+
+/// Reduce `samples` to at most `bars` values by averaging contiguous buckets (newest
+/// samples stay aligned to the end). Fewer samples than bars pass through unchanged.
+fn downsample(samples: &VecDeque<f32>, bars: usize) -> Vec<f32> {
+    let n = samples.len();
+    if bars == 0 || n == 0 {
+        return Vec::new();
+    }
+    if n <= bars {
+        return samples.iter().copied().collect();
+    }
+    (0..bars)
+        .map(|i| {
+            let lo = i * n / bars;
+            let hi = ((i + 1) * n / bars).max(lo + 1);
+            let sum: f32 = samples.iter().skip(lo).take(hi - lo).sum();
+            sum / (hi - lo) as f32
+        })
+        .collect()
+}
+
+/// A small history bar chart `height` px tall (the cards pass a taller one beside the
+/// CPU card's per-core strip so all three cards end level): always [`SPARK_BARS`] slots so the newest sample sits at
+/// the right edge and the chart fills the card; unfilled slots on the left are blank.
+fn sparkline(theme: &Theme, samples: &VecDeque<f32>, height: f32) -> impl IntoElement + use<> {
+    let values = downsample(samples, SPARK_BARS);
+    let blanks = SPARK_BARS - values.len();
+    div()
+        .flex()
+        .flex_row()
+        .items_end()
+        .gap_px()
+        .w_full()
+        .flex_none()
+        .h(scaled(height))
+        .children((0..blanks).map(|_| div().flex_1().h(px(1.)).bg(rgb(theme.selection))))
+        .children(values.into_iter().map(|v| {
+            let tone = MeterTone::of(v).color(theme);
+            div()
+                .flex_1()
+                .h(relative(v.max(0.04)))
+                .rounded_sm()
+                .bg(rgb(tone))
+        }))
+}
 
 /// Case-insensitive filter over the processes table: name/command/user substring, or
 /// an exact pid match. Empty (or all-whitespace) query matches everything. Mirrors
@@ -1588,6 +1711,33 @@ mod tests {
             parent: None,
             user: user.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn push_sample_evicts_oldest_and_sanitises() {
+        let mut b = VecDeque::new();
+        for i in 0..5 {
+            push_sample(&mut b, i as f32 / 10.0, 3);
+        }
+        assert_eq!(b.len(), 3);
+        assert!((b[0] - 0.2).abs() < 1e-6);
+        push_sample(&mut b, f32::NAN, 3);
+        push_sample(&mut b, 7.0, 3);
+        assert_eq!(b.iter().copied().collect::<Vec<_>>(), vec![0.4, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn downsample_passes_short_series_and_averages_long_ones() {
+        let short: VecDeque<f32> = [0.1, 0.2].into();
+        assert_eq!(downsample(&short, 5), vec![0.1, 0.2]);
+        let long: VecDeque<f32> = [0.0, 1.0, 0.5, 0.5, 1.0, 1.0].into();
+        let d = downsample(&long, 3);
+        assert_eq!(d.len(), 3);
+        assert!(
+            (d[0] - 0.5).abs() < 1e-6 && (d[1] - 0.5).abs() < 1e-6 && (d[2] - 1.0).abs() < 1e-6
+        );
+        assert!(downsample(&long, 0).is_empty());
+        assert!(downsample(&VecDeque::new(), 4).is_empty());
     }
 
     #[test]
