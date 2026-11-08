@@ -149,6 +149,6 @@ pub mod component {
         Root,
         input::{Editor, EditorState, InputEvent, InputState, Position},
         menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-        table::{Column, ColumnSort, TableDelegate, TableState},
+        table::{Column, ColumnSort, TableDelegate, TableEvent, TableState},
     };
 }
