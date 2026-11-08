@@ -51,7 +51,18 @@ pub(crate) fn friendly(raw: &str, host: &str, port: u16) -> Option<String> {
     }
     // A live session whose link went away underneath it (server stopped, network
     // dropped): the SFTP/exec layers report this as a closed session or channel.
-    if has(&[
+    if is_dropped(raw) {
+        return Some(format!(
+            "The connection to {host}:{port} dropped. Reconnect the session and try again."
+        ));
+    }
+    None
+}
+
+/// Whether `raw` says an established connection went away underneath us.
+pub(crate) fn is_dropped(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    [
         "session closed",
         "channel closed",
         "connection reset",
@@ -59,12 +70,9 @@ pub(crate) fn friendly(raw: &str, host: &str, port: u16) -> Option<String> {
         "os error 104",
         "os error 32",
         "unexpected eof",
-    ]) {
-        return Some(format!(
-            "The connection to {host}:{port} dropped. Reconnect the session and try again."
-        ));
-    }
-    None
+    ]
+    .iter()
+    .any(|n| lower.contains(n))
 }
 
 /// The failed pane's title: the alias plus where it tried to connect.

@@ -31,6 +31,11 @@ use crate::known_hosts;
 /// error while the user is still watching.
 pub const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How often an idle connection is probed (SSH keepalive request).
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// Unanswered probes tolerated before the transport is torn down.
+pub const KEEPALIVE_MAX: usize = 3;
+
 /// Factory carrying the app-level known_hosts path and dial timeout; per-host
 /// clients are produced by `new_client`. The caller supplies
 /// `<data_dir>/known_hosts` — the adapter contains no XDG logic.
@@ -229,6 +234,11 @@ impl SshClient for RusshClient {
         };
         let config = Arc::new(Config {
             inactivity_timeout: Some(Duration::from_secs(300)),
+            // A server that dies silently (stopped container, pulled cable) never sends
+            // a FIN we can see in time; probe it so the transport (and with it every
+            // channel) closes within ~keepalive_interval * (keepalive_max + 1).
+            keepalive_interval: Some(KEEPALIVE_INTERVAL),
+            keepalive_max: KEEPALIVE_MAX,
             preferred,
             ..Default::default()
         });
@@ -292,7 +302,7 @@ impl SshClient for RusshClient {
     }
 
     fn is_connected(&self) -> bool {
-        self.handle.is_some()
+        self.handle.as_ref().is_some_and(|h| !h.is_closed())
     }
 
     async fn exec(&mut self, cmd: &str) -> Result<ExecResult, SshError> {

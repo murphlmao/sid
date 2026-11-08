@@ -356,6 +356,7 @@ impl SshSession {
                     );
                 }
                 self.toast(ToastTone::Success, msg, cx);
+                self.refresh_dir_of(remote_path, cx);
             }
             Ok(Err(RemoteEditError::Conflict(kind))) => self.park_conflict(remote_path, kind, cx),
             Ok(Err(e)) => {
@@ -374,6 +375,14 @@ impl SshSession {
                     cx,
                 );
             }
+        }
+    }
+
+    /// After an upload, re-list the sidebar if it is showing the file's directory, so the
+    /// row's size and mtime are the server's, not the ones from before the save.
+    fn refresh_dir_of(&mut self, remote_path: &str, cx: &mut Context<Self>) {
+        if super::parent_path(remote_path) == self.path {
+            self.refresh(cx);
         }
     }
 
@@ -607,6 +616,9 @@ impl SshSession {
                 Ok(StopResult::Conflict(kind)) => s.park_conflict(&remote_path, kind, cx),
                 Ok(StopResult::Done(p, err)) => {
                     s.take_active(&remote_path);
+                    if err.is_none() {
+                        s.refresh_dir_of(&remote_path, cx);
+                    }
                     if let Some(e) = err {
                         s.toast(
                             ToastTone::Danger,

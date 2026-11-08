@@ -27,8 +27,29 @@ use crate::client::map_russh_error;
 /// via `shutdown_tx` — see [`split`] — but this `Drop` is the backstop for every
 /// other path: the entity dropping without a clean disconnect, a panic, etc.).
 pub struct RusshShellReader {
-    buffer: Arc<Mutex<Vec<u8>>>,
+    buffer: Arc<Mutex<PumpBuffer>>,
     pump: JoinHandle<()>,
+}
+
+/// What the pump has received so far, plus whether the channel has ended. The flag is
+/// what lets `try_read` report a dead session: without it a server that vanished mid-
+/// session looked like an idle shell forever.
+#[derive(Default)]
+struct PumpBuffer {
+    data: Vec<u8>,
+    closed: bool,
+}
+
+impl PumpBuffer {
+    /// Everything buffered, or `Disconnected` once the channel has ended and the
+    /// remaining output has been handed over (output received before the close is
+    /// never swallowed by the error).
+    fn drain(&mut self) -> Result<Vec<u8>, SshError> {
+        if self.data.is_empty() && self.closed {
+            return Err(SshError::Disconnected);
+        }
+        Ok(std::mem::take(&mut self.data))
+    }
 }
 
 /// The write half: input, PTY resize, and close. Meant to live behind its own
@@ -47,7 +68,7 @@ pub struct RusshShellWriter {
 /// reader's background pump task.
 pub(crate) fn split(channel: Channel<Msg>) -> (RusshShellReader, RusshShellWriter) {
     let (mut read_half, write_half) = channel.split();
-    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let buffer = Arc::new(Mutex::new(PumpBuffer::default()));
     let buffer_for_task = buffer.clone();
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let pump = tokio::spawn(async move {
@@ -58,10 +79,10 @@ pub(crate) fn split(channel: Channel<Msg>) -> (RusshShellReader, RusshShellWrite
                 msg = read_half.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { data }) => {
-                            buffer_for_task.lock().await.extend_from_slice(&data);
+                            buffer_for_task.lock().await.data.extend_from_slice(&data);
                         }
                         Some(ChannelMsg::ExtendedData { data, .. }) => {
-                            buffer_for_task.lock().await.extend_from_slice(&data);
+                            buffer_for_task.lock().await.data.extend_from_slice(&data);
                         }
                         Some(ChannelMsg::Close) | Some(ChannelMsg::Eof) | None => break,
                         _ => {}
@@ -69,6 +90,7 @@ pub(crate) fn split(channel: Channel<Msg>) -> (RusshShellReader, RusshShellWrite
                 }
             }
         }
+        buffer_for_task.lock().await.closed = true;
     });
     (
         RusshShellReader { buffer, pump },
@@ -83,8 +105,7 @@ pub(crate) fn split(channel: Channel<Msg>) -> (RusshShellReader, RusshShellWrite
 #[async_trait]
 impl SshShellReader for RusshShellReader {
     async fn try_read(&mut self) -> Result<Vec<u8>, SshError> {
-        let mut buf = self.buffer.lock().await;
-        Ok(std::mem::take(&mut *buf))
+        self.buffer.lock().await.drain()
     }
 }
 
@@ -129,5 +150,25 @@ impl SshShellWriter for RusshShellWriter {
         }
         let _ = self.write_half.close().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_empty_buffer_reads_as_idle() {
+        let mut b = PumpBuffer::default();
+        assert_eq!(b.drain().unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn closed_channel_errors_only_after_output_is_drained() {
+        let mut b = PumpBuffer::default();
+        b.data.extend_from_slice(b"bye");
+        b.closed = true;
+        assert_eq!(b.drain().unwrap(), b"bye");
+        assert!(matches!(b.drain(), Err(SshError::Disconnected)));
     }
 }

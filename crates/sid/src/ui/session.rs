@@ -148,6 +148,24 @@ pub(crate) fn ssh_runtime() -> &'static tokio::runtime::Handle {
     })
 }
 
+/// Generation counter for directory listings: each navigation takes a new number and only
+/// the newest request may land its result.
+#[derive(Debug, Default, Clone, Copy)]
+struct ListGen(u64);
+
+impl ListGen {
+    /// Start a request; the returned token is the new live generation.
+    fn begin(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    /// Whether `token` still names the newest request.
+    fn is_current(&self, token: u64) -> bool {
+        self.0 == token
+    }
+}
+
 /// Lifecycle status of an [`SshSession`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionStatus {
@@ -375,6 +393,8 @@ pub struct SshSession {
     /// the connection's own lifecycle. A listing failure here does not fail the session:
     /// the terminal keeps working even if e.g. the home directory can't be read.
     file_error: Option<String>,
+    /// Which directory listing request is the live one (see [`ListGen`]).
+    list_gen: ListGen,
     /// Split-layout collapse toggle (P5.2): the `«`/`»` control that lets the terminal
     /// reclaim the whole pane when browsing files isn't needed. Complements the drag
     /// divider rather than substituting for it — collapse is "not now", drag is "this
@@ -418,6 +438,8 @@ pub struct SshSession {
     host_label: String,
     /// The dialled host and port, for the failed pane title and friendly error copy.
     host_addr: (String, u16),
+    /// The connection died underneath an open session (vs a user-initiated disconnect).
+    dropped: bool,
     /// Remote files currently open in the user's editor. See [`edit`].
     edits: Vec<edit::ActiveEdit>,
     /// The conflict / no-editor dialog, if one is up.
@@ -502,6 +524,7 @@ impl SshSession {
                 path: "/".to_string(),
                 entries: Vec::new(),
                 file_error: None,
+                list_gen: ListGen::default(),
                 sidebar_collapsed: false,
                 sidebar_width_pref: None,
                 sidebar_drag: None,
@@ -511,6 +534,7 @@ impl SshSession {
                 dock_side,
                 host_label: host.alias.clone(),
                 host_addr: (host.host.clone(), host.port),
+                dropped: false,
                 edits: Vec::new(),
                 edit_dialog: None,
                 toast: None,
@@ -767,6 +791,7 @@ impl SshSession {
                             let was_open = session.status != SessionStatus::Closed;
                             session.status = SessionStatus::Closed;
                             if was_open {
+                                session.dropped = true;
                                 cx.emit(SshSessionEvent::Dropped);
                             }
                             cx.notify();
@@ -930,19 +955,39 @@ impl SshSession {
             return;
         };
         self.file_error = None;
+        let generation = self.list_gen.begin();
         let list_path = path.clone();
         cx.spawn(async move |this, cx| {
             let handle =
                 ssh_runtime().spawn(async move { sftp.lock().await.list(&list_path).await });
             let result = handle.await;
             let _ = this.update(cx, |session, cx| {
+                // A newer navigation superseded this one while it was in flight: its
+                // answer (good or "not found") describes a directory the user already
+                // left, so it must neither replace the listing nor raise an error.
+                if !session.list_gen.is_current(generation) {
+                    return;
+                }
                 match result {
                     Ok(Ok(mut entries)) => {
                         sort_entries(&mut entries);
                         session.path = path;
                         session.entries = entries;
                     }
-                    Ok(Err(e)) => session.file_error = Some(e.to_string()),
+                    Ok(Err(e)) => {
+                        let raw = e.to_string();
+                        if session.status == SessionStatus::Connected
+                            && super::connect_error::is_dropped(&raw)
+                        {
+                            // The SFTP layer noticed the link is gone before the shell
+                            // reader did: same outcome, same notification.
+                            session.status = SessionStatus::Closed;
+                            session.dropped = true;
+                            cx.emit(SshSessionEvent::Dropped);
+                        } else {
+                            session.file_error = Some(raw);
+                        }
+                    }
                     Err(join_err) => {
                         session.file_error = Some(format!("list task panicked: {join_err}"))
                     }
@@ -2741,9 +2786,14 @@ impl SshSession {
             )
             // Folders open; files preview. Right-click records which row it landed on for
             // the list's single context menu.
-            .on_click(cx.listener(move |session, _ev: &ClickEvent, _window, cx| {
+            .on_click(cx.listener(move |session, ev: &ClickEvent, _window, cx| {
                 if is_dir {
-                    session.enter_dir(&enter_name, cx);
+                    // The first click of a double-click already navigated; by the second
+                    // the rows have shifted under the pointer, so it would enter whatever
+                    // now sits there (or a name that no longer exists).
+                    if ev.click_count() < 2 {
+                        session.enter_dir(&enter_name, cx);
+                    }
                 } else {
                     session.view(view_name.clone(), cx);
                 }
@@ -3107,7 +3157,11 @@ impl SshSession {
         div().size_full().bg(rgb(t.bg)).child(
             EmptyState::new("Session closed")
                 .icon(Icon::Terminal)
-                .guidance(format!("The connection to {} has ended.", self.host_label))
+                .guidance(if self.dropped {
+                    self.friendly_err("connection reset")
+                } else {
+                    format!("The connection to {} has ended.", self.host_label)
+                })
                 .action(
                     Button::new("session-reconnect", "Reconnect")
                         .primary()
@@ -3653,5 +3707,20 @@ mod path_tests {
             safe_local_name("normal.txt"),
             Some("normal.txt".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod list_gen_tests {
+    use super::ListGen;
+
+    #[test]
+    fn only_the_newest_listing_request_is_current() {
+        let mut g = ListGen::default();
+        let first = g.begin();
+        assert!(g.is_current(first));
+        let second = g.begin();
+        assert!(!g.is_current(first), "a superseded response must be dropped");
+        assert!(g.is_current(second));
     }
 }
