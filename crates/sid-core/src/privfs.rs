@@ -437,6 +437,7 @@ mod tests {
 
     // ---- guard_path --------------------------------------------------------------
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn guard_path_accepts_an_absolute_path() {
         let p = Path::new("/etc/ssh/sshd_config");
@@ -589,6 +590,7 @@ mod tests {
         assert_object_safe(&*fs);
     }
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn a_correct_secret_reads_the_content() {
         let fs = FakePrivilegedFs::new(Access::Denied, "PermitRootLogin no\n");
@@ -600,6 +602,7 @@ mod tests {
         assert_eq!(String::from_utf8(got).unwrap(), "PermitRootLogin no\n");
     }
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn a_wrong_secret_fails_authentication_and_reads_nothing() {
         let fs = FakePrivilegedFs::new(Access::Denied, "secret\n");
@@ -608,6 +611,7 @@ mod tests {
         assert!(matches!(err, PrivError::AuthFailed), "got {err:?}");
     }
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn a_write_is_observable_by_a_later_read() {
         let fs = FakePrivilegedFs::new(Access::ReadOnly, "old\n");
@@ -633,6 +637,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn the_defaulted_read_passes_the_ports_own_cap_down() {
         // The seam that keeps `config_editor.rs` compiling unchanged: the old two-argument
@@ -643,6 +648,7 @@ mod tests {
         assert_eq!(*fs.last_cap.lock().unwrap(), Some(DEFAULT_READ_LIMIT));
     }
 
+    #[cfg(unix)] // fixtures use POSIX absolute paths (`/etc/...`)
     #[test]
     fn a_caller_with_an_opinion_gets_the_cap_it_asked_for() {
         let fs = FakePrivilegedFs::new(Access::Denied, "0123456789");
