@@ -272,6 +272,19 @@ pub struct NetworkTabState {
 }
 
 impl NetworkTabState {
+    /// Sub-view names in segmented-control order, for the command palette's
+    /// "Network: <view>" entries.
+    pub(crate) fn view_labels() -> [&'static str; 6] {
+        NetSubTab::ALL.map(NetSubTab::label)
+    }
+
+    /// Switch to the sub-view at `ix` (palette navigation); out of range is ignored.
+    pub(crate) fn show_view(&mut self, ix: usize) {
+        if let Some(tab) = NetSubTab::at(ix) {
+            self.sub_tab = tab;
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             provider: Arc::new(Mutex::new(SysinfoProvider::new())),

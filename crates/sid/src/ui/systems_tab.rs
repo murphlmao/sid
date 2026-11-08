@@ -201,6 +201,18 @@ pub struct SystemsTabState {
 }
 
 impl SystemsTabState {
+    /// Sub-view names in segmented-control order, for the command palette.
+    pub(crate) fn view_labels() -> [&'static str; 2] {
+        SystemSubView::ALL.map(SystemSubView::label)
+    }
+
+    /// Switch to the sub-view at `ix` (palette navigation); out of range is ignored.
+    pub(crate) fn show_view(&mut self, ix: usize) {
+        if let Some(view) = SystemSubView::at(ix) {
+            self.sub_view = view;
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             provider: Arc::new(Mutex::new(SysinfoProvider::new())),

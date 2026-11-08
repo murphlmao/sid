@@ -705,6 +705,7 @@ impl AppState {
             },
             |this, rep| {
                 let moved = rep.updated_refs.len();
+                let got = received_summary(rep.received_objects, rep.received_bytes);
                 let tail = match (rep.ahead, rep.behind) {
                     (Some(a), Some(b)) => format!(" You are {a} ahead and {b} behind."),
                     _ => String::new(),
@@ -714,7 +715,10 @@ impl AppState {
                     if moved == 0 {
                         format!("Fetched {} — already up to date.{tail}", rep.remote)
                     } else {
-                        format!("Fetched {} — {moved} ref(s) updated.{tail}", rep.remote)
+                        format!(
+                            "Fetched {} — {moved} ref(s) updated{got}.{tail}",
+                            rep.remote
+                        )
                     },
                 );
             },
@@ -737,5 +741,42 @@ impl AppState {
                 );
             },
         );
+    }
+}
+
+/// " (12 objects, 4.2 KiB)" for a fetch that actually transferred something, empty
+/// otherwise: a "0 objects" readout is noise, so zero counts are simply hidden.
+pub(super) fn received_summary(objects: usize, bytes: usize) -> String {
+    if objects == 0 && bytes == 0 {
+        return String::new();
+    }
+    let size = if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    };
+    match (objects, bytes) {
+        (0, _) => format!(" ({size})"),
+        (n, 0) => format!(" ({n} object{})", if n == 1 { "" } else { "s" }),
+        (n, _) => format!(" ({n} object{}, {size})", if n == 1 { "" } else { "s" }),
+    }
+}
+
+#[cfg(test)]
+mod received_tests {
+    use super::received_summary;
+
+    #[test]
+    fn zero_counts_are_hidden() {
+        assert_eq!(received_summary(0, 0), "");
+    }
+
+    #[test]
+    fn objects_and_bytes_read_naturally() {
+        assert_eq!(received_summary(1, 512), " (1 object, 512 B)");
+        assert_eq!(received_summary(12, 4300), " (12 objects, 4.2 KiB)");
+        assert_eq!(received_summary(3, 0), " (3 objects)");
     }
 }
