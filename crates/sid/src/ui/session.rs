@@ -30,7 +30,9 @@ use gpui::{
     ShapedLine, SharedString, Size, TextRun, UnderlineStyle, Window, anchored, canvas, deferred,
     div, fill, font, point, prelude::*, px, rgb, rgba, uniform_list,
 };
-use sid_core::ssh::{SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter};
+use sid_core::ssh::{
+    SftpEntry, SftpSession, SshClient, SshError, SshShellReader, SshShellWriter, UnknownHostKey,
+};
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use sid_ssh::RusshClientFactory;
 use sid_store::{Host, PanelSide};
@@ -144,6 +146,10 @@ pub enum SshSessionEvent {
     Retry,
     /// A failed session's **Edit connection**: open the host form for its host.
     EditConnection,
+    /// Security review M1: the connect stopped at a host key sid has never seen. The
+    /// session waits (still `Connecting`) for [`SshSession::trust_host_key`] or
+    /// [`SshSession::reject_host_key`]; `ui::host_key_prompt` asks the user.
+    UnknownHostKey(UnknownHostKey),
 }
 
 impl EventEmitter<SshSessionEvent> for SshSession {}
@@ -378,6 +384,32 @@ pub struct SshSession {
     /// updates to every live session via [`Self::set_dock_side`] when the header's
     /// `⇄ dock` control flips the (global, persisted) setting — see [`SshSessionEvent`].
     dock_side: PanelSide,
+    /// M1: a connect parked on an unknown host key — what re-dialling needs, held only
+    /// until the user answers the prompt (see [`SshSessionEvent::UnknownHostKey`]).
+    awaiting_host_key: Option<HostKeyRetry>,
+}
+
+/// Everything [`SshSession::trust_host_key`] re-dials with. `secret` is the same
+/// already-resolved secret the first attempt carried; it lives here only while the
+/// prompt is open and is dropped with this value on either answer.
+struct HostKeyRetry {
+    host: Host,
+    secret: Result<Option<Vec<u8>>, String>,
+    known_hosts_path: PathBuf,
+    fingerprint: String,
+}
+
+/// Why a connect attempt stopped: a host key waiting on the user (M1), or anything else
+/// (rendered verbatim as the failed pane's message).
+enum ConnectStop {
+    UnknownHostKey(UnknownHostKey),
+    Failed(String),
+}
+
+impl From<String> for ConnectStop {
+    fn from(msg: String) -> Self {
+        Self::Failed(msg)
+    }
 }
 
 impl SshSession {
@@ -424,10 +456,38 @@ impl SshSession {
                 goto_input: cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/go")),
                 preview: None,
                 dock_side,
+                awaiting_host_key: None,
             };
-            session.start_connect(host, secret, known_hosts_path, cx);
+            session.start_connect(host, secret, known_hosts_path, None, cx);
             session
         })
+    }
+
+    /// M1: the user trusted the unknown host key — re-dial approving exactly that
+    /// fingerprint. A no-op unless a connect is parked on one.
+    pub fn trust_host_key(&mut self, cx: &mut Context<Self>) {
+        if let Some(retry) = self.awaiting_host_key.take() {
+            self.start_connect(
+                retry.host,
+                retry.secret,
+                retry.known_hosts_path,
+                Some(retry.fingerprint),
+                cx,
+            );
+        }
+    }
+
+    /// M1: the user refused the unknown host key — fail the session (Retry asks again).
+    pub fn reject_host_key(&mut self, cx: &mut Context<Self>) {
+        if self.awaiting_host_key.take().is_some() {
+            self.status = SessionStatus::Failed(
+                "host key not trusted — nothing was sent to the server. Retry to see the \
+                 fingerprint again."
+                    .into(),
+            );
+            self.needs_focus = true;
+            cx.notify();
+        }
     }
 
     pub fn status(&self) -> &SessionStatus {
@@ -458,11 +518,14 @@ impl SshSession {
         self.focus_handle.clone()
     }
 
+    /// `approved_fingerprint` is the unknown host key the user just trusted (M1), if
+    /// this is the re-dial after the prompt; `None` on a first attempt.
     fn start_connect(
         &mut self,
         host: Host,
         secret: Result<Option<Vec<u8>>, String>,
         known_hosts_path: PathBuf,
+        approved_fingerprint: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let rows = self.rows;
@@ -474,11 +537,16 @@ impl SshSession {
                 Box<dyn SshShellWriter>,
                 Box<dyn SftpSession>,
             );
-            let connect_outcome: Result<Quad, String> = async {
+            // Kept only so an unknown-host-key stop can park a re-dial (M1).
+            let retry = (host.clone(), secret.clone(), known_hosts_path.clone());
+            let connect_outcome: Result<Quad, ConnectStop> = async {
                 let secret = secret?;
                 let (spec, auth) = connect_params(&host, secret)?;
                 let factory = RusshClientFactory::new(known_hosts_path);
                 let mut client: Box<dyn SshClient> = Box::new(factory.new_client());
+                if let Some(fingerprint) = &approved_fingerprint {
+                    client.approve_host_key(fingerprint);
+                }
                 let handle = ssh_runtime().spawn(async move {
                     client.connect(&spec, &auth).await?;
                     // Both channels open on the *same* client — one connection, one auth.
@@ -489,15 +557,31 @@ impl SshSession {
                 });
                 match handle.await {
                     Ok(Ok(quad)) => Ok(quad),
-                    Ok(Err(e)) => Err(e.to_string()),
-                    Err(join_err) => Err(format!("connect task panicked: {join_err}")),
+                    Ok(Err(SshError::HostKeyUnknown(key))) => Err(ConnectStop::UnknownHostKey(key)),
+                    Ok(Err(e)) => Err(e.to_string().into()),
+                    Err(join_err) => Err(format!("connect task panicked: {join_err}").into()),
                 }
             }
             .await;
 
             let (client, shell_reader, shell_writer, sftp) = match connect_outcome {
                 Ok(quad) => quad,
-                Err(err) => {
+                // M1: park the dial and ask (status stays `Connecting`).
+                Err(ConnectStop::UnknownHostKey(key)) => {
+                    let (host, secret, known_hosts_path) = retry;
+                    let _ = this.update(cx, |session, cx| {
+                        session.awaiting_host_key = Some(HostKeyRetry {
+                            host,
+                            secret,
+                            known_hosts_path,
+                            fingerprint: key.fingerprint.clone(),
+                        });
+                        cx.emit(SshSessionEvent::UnknownHostKey(key));
+                        cx.notify();
+                    });
+                    return;
+                }
+                Err(ConnectStop::Failed(err)) => {
                     let _ = this.update(cx, |session, cx| {
                         session.status = SessionStatus::Failed(err);
                         session.needs_focus = true;
@@ -506,6 +590,7 @@ impl SshSession {
                     return;
                 }
             };
+            drop(retry);
 
             // The shell/sftp channels are live; mark the session Connected before the
             // (best-effort) initial listing, so a slow or failing `list` never blocks the

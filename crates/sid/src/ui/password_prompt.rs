@@ -48,6 +48,10 @@ pub struct PasswordPromptModal {
     /// What the prompt is for — e.g. `user@host` or a DB connection's name — shown as
     /// "password for {label}".
     label: SharedString,
+    /// Why the prompt opened, when it is not the ordinary "nothing stored" case — the
+    /// security review's H2 "the saved password was not sent: …" warning. Replaces the
+    /// default caption.
+    note: Option<SharedString>,
     password: Entity<InputState>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
@@ -61,6 +65,7 @@ impl PasswordPromptModal {
     ) -> Self {
         Self {
             label: label.into(),
+            note: None,
             password: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
@@ -69,6 +74,12 @@ impl PasswordPromptModal {
             error: None,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Show `note` (a warning) in place of the default caption — see [`Self::note`].
+    pub fn with_note(mut self, note: Option<String>) -> Self {
+        self.note = note.map(Into::into);
+        self
     }
 
     /// Move keyboard focus into the password field. Called once, right after the modal
@@ -123,11 +134,15 @@ impl Render for PasswordPromptModal {
                         cx.emit(PasswordPromptEvent::Cancel);
                     }))
                     // Why the prompt exists at all, stated before the field rather than
-                    // as a caption under it: what the user types here does not persist.
-                    .child(Toast::info(
-                        "no OS keyring — this password is used once and held only \
-                         for this session",
-                    ))
+                    // as a caption under it: what the user types here does not persist —
+                    // or, when a stored password was withheld, why it was not sent.
+                    .child(match self.note.clone() {
+                        Some(note) => Toast::warning(note),
+                        None => Toast::info(
+                            "no OS keyring — this password is used once and held only \
+                             for this session",
+                        ),
+                    })
                     .child(TextInput::new(&self.password))
                     .when_some(self.error.clone(), |modal, err| {
                         modal.child(Toast::danger(err))

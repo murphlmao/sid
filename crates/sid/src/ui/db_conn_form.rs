@@ -30,10 +30,11 @@ use gpui::{
     SharedString, Window, actions, div, prelude::*, rgb,
 };
 use sid_core::db::{ConnField, ConnFieldKind, DbKind};
-use sid_secrets::{SecretId, SecretStore};
-use sid_store::{DbConnection, DefaultScope, Scope};
+use sid_secrets::SecretStore;
+use sid_store::{DbConnection, DefaultScope, GlobalStore, Scope};
 
 use crate::db_registry::DbRegistry;
+use crate::secret_binding;
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Button, Elevation, InputState, Modal, Row, SegmentSelect, SegmentedControl, StyledExt as _,
@@ -873,11 +874,19 @@ pub(crate) struct StagedSecret {
 /// Execute the write-side half of a [`SecretPlan`]: mint + put for [`SecretPlan::Mint`]
 /// (requires `secret`), pass-through for `Keep`/`Clear`. Old-id deletion is deferred to
 /// the caller via [`StagedSecret::delete_after_write`].
+///
+/// A minted secret is stored through [`secret_binding::save`]: under `target`'s keyring
+/// key (workspace-namespaced for a workspace record) and bound to `endpoint`, the
+/// connection's endpoint fingerprint as saved — so the secret is only ever handed back for this
+/// record pointed at this endpoint (security review H2).
 pub(crate) fn stage_secret(
     secrets: &dyn SecretStore,
+    bindings: &GlobalStore,
     plan: &SecretPlan,
     name: &str,
     secret: Option<&str>,
+    target: &Scope,
+    endpoint: &str,
 ) -> Result<StagedSecret, String> {
     match plan {
         SecretPlan::Clear { delete_old } => Ok(StagedSecret {
@@ -894,9 +903,7 @@ pub(crate) fn stage_secret(
             let secret =
                 secret.ok_or_else(|| "internal: mint plan without a secret".to_string())?;
             let id = mint_secret_id(name);
-            secrets
-                .put(&SecretId::new(id.clone()), secret.as_bytes())
-                .map_err(|e| e.to_string())?;
+            secret_binding::save(secrets, bindings, target, &id, endpoint, secret.as_bytes())?;
             Ok(StagedSecret {
                 secret_ref: Some(id),
                 delete_after_write: delete_old.clone(),
@@ -909,6 +916,7 @@ pub(crate) fn stage_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sid_secrets::SecretId;
     use sid_secrets::keyring::{FakeKeyring, KeyringStore};
 
     #[test]
@@ -1103,6 +1111,45 @@ mod tests {
         assert_ne!(mint_secret_id("db"), mint_secret_id("db"));
     }
 
+    /// `stage_secret` into the global layer, with a throwaway binding store.
+    fn stage(
+        secrets: &dyn SecretStore,
+        plan: &SecretPlan,
+        name: &str,
+        secret: Option<&str>,
+    ) -> Result<StagedSecret, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let bindings = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        stage_secret(
+            secrets,
+            &bindings,
+            plan,
+            name,
+            secret,
+            &Scope::Global,
+            "endpoint",
+        )
+    }
+
+    /// H2: a secret minted for a workspace record lands under that workspace's
+    /// namespaced key, bound to the endpoint it was typed for.
+    #[test]
+    fn stage_mint_into_a_workspace_is_namespaced_and_bound() {
+        let secrets = KeyringStore::with_backend(FakeKeyring::default());
+        let dir = tempfile::tempdir().unwrap();
+        let bindings = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let target = Scope::Workspace(sid_store::WorkspaceId("/w".into()));
+        let plan = SecretPlan::Mint { delete_old: None };
+        let staged =
+            stage_secret(&secrets, &bindings, &plan, "a", Some("pw"), &target, "e").unwrap();
+        let id = staged.secret_ref.unwrap();
+        assert_eq!(secrets.get(&SecretId::new(id.clone())).unwrap(), None);
+        let key = SecretId::for_workspace("/w", &id);
+        assert_eq!(secrets.get(&key).unwrap().as_deref(), Some(&b"pw"[..]));
+        let bound = bindings.secret_binding(key.as_str()).unwrap().unwrap();
+        assert_eq!((bound.scope, bound.endpoint.as_str()), (target, "e"));
+    }
+
     // ---- staging against the (fake) keyring ----------------------------------------------
 
     #[test]
@@ -1111,7 +1158,7 @@ mod tests {
         let plan = SecretPlan::Mint {
             delete_old: Some("db-a-old".into()),
         };
-        let staged = stage_secret(&secrets, &plan, "a", Some("hunter2")).unwrap();
+        let staged = stage(&secrets, &plan, "a", Some("hunter2")).unwrap();
         let id = staged.secret_ref.expect("minted ref");
         assert!(id.starts_with("db-a-"), "{id}");
         assert!(staged.minted);
@@ -1126,7 +1173,7 @@ mod tests {
     fn stage_mint_without_secret_is_an_internal_error() {
         let secrets = KeyringStore::with_backend(FakeKeyring::default());
         let plan = SecretPlan::Mint { delete_old: None };
-        assert!(stage_secret(&secrets, &plan, "a", None).is_err());
+        assert!(stage(&secrets, &plan, "a", None).is_err());
         assert!(secrets.list_ids().unwrap().is_empty());
     }
 
@@ -1134,7 +1181,7 @@ mod tests {
     fn stage_keep_touches_nothing() {
         let secrets = KeyringStore::with_backend(FakeKeyring::default());
         secrets.put(&SecretId::new("db-a-1"), b"old").unwrap();
-        let staged = stage_secret(&secrets, &SecretPlan::Keep("db-a-1".into()), "a", None).unwrap();
+        let staged = stage(&secrets, &SecretPlan::Keep("db-a-1".into()), "a", None).unwrap();
         assert_eq!(staged.secret_ref.as_deref(), Some("db-a-1"));
         assert_eq!(staged.delete_after_write, None);
         assert!(!staged.minted);
@@ -1151,7 +1198,7 @@ mod tests {
         let plan = SecretPlan::Clear {
             delete_old: Some("db-a-1".into()),
         };
-        let staged = stage_secret(&secrets, &plan, "a", None).unwrap();
+        let staged = stage(&secrets, &plan, "a", None).unwrap();
         assert_eq!(staged.secret_ref, None);
         assert_eq!(staged.delete_after_write.as_deref(), Some("db-a-1"));
         // The old secret must still exist — it is only deleted after a successful write.

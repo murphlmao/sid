@@ -18,6 +18,7 @@ pub mod db_conn_form;
 pub mod db_diagram;
 pub mod db_tab;
 pub mod host_form;
+pub mod host_key_prompt;
 pub mod network_tab;
 pub mod password_prompt;
 pub mod session;
@@ -68,6 +69,13 @@ pub fn init(cx: &mut App) {
             "enter",
             password_prompt::PasswordPromptSubmit,
             Some("PasswordPrompt"),
+        ),
+        // Unknown-host-key confirmation (security review M1): Escape refuses the key.
+        // Deliberately no `enter` binding — trusting a key is never the default.
+        KeyBinding::new(
+            "escape",
+            host_key_prompt::HostKeyPromptCancel,
+            Some(host_key_prompt::HOST_KEY_PROMPT_CONTEXT),
         ),
         // SSH home-tree inline rename / folder-edit bindings (ssh-v3), scoped to the
         // row wrapper's own key context so Enter/Esc commit/cancel the in-place edit no

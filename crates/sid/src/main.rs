@@ -17,6 +17,9 @@ mod git_registry;
 // The keyboard-driven system (2026-07-02 plan): the `Action` enum + default binding
 // registry. Pure/gpui-light — see that module's doc comment.
 mod keymap;
+// Security review H2: stored secrets are bound to the endpoint + layer they were saved
+// for, in the global store, and withheld from any record that no longer matches.
+mod secret_binding;
 mod ssh_connect;
 mod ui;
 
