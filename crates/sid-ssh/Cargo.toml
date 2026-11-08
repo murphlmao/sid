@@ -15,6 +15,8 @@ tokio.workspace = true
 async-trait.workspace = true
 # Private per-edit directories for RemoteEdit (0700) and ssh_config tests.
 tempfile.workspace = true
+# Unpredictable names for exclusive remote temp files.
+getrandom.workspace = true
 
 [dev-dependencies]
 sid-term.workspace = true

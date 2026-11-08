@@ -102,8 +102,8 @@ pub use header::{next_sort, sortable_th};
 use gpui::{
     App, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas, div,
 };
-use gpui_component::Size;
 use gpui_component::table::{DataTable, TableDelegate, TableState};
+use gpui_component::{FocusableExt as _, Size};
 
 use crate::scale::UiScale;
 
@@ -234,7 +234,11 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
             .child(
                 DataTable::new(&self.state)
                     .stripe(stripe)
-                    .bordered(self.bordered),
+                    .bordered(self.bordered)
+                    // gpui-component 0.9 added a keyboard-focus ring to `DataTable`,
+                    // on by default. Off, so a table looks as it did on 0.6; sid's
+                    // focus ring (`StyledExt::focus_ring`) is the one ring it draws.
+                    .focus_ring(false),
             )
             .child(
                 // The viewport probe. See the module docs: this is upstream's own

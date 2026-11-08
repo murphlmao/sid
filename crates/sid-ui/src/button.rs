@@ -37,8 +37,8 @@ use std::rc::Rc;
 
 use gpui::{
     App, ClickEvent, ElementId, IntoElement, ParentElement, Refineable as _, RenderOnce,
-    SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px, rgb,
-    transparent_black,
+    SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px, relative,
+    rgb, transparent_black,
 };
 use gpui_component::{
     Sizable as _, Size,
@@ -735,8 +735,14 @@ fn shell(
         //    `border_*_1()` calls behind `variant.is_default() || outline`; 0.5.1 drew
         //    them for every variant. Without the width, sid's border token has nothing
         //    to colour, and every button also loses 2px on each axis.
+        // 3. **(0.9) The label sits on a 1.25 line box.** 0.9 moved the line height
+        //    from the label row (`relative(1.)`) to the button root
+        //    (`relative(1.25)`), which drops every label ~1px inside its fixed-height
+        //    box. Setting the root back to 1.0 hands the label row the line box it
+        //    had in 0.6.
         .border_1()
         .border_color(colour(paint.border))
+        .line_height(relative(1.))
         .when_some(paint.fill, |this, fill| this.bg(rgb(fill)))
         // v2 control corner — stated rather than left to the library's `radius`, so a
         // button and a field beside it share one curve whatever the bridge says.

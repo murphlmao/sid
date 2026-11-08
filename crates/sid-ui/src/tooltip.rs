@@ -30,7 +30,14 @@ pub trait Tipped: StatefulInteractiveElement + Sized {
     /// the mouse already is. An unparseable chord falls back to the plain tip.
     fn tip_with_key(self, text: impl Into<SharedString>, keys: &str) -> Self {
         let text = text.into();
-        let stroke = gpui::Keystroke::parse(keys).ok();
+        // Parsed the way `Kbd` parses a spec, so a tooltip's keycap and a cheat-sheet
+        // row agree on what `secondary-` means; the first stroke of a chord is shown.
+        let stroke = crate::kbd::chips(keys)
+            .into_iter()
+            .find_map(|chip| match chip {
+                crate::kbd::Chip::Stroke(stroke) => Some(stroke),
+                _ => None,
+            });
         self.tooltip(move |window, cx| {
             Tooltip::new(text.clone())
                 .key_binding(stroke.clone().map(gpui_component::kbd::Kbd::new))

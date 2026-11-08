@@ -1586,7 +1586,11 @@ impl AppState {
                 .h(scaled(140.))
                 .rounded_md()
                 .elevation(Elevation::Well, &t)
-                .children(self.db.sql.clone().map(|sql| Editor::new(&sql)))
+                // `h_full`: since gpui-component 0.9 a code editor no longer grows
+                // with its lines (auto-grow is textarea-only; `EditorState` is a fixed
+                // two rows), so the well sizes it — a long statement fills the well
+                // instead of scrolling inside a two-line box. Same as `config_editor`.
+                .children(self.db.sql.clone().map(|sql| Editor::new(&sql).h_full()))
                 .into_any_element()
         };
 

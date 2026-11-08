@@ -15,7 +15,7 @@
 
 use gpui::{
     App, IntoElement, ParentElement, RenderOnce, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _, rgb, transparent_black,
+    prelude::FluentBuilder as _, relative, rgb, transparent_black,
 };
 use gpui_component::{Sizable as _, tag::Tag};
 
@@ -220,6 +220,10 @@ impl RenderOnce for Badge {
 
         Tag::custom(fill, rgb(paint.ink).into(), rgb(paint.border).into())
             .small()
+            // gpui-component 0.9 raised `Tag`'s line box from 1.0 to 1.25, which makes
+            // every chip ~2px taller than the row it sits in was laid out for. Back to
+            // the 0.6 line box; the label's size comes from `text_meta` below either way.
+            .line_height(relative(1.))
             // v2: badges take the `Sm` corner (6px) rather than the library tag's; a pill is
             // still a pill.
             .map(|tag| {

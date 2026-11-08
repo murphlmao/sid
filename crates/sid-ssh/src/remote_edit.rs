@@ -18,7 +18,7 @@
 //!
 //! Upload strategy: [`UploadStrategy::Overwrite`] (default) truncates and rewrites the
 //! remote in place, which preserves its mode and owner. [`UploadStrategy::TmpRename`]
-//! writes `<name>.sid-tmp` and renames over the target (atomic for readers), falling back
+//! writes an exclusively-created, randomly named `.<name>.sid-<hex>` and renames over the target (atomic for readers), falling back
 //! to overwrite when the server refuses the rename (plain SFTP rename generally will not
 //! replace an existing file). The rename path creates a *new* inode with default mode, so
 //! it is opt-in.
@@ -260,6 +260,30 @@ pub struct RemoteEdit {
     baseline: RemoteSig,
     synced: LocalSig,
     handle: Option<Box<dyn EditorHandle>>,
+    #[cfg(test)]
+    tmp_override: Option<String>,
+}
+
+/// POSIX file-type check on an SFTP `permissions` value. Servers that send no type bits
+/// (0) are given the benefit of the doubt; anything that says it is not a regular file
+/// (FIFO, device, socket, ...) is refused.
+fn is_regular(mode: u32) -> bool {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFREG: u32 = 0o100000;
+    mode & S_IFMT == 0 || mode & S_IFMT == S_IFREG
+}
+
+/// `<dir>/.<name>.sid-<16 hex>`: same directory (so rename stays on one filesystem),
+/// hidden, and unguessable by another user who might plant something there.
+fn random_tmp_name(remote_path: &str) -> io::Result<String> {
+    let mut r = [0u8; 8];
+    getrandom::fill(&mut r).map_err(|e| io::Error::other(e.to_string()))?;
+    let hex: String = r.iter().map(|b| format!("{b:02x}")).collect();
+    let (dir, name) = match remote_path.rsplit_once('/') {
+        Some((d, n)) => (format!("{d}/"), n),
+        None => (String::new(), remote_path),
+    };
+    Ok(format!("{dir}.{name}.sid-{hex}"))
 }
 
 fn private_dir_all(p: &Path) -> io::Result<()> {
@@ -302,7 +326,7 @@ impl RemoteEdit {
             .stat(remote_path)
             .await?
             .ok_or_else(|| SshError::PathNotFound(remote_path.to_string()))?;
-        if st.is_dir {
+        if st.is_dir || !is_regular(st.mode) {
             return Err(RemoteEditError::NotAFile(remote_path.to_string()));
         }
         if st.size > cfg.max_bytes {
@@ -311,13 +335,17 @@ impl RemoteEdit {
                 max: cfg.max_bytes,
             });
         }
-        let bytes = sftp.get(remote_path).await?;
-        if bytes.len() as u64 > cfg.max_bytes {
-            return Err(RemoteEditError::TooLarge {
-                size: bytes.len() as u64,
-                max: cfg.max_bytes,
-            });
-        }
+        // The size above is the server's claim; the read itself is what is bounded.
+        let bytes = match sftp.get_bounded(remote_path, cfg.max_bytes).await {
+            Ok(b) => b,
+            Err(SshError::TooLarge(max)) => {
+                return Err(RemoteEditError::TooLarge {
+                    size: max.saturating_add(1),
+                    max,
+                });
+            }
+            Err(e) => return Err(e.into()),
+        };
         if looks_binary(&bytes) {
             return Err(RemoteEditError::Binary);
         }
@@ -352,6 +380,8 @@ impl RemoteEdit {
                 hash: hash_bytes(&bytes),
             },
             handle: None,
+            #[cfg(test)]
+            tmp_override: None,
         })
     }
 
@@ -457,14 +487,23 @@ impl RemoteEdit {
         match self.strategy {
             UploadStrategy::Overwrite => sftp.put(&self.remote_path, &bytes).await?,
             UploadStrategy::TmpRename => {
-                let tmp = format!("{}.sid-tmp", self.remote_path);
-                sftp.put(&tmp, &bytes).await?;
-                if sftp.rename(&tmp, &self.remote_path).await.is_ok() {
-                    atomic = true;
+                let tmp = random_tmp_name(&self.remote_path)?;
+                #[cfg(test)]
+                let tmp = self.tmp_override.clone().unwrap_or(tmp);
+                // Exclusive create: if anything already exists at `tmp` (or exclusive
+                // create is unsupported) we do NOT write through it and do NOT remove it;
+                // we simply overwrite the real target in place instead.
+                if sftp.put_exclusive(&tmp, &bytes).await.is_ok() {
+                    // From here the tmp file is ours, so it is ours to clean up.
+                    if sftp.rename(&tmp, &self.remote_path).await.is_ok() {
+                        atomic = true;
+                    } else {
+                        let res = sftp.put(&self.remote_path, &bytes).await;
+                        let _ = sftp.remove_file(&tmp).await;
+                        res?;
+                    }
                 } else {
-                    let res = sftp.put(&self.remote_path, &bytes).await;
-                    let _ = sftp.remove_file(&tmp).await;
-                    res?;
+                    sftp.put(&self.remote_path, &bytes).await?;
                 }
             }
         }
@@ -502,6 +541,9 @@ mod tests {
         files: HashMap<String, (Vec<u8>, i64)>,
         clock: i64,
         rename_ok: bool,
+        exclusive_ok: bool,
+        lie_size: Option<u64>,
+        mode: u32,
         puts: Vec<String>,
         renames: usize,
     }
@@ -547,6 +589,25 @@ mod tests {
                 .map(|f| f.0.clone())
                 .ok_or_else(|| SshError::PathNotFound(p.into()))
         }
+        async fn get_bounded(&mut self, p: &str, max: u64) -> Result<Vec<u8>, SshError> {
+            let s = self.0.lock().unwrap();
+            let (b, _) = s
+                .files
+                .get(p)
+                .ok_or_else(|| SshError::PathNotFound(p.into()))?;
+            // streams until the cap is exceeded, whatever stat claimed
+            if b.len() as u64 > max {
+                return Err(SshError::TooLarge(max));
+            }
+            Ok(b.clone())
+        }
+        async fn put_exclusive(&mut self, p: &str, b: &[u8]) -> Result<(), SshError> {
+            if !self.0.lock().unwrap().exclusive_ok || self.0.lock().unwrap().files.contains_key(p)
+            {
+                return Err(SshError::Other("exists or unsupported".into()));
+            }
+            self.put(p, b).await
+        }
         async fn put(&mut self, p: &str, b: &[u8]) -> Result<(), SshError> {
             let mut s = self.0.lock().unwrap();
             s.clock += 10;
@@ -563,12 +624,15 @@ mod tests {
             Ok(())
         }
         async fn stat(&mut self, p: &str) -> Result<Option<SftpEntry>, SshError> {
-            Ok(self.0.lock().unwrap().files.get(p).map(|(b, m)| SftpEntry {
+            let s = self.0.lock().unwrap();
+            let lie = s.lie_size;
+            let mode = if s.mode == 0 { 0o644 } else { s.mode };
+            Ok(s.files.get(p).map(|(b, m)| SftpEntry {
                 name: p.into(),
                 is_dir: false,
-                size: b.len() as u64,
+                size: lie.unwrap_or(b.len() as u64),
                 mtime_secs: *m,
-                mode: 0o644,
+                mode,
             }))
         }
         async fn rename(&mut self, from: &str, to: &str) -> Result<(), SshError> {
@@ -732,6 +796,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut sftp = FakeSftp::with(P, b"v1\n");
         sftp.0.lock().unwrap().rename_ok = true;
+        sftp.0.lock().unwrap().exclusive_ok = true;
         let mut c = cfg(root.path());
         c.strategy = UploadStrategy::TmpRename;
         let mut re = RemoteEdit::open(&mut sftp, P, &c).await.unwrap();
@@ -741,8 +806,11 @@ mod tests {
             SyncOutcome::Uploaded { atomic: true }
         );
         assert_eq!(sftp.body(P).unwrap(), b"v2 longer\n");
-        assert!(sftp.body(&format!("{P}.sid-tmp")).is_none());
+        assert_eq!(sftp.0.lock().unwrap().files.len(), 1, "no stray tmp left");
         assert_eq!(sftp.0.lock().unwrap().renames, 1);
+        let tmp = sftp.0.lock().unwrap().puts.last().cloned().unwrap();
+        assert!(tmp.starts_with("/etc/app/.conf.toml.sid-"), "{tmp}");
+        assert_eq!(tmp.len(), "/etc/app/.conf.toml.sid-".len() + 16);
     }
 
     #[tokio::test]
@@ -785,6 +853,76 @@ mod tests {
         assert!(dir.exists());
         re.close().unwrap();
         assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_lies_about_size_cannot_defeat_the_cap() {
+        let root = tempfile::tempdir().unwrap();
+        let mut c = cfg(root.path());
+        c.max_bytes = 10;
+        let mut sftp = FakeSftp::with(P, &[b'x'; 5000]);
+        sftp.0.lock().unwrap().lie_size = Some(3); // stat says 3 bytes
+        assert!(matches!(
+            RemoteEdit::open(&mut sftp, P, &c).await,
+            Err(RemoteEditError::TooLarge { max: 10, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_regular_files_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        for mode in [0o010644, 0o020644, 0o060644, 0o140644, 0o120777] {
+            let mut sftp = FakeSftp::with(P, b"x");
+            sftp.0.lock().unwrap().mode = mode;
+            assert!(
+                matches!(
+                    RemoteEdit::open(&mut sftp, P, &cfg(root.path())).await,
+                    Err(RemoteEditError::NotAFile(_))
+                ),
+                "mode {mode:o}"
+            );
+        }
+        let mut ok = FakeSftp::with(P, b"x");
+        ok.0.lock().unwrap().mode = 0o100644;
+        assert!(
+            RemoteEdit::open(&mut ok, P, &cfg(root.path()))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_preexisting_tmp_path_is_never_written_through_or_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"v1\n");
+        let planted = "/etc/app/.conf.toml.sid-planted";
+        {
+            let mut s = sftp.0.lock().unwrap();
+            s.rename_ok = true;
+            s.exclusive_ok = true;
+            s.files.insert(planted.into(), (b"attacker".to_vec(), 5));
+        }
+        let mut c = cfg(root.path());
+        c.strategy = UploadStrategy::TmpRename;
+        let mut re = RemoteEdit::open(&mut sftp, P, &c).await.unwrap();
+        re.tmp_override = Some(planted.into());
+        edit_local(&re, b"v2 longer\n");
+        assert_eq!(
+            re.sync(&mut sftp).await.unwrap(),
+            SyncOutcome::Uploaded { atomic: false }
+        );
+        assert_eq!(sftp.body(planted).unwrap(), b"attacker", "left untouched");
+        assert_eq!(sftp.body(P).unwrap(), b"v2 longer\n");
+        assert_eq!(sftp.0.lock().unwrap().renames, 0);
+    }
+
+    #[test]
+    fn tmp_names_are_random_and_stay_in_the_directory() {
+        let a = random_tmp_name("/srv/x/file.conf").unwrap();
+        let b = random_tmp_name("/srv/x/file.conf").unwrap();
+        assert_ne!(a, b);
+        assert!(a.starts_with("/srv/x/.file.conf.sid-"));
+        assert!(random_tmp_name("bare").unwrap().starts_with(".bare.sid-"));
     }
 
     #[test]

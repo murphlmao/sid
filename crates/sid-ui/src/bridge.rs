@@ -83,13 +83,35 @@ use gpui_component::{ThemeColor, ThemeConfig, ThemeConfigColors};
 
 use crate::theme::{self, Theme};
 
-/// The theme-agnostic modal scrim: black at 66% alpha.
+/// The legacy, theme-agnostic modal scrim: black at 66% alpha.
 ///
 /// The one documented raw-colour exemption in the design system (`.interface-design/
-/// system.md`) — a scrim must darken *whatever* is behind it, so it cannot follow a
-/// palette. Centralised here so no call site has to type a hex literal, and reused as
-/// the library's `overlay` colour by [`theme_config`].
+/// system.md`). Kept for the hand-built overlays still in the app crate (the cheat
+/// sheet, the command palette, the config editor, the DB cell view); new code and the
+/// v2 rollout use [`scrim`], which derives the same darkening from the palette.
 pub const SCRIM: u32 = 0x000000a8;
+
+/// The scrim's alpha on a dark palette — the same 66% [`SCRIM`] has always used, so a
+/// dark-theme modal looks exactly as it did.
+pub const SCRIM_DARK_ALPHA: u8 = 0xa8;
+
+/// The scrim's alpha on a light palette. 66% black over an off-white app turned the
+/// whole window into a grey slab with a white card on it — heavier than the modal it
+/// was meant to frame. Light needs far less ink to recede, and the ink is the palette's
+/// own tinted shadow rather than pure black.
+pub const SCRIM_LIGHT_ALPHA: u8 = 0x5c;
+
+/// The modal scrim for `t`, as `0xRRGGBBAA`: the palette's [`Theme::shadow`] ink at
+/// [`SCRIM_DARK_ALPHA`] or [`SCRIM_LIGHT_ALPHA`]. Derived, so a future palette gets a
+/// scrim that belongs to it without a second raw colour.
+pub fn scrim(t: &Theme) -> u32 {
+    let alpha = if theme::is_light(t) {
+        SCRIM_LIGHT_ALPHA
+    } else {
+        SCRIM_DARK_ALPHA
+    };
+    (t.shadow << 8) | u32::from(alpha)
+}
 
 // ---- token arithmetic -------------------------------------------------------
 //
@@ -281,28 +303,32 @@ fn hex_alpha(color: u32) -> Option<SharedString> {
 
 /// The `gpui-component` theme configuration for a sid palette. Pure — no globals, no
 /// window — so the mapping is unit-testable on its own.
+///
+/// `ThemeConfig` is `#[non_exhaustive]` since gpui-component 0.9, so it is built by
+/// assignment onto `default()` rather than as a struct literal; every field is still
+/// named here so a reader sees the whole decision.
 pub fn theme_config(t: &Theme) -> ThemeConfig {
-    ThemeConfig {
-        is_default: false,
-        name: format!("sid-{}", t.name).into(),
-        mode: theme::component_mode(t),
-        // Fonts: library defaults already match sid (see module docs).
-        font_size: None,
-        font_family: None,
-        mono_font_family: None,
-        mono_font_size: None,
-        // Design system v2 corners (`crate::metrics::Radius`): `Md` (8) for controls,
-        // `Lg` (12) for the library's larger surfaces (popovers, menus, dialogs).
-        radius: Some(8),
-        radius_lg: Some(12),
-        // v2 amended "no shadows": things that float get a soft shadow. This turns the
-        // library's own on for its popovers and menus; sid's buttons still opt out
-        // per-variant (`button.rs`), and sid's own surfaces use `crate::elevation`.
-        shadow: Some(true),
-        colors: config_colors(t),
-        // Left at the library's per-mode default — see module docs.
-        highlight: None,
-    }
+    let mut config = ThemeConfig::default();
+    config.is_default = false;
+    config.name = format!("sid-{}", t.name).into();
+    config.mode = theme::component_mode(t);
+    // Fonts: library defaults already match sid (see module docs).
+    config.font_size = None;
+    config.font_family = None;
+    config.mono_font_family = None;
+    config.mono_font_size = None;
+    // Design system v2 corners (`crate::metrics::Radius`): `Md` (8) for controls,
+    // `Lg` (12) for the library's larger surfaces (popovers, menus, dialogs).
+    config.radius = Some(8);
+    config.radius_lg = Some(12);
+    // v2 amended "no shadows": things that float get a soft shadow. This turns the
+    // library's own on for its popovers and menus; sid's buttons still opt out
+    // per-variant (`button.rs`), and sid's own surfaces use `crate::elevation`.
+    config.shadow = Some(true);
+    config.colors = config_colors(t);
+    // Left at the library's per-mode default — see module docs.
+    config.highlight = None;
+    config
 }
 
 /// The colour block of [`theme_config`].
@@ -338,9 +364,9 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     colors.muted = hex(t.surface);
     colors.muted_foreground = hex(t.muted);
     // The theme-agnostic scrim behind dialogs/sheets.
-    colors.overlay = hex_alpha(SCRIM);
+    colors.overlay = hex_alpha(scrim(t));
     colors.window_border = hex(t.border);
-    colors.tiles = hex(t.bg);
+    // (`tiles` was dropped upstream in gpui-component 0.9 with the Tiles widget.)
 
     // -- primary = sid's "engage" accent ---------------------------------
     colors.primary = hex(t.accent);
@@ -417,7 +443,12 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     // Raised one step above `surface`, not equal to it: a `PopupMenu`/popover floats
     // over a `surface` panel with no scrim between them, unlike a modal. `Tooltip`
     // reads this same field (gpui-component 0.6.1 has no separate `tooltip` colour).
-    colors.popover = hex(raised_surface(t));
+    // v2: the popover is `Elevation::Floating`'s fill. On the dark palettes that is still
+    // `raised_surface` (no scrim, so the fill does some of the separating); on the light
+    // one cards became near-white, and walking the surface toward `fg` made a menu
+    // *darker* than the card it opened on. Now it is the card's own white, separated by
+    // the library's shadow (on since v2), which is how a light menu should read.
+    colors.popover = hex(crate::elevation::Elevation::Floating.fill(t));
     colors.popover_foreground = hex(t.fg);
 
     // -- chrome ---------------------------------------------------------
@@ -636,10 +667,10 @@ mod tests {
             );
             assert_eq!(c.table, rgb(t.bg).into(), "{}: table bg", t.name);
             assert_eq!(c.table_hover, rgb(t.selection).into(), "{}: hover", t.name);
-            // Raised one step above `surface`, not equal to it — see `raised_surface`.
+            // The Floating rung's fill: raised on dark, the card's own white on light.
             assert_eq!(
                 c.popover,
-                rgb(raised_surface(&t)).into(),
+                rgb(crate::elevation::Elevation::Floating.fill(&t)).into(),
                 "{}: popover",
                 t.name
             );
@@ -854,6 +885,18 @@ mod tests {
     }
 
     #[test]
+    fn the_scrim_is_derived_from_the_palette_and_lighter_on_light() {
+        // Dark palettes keep exactly the legacy 66% black, so no dark modal changes.
+        for t in [cosmos(), void(), dusk()] {
+            assert_eq!(scrim(&t), SCRIM, "{}: dark scrim is the legacy one", t.name);
+        }
+        // Light: the palette's tinted shadow ink, at far less alpha than 66%.
+        let light = cosmos_light();
+        assert_eq!(scrim(&light) >> 8, light.shadow);
+        assert!(scrim(&light) & 0xff < SCRIM & 0xff);
+    }
+
+    #[test]
     fn mix_interpolates_per_channel() {
         assert_eq!(mix(0x000000, 0xffffff, 0.0), 0x000000);
         assert_eq!(mix(0x000000, 0xffffff, 1.0), 0xffffff);
@@ -875,12 +918,15 @@ mod tests {
     }
 
     #[test]
-    fn the_scrim_is_translucent_black() {
-        let c = bridged(&cosmos());
-        assert_eq!(c.overlay, gpui::rgba(SCRIM).into());
-        assert!(
-            c.overlay.a > 0.0 && c.overlay.a < 1.0,
-            "scrim is translucent"
-        );
+    fn the_library_overlay_is_the_derived_translucent_scrim() {
+        for t in [cosmos(), void(), dusk(), cosmos_light()] {
+            let c = bridged(&t);
+            assert_eq!(c.overlay, gpui::rgba(scrim(&t)).into(), "{}", t.name);
+            assert!(
+                c.overlay.a > 0.0 && c.overlay.a < 1.0,
+                "{}: scrim is translucent",
+                t.name
+            );
+        }
     }
 }
