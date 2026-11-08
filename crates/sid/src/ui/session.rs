@@ -3022,6 +3022,14 @@ impl Render for SshSession {
 }
 
 impl SshSession {
+    /// A raw connection/transport error as a plain sentence for a toast (the same wording
+    /// the failed pane uses); anything `connect_error::friendly` doesn't recognise
+    /// passes through unchanged.
+    pub(super) fn friendly_err(&self, raw: &str) -> String {
+        super::connect_error::friendly(raw, &self.host_addr.0, self.host_addr.1)
+            .unwrap_or_else(|| raw.to_string())
+    }
+
     /// The failed-connect pane: ONE centred block — icon, "Couldn't connect to <alias>",
     /// the error as the body, then **Retry** (primary) and **Edit connection** beside it,
     /// so a failure is never a dead end and the buttons sit right under the words that

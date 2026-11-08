@@ -1571,12 +1571,12 @@ impl AppState {
 
         // The one rule `keymap::resolve`'s pure `(Keystroke, FocusContext)` lookup can't
         // express on its own: the bare `?` cheat-sheet binding must never steal a
-        // literal `?` from whatever text field currently has focus. Every text-entry
-        // widget in this app calls `track_focus`, so "nothing at all is focused" is a
-        // safe, generic proxy for "you're not mid-typing somewhere" — it never swallows
-        // a real keystroke; the only cost is the cheat sheet occasionally staying closed
-        // when some non-text focus holder (e.g. a keyboard-navigable list) has focus.
-        if action == Action::CheatSheet && window.focused(cx).is_some() {
+        // literal `?` from a text field. Every text input / editor tags its dispatch
+        // node with the `Input` key context, so we block only when the focused node
+        // sits inside one (any other focus holder -- a list, a button -- lets `?` through).
+        if action == Action::CheatSheet
+            && window.context_stack().iter().any(|c| c.contains("Input"))
+        {
             return;
         }
 

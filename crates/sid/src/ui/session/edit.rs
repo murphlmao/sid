@@ -261,7 +261,10 @@ impl SshSession {
                             }
                             other => s.toast(
                                 ToastTone::Danger,
-                                format!("Couldn't edit {name}: {other}"),
+                                format!(
+                                    "Couldn't edit {name}: {}",
+                                    s.friendly_err(&other.to_string())
+                                ),
                                 cx,
                             ),
                         }
@@ -357,7 +360,11 @@ impl SshSession {
             Ok(Err(RemoteEditError::Conflict(kind))) => self.park_conflict(remote_path, kind, cx),
             Ok(Err(e)) => {
                 // Keep the edit alive (the next save may succeed) but say what happened.
-                let msg = format!("Couldn't save {name} to {}: {e}", self.host_label);
+                let msg = format!(
+                    "Couldn't save {name} to {}: {}",
+                    self.host_label,
+                    self.friendly_err(&e.to_string())
+                );
                 self.toast(ToastTone::Danger, msg, cx);
             }
             Err(join) => {
@@ -603,7 +610,11 @@ impl SshSession {
                     if let Some(e) = err {
                         s.toast(
                             ToastTone::Danger,
-                            format!("Couldn't save {name} to {}: {e}", s.host_label),
+                            format!(
+                                "Couldn't save {name} to {}: {}",
+                                s.host_label,
+                                s.friendly_err(&e.to_string())
+                            ),
                             cx,
                         );
                     }

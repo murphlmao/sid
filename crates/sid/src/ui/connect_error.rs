@@ -49,6 +49,21 @@ pub(crate) fn friendly(raw: &str, host: &str, port: u16) -> Option<String> {
             "Can't reach {host}:{port} from this network. Check your connection or VPN."
         ));
     }
+    // A live session whose link went away underneath it (server stopped, network
+    // dropped): the SFTP/exec layers report this as a closed session or channel.
+    if has(&[
+        "session closed",
+        "channel closed",
+        "connection reset",
+        "broken pipe",
+        "os error 104",
+        "os error 32",
+        "unexpected eof",
+    ]) {
+        return Some(format!(
+            "The connection to {host}:{port} dropped. Reconnect the session and try again."
+        ));
+    }
     None
 }
 
@@ -98,6 +113,12 @@ mod tests {
     #[test]
     fn unreachable() {
         assert!(friendly("connect failed: No route to host (os error 113)", "h", 22).is_some());
+    }
+
+    #[test]
+    fn dropped_session() {
+        let s = friendly("ssh operation failed: sftp: session closed", "h", 22).unwrap();
+        assert!(s.starts_with("The connection to h:22 dropped."));
     }
 
     #[test]

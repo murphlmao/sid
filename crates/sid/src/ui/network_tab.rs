@@ -2097,10 +2097,20 @@ impl AppState {
             let running = all.iter().filter(|c| c.state == "running").count();
             let images: std::collections::HashSet<&str> =
                 all.iter().map(|c| c.image.as_str()).collect();
-            Some((running, all.len() - running, images.len()))
+            // Per-image container counts, busiest first, for the list under the cards.
+            let mut per_image: HashMap<&str, usize> = HashMap::new();
+            for c in all {
+                *per_image.entry(c.image.as_str()).or_default() += 1;
+            }
+            let mut per_image: Vec<(String, usize)> = per_image
+                .into_iter()
+                .map(|(image, n)| (image.to_string(), n))
+                .collect();
+            per_image.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            Some((running, all.len() - running, images.len(), per_image))
         });
         let theme = theme::active(cx).clone();
-        let summary_strip = summary.map(|(running, stopped, images)| {
+        let summary_strip = summary.map(|(running, stopped, images, per_image)| {
             let stat = |ix: usize, label: &'static str, n: usize| {
                 GridCard::new(("net-docker-stat", ix))
                     .child(div().text_meta(&theme).child(label))
@@ -2111,14 +2121,57 @@ impl AppState {
                             .child(n.to_string()),
                     )
             };
-            div().flex_none().w_full().p_3().child(
-                CardGrid::new()
-                    .min_col(px(180.))
-                    .max_col(px(260.))
-                    .child(stat(0, "Running", running))
-                    .child(stat(1, "Stopped", stopped))
-                    .child(stat(2, "Images in use", images)),
-            )
+            // The images behind those containers: fills the strip under the cards so a
+            // handful of containers doesn't leave the panel reading as empty.
+            let shown = 6;
+            let more = per_image.len().saturating_sub(shown);
+            let image_rows = per_image.iter().take(shown).map(|(image, n)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .py_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_mono(&theme)
+                            .text_color(rgb(theme.fg))
+                            .clamp_one_line()
+                            .child(image.clone()),
+                    )
+                    .child(div().flex_none().text_meta(&theme).child(if *n == 1 {
+                        "1 container".to_string()
+                    } else {
+                        format!("{n} containers")
+                    }))
+            });
+            div()
+                .flex_none()
+                .w_full()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    CardGrid::new()
+                        .min_col(px(180.))
+                        .max_col(px(260.))
+                        .child(stat(0, "Running", running))
+                        .child(stat(1, "Stopped", stopped))
+                        .child(stat(2, "Images in use", images)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_meta(&theme).pb_1().child("Images"))
+                        .children(image_rows)
+                        .when(more > 0, |this| {
+                            this.child(div().text_meta(&theme).child(format!("and {more} more")))
+                        }),
+                )
         });
 
         self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
