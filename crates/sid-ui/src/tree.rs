@@ -415,6 +415,16 @@ pub struct TreeState {
     scroll: UniformListScrollHandle,
     /// The rows as last rendered — what the list's item builder and the keyboard read.
     visible: Vec<VisibleRow>,
+    /// When set, Enter / double-click on a *branch* also emits
+    /// [`TreeEvent::Activated`] (it still toggles). For trees whose branches are
+    /// themselves openable things — a database table that also owns columns.
+    activate_branches: bool,
+}
+
+/// Whether an activation gesture on a row should additionally emit `Activated`.
+/// Leaves always do (via [`navigate`] / the click handler); branches only opt in.
+pub fn branch_activates(activate_branches: bool, expandable: bool) -> bool {
+    activate_branches && expandable
 }
 
 impl EventEmitter<TreeEvent> for TreeState {}
@@ -430,7 +440,13 @@ impl TreeState {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             visible: Vec::new(),
+            activate_branches: false,
         }
+    }
+
+    /// Opt in to [`TreeEvent::Activated`] on branches too (see [`branch_activates`]).
+    pub fn set_activate_branches(&mut self, on: bool) {
+        self.activate_branches = on;
     }
 
     /// Replace the whole tree. Expansion and selection are kept by key, so a refresh
@@ -592,7 +608,19 @@ impl TreeState {
         };
         cx.stop_propagation();
         let mv = navigate(&self.visible, self.selected.as_ref(), key);
+        let branch = match (&key, &self.selected) {
+            (TreeKey::Activate, Some(sel)) => self
+                .visible
+                .iter()
+                .find(|r| &r.key == sel)
+                .filter(|r| branch_activates(self.activate_branches, r.is_expandable()))
+                .map(|r| r.key.clone()),
+            _ => None,
+        };
         self.apply(mv, cx);
+        if let Some(k) = branch {
+            cx.emit(TreeEvent::Activated(k));
+        }
     }
 
     fn render_row(&self, ix: usize, theme: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -703,6 +731,9 @@ impl TreeState {
                         if ev.click_count() >= 2 {
                             if expandable {
                                 this.toggle(click_key.clone(), cx);
+                                if branch_activates(this.activate_branches, true) {
+                                    cx.emit(TreeEvent::Activated(click_key.clone()));
+                                }
                             } else {
                                 cx.emit(TreeEvent::Activated(click_key.clone()));
                             }
@@ -915,6 +946,13 @@ mod tests {
             navigate(&opened, Some(&readme), TreeKey::Right),
             TreeMove::Stay
         );
+    }
+
+    #[test]
+    fn branches_activate_only_when_opted_in() {
+        assert!(branch_activates(true, true));
+        assert!(!branch_activates(false, true));
+        assert!(!branch_activates(true, false));
     }
 
     #[test]

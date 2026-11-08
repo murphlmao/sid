@@ -1005,10 +1005,11 @@ fn schema_tree_nodes(schema: &SchemaInfo) -> Vec<TreeNode> {
             .iter()
             .map(|c| {
                 TreeNode::leaf(format!("{key}\u{1f}{}", c.name), c.name.clone())
+                    .icon(Icon::Columns)
                     .meta(format!("{:?}", c.ty).to_lowercase())
             })
             .collect();
-        TreeNode::branch(key, table.name.clone(), cols)
+        TreeNode::branch(key, table.name.clone(), cols).icon(Icon::Table)
     };
     let mut roots: Vec<TreeNode> = Vec::new();
     let mut by_schema: BTreeMap<String, Vec<TreeNode>> = BTreeMap::new();
@@ -1403,21 +1404,25 @@ impl AppState {
             self.db.conn_focus = Some(cx.focus_handle());
         }
         if self.db.schema_tree.is_none() {
-            let tree = cx.new(|cx| TreeState::new("db-schema-tree", cx));
+            let tree = cx.new(|cx| {
+                let mut t = TreeState::new("db-schema-tree", cx);
+                t.set_activate_branches(true);
+                t
+            });
             self.db._schema_tree_sub = Some(cx.subscribe_in(
                 &tree,
                 window,
                 |this: &mut Self, _tree, ev: &TreeEvent, window, cx| {
-                    // A click on a table row (a branch) inserts its `SELECT *`; schema
-                    // and column rows only expand / select.
-                    if let TreeEvent::Selected(key) = ev
-                        && this.db.schema.as_ref().is_some_and(|s| {
-                            s.tables
-                                .iter()
-                                .any(|t| table_display_name(t) == key.as_ref())
+                    // Moving the selection (arrows, single click) never touches the
+                    // editor. Only *activation* — Enter or a double-click on a table —
+                    // writes a query.
+                    let is_table = |key: &str| {
+                        this.db.schema.as_ref().is_some_and(|s| {
+                            s.tables.iter().any(|t| table_display_name(t) == key)
                         })
-                    {
-                        this.insert_select_star(key.as_ref(), window, cx);
+                    };
+                    if let Some(table) = tree_event_table(ev, is_table) {
+                        this.activate_table(&table, window, cx);
                     }
                 },
             ));
@@ -2294,10 +2299,7 @@ impl AppState {
                             let app = app.clone();
                             let name = name.clone();
                             move |window: &mut Window, cx: &mut App| {
-                                app.update(cx, |this, cx| {
-                                    this.insert_select_star(&name, window, cx);
-                                    this.db_set_top_100(&name, window, cx);
-                                });
+                                app.update(cx, |this, cx| this.db_set_top_100(&name, window, cx));
                             }
                         };
                         let copy = {
@@ -3893,14 +3895,38 @@ impl AppState {
         });
     }
 
-    /// D1: name-click — replace the editor contents with `SELECT * FROM <table>`.
+    /// Activating a table (Enter / double-click): write its `SELECT *` into the editor
+    /// without destroying what the user already has. An empty editor takes the statement
+    /// outright; otherwise it is appended as a new statement at the end.
     ///
-    /// In browse mode there is no editor to write into and no SQL to write: the store
-    /// engine takes a table name, so clicking the name **is** the whole request and the
-    /// rows load straight away (inc-3).
-    fn insert_select_star(
+    /// In browse mode there is no editor and no SQL: the store engine takes a table
+    /// name, so activation **is** the whole request and the rows load straight away.
+    fn activate_table(&mut self, display_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.browse_mode() {
+            self.load_browse_table(display_name, cx);
+            return;
+        }
+        let Some(sql_entity) = self.db.sql.clone() else {
+            return;
+        };
+        let stmt = format!("SELECT * FROM {}", quote_ident(display_name));
+        let existing = sql_entity.read(cx).value().to_string();
+        let next = append_statement(&existing, &stmt);
+        let end = end_position(&next);
+        sql_entity.update(cx, |state, cx| {
+            state.set_value(next, window, cx);
+            state.set_cursor_position(end, window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Replace the editor with `SELECT * FROM <table>` (the diagram's click-through and
+    /// the context menu's run actions). Whatever was there is first pushed to the
+    /// history panel, so the replacement is recoverable with one click.
+    fn replace_with_select(
         &mut self,
         display_name: &str,
+        limit: Option<u32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3911,23 +3937,26 @@ impl AppState {
         let Some(sql_entity) = self.db.sql.clone() else {
             return;
         };
-        let stmt = format!("SELECT * FROM {}", quote_ident(display_name));
-        sql_entity.update(cx, |state, cx| {
-            state.set_value(stmt, window, cx);
-        });
+        let prior = sql_entity.read(cx).value().to_string();
+        if !prior.trim().is_empty() {
+            push_history(&mut self.db.history, prior, HISTORY_CAP);
+        }
+        let mut stmt = format!("SELECT * FROM {}", quote_ident(display_name));
+        if let Some(n) = limit {
+            stmt.push_str(&format!(" LIMIT {n}"));
+        }
+        sql_entity.update(cx, |state, cx| state.set_value(stmt, window, cx));
         cx.notify();
     }
 
-    /// Context-menu "Select top 100": rewrite the statement the click just inserted with
-    /// a `LIMIT` and run it. Browse mode has no SQL, so it only loads the table.
+    /// Context-menu "Select top 100": replace the statement with a `LIMIT 100` one and
+    /// run it. Browse mode has no SQL, so it only loads the table.
     fn db_set_top_100(&mut self, display_name: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.browse_mode() {
+            self.load_browse_table(display_name, cx);
             return;
         }
-        if let Some(sql_entity) = self.db.sql.clone() {
-            let stmt = format!("SELECT * FROM {} LIMIT 100", quote_ident(display_name));
-            sql_entity.update(cx, |state, cx| state.set_value(stmt, window, cx));
-        }
+        self.replace_with_select(display_name, Some(100), window, cx);
         self.run_query(window, cx);
     }
 
@@ -3942,8 +3971,10 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.insert_select_star(table, window, cx);
-        self.run_query(window, cx);
+        self.replace_with_select(table, None, window, cx);
+        if !self.browse_mode() {
+            self.run_query(window, cx);
+        }
     }
 
     /// Task 2 — diagram click-through, COLUMN row click: seed (not run) the editor with
@@ -4177,6 +4208,33 @@ pub(crate) fn needs_password_prompt(kind: DbKind, secret: &Result<Option<String>
 /// oldest entry, and skipping the push entirely if `sql` is identical to the current
 /// most-recent entry (consecutive-dedup — re-running the same query shouldn't spam the
 /// list). Pure logic, no `AppState`/GPUI — D4's TDD target.
+/// Append `stmt` to `existing` as a new statement: an empty editor just takes it; else
+/// the previous statement is terminated with `;` and `stmt` starts after a blank line.
+fn append_statement(existing: &str, stmt: &str) -> String {
+    let body = existing.trim_end();
+    if body.trim().is_empty() {
+        return stmt.to_string();
+    }
+    let sep = if body.ends_with(';') { "" } else { ";" };
+    format!("{body}{sep}\n\n{stmt}")
+}
+
+/// The cursor position at the very end of `text`.
+fn end_position(text: &str) -> Position {
+    let line = text.matches('\n').count() as u32;
+    let col = text.rsplit('\n').next().map_or(0, |l| l.chars().count()) as u32;
+    Position::new(line, col)
+}
+
+/// Which schema-tree event writes a query: only `Activated` on a known table. Selection
+/// moves (arrows, a single click) must never touch the editor.
+fn tree_event_table(ev: &TreeEvent, is_table: impl Fn(&str) -> bool) -> Option<String> {
+    match ev {
+        TreeEvent::Activated(key) if is_table(key.as_ref()) => Some(key.to_string()),
+        _ => None,
+    }
+}
+
 fn push_history(history: &mut Vec<String>, sql: String, cap: usize) {
     if history.last() == Some(&sql) {
         return;
@@ -5664,17 +5722,56 @@ mod button_label_case_hygiene_tests {
         out
     }
 
-    fn capitalized_labels(src: &str) -> Vec<String> {
+    /// Button-label literals that differ from what `Button` renders. Design v2: the
+    /// component sentence-cases its own label (`sid_ui::sentence_case`), so the source
+    /// is written the way the screen reads — no lowercase literals relying on the
+    /// component to fix them up.
+    fn unsentenced_labels(src: &str) -> Vec<String> {
         button_new_string_literals(&shipping_text(src))
             .into_iter()
             // A label never has a hyphen; every element id does (kebab-case).
-            .filter(|s| !s.contains('-'))
-            .filter(|s| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()))
+            .filter(|s| !s.contains('-') && !s.is_empty())
+            .filter(|s| sid_ui::sentence_case(s) != *s)
             .collect()
     }
 
     #[test]
-    fn button_labels_open_lowercase() {
+    fn append_statement_preserves_existing_text() {
+        assert_eq!(append_statement("", "SELECT 1"), "SELECT 1");
+        assert_eq!(append_statement("  \n", "SELECT 1"), "SELECT 1");
+        assert_eq!(
+            append_statement("select a from b", "SELECT * FROM t"),
+            "select a from b;\n\nSELECT * FROM t"
+        );
+        assert_eq!(
+            append_statement("select 1;\n", "SELECT * FROM t"),
+            "select 1;\n\nSELECT * FROM t"
+        );
+    }
+
+    #[test]
+    fn end_position_is_last_line_and_column() {
+        assert_eq!(end_position("ab"), Position::new(0, 2));
+        assert_eq!(end_position("ab\ncde"), Position::new(1, 3));
+    }
+
+    #[test]
+    fn only_activation_of_a_table_writes_a_query() {
+        let is_table = |k: &str| k == "users";
+        let k = |s: &str| SharedString::from(s.to_string());
+        // Arrow keys / single clicks emit Selected: never a query.
+        assert_eq!(tree_event_table(&TreeEvent::Selected(k("users")), is_table), None);
+        assert_eq!(
+            tree_event_table(&TreeEvent::Activated(k("users")), is_table),
+            Some("users".to_string())
+        );
+        // Activating a schema folder or a column is not a table open.
+        assert_eq!(tree_event_table(&TreeEvent::Activated(k("schema:public")), is_table), None);
+        assert_eq!(tree_event_table(&TreeEvent::Expanded(k("users")), is_table), None);
+    }
+
+    #[test]
+    fn button_labels_are_written_sentence_case() {
         let files: [(&str, &str); 3] = [
             ("db_tab.rs", include_str!("db_tab.rs")),
             ("host_form.rs", include_str!("host_form.rs")),
@@ -5682,13 +5779,13 @@ mod button_label_case_hygiene_tests {
         ];
         let mut offences = Vec::new();
         for (name, src) in files {
-            for label in capitalized_labels(src) {
+            for label in unsentenced_labels(src) {
                 offences.push(format!("{name}: {label:?}"));
             }
         }
         assert!(
             offences.is_empty(),
-            "chrome labels are lowercase everywhere — capitalized Button labels found:\n{}",
+            "Button labels are written in sentence case (design v2) — found:\n{}",
             offences.join("\n")
         );
     }
