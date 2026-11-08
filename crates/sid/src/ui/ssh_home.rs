@@ -427,7 +427,7 @@ pub(crate) fn section_title(folder: Option<&str>, named_folders: usize) -> Optio
 }
 
 /// The implicit final/first group's name — see [`section_title`].
-const UNGROUPED: &str = "ungrouped";
+const UNGROUPED: &str = "Ungrouped";
 
 /// Parse the quick-connect box's `user@host[:port]` shorthand. `None` if the text
 /// doesn't look like that shape at all — the same box doubles as a plain grid filter, so
@@ -739,7 +739,7 @@ impl AppState {
                 CardGrid::new()
                     .min_col(px(320.))
                     .max_col(match few {
-                        true => px(560.),
+                        true => px(800.),
                         false => px(440.),
                     })
                     .children(cards),
@@ -2273,8 +2273,8 @@ mod tests {
         assert_eq!(section_title(None, 0), None);
         // As soon as a named folder exists, the unfiled cards need a name of their own —
         // otherwise they read as belonging to whatever header is nearest.
-        assert_eq!(section_title(None, 1), Some("ungrouped"));
-        assert_eq!(section_title(None, 5), Some("ungrouped"));
+        assert_eq!(section_title(None, 1), Some("Ungrouped"));
+        assert_eq!(section_title(None, 5), Some("Ungrouped"));
     }
 
     #[test]
@@ -2290,7 +2290,7 @@ mod tests {
             .iter()
             .map(|g| section_title(g.folder, named))
             .collect();
-        assert_eq!(titles, vec![Some("ungrouped"), Some("work")]);
+        assert_eq!(titles, vec![Some("Ungrouped"), Some("work")]);
 
         // The all-unfiled store — the shape a first-run user actually has.
         let flat = vec![attributed(host("alpha", None))];

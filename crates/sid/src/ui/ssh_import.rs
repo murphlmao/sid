@@ -210,10 +210,19 @@ impl SshImportModal {
     ) -> Self {
         let env = ImportEnv::from_process();
         let path = env.default_config_path();
+        let home = env.home.display().to_string();
+        let tilde = |text: &str| match home.is_empty() {
+            true => text.to_string(),
+            false => text.replace(&home, "~"),
+        };
         let (phase, selection) = match parse_file(&path, &env) {
             Ok(parsed) => (
                 Phase::Review,
-                ImportSelection::from_parsed(parsed, &env.local_user, existing),
+                {
+                    let mut sel = ImportSelection::from_parsed(parsed, &env.local_user, existing);
+                    sel.notes = sel.notes.iter().map(|n| tilde(n)).collect();
+                    sel
+                },
             ),
             Err(e) => (
                 Phase::Unreadable(
@@ -229,7 +238,7 @@ impl SshImportModal {
         Self {
             phase,
             selection,
-            path: path.display().to_string().into(),
+            path: tilde(&path.display().to_string()).into(),
             save_to: preselect(default_scope, workspace.is_some()),
             workspace,
             error: None,
@@ -356,8 +365,12 @@ impl SshImportModal {
                     .clamp_one_line()
                     .child(SharedString::from(
                         row.duplicate_note()
-                            .or_else(|| c.identity_file.as_ref().map(|k| format!("key {k}")))
-                            .unwrap_or_else(|| "agent".into()),
+                            .or_else(|| {
+                                c.identity_file.as_ref().map(|k| {
+                                    format!("Key {}", k.rsplit(['/', '\\']).next().unwrap_or(k))
+                                })
+                            })
+                            .unwrap_or_else(|| "Agent".into()),
                     )),
             )
     }
@@ -498,6 +511,19 @@ impl Render for SshImportModal {
                                 )),
                         )
                     })
+                    .when(
+                        matches!(self.phase, Phase::Review)
+                            && self.save_to.is_none()
+                            && n > 0
+                            && self.error.is_none(),
+                        |m| {
+                            m.child(
+                                div()
+                                    .text_meta(&t)
+                                    .child("Choose where to save these connections to continue."),
+                            )
+                        },
+                    )
                     .when_some(self.error.clone(), |m, e| m.child(Toast::danger(e)))
                     .footer(Button::new("ssh-import-cancel", "Cancel").ghost().on_click(
                         cx.listener(|_this, _ev: &ClickEvent, _w, cx| {
