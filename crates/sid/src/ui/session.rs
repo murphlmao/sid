@@ -2827,7 +2827,7 @@ impl SshSession {
         div().size_full().bg(rgb(t.bg)).child(
             EmptyState::new(format!("Connecting to {}", self.host_label))
                 .icon(Icon::Spinner)
-                .guidance("Checking the host and signing in. This usually takes a moment."),
+                .guidance("Checking the host and signing in."),
         )
     }
 
