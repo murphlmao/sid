@@ -35,21 +35,28 @@ use gpui::{
     StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::badge::Badge;
+use crate::copy::sentence_case;
 use crate::elevation::Elevation;
+use crate::metrics::{CARD_PADDING, CONTROL_GAP, Radius, Rounded as _, STACK_GAP};
 use crate::scale::scaled;
 use crate::styled::{StyledExt as _, h_flex, v_flex};
 use crate::theme;
 use crate::typography::Typography;
 
-/// The header line: UPPERCASE title, and the count appended with the design system's
-/// middot separator when there is one.
+/// A header line as one string: the title in sentence case, and the count appended with
+/// a middot when there is one.
 ///
-/// `Some(0)` still prints: "0 hosts" is information, and a header that silently drops
-/// its count when a list empties reads as a rendering bug.
+/// v2 retired the UPPERCASE header (`docs/design/2026-11-07-friendly-ui-v2.md`): a
+/// [`Card`] now renders its title in the Heading role and its count as a pill, and only
+/// hand-built group headers (SSH home's folders) still want the one-string form, which
+/// is what this is for. `Some(0)` still prints: "0 hosts" is information, and a header
+/// that silently drops its count when a list empties reads as a rendering bug.
 pub fn header_text(title: &str, count: Option<usize>) -> String {
+    let title = sentence_case(title);
     match count {
-        Some(count) => format!("{} · {count}", title.to_uppercase()),
-        None => title.to_uppercase(),
+        Some(count) => format!("{title} · {count}"),
+        None => title,
     }
 }
 
@@ -91,8 +98,8 @@ fn panel_body() -> gpui::Div {
 }
 
 /// The one height a titled card's header row is drawn at, in design pixels at 100%
-/// zoom: the 24px small-control box (`ButtonSize::Sm`, what a header filter, icon
-/// button or `ConfirmButton` is) plus `py_2`'s 8px above and below.
+/// zoom: the 32px small-control box (`ButtonSize::Sm`, what a header filter, icon
+/// button or `ConfirmButton` is) plus 10px above and below. (v1: 24 + 8 + 8 = 40.)
 ///
 /// A header is a *row*, not a box that grows to its tallest child. Without this the
 /// same strip measured 41px with an action control, 36px with none (Database's
@@ -101,7 +108,7 @@ fn panel_body() -> gpui::Div {
 /// height is stated here rather than left to the children, and there is deliberately
 /// no per-call-site knob: a panel whose header disagrees with its neighbour's is the
 /// bug, not a layout the caller should be able to ask for.
-pub const PANEL_HEADER_HEIGHT: Pixels = px(40.);
+pub const PANEL_HEADER_HEIGHT: Pixels = px(52.);
 
 /// A panel's header: the ruled strip the body scrolls under.
 ///
@@ -119,8 +126,7 @@ fn panel_header() -> gpui::Div {
         .flex_none()
         .justify_between()
         .gap_3()
-        .px_3()
-        .py_2()
+        .px(CARD_PADDING.len())
         .h(scaled(f32::from(PANEL_HEADER_HEIGHT)))
 }
 
@@ -164,7 +170,10 @@ pub const PANEL_FILTER_FLOOR: Pixels = px(120.);
 /// but a header filter built with `.flex_shrink_1()` down to [`PANEL_FILTER_FLOOR`]
 /// (`db_tab.rs`/`network_tab.rs`) now yields *before* the title does.
 fn header_actions(actions: Vec<AnyElement>) -> gpui::Div {
-    h_flex().flex_initial().gap_1().children(actions)
+    h_flex()
+        .flex_initial()
+        .gap(CONTROL_GAP.len())
+        .children(actions)
 }
 
 /// A titled container. See the module docs for the two shapes.
@@ -275,19 +284,32 @@ impl RenderOnce for Card {
         // its padding off the root and onto the body — the arrangement `panel` already
         // had. An untitled card has no header to rule and keeps the padded root.
         let ruled = chrome.is_raised() && self.title.is_some();
+        let count = self.count;
         let header = self.title.map(|title| {
             header_bar(chrome, &theme)
                 .child(
-                    // `flex_1` + `min_w_0` + a clamp: a header is one line, and gpui reports
-                    // a text element's min-content width as its *whole string*, so without
-                    // the pair a long title pushes the header's actions off the card's right
-                    // edge instead of eliding.
-                    div()
+                    // `flex_1` + `min_w_0` on the title cluster, a clamp on the words: a
+                    // header is one line, and gpui reports a text element's min-content
+                    // width as its *whole string*, so without the pair a long title pushes
+                    // the header's actions off the card's right edge instead of eliding.
+                    h_flex()
                         .flex_1()
                         .min_w_0()
-                        .clamp_one_line()
-                        .section_label(&theme)
-                        .child(header_text(&title, self.count)),
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .clamp_one_line()
+                                // v2: a strong, sentence-case Heading — v1's 12px UPPERCASE
+                                // muted label was the most clinical thing on every screen.
+                                .text_heading(&theme)
+                                .child(sentence_case(&title)),
+                        )
+                        // The count is orientation, so it is a quiet pill beside the
+                        // title rather than a `· n` run into it.
+                        .when_some(count, |this, n| {
+                            this.child(div().flex_none().child(Badge::count(n).pill()))
+                        }),
                 )
                 .when(!self.actions.is_empty(), |this| {
                     this.child(header_actions(self.actions))
@@ -297,18 +319,24 @@ impl RenderOnce for Card {
         let mut card = v_flex()
             .when(chrome.is_raised(), |this| {
                 this.elevation(Elevation::Surface, &theme)
+                    .corners(Radius::Lg)
             })
             // A panel does its padding per region (the header's own, the body's none),
             // because a scrolling body has to reach the card's edges.
-            .when(!panel && !ruled, |this| this.p_3().gap_2())
+            .when(!panel && !ruled, |this| {
+                this.p(CARD_PADDING.len()).gap(STACK_GAP.len())
+            })
             .when(panel, |this| this.min_h_0())
             .children(header)
             .child(if panel {
                 panel_body().children(self.children)
             } else if ruled {
-                v_flex().gap_2().p_3().children(self.children)
+                v_flex()
+                    .gap(STACK_GAP.len())
+                    .p(CARD_PADDING.len())
+                    .children(self.children)
             } else {
-                v_flex().gap_2().children(self.children)
+                v_flex().gap(STACK_GAP.len()).children(self.children)
             })
             // A card's own type, so its body does not inherit whatever size and colour
             // the surrounding chrome happened to be painted in. It used to set only the
@@ -325,17 +353,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_header_is_uppercase() {
-        // The design system's rule, and the reason four tabs each retyped it.
-        assert_eq!(header_text("processes", None), "PROCESSES");
-        assert_eq!(header_text("Common", None), "COMMON");
+    fn a_header_is_sentence_case() {
+        // v2's rule: no UPPERCASE headers; the first letter is capitalised and nothing
+        // else moves, so an acronym survives.
+        assert_eq!(header_text("processes", None), "Processes");
+        assert_eq!(header_text("Common", None), "Common");
         assert_eq!(header_text("SSH / SFTP", None), "SSH / SFTP");
     }
 
     #[test]
     fn a_count_is_appended_with_the_middot() {
-        assert_eq!(header_text("processes", Some(132)), "PROCESSES · 132");
-        assert_eq!(header_text("hosts", Some(1)), "HOSTS · 1");
+        assert_eq!(header_text("processes", Some(132)), "Processes · 132");
+        assert_eq!(header_text("hosts", Some(1)), "Hosts · 1");
     }
 
     #[test]
@@ -343,7 +372,7 @@ mod tests {
         // "0 hosts" is information. A header that drops its count when the list
         // empties reads as a broken render, which is exactly the complaint the
         // Workspaces empty state drew.
-        assert_eq!(header_text("hosts", Some(0)), "HOSTS · 0");
+        assert_eq!(header_text("hosts", Some(0)), "Hosts · 0");
     }
 
     #[test]
@@ -410,9 +439,12 @@ mod tests {
             Some(scaled(f32::from(PANEL_HEADER_HEIGHT)).into()),
             "a panel header is drawn at PANEL_HEADER_HEIGHT"
         );
-        // ...and that height is the small-control box plus the py_2 padding, which is
-        // what makes it the same row a toolbar draws.
-        assert_eq!(f32::from(PANEL_HEADER_HEIGHT), 24. + 8. + 8.);
+        // ...and that height is the small-control box plus 10px above and below, so a
+        // header's filter or button floats in the strip instead of filling it.
+        assert_eq!(
+            f32::from(PANEL_HEADER_HEIGHT),
+            f32::from(crate::ButtonSize::Sm.height()) + 10. + 10.
+        );
     }
 
     #[test]
