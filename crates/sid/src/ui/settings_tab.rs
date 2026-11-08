@@ -116,6 +116,11 @@ impl SettingsSection {
     }
 }
 
+/// The section names, in nav order -- the command palette's "Settings: ..." entries.
+pub(crate) fn section_labels() -> Vec<&'static str> {
+    SettingsSection::ALL.iter().map(|s| s.label()).collect()
+}
+
 /// How a nav click reaches `AppState`. `Rc` because both nav shapes hand the same
 /// handler to every item.
 type SectionSelect = Rc<dyn Fn(SettingsSection, &mut Window, &mut App)>;
@@ -169,6 +174,8 @@ impl RenderOnce for SettingsFrame {
                     .min_h(px(0.))
                     .overflow_y_scroll()
                     .p_3()
+                    // No width cap (design v2 section 4.6): the cards fill the pane and the
+                    // sections that have two things to say lay them side by side.
                     .child(div().w_full().child(self.content)),
             )
     }
@@ -298,7 +305,7 @@ fn section_strip(
 /// No form, no modal — every control on this screen is a direct,
 /// read-modify-write control.
 pub struct SettingsTabState {
-    pub(crate) cached: Settings,
+    cached: Settings,
     error: Option<String>,
     /// The persisted keybinding overrides, cached under the same rule as [`Self::cached`]
     /// (loaded once, refreshed after every successful write — render never reads the
@@ -327,6 +334,13 @@ impl SettingsTabState {
             notice: None,
             section: SettingsSection::default(),
         }
+    }
+
+    /// The cached persisted [`Settings`] (read once at startup, refreshed after every
+    /// write) -- for callers outside this module that need a flag without touching the
+    /// store from `render`.
+    pub(crate) fn cached_settings(&self) -> &Settings {
+        &self.cached
     }
 
     /// Whether a rebind capture is armed. `app.rs`'s root key handler asks this before
@@ -375,6 +389,20 @@ fn persist_default_scope(store: &Store, scope: DefaultScope) -> sid_store::Resul
 fn persist_file_browser_side(store: &Store, side: PanelSide) -> sid_store::Result<()> {
     let mut settings = store.settings()?;
     settings.file_browser_side = side;
+    store.set_settings(&settings)
+}
+
+/// Read-modify-write `Settings::reduce_motion`.
+fn persist_reduce_motion(store: &Store, on: bool) -> sid_store::Result<()> {
+    let mut settings = store.settings()?;
+    settings.reduce_motion = on;
+    store.set_settings(&settings)
+}
+
+/// Read-modify-write `Settings::desktop_notifications`.
+fn persist_desktop_notifications(store: &Store, on: bool) -> sid_store::Result<()> {
+    let mut settings = store.settings()?;
+    settings.desktop_notifications = on;
     store.set_settings(&settings)
 }
 
@@ -501,51 +529,6 @@ fn row_button(
         .child(label)
 }
 
-const TEXT_RENDERING: [(TextRendering, &str); 3] = [
-    (TextRendering::Auto, "Auto"),
-    (TextRendering::Subpixel, "Subpixel"),
-    (TextRendering::Grayscale, "Grayscale"),
-];
-
-fn text_rendering_selector(current: TextRendering, cx: &mut Context<AppState>) -> SegmentedControl {
-    SegmentedControl::new("settings-text-rendering")
-        .segments(TEXT_RENDERING.map(|(_, label)| label))
-        .selected(selected_index(&TEXT_RENDERING, &current))
-        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
-            if let Some(&(mode, _)) = TEXT_RENDERING.get(ev.index) {
-                this.set_text_rendering(mode, cx);
-            }
-        }))
-}
-
-fn text_rendering_hint(mode: TextRendering) -> &'static str {
-    match mode {
-        TextRendering::Auto => {
-            "Softer grayscale edges on fractionally scaled displays, crisp subpixel otherwise."
-        }
-        TextRendering::Subpixel => {
-            "Sharpest on 100% and 200% displays; can look fuzzy at 125%-175%."
-        }
-        TextRendering::Grayscale => "Even edges at any scale, slightly lighter than subpixel.",
-    }
-}
-
-/// What gpui should be told for `pref` on a window with `scale` (pure, so the Auto rule
-/// is tested without a window). Auto = grayscale when the scale is fractional.
-pub(crate) fn resolve_text_mode(pref: TextRendering, scale: f32) -> gpui::TextRenderingMode {
-    match pref {
-        TextRendering::Subpixel => gpui::TextRenderingMode::Subpixel,
-        TextRendering::Grayscale => gpui::TextRenderingMode::Grayscale,
-        TextRendering::Auto => {
-            if (scale - scale.round()).abs() > 0.01 {
-                gpui::TextRenderingMode::Grayscale
-            } else {
-                gpui::TextRenderingMode::Subpixel
-            }
-        }
-    }
-}
-
 /// The Behaviour panel's option lists, each as one `(value, label)` table. One list
 /// per control so the labels and the values cannot drift: the segmented control
 /// reports an index back into the same array it was built from.
@@ -609,6 +592,51 @@ fn secret_keyring_selector(enabled: bool, cx: &mut Context<AppState>) -> Segment
         }))
 }
 
+const TEXT_RENDERING: [(TextRendering, &str); 3] = [
+    (TextRendering::Auto, "Auto"),
+    (TextRendering::Subpixel, "Subpixel"),
+    (TextRendering::Grayscale, "Grayscale"),
+];
+
+fn text_rendering_selector(current: TextRendering, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-text-rendering")
+        .segments(TEXT_RENDERING.map(|(_, label)| label))
+        .selected(selected_index(&TEXT_RENDERING, &current))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(mode, _)) = TEXT_RENDERING.get(ev.index) {
+                this.set_text_rendering(mode, cx);
+            }
+        }))
+}
+
+fn text_rendering_hint(mode: TextRendering) -> &'static str {
+    match mode {
+        TextRendering::Auto => {
+            "Softer grayscale edges on fractionally scaled displays, crisp subpixel otherwise."
+        }
+        TextRendering::Subpixel => {
+            "Sharpest at 100% and 200%; can look fuzzy at scales like 125% to 175%."
+        }
+        TextRendering::Grayscale => "Even edges at any scale, slightly lighter than subpixel.",
+    }
+}
+
+/// What gpui should be told for `pref` on a window with `scale` (pure, so the Auto rule
+/// is tested without a window). Auto is grayscale when the scale is fractional.
+pub(crate) fn resolve_text_mode(pref: TextRendering, scale: f32) -> gpui::TextRenderingMode {
+    match pref {
+        TextRendering::Subpixel => gpui::TextRenderingMode::Subpixel,
+        TextRendering::Grayscale => gpui::TextRenderingMode::Grayscale,
+        TextRendering::Auto => {
+            if (scale - scale.round()).abs() > 0.01 {
+                gpui::TextRenderingMode::Grayscale
+            } else {
+                gpui::TextRenderingMode::Subpixel
+            }
+        }
+    }
+}
+
 /// Split `app::secret_status_message`'s composed line into the sentence ("what is
 /// happening") and, when there is one, the trailing detail ("why", plus the pacman
 /// recommendation).
@@ -665,7 +693,6 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
     };
 
     Card::new()
-        .title(SettingsSection::Storage.label())
         .child(path_row("Data directory", data_dir))
         .child(path_row("Store file", store_path))
         .child(path_row("Demo database", demo_db_path))
@@ -698,6 +725,12 @@ impl AppState {
             .flex_col()
             .gap_3()
             .children(self.settings.error.clone().map(error_line))
+            .child(
+                div()
+                    .text_display(&chrome)
+                    .text_color(rgb(chrome.fg_strong))
+                    .child(active.label()),
+            )
             .child(match active {
                 // The theme panel's active marker follows the LIVE theme (not the
                 // persisted name): identical in normal use (set_theme installs +
@@ -730,18 +763,45 @@ impl AppState {
         applied: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let cards: Vec<_> = theme::THEME_NAMES
+        let reduce_motion = self.settings.cached.reduce_motion;
+        let zoom = self.ui_scale;
+        let size = SegmentedControl::new("settings-interface-size")
+            .segments(["Smaller", "Default", "Larger"])
+            .selected(1)
+            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+                let next = match ev.index {
+                    0 => this.ui_scale.zoom_out(),
+                    2 => this.ui_scale.zoom_in(),
+                    _ => this.ui_scale.reset(),
+                };
+                this.set_ui_scale(next, cx);
+            }));
+        let theme_cards: Vec<_> = theme::THEME_NAMES
             .iter()
             .enumerate()
             .map(|(ix, &name)| self.theme_card(ix, name, chrome, applied, cx))
             .collect();
         let themes = Card::new()
-            .title("Theme")
-            .child(div().grid().grid_cols(2).gap_3().children(cards));
-
-        let settings = self.settings.cached.clone();
+            .child(div().text_heading(chrome).child("Theme"))
+            .child(div().grid().grid_cols(2).gap_3().children(theme_cards));
+        let text_rendering = self.settings.cached.text_rendering;
         let display = Card::new()
-            .title("Display")
+            .child(div().text_heading(chrome).child("Display"))
+            .child(labeled_row(
+                chrome,
+                "Interface size",
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(size)
+                    .child(
+                        div()
+                            .text_meta(chrome)
+                            .child(format!("Now {}", zoom.label())),
+                    ),
+            ))
             .child(labeled_row(
                 chrome,
                 "Text rendering",
@@ -750,37 +810,38 @@ impl AppState {
                     .flex_col()
                     .min_w(px(0.))
                     .gap_1p5()
-                    .child(text_rendering_selector(settings.text_rendering, cx))
+                    .child(text_rendering_selector(text_rendering, cx))
                     .child(
                         div()
                             .text_meta(chrome)
-                            .child(text_rendering_hint(settings.text_rendering)),
+                            .child(text_rendering_hint(text_rendering)),
                     ),
             ))
             .child(
-                Switch::new("settings-reduce-motion", settings.reduce_motion)
+                Switch::new("settings-reduce-motion", reduce_motion)
                     .label("Reduce motion")
                     .on_toggle({
-                        let this = cx.entity();
-                        move |on, _window, cx| {
-                            this.update(cx, |state, cx| state.set_reduce_motion(on, cx));
-                        }
+                        let me = cx.entity();
+                        move |on, _w, app| me.update(app, |this, cx| this.set_reduce_motion(on, cx))
                     }),
+            )
+            .child(
+                div()
+                    .text_meta(chrome)
+                    .child("Skips fades and slides. Animation is on by default."),
             );
-
-        // Two columns when there is room, so a wide window fills with cards rather than
-        // growing a void beside one column.
         div()
             .flex()
             .flex_row()
             .flex_wrap()
             .gap_3()
+            .items_start()
             .child(div().flex_1().min_w(scaled(360.)).child(themes))
             .child(div().flex_1().min_w(scaled(360.)).child(display))
     }
 
-    /// One selectable card per `theme::THEME_NAMES` entry: a mini preview painted in
-    /// the theme's own bg / surface / accent / fg, then its name. Clicking applies it.
+    /// One selectable card per `theme::THEME_NAMES` entry: a miniature painted in the
+    /// theme's own bg / surface / accent / fg, then its name. Clicking applies it.
     fn theme_card(
         &self,
         ix: usize,
@@ -791,8 +852,7 @@ impl AppState {
     ) -> impl IntoElement + use<> {
         let palette = theme::by_name(name);
         let active = name == applied;
-        // The preview: a window-shaped miniature. `faint` ring so a near-black preview
-        // still reads against a near-black card (void).
+        // `faint` ring so a near-black preview (void) still reads on a near-black card.
         let preview = div()
             .flex()
             .flex_col()
@@ -897,29 +957,12 @@ impl AppState {
             }
             Err(e) => self.settings.error = Some(format!("Could not save text rendering: {e}")),
         }
-        cx.refresh_windows();
-        cx.notify();
-    }
-
-    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
-        sid_ui::motion::set_reduced(on, cx);
-        let saved = self.store.settings().and_then(|mut s| {
-            s.reduce_motion = on;
-            self.store.set_settings(&s)
-        });
-        match saved {
-            Ok(()) => {
-                self.settings.cached.reduce_motion = on;
-                self.settings.error = None;
-            }
-            Err(e) => self.settings.error = Some(format!("Could not save reduce motion: {e}")),
-        }
         cx.notify();
     }
 
     /// Keep gpui's glyph antialiasing in step with the preference and the window's
-    /// CURRENT scale factor (so moving the window to another output re-evaluates
-    /// `Auto`). Cheap enough to call every render: it only writes on a change.
+    /// CURRENT scale factor (moving the window to another output re-evaluates `Auto`).
+    /// Called every render; it only writes on a change.
     pub(crate) fn sync_text_rendering(&self, window: &Window, cx: &mut App) {
         let mode = resolve_text_mode(self.settings.cached.text_rendering, window.scale_factor());
         if cx.text_rendering_mode() != mode {
@@ -933,6 +976,11 @@ impl AppState {
     /// palette, persist the choice, and refresh every window so the switch is
     /// LIVE. `pub(crate)` so this module's tests can drive it directly, and so a
     /// future command-palette "switch theme" entry could reuse it.
+    /// Point the Settings screen at section `index` (see [`section_labels`]).
+    pub(crate) fn show_settings_section(&mut self, index: usize) {
+        self.settings.section = SettingsSection::from_index(index);
+    }
+
     pub(crate) fn set_theme(&mut self, name: &'static str, cx: &mut Context<Self>) {
         theme::install(name, cx);
         // Re-project the new palette onto gpui-component's theme so the borrowed
@@ -977,20 +1025,36 @@ impl AppState {
         };
 
         Card::new()
-            .title(SettingsSection::Behaviour.label())
+            .child(
+                Switch::new(
+                    "settings-desktop-notifications",
+                    settings.desktop_notifications,
+                )
+                .label("Desktop notifications")
+                .on_toggle({
+                    let me = cx.entity();
+                    move |on, _w, app| {
+                        me.update(app, |this, cx| this.set_desktop_notifications(on, cx))
+                    }
+                }),
+            )
+            .child(div().text_meta(chrome).child(
+                "Tells you when a long query finishes while sid is in the background, \
+                     an SSH session drops, or a fetch or push completes.",
+            ))
             .child(labeled_row(
                 chrome,
-                "Default scope for new items",
+                "default scope for new items",
                 default_scope_selector(settings.default_scope, cx),
             ))
             .child(labeled_row(
                 chrome,
-                "File browser side",
+                "file browser side",
                 file_browser_side_selector(settings.file_browser_side, cx),
             ))
             .child(labeled_row(
                 chrome,
-                "Secret keyring",
+                "secret keyring",
                 div()
                     .flex()
                     .flex_col()
@@ -1006,7 +1070,7 @@ impl AppState {
                     .child(
                         div()
                             .text_meta(chrome)
-                            .child("Takes effect the next time sid starts."),
+                            .child("changes take effect on restart"),
                     )
                     .child(backend),
             ))
@@ -1040,6 +1104,31 @@ impl AppState {
                 }
             }
             Err(e) => self.settings.error = Some(format!("failed to save file browser side: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Reduce motion: apply to the live process (`sid_ui::motion`) and persist.
+    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+        sid_ui::motion::set_reduced(on, cx);
+        match persist_reduce_motion(&self.store, on) {
+            Ok(()) => {
+                self.settings.cached.reduce_motion = on;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Couldn't save reduce motion: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Desktop notifications on/off: persisted, and mirrored for the notify call sites.
+    pub(crate) fn set_desktop_notifications(&mut self, on: bool, cx: &mut Context<Self>) {
+        match persist_desktop_notifications(&self.store, on) {
+            Ok(()) => {
+                self.settings.cached.desktop_notifications = on;
+                self.settings.error = None;
+            }
+            Err(e) => self.settings.error = Some(format!("Couldn't save notifications: {e}")),
         }
         cx.notify();
     }
@@ -1087,9 +1176,9 @@ impl AppState {
         });
 
         Card::new()
-            .title(SettingsSection::Keyboard.label())
-            .count(rows.len())
-            .when_some(reset_all, Card::action)
+            .when_some(reset_all, |card, button| {
+                card.child(div().flex().flex_row().justify_end().child(button))
+            })
             .child(div().flex().flex_col().children(rows))
             .child(div().text_meta(chrome).child(
                 "shortcuts carry Ctrl; inside a focused terminal a letter chord \
@@ -1327,6 +1416,17 @@ mod tests {
             store.settings().unwrap().file_browser_side,
             PanelSide::Right
         );
+    }
+
+    #[test]
+    fn persist_reduce_motion_and_notifications_round_trip() {
+        let (_dir, store) = tmp_store();
+        assert!(store.settings().unwrap().desktop_notifications);
+        persist_reduce_motion(&store, true).unwrap();
+        persist_desktop_notifications(&store, false).unwrap();
+        let s = store.settings().unwrap();
+        assert!(s.reduce_motion);
+        assert!(!s.desktop_notifications);
     }
 
     #[test]

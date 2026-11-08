@@ -46,6 +46,9 @@ sid-containers.workspace = true
 # concrete-adapter *constructors* (`RusshClientFactory`, `Vt100Screen`) — never `russh`/
 # `vt100` themselves.
 sid-core.workspace = true
+# Desktop notifications: the one crate allowed to name `sid-os`'s concrete `DbusNotifier`
+# (constructed at the composition root, `app::AppState::new`).
+sid-os.workspace = true
 # Privileged (root) config-file reads/writes for the System tab's editor: the one crate
 # allowed to name `sid-privfs`'s concrete `SudoPrivilegedFs::new()` constructor — same seam
 # shape as `sid-sysinfo`/`sid-svcctl` above. `sudo` itself stays behind

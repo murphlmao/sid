@@ -15,7 +15,7 @@ pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub(crate) fn remotes(repo: &git2::Repository) -> Result<Vec<String>, GitError> {
     let names = repo.remotes().map_err(map_git2_error)?;
-    Ok(names.iter().flatten().map(String::from).collect())
+    Ok(names.iter().flatten().flatten().map(String::from).collect())
 }
 
 /// Under the repo lock: validate the remote and return the gitdir for the worker.
@@ -144,8 +144,8 @@ fn run_fetch(
     let updated_refs = updated.lock().map(|u| u.clone()).unwrap_or_default();
     let (ahead, behind) = match repo.head() {
         Ok(h) if h.is_branch() => match h.shorthand() {
-            Some(n) => ahead_behind(&repo, n)?,
-            None => (None, None),
+            Ok(n) => ahead_behind(&repo, n)?,
+            Err(_) => (None, None),
         },
         _ => (None, None),
     };

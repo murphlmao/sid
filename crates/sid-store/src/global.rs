@@ -18,7 +18,7 @@ use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, HistoryEntry, Host, HostHistory, HostV1, HostV2,
     Identity, KeyBinding, PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
-    SettingsV4, SettingsV5,
+    SettingsV4, SettingsV5, SettingsV6,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -63,9 +63,9 @@ pub(crate) const CONNECTION_VERSION: u8 = 3;
 
 /// Current codec version for [`Settings`]. Bumped to 2 when `file_browser_side` was
 /// added, to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added, to 4 when
-/// `theme` was, and to 5 when `ui_scale_percent` was; reads branch on the leading version
+/// `theme` was, to 5 when `ui_scale_percent` was and to 6 when `reduce_motion`/`desktop_notifications`/`last_tab` were; reads branch on the leading version
 /// byte and migrate older values forward (see [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 6;
+pub(crate) const SETTINGS_VERSION: u8 = 7;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -452,27 +452,29 @@ fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
 /// `1` → the pre-`file_browser_side` [`SettingsV1`] shape; `2` → the pre-secret-toggle
 /// [`SettingsV2`] shape; `3` → the pre-`theme` [`SettingsV3`] shape; `4` → the
 /// pre-`ui_scale_percent` [`SettingsV4`] shape; each migrates forward through the version
-/// chain, filling added fields with defaults; `5` → the pre-`text_rendering` [`SettingsV5`] shape; `6` → the current [`Settings`] shape. Any
+/// chain, filling added fields with defaults; `5` → the pre-`reduce_motion` [`SettingsV5`] shape; `6` → the current [`Settings`] shape. Any
 /// other version is rejected.
 fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
+    let from_v4 = |v: SettingsV4| Settings::from(SettingsV6::from(SettingsV5::from(v)));
     match version {
-        1 => Ok(Settings::from(SettingsV5::from(SettingsV4::from(
-            SettingsV3::from(SettingsV2::from(decode_versioned::<SettingsV1>(bytes)?.1)),
+        1 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
+            SettingsV2::from(decode_versioned::<SettingsV1>(bytes)?.1),
         )))),
-        2 => Ok(Settings::from(SettingsV5::from(SettingsV4::from(
-            SettingsV3::from(decode_versioned::<SettingsV2>(bytes)?.1),
+        2 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
+            decode_versioned::<SettingsV2>(bytes)?.1,
         )))),
-        3 => Ok(Settings::from(SettingsV5::from(SettingsV4::from(
+        3 => Ok(from_v4(SettingsV4::from(
             decode_versioned::<SettingsV3>(bytes)?.1,
-        )))),
-        4 => Ok(Settings::from(SettingsV5::from(
-            decode_versioned::<SettingsV4>(bytes)?.1,
         ))),
-        5 => Ok(decode_versioned::<SettingsV5>(bytes)?.1.into()),
+        4 => Ok(from_v4(decode_versioned::<SettingsV4>(bytes)?.1)),
+        5 => Ok(Settings::from(SettingsV6::from(
+            decode_versioned::<SettingsV5>(bytes)?.1,
+        ))),
+        6 => Ok(decode_versioned::<SettingsV6>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -820,29 +822,16 @@ mod tests {
         assert!(settings.secret_file_enabled);
     }
 
-    /// The oldest payload still has to reach the newest shape: v1 predates four hops, and
-    /// the chain is only as good as its longest walk.
+    /// A v5 payload (pre `reduce_motion`/notifications/last tab) keeps its zoom and theme
+    /// and reads motion on, notifications on, no remembered tab.
     #[test]
-    fn a_v1_payload_walks_every_hop_to_an_unzoomed_current_shape() {
-        use crate::entities::DefaultScope;
-        let bytes = encode_versioned(1, &settings_v1(DefaultScope::Workspace)).unwrap();
-        let settings = decode_settings(&bytes).unwrap();
-        assert_eq!(settings.ui_scale_percent, 100);
-        assert_eq!(settings.theme, "cosmos");
-        assert_eq!(settings.default_scope, DefaultScope::Workspace);
-    }
-
-    /// A v5 payload (pre text-rendering / reduce-motion / palette-recents) migrates with
-    /// every old field carried and the new ones at their defaults.
-    #[test]
-    fn settings_v5_payload_migrates_to_auto_text_rendering() {
-        use crate::entities::{DefaultScope, TextRendering};
+    fn settings_v5_payload_migrates_with_new_fields_defaulted() {
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         let v5 = SettingsV5 {
-            default_scope: DefaultScope::Workspace,
-            file_browser_side: PanelSide::Right,
-            secret_keyring_enabled: false,
+            default_scope: crate::entities::DefaultScope::Global,
+            file_browser_side: PanelSide::Left,
+            secret_keyring_enabled: true,
             secret_file_enabled: true,
             theme: "dusk".into(),
             ui_scale_percent: 125,
@@ -857,33 +846,95 @@ mod tests {
             })
             .unwrap();
         let s = store.get_settings().unwrap();
-        assert_eq!(s.text_rendering, TextRendering::Auto);
+        assert_eq!((s.theme.as_str(), s.ui_scale_percent), ("dusk", 125));
         assert!(!s.reduce_motion);
+        assert!(s.desktop_notifications);
+        assert!(s.last_tab.is_empty());
+    }
+
+    /// The new v6 fields survive a write/read round trip.
+    #[test]
+    fn reduce_motion_notifications_and_last_tab_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let s = Settings {
+            reduce_motion: true,
+            desktop_notifications: false,
+            last_tab: "network".into(),
+            ..Default::default()
+        };
+        store.set_settings(&s).unwrap();
+        assert_eq!(store.get_settings().unwrap(), s);
+    }
+
+    /// The oldest payload still has to reach the newest shape: v1 predates four hops, and
+    /// the chain is only as good as its longest walk.
+    #[test]
+    fn a_v1_payload_walks_every_hop_to_an_unzoomed_current_shape() {
+        use crate::entities::DefaultScope;
+        let bytes = encode_versioned(1, &settings_v1(DefaultScope::Workspace)).unwrap();
+        let settings = decode_settings(&bytes).unwrap();
+        assert_eq!(settings.ui_scale_percent, 100);
+        assert_eq!(settings.theme, "cosmos");
+        assert_eq!(settings.default_scope, DefaultScope::Workspace);
+    }
+
+    /// A v6 payload migrates with every old field carried and the v7 ones defaulted.
+    #[test]
+    fn settings_v6_payload_migrates_to_auto_text_rendering() {
+        use crate::entities::{DefaultScope, TextRendering};
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let v6 = SettingsV6 {
+            default_scope: DefaultScope::Workspace,
+            file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: false,
+            secret_file_enabled: true,
+            theme: "dusk".into(),
+            ui_scale_percent: 125,
+            reduce_motion: true,
+            desktop_notifications: false,
+            last_tab: "network".into(),
+        };
+        let bytes = encode_versioned(6, &v6).unwrap();
+        store
+            .with_write("seed v6", |txn| {
+                let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                tbl.insert(SETTINGS_KEY, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.text_rendering, TextRendering::Auto);
         assert!(s.palette_recents.is_empty());
+        assert!(!s.import_banner_dismissed);
         assert_eq!(s.theme, "dusk");
         assert_eq!(s.ui_scale_percent, 125);
-        assert_eq!(s.default_scope, DefaultScope::Workspace);
+        assert!(s.reduce_motion);
+        assert!(!s.desktop_notifications);
+        assert_eq!(s.last_tab, "network");
         assert!(!s.secret_keyring_enabled);
     }
 
-    /// The new fields survive a write/read round-trip.
+    /// The v7 fields survive a write/read round-trip.
     #[test]
-    fn text_rendering_motion_and_recents_round_trip() {
+    fn text_rendering_recents_and_banner_round_trip() {
         use crate::entities::TextRendering;
         let dir = tempfile::tempdir().unwrap();
         let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
         store
             .set_settings(&Settings {
                 text_rendering: TextRendering::Grayscale,
-                reduce_motion: true,
                 palette_recents: vec!["a".into(), "b".into()],
+                import_banner_dismissed: true,
                 ..Default::default()
             })
             .unwrap();
         let s = store.get_settings().unwrap();
         assert_eq!(s.text_rendering, TextRendering::Grayscale);
-        assert!(s.reduce_motion);
         assert_eq!(s.palette_recents, vec!["a".to_string(), "b".to_string()]);
+        assert!(s.import_banner_dismissed);
     }
 
     /// A zoom level survives the write/read round-trip verbatim — the store must not snap
