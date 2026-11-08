@@ -133,7 +133,7 @@ impl GitProvider for Git2Provider {
         let repo = self.repo()?;
         let (branch, detached, last_commit) = match repo.head() {
             Ok(h) if h.is_branch() => {
-                let name = h.shorthand().map(String::from);
+                let name = h.shorthand().ok().map(String::from);
                 let commit = h.peel_to_commit().ok();
                 (name, false, commit.as_ref().map(commit_info))
             }
@@ -190,7 +190,7 @@ impl GitProvider for Git2Provider {
         let refname = branch
             .get()
             .name()
-            .ok_or_else(|| GitError::InvalidRef(name.to_string()))?
+            .map_err(|_| GitError::InvalidRef(name.to_string()))?
             .to_string();
         let obj = repo.revparse_single(&refname).map_err(map_git2_error)?;
         repo.checkout_tree(&obj, None).map_err(map_git2_error)?;
@@ -295,7 +295,7 @@ impl GitProvider for Git2Provider {
 pub(crate) fn commit_info(c: &git2::Commit<'_>) -> CommitInfo {
     CommitInfo {
         oid: c.id().to_string(),
-        summary: c.summary().unwrap_or("").to_string(),
+        summary: c.summary().ok().flatten().unwrap_or("").to_string(),
         author_name: c.author().name().unwrap_or("").to_string(),
         author_email: c.author().email().unwrap_or("").to_string(),
         timestamp_secs: c.time().seconds(),

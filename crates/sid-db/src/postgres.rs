@@ -115,12 +115,11 @@ pub(crate) fn explain_option_injection(sql: &str) -> Option<&'static str> {
     if is_analyze(&word) {
         return Some("EXPLAIN refused: ANALYZE would execute the statement");
     }
-    if word == "VERBOSE" {
-        if let Some(n) = toks.next() {
-            if is_analyze(&n.text.to_ascii_uppercase()) {
-                return Some("EXPLAIN refused: ANALYZE would execute the statement");
-            }
-        }
+    if word == "VERBOSE"
+        && let Some(n) = toks.next()
+        && is_analyze(&n.text.to_ascii_uppercase())
+    {
+        return Some("EXPLAIN refused: ANALYZE would execute the statement");
     }
     None
 }
@@ -707,10 +706,10 @@ fn assemble_primary_keys(rows: Vec<PgPkRow>) -> BTreeMap<String, Vec<String>> {
 /// auth failure, distinct from every other connect failure (DNS, refused,
 /// timeout, TLS, etc.) which stays `DbError::Connect`.
 pub(crate) fn map_pg_connect_error(e: tokio_postgres::Error) -> DbError {
-    if let Some(db_err) = e.as_db_error() {
-        if matches!(db_err.code().code(), "28P01" | "28000") {
-            return DbError::Auth;
-        }
+    if let Some(db_err) = e.as_db_error()
+        && matches!(db_err.code().code(), "28P01" | "28000")
+    {
+        return DbError::Auth;
     }
     DbError::Connect(e.to_string())
 }

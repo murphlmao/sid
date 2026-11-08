@@ -36,7 +36,12 @@ fn blank_message_is_refused_and_nothing_is_committed() {
         );
     }
     assert_eq!(
-        repo.head().unwrap().peel_to_commit().unwrap().summary(),
+        repo.head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .summary()
+            .unwrap(),
         Some("init")
     );
 }
@@ -72,7 +77,7 @@ fn commit_creates_child_of_head_with_trimmed_message() {
     let head = repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(head.id().to_string(), c.oid);
     assert_eq!(head.parent_id(0).unwrap(), before);
-    assert_eq!(head.message(), Some("feat: x\n\nbody here\n"));
+    assert_eq!(head.message().ok(), Some("feat: x\n\nbody here\n"));
 }
 
 #[test]
@@ -92,7 +97,7 @@ fn amend_rewrites_head_keeping_author() {
     let head = repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(head.id().to_string(), c.oid);
     assert_eq!(head.parent_count(), parent_count_before);
-    assert_eq!(head.summary(), Some("init (amended)"));
+    assert_eq!(head.summary().unwrap(), Some("init (amended)"));
     assert_eq!(
         repo.revwalk()
             .map(|mut w| {
