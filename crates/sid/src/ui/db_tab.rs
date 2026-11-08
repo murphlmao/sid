@@ -165,7 +165,7 @@ pub struct DbTabState {
     /// clicks.
     running: bool,
     status: QueryStatus,
-    /// The exact SQL text of the last run query, so "next page" repeats it without
+    /// The exact SQL text of the last run query, so "Next page" repeats it without
     /// depending on the editor's current (possibly since-edited) contents.
     last_sql: Option<String>,
     /// The cursor `query_paged` returned for the next page, if any.
@@ -194,7 +194,7 @@ pub struct DbTabState {
     schema: Option<SchemaInfo>,
     /// Relationship metadata (FK edges + primary keys) for the same connection as
     /// `schema` — fetched alongside it in [`fetch_schema`] and cleared on the same
-    /// triggers (connection switch, re-fetch). Feeds the "diagram" pop-out window
+    /// triggers (connection switch, re-fetch). Feeds the "Diagram" pop-out window
     /// (`db_diagram::DiagramView`); `None` before the first successful fetch, same as
     /// `schema`.
     schema_graph: Option<SchemaGraph>,
@@ -939,7 +939,7 @@ impl TableDelegate for ResultDelegate {
             IconButton::new(
                 ("db-cell-view", cell_ix),
                 Icon::Maximize,
-                "view the whole value",
+                "View the whole value",
             )
             .size(ButtonSize::Xs)
             .on_click(move |_ev, _window, cx| {
@@ -1364,7 +1364,7 @@ impl AppState {
                                             IconButton::new(
                                                 "db-cell-view-close",
                                                 Icon::Close,
-                                                "close",
+                                                "Close",
                                             )
                                             .small()
                                             .on_click(
@@ -1417,9 +1417,10 @@ impl AppState {
                     // editor. Only *activation* — Enter or a double-click on a table —
                     // writes a query.
                     let is_table = |key: &str| {
-                        this.db.schema.as_ref().is_some_and(|s| {
-                            s.tables.iter().any(|t| table_display_name(t) == key)
-                        })
+                        this.db
+                            .schema
+                            .as_ref()
+                            .is_some_and(|s| s.tables.iter().any(|t| table_display_name(t) == key))
                     };
                     if let Some(table) = tree_event_table(ev, is_table) {
                         this.activate_table(&table, window, cx);
@@ -1583,7 +1584,7 @@ impl AppState {
         let caveat = page_view_caveat(is_sorted, is_filtered, has_more);
 
         let next_page = has_more.then(|| {
-            Button::new("db-next-page", "next page")
+            Button::new("db-next-page", "Next page")
                 .size(QUERY_ACTION_SIZE)
                 .icon(Icon::ChevronRight)
                 .tooltip("fetch the next page of this result set")
@@ -1645,7 +1646,7 @@ impl AppState {
                 // for what it does. Same id, same slot, same size — only the word, tooltip
                 // and leading icon change (`play` for a fresh run, the same `redo`
                 // `network_refresh_button` uses for a re-read).
-                Button::new("db-run", if browse { "reload" } else { "run" })
+                Button::new("db-run", if browse { "Reload" } else { "Run" })
                     .primary()
                     .icon(if browse { Icon::Refresh } else { Icon::Run })
                     .size(QUERY_ACTION_SIZE)
@@ -2007,7 +2008,7 @@ impl AppState {
                     },
                 }
             };
-        Button::new("db-explain", "explain")
+        Button::new("db-explain", "Explain")
             .size(QUERY_ACTION_SIZE)
             .icon(Icon::Info)
             .disabled(disabled || self.db.running)
@@ -2061,7 +2062,7 @@ impl AppState {
             // `EXPLAIN QUERY PLAN`), so it takes the family the plan body does.
             .action(div().text_mono_meta(&t).child(plan.keyword.clone()))
             .action(
-                IconButton::new("db-plan-close", Icon::Close, "back to the results")
+                IconButton::new("db-plan-close", Icon::Close, "Back to the results")
                     .small()
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.db.plan = None;
@@ -2087,7 +2088,7 @@ impl AppState {
                     )
                     .icon(Icon::Dashboard)
                     .action(
-                        Button::new("db-empty-add", "add database")
+                        Button::new("db-empty-add", "Add database")
                             .primary()
                             .icon(Icon::Add)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -2157,7 +2158,7 @@ impl AppState {
     /// full-viewport modal.
     fn export_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = theme::active(cx).clone();
-        let button = Button::new("db-export-open", "export")
+        let button = Button::new("db-export-open", "Export")
             .icon(Icon::Export)
             .size(QUERY_ACTION_SIZE)
             .tooltip("export the results now on screen")
@@ -2250,7 +2251,7 @@ impl AppState {
                     Toast::danger(err.clone())
                         .title("Couldn't load the schema")
                         .action(
-                            Button::new("db-schema-retry", "retry")
+                            Button::new("db-schema-retry", "Retry")
                                 .size(ButtonSize::Xs)
                                 .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                     this.refresh_schema(window, cx);
@@ -2340,7 +2341,7 @@ impl AppState {
             .min_h_0()
             .action(self.diagram_button(cx))
             .action(
-                IconButton::new("db-schema-refresh", Icon::Refresh, "reload the schema")
+                IconButton::new("db-schema-refresh", Icon::Refresh, "Reload the schema")
                     .small()
                     .loading(self.db.schema_loading)
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -2350,7 +2351,7 @@ impl AppState {
             .child(body)
     }
 
-    /// "diagram" — opens the Access-style relationships pop-out window (see
+    /// "Diagram" — opens the Access-style relationships pop-out window (see
     /// [`Self::open_diagram_window`]). Enabled (brand-colored, clickable) only once a
     /// schema is cached for the active connection; otherwise rendered dim and inert
     /// rather than hidden, matching this tab's convention of always-present, sometimes
@@ -2358,7 +2359,7 @@ impl AppState {
     fn diagram_button(&self, cx: &mut Context<Self>) -> Button {
         // `Button::disabled` installs no click handler at all, so "inert until a schema
         // is cached" is structural here rather than an `if` around the listener.
-        Button::new("db-diagram-open", "diagram")
+        Button::new("db-diagram-open", "Diagram")
             .small()
             .ghost()
             .icon(Icon::Diagram)
@@ -2573,7 +2574,7 @@ impl AppState {
                     .count(count)
                     .size_full()
                     .action(
-                        Button::new("db-conn-add", "add connection")
+                        Button::new("db-conn-add", "Add connection")
                             .icon(Icon::Add)
                             .size(ButtonSize::Sm)
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
@@ -2728,7 +2729,7 @@ impl AppState {
             IconButton::new(
                 ("db-promote", ix),
                 Icon::ChevronUp,
-                "promote this connection to the global store",
+                "Promote this connection to the global store",
             )
             .small()
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
@@ -2742,7 +2743,7 @@ impl AppState {
             IconButton::new(
                 ("db-demote", ix),
                 Icon::ChevronDown,
-                "demote this connection into the active workspace",
+                "Demote this connection into the active workspace",
             )
             .small()
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
@@ -2754,7 +2755,7 @@ impl AppState {
         let edit = {
             let conn = conn.clone();
             let origin = origin.clone();
-            IconButton::new(("db-edit", ix), Icon::Rename, "edit this connection")
+            IconButton::new(("db-edit", ix), Icon::Rename, "Edit this connection")
                 .small()
                 .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                     this.open_edit_db_form(conn.clone(), origin.clone(), window, cx);
@@ -2770,7 +2771,7 @@ impl AppState {
             IconButton::new(
                 ("db-folder-edit", ix),
                 Icon::Folder,
-                "put this row in a folder",
+                "Put this row in a folder",
             )
             .small()
             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
@@ -2795,18 +2796,18 @@ impl AppState {
                 this.press_delete_db_row(&id, &origin, secret_ref.as_deref(), cx);
             });
             if armed {
-                ConfirmButton::new(("db-delete", ix), "delete")
+                ConfirmButton::new(("db-delete", ix), "Delete")
                     .armed(true)
                     .armed_label("confirm")
                     .size(ButtonSize::Sm)
-                    .tooltip("delete this connection and its stored secret")
+                    .tooltip("Delete this connection and its stored secret")
                     .on_press(on_press)
                     .into_any_element()
             } else {
                 IconButton::new(
                     ("db-delete", ix),
                     Icon::Trash,
-                    "delete this connection and its stored secret",
+                    "Delete this connection and its stored secret",
                 )
                 .small()
                 .on_click(on_press)
@@ -3021,7 +3022,7 @@ impl AppState {
             )
             .separator()
             .item(
-                PopupMenuItem::new("delete")
+                PopupMenuItem::new("Delete")
                     .icon(Icon::Trash.el())
                     .on_click({
                         let this = this.clone();
@@ -5683,6 +5684,11 @@ mod button_label_case_hygiene_tests {
     //! "closing brace at column 0" rule `sid-ui/tests/hygiene.rs` documents) so this
     //! module never matches against itself.
 
+    use super::{append_statement, end_position, tree_event_table};
+    use gpui::SharedString;
+    use gpui_component::input::Position;
+    use sid_ui::TreeEvent;
+
     /// `src` with every `#[cfg(test)] mod .. { .. }` block removed.
     fn shipping_text(src: &str) -> String {
         let mut out = String::new();
@@ -5783,14 +5789,23 @@ mod button_label_case_hygiene_tests {
         let is_table = |k: &str| k == "users";
         let k = |s: &str| SharedString::from(s.to_string());
         // Arrow keys / single clicks emit Selected: never a query.
-        assert_eq!(tree_event_table(&TreeEvent::Selected(k("users")), is_table), None);
+        assert_eq!(
+            tree_event_table(&TreeEvent::Selected(k("users")), is_table),
+            None
+        );
         assert_eq!(
             tree_event_table(&TreeEvent::Activated(k("users")), is_table),
             Some("users".to_string())
         );
         // Activating a schema folder or a column is not a table open.
-        assert_eq!(tree_event_table(&TreeEvent::Activated(k("schema:public")), is_table), None);
-        assert_eq!(tree_event_table(&TreeEvent::Expanded(k("users")), is_table), None);
+        assert_eq!(
+            tree_event_table(&TreeEvent::Activated(k("schema:public")), is_table),
+            None
+        );
+        assert_eq!(
+            tree_event_table(&TreeEvent::Expanded(k("users")), is_table),
+            None
+        );
     }
 
     #[test]
