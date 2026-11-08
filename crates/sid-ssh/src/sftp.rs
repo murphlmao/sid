@@ -64,6 +64,50 @@ impl SftpSession for RusshSftp {
             .map_err(map_sftp_error)
     }
 
+    async fn get_bounded(&mut self, path: &str, max_bytes: u64) -> Result<Vec<u8>, SshError> {
+        use tokio::io::AsyncReadExt;
+        let mut file = self
+            .inner
+            .open(path.to_string())
+            .await
+            .map_err(map_sftp_error)?;
+        let mut out: Vec<u8> = Vec::new();
+        let mut chunk = vec![0u8; 32 * 1024];
+        loop {
+            let n = file
+                .read(&mut chunk)
+                .await
+                .map_err(|e| SshError::Other(format!("sftp read: {e}")))?;
+            if n == 0 {
+                return Ok(out);
+            }
+            if out.len() as u64 + n as u64 > max_bytes {
+                return Err(SshError::TooLarge(max_bytes)); // stop; drop the handle
+            }
+            out.extend_from_slice(&chunk[..n]);
+        }
+    }
+
+    async fn put_exclusive(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError> {
+        use russh_sftp::protocol::{FileAttributes, OpenFlags};
+        let attrs = FileAttributes {
+            permissions: Some(0o600),
+            ..FileAttributes::empty()
+        };
+        let mut file = self
+            .inner
+            .open_with_flags_and_attributes(
+                path.to_string(),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+                attrs,
+            )
+            .await
+            .map_err(map_sftp_error)?;
+        file.write_all(bytes)
+            .await
+            .map_err(|e| SshError::Other(format!("sftp write: {e}")))
+    }
+
     async fn put(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError> {
         // `RusshSftpSession::write` opens with `OpenFlags::WRITE` only — it can
         // overwrite an existing remote file but can't create a new one. `create`
