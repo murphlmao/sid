@@ -7,8 +7,17 @@
 use std::path::Path;
 
 use sid_core::git::{
-    Branch, CommitInfo, GitError, GitProvider, GitStatus, RepoSummary, StatusEntry, StatusKind,
+    Branch, CommitInfo, Diff, DiffLimits, DiffTarget, FetchReport, GitError, GitProvider,
+    GitStatus, LogPage, LogQuery, RepoSummary, StashEntry, StatusKind, StatusOptions, WorktreeInfo,
 };
+
+mod diff;
+mod history;
+mod remote;
+mod status;
+mod write;
+
+use status::collect_status_entries;
 
 /// git2-backed provider. [`Git2Provider::factory`] returns a stateless handle
 /// with no bound repo; [`GitProvider::open`] binds a per-repo handle (the
@@ -64,19 +73,7 @@ impl GitProvider for Git2Provider {
             .map_err(map_git2_error)?;
         for entry in iter {
             let (b, _branch_type) = entry.map_err(map_git2_error)?;
-            let name = b.name().map_err(map_git2_error)?.unwrap_or("").to_string();
-            let head_oid = b.get().target().map(|o| o.to_string()).unwrap_or_default();
-            let upstream = b
-                .upstream()
-                .ok()
-                .and_then(|u| u.name().ok().flatten().map(String::from));
-            let is_current = b.is_head();
-            out.push(Branch {
-                name,
-                head_oid,
-                upstream,
-                is_current,
-            });
+            out.push(branch_info(&b));
         }
         // Current first, then alphabetical (trait contract). At most one
         // branch is ever current, so a total-order sort is sufficient.
@@ -97,12 +94,7 @@ impl GitProvider for Git2Provider {
     }
 
     fn status(&self) -> Result<GitStatus, GitError> {
-        let repo = self.repo()?;
-        let entries = collect_status_entries(&repo)?;
-        Ok(GitStatus {
-            is_clean: entries.is_empty(),
-            entries,
-        })
+        self.status_with(&StatusOptions::default())
     }
 
     fn commit_log(&self, max: usize) -> Result<Vec<CommitInfo>, GitError> {
@@ -188,11 +180,7 @@ impl GitProvider for Git2Provider {
         // Dirty-tree guard: only *tracked* changes (staged or unstaged) block
         // a checkout. Untracked files are not at risk of being clobbered by
         // a safe checkout, so they must not refuse the switch.
-        let entries = collect_status_entries(&repo)?;
-        let tracked_changes = entries
-            .iter()
-            .filter(|e| e.kind != StatusKind::Untracked)
-            .count();
+        let tracked_changes = write::tracked_change_count(&repo)?;
         if tracked_changes > 0 {
             return Err(GitError::DirtyWorkingTree(tracked_changes));
         }
@@ -209,106 +197,102 @@ impl GitProvider for Git2Provider {
         repo.set_head(&refname).map_err(map_git2_error)?;
         Ok(())
     }
+
+    fn status_with(&self, opts: &StatusOptions) -> Result<GitStatus, GitError> {
+        let repo = self.repo()?;
+        status::full_status(&repo, opts)
+    }
+
+    fn stage_paths(&mut self, paths: &[String]) -> Result<(), GitError> {
+        write::stage_paths(&*self.repo()?, paths)
+    }
+
+    fn stage_all(&mut self) -> Result<(), GitError> {
+        write::stage_all(&*self.repo()?)
+    }
+
+    fn unstage_paths(&mut self, paths: &[String]) -> Result<(), GitError> {
+        write::unstage_paths(&*self.repo()?, paths)
+    }
+
+    fn unstage_all(&mut self) -> Result<(), GitError> {
+        write::unstage_all(&*self.repo()?)
+    }
+
+    fn discard_paths(&mut self, paths: &[String]) -> Result<(), GitError> {
+        write::discard_paths(&*self.repo()?, paths)
+    }
+
+    fn remove_untracked(&mut self, paths: &[String]) -> Result<(), GitError> {
+        write::remove_untracked(&*self.repo()?, paths)
+    }
+
+    fn diff(&self, target: &DiffTarget, limits: &DiffLimits) -> Result<Diff, GitError> {
+        diff::diff(&*self.repo()?, target, limits)
+    }
+
+    fn commit(&mut self, message: &str, amend: bool) -> Result<CommitInfo, GitError> {
+        write::commit(&*self.repo()?, message, amend)
+    }
+
+    fn stash_list(&self) -> Result<Vec<StashEntry>, GitError> {
+        write::stash_list(&mut *self.repo()?)
+    }
+
+    fn stash_push(
+        &mut self,
+        message: Option<&str>,
+        include_untracked: bool,
+    ) -> Result<StashEntry, GitError> {
+        write::stash_push(&mut *self.repo()?, message, include_untracked)
+    }
+
+    fn stash_apply(&mut self, index: usize) -> Result<(), GitError> {
+        write::stash_apply(&mut *self.repo()?, index)
+    }
+
+    fn stash_pop(&mut self, index: usize) -> Result<(), GitError> {
+        write::stash_pop(&mut *self.repo()?, index)
+    }
+
+    fn stash_drop(&mut self, index: usize) -> Result<(), GitError> {
+        write::stash_drop(&mut *self.repo()?, index)
+    }
+
+    fn create_branch(&mut self, name: &str, from: Option<&str>) -> Result<Branch, GitError> {
+        write::create_branch(&*self.repo()?, name, from)
+    }
+
+    fn delete_branch(&mut self, name: &str, force: bool) -> Result<(), GitError> {
+        write::delete_branch(&*self.repo()?, name, force)
+    }
+
+    fn rename_branch(&mut self, old: &str, new: &str) -> Result<(), GitError> {
+        write::rename_branch(&*self.repo()?, old, new)
+    }
+
+    fn remotes(&self) -> Result<Vec<String>, GitError> {
+        remote::remotes(&*self.repo()?)
+    }
+
+    fn fetch(&self, remote_name: &str) -> Result<FetchReport, GitError> {
+        // Lock only for validation; the network work must not block other calls.
+        let gitdir = remote::precheck(&*self.repo()?, remote_name)?;
+        remote::fetch(gitdir, remote_name, remote::FETCH_TIMEOUT)
+    }
+
+    fn worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
+        history::worktrees(&*self.repo()?)
+    }
+
+    fn log_page(&self, query: &LogQuery) -> Result<LogPage, GitError> {
+        history::log_page(&*self.repo()?, query)
+    }
 }
 
 // ─── Private helpers ────────────────────────────────────────────────────────
 
-/// Collect every status entry (staged, unstaged/untracked, conflicted).
-///
-/// A single path can produce two entries (one staged, one unstaged) when it
-/// has changes in both the index and the working tree — that mirrors `git
-/// status`'s two-column porcelain output and is what lets callers count
-/// "staged" and "unstaged" independently.
-fn collect_status_entries(repo: &git2::Repository) -> Result<Vec<StatusEntry>, GitError> {
-    let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repo.statuses(Some(&mut opts)).map_err(map_git2_error)?;
-
-    let mut entries = Vec::new();
-    for entry in statuses.iter() {
-        let s = entry.status();
-        let in_index = s.is_index_new()
-            || s.is_index_modified()
-            || s.is_index_deleted()
-            || s.is_index_renamed()
-            || s.is_index_typechange();
-        let in_wt = s.is_wt_new()
-            || s.is_wt_modified()
-            || s.is_wt_deleted()
-            || s.is_wt_renamed()
-            || s.is_wt_typechange();
-
-        if in_index {
-            if let Some(delta) = entry.head_to_index() {
-                let old_path = s.is_index_renamed().then(|| delta_path(&delta.old_file()));
-                entries.push(StatusEntry {
-                    path: delta_path(&delta.new_file()),
-                    kind: status_kind_index(s),
-                    staged: true,
-                    old_path,
-                });
-            }
-        }
-        if in_wt {
-            if let Some(delta) = entry.index_to_workdir() {
-                let old_path = s.is_wt_renamed().then(|| delta_path(&delta.old_file()));
-                entries.push(StatusEntry {
-                    path: delta_path(&delta.new_file()),
-                    kind: status_kind_wt(s),
-                    staged: false,
-                    old_path,
-                });
-            }
-        }
-        if s.is_conflicted() {
-            entries.push(StatusEntry {
-                path: entry.path().unwrap_or("").to_string(),
-                kind: StatusKind::Conflicted,
-                staged: false,
-                old_path: None,
-            });
-        }
-    }
-    Ok(entries)
-}
-
-/// A `DiffFile`'s path, falling back to the other side (deletions carry no
-/// "new" path; the fallback keeps the entry non-empty rather than dropping
-/// it).
-fn delta_path(f: &git2::DiffFile<'_>) -> String {
-    f.path()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-fn status_kind_index(s: git2::Status) -> StatusKind {
-    if s.is_index_new() {
-        StatusKind::Added
-    } else if s.is_index_deleted() {
-        StatusKind::Deleted
-    } else if s.is_index_renamed() {
-        StatusKind::Renamed
-    } else {
-        StatusKind::Modified
-    }
-}
-
-fn status_kind_wt(s: git2::Status) -> StatusKind {
-    if s.is_wt_new() {
-        StatusKind::Untracked
-    } else if s.is_wt_deleted() {
-        StatusKind::Deleted
-    } else if s.is_wt_renamed() {
-        StatusKind::Renamed
-    } else {
-        StatusKind::Modified
-    }
-}
-
-fn commit_info(c: &git2::Commit<'_>) -> CommitInfo {
+pub(crate) fn commit_info(c: &git2::Commit<'_>) -> CommitInfo {
     CommitInfo {
         oid: c.id().to_string(),
         summary: c.summary().unwrap_or("").to_string(),
@@ -320,7 +304,7 @@ fn commit_info(c: &git2::Commit<'_>) -> CommitInfo {
 
 /// Ahead/behind counts for `branch_name` against its upstream. `(None, None)`
 /// whenever there is no upstream configured — that is not an error case.
-fn ahead_behind(
+pub(crate) fn ahead_behind(
     repo: &git2::Repository,
     branch_name: &str,
 ) -> Result<(Option<usize>, Option<usize>), GitError> {
@@ -348,7 +332,7 @@ fn short_oid(oid: git2::Oid) -> String {
     full[..7.min(full.len())].to_string()
 }
 
-fn is_unborn(e: &git2::Error) -> bool {
+pub(crate) fn is_unborn(e: &git2::Error) -> bool {
     matches!(
         e.code(),
         git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
@@ -362,6 +346,28 @@ fn map_open_error(e: git2::Error, path: &Path) -> GitError {
     }
 }
 
-fn map_git2_error(e: git2::Error) -> GitError {
+pub(crate) fn map_git2_error(e: git2::Error) -> GitError {
     GitError::Other(e.message().to_string())
+}
+
+pub(crate) fn branch_info(b: &git2::Branch<'_>) -> Branch {
+    Branch {
+        name: b.name().ok().flatten().unwrap_or("").to_string(),
+        head_oid: b.get().target().map(|o| o.to_string()).unwrap_or_default(),
+        upstream: b
+            .upstream()
+            .ok()
+            .and_then(|u| u.name().ok().flatten().map(String::from)),
+        is_current: b.is_head(),
+    }
+}
+
+/// Resolve any rev to its tree (for ref-to-ref diffs).
+pub(crate) fn resolve_tree<'r>(
+    repo: &'r git2::Repository,
+    rev: &str,
+) -> Result<git2::Tree<'r>, GitError> {
+    repo.revparse_single(rev)
+        .and_then(|o| o.peel_to_tree())
+        .map_err(|_| GitError::InvalidRef(rev.to_string()))
 }
