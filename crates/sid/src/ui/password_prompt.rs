@@ -100,7 +100,7 @@ impl Focusable for PasswordPromptModal {
 
 impl Render for PasswordPromptModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title: SharedString = format!("password for {}", self.label).into();
+        let title: SharedString = format!("Password for {}", self.label).into();
 
         // The key context, the focus handle and the two actions stay on a wrapper around
         // the panel: `Modal` is a plain element with no lifecycle, and Escape/Enter are
@@ -125,8 +125,8 @@ impl Render for PasswordPromptModal {
                     // Why the prompt exists at all, stated before the field rather than
                     // as a caption under it: what the user types here does not persist.
                     .child(Toast::info(
-                        "no OS keyring — this password is used once and held only \
-                         for this session",
+                        "There's no system keyring, so sid will keep this password \
+                         for this session only.",
                     ))
                     .child(TextInput::new(&self.password))
                     .when_some(self.error.clone(), |modal, err| {
