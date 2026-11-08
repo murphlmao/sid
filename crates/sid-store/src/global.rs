@@ -18,7 +18,7 @@ use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, HistoryEntry, Host, HostHistory, HostV1, HostV2,
     Identity, KeyBinding, PinnedFile, QuickAction, SecretBinding, Settings, SettingsV1, SettingsV2,
-    SettingsV3, SettingsV4, SettingsV5, SettingsV6,
+    SettingsV3, SettingsV4, SettingsV5, SettingsV6, SettingsV7,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::{Scope, WorkspaceMeta};
@@ -73,7 +73,7 @@ pub(crate) const CONNECTION_VERSION: u8 = 3;
 /// added, to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added, to 4 when
 /// `theme` was, to 5 when `ui_scale_percent` was and to 6 when `reduce_motion`/`desktop_notifications`/`last_tab` were; reads branch on the leading version
 /// byte and migrate older values forward (see [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 7;
+pub(crate) const SETTINGS_VERSION: u8 = 8;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -530,7 +530,8 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
-    let from_v4 = |v: SettingsV4| Settings::from(SettingsV6::from(SettingsV5::from(v)));
+    let from_v6 = |v: SettingsV6| Settings::from(SettingsV7::from(v));
+    let from_v4 = |v: SettingsV4| from_v6(SettingsV6::from(SettingsV5::from(v)));
     match version {
         1 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
             SettingsV2::from(decode_versioned::<SettingsV1>(bytes)?.1),
@@ -542,10 +543,11 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
             decode_versioned::<SettingsV3>(bytes)?.1,
         ))),
         4 => Ok(from_v4(decode_versioned::<SettingsV4>(bytes)?.1)),
-        5 => Ok(Settings::from(SettingsV6::from(
+        5 => Ok(from_v6(SettingsV6::from(
             decode_versioned::<SettingsV5>(bytes)?.1,
         ))),
-        6 => Ok(decode_versioned::<SettingsV6>(bytes)?.1.into()),
+        6 => Ok(from_v6(decode_versioned::<SettingsV6>(bytes)?.1)),
+        7 => Ok(decode_versioned::<SettingsV7>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -998,6 +1000,57 @@ mod tests {
         assert!(!s.desktop_notifications);
         assert_eq!(s.last_tab, "network");
         assert!(!s.secret_keyring_enabled);
+    }
+
+    /// A v7 payload migrates with everything carried and refresh defaulted to Off.
+    #[test]
+    fn settings_v7_payload_migrates_to_background_refresh_off() {
+        use crate::entities::{DefaultScope, TextRendering};
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let v7 = SettingsV7 {
+            default_scope: DefaultScope::Workspace,
+            file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: true,
+            secret_file_enabled: true,
+            theme: "void".into(),
+            ui_scale_percent: 110,
+            reduce_motion: false,
+            desktop_notifications: true,
+            last_tab: "ssh".into(),
+            text_rendering: TextRendering::Subpixel,
+            palette_recents: vec!["x".into()],
+            import_banner_dismissed: true,
+        };
+        let bytes = encode_versioned(7, &v7).unwrap();
+        store
+            .with_write("seed v7", |txn| {
+                let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                tbl.insert(SETTINGS_KEY, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.background_refresh_secs, 0);
+        assert_eq!(s.theme, "void");
+        assert_eq!(s.text_rendering, TextRendering::Subpixel);
+        assert_eq!(s.palette_recents, vec!["x".to_string()]);
+        assert!(s.import_banner_dismissed);
+    }
+
+    /// `background_refresh_secs` survives a write/read round-trip.
+    #[test]
+    fn background_refresh_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        store
+            .set_settings(&Settings {
+                background_refresh_secs: 30,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(store.get_settings().unwrap().background_refresh_secs, 30);
     }
 
     /// The v7 fields survive a write/read round-trip.

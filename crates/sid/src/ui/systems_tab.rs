@@ -208,6 +208,11 @@ pub struct SystemsTabState {
 }
 
 impl SystemsTabState {
+    /// Seed the hidden-refresh policy at startup, before any loop exists.
+    pub(crate) fn seed_background(&mut self, policy: BackgroundRefresh) {
+        self.background = policy;
+    }
+
     /// Sub-view names in segmented-control order, for the command palette.
     pub(crate) fn view_labels() -> [&'static str; 2] {
         SystemSubView::ALL.map(SystemSubView::label)
@@ -999,8 +1004,7 @@ impl AppState {
     }
 
     /// Set how introspection behaves while System is hidden or sid is unfocused. Default
-    /// [`BackgroundRefresh::Off`]; the persisted Settings control will call this.
-    #[allow(dead_code)]
+    /// [`BackgroundRefresh::Off`]; the Settings -> Behaviour control calls this.
     pub(crate) fn set_background_refresh(
         &mut self,
         policy: BackgroundRefresh,
@@ -1632,9 +1636,18 @@ pub(crate) enum BackgroundRefresh {
     /// No timers, no probes, no repaints (the default).
     #[default]
     Off,
-    /// Probe at this interval (constructed by the Settings control once it lands).
-    #[allow(dead_code)]
+    /// Probe at this interval (the Settings -> Behaviour control).
     Every(Duration),
+}
+
+impl BackgroundRefresh {
+    /// The persisted form (`Settings::background_refresh_secs`): `0` = Off.
+    pub(crate) fn from_secs(secs: u32) -> Self {
+        match secs {
+            0 => Self::Off,
+            n => Self::Every(Duration::from_secs(u64::from(n))),
+        }
+    }
 }
 
 /// The pure scheduling decision: how long until the next probe, or `None` to idle.
@@ -1884,6 +1897,20 @@ mod tests {
             parent: None,
             user: user.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn background_refresh_maps_from_persisted_secs() {
+        use BackgroundRefresh::*;
+        assert_eq!(BackgroundRefresh::from_secs(0), Off);
+        assert_eq!(
+            BackgroundRefresh::from_secs(2),
+            Every(Duration::from_secs(2))
+        );
+        assert_eq!(
+            BackgroundRefresh::from_secs(300),
+            Every(Duration::from_secs(300))
+        );
     }
 
     #[test]

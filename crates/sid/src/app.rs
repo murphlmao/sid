@@ -34,7 +34,7 @@ use crate::ui::network_tab::NetworkTabState;
 use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
 use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
-use crate::ui::systems_tab::SystemsTabState;
+use crate::ui::systems_tab::{BackgroundRefresh, SystemsTabState};
 use crate::ui::workspaces_tab::WorkspacesTabState;
 use crate::ui::{SessionStatus, SshSession, SshSessionEvent};
 use sid_ui::{
@@ -572,6 +572,9 @@ impl AppState {
             import_banner_dismissed: prefs.import_banner_dismissed,
             root_focus: cx.focus_handle(),
         };
+        state
+            .systems
+            .seed_background(BackgroundRefresh::from_secs(prefs.background_refresh_secs));
         state.apply_seed_lists(seed_lists);
         state
     }

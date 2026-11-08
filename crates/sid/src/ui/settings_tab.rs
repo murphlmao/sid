@@ -31,6 +31,7 @@
 //! helper into `main.rs`'s startup path), and refreshes every window so the
 //! switch is visible immediately, per round-E §C.1.
 
+use crate::ui::systems_tab::BackgroundRefresh;
 use std::rc::Rc;
 
 use gpui::{
@@ -399,6 +400,13 @@ fn persist_reduce_motion(store: &Store, on: bool) -> sid_store::Result<()> {
     store.set_settings(&settings)
 }
 
+/// Read-modify-write `Settings::background_refresh_secs`.
+fn persist_background_refresh(store: &Store, secs: u32) -> sid_store::Result<()> {
+    let mut settings = store.settings()?;
+    settings.background_refresh_secs = secs;
+    store.set_settings(&settings)
+}
+
 /// Read-modify-write `Settings::desktop_notifications`.
 fn persist_desktop_notifications(store: &Store, on: bool) -> sid_store::Result<()> {
     let mut settings = store.settings()?;
@@ -533,12 +541,12 @@ fn row_button(
 /// per control so the labels and the values cannot drift: the segmented control
 /// reports an index back into the same array it was built from.
 const SCOPES: [(DefaultScope, &str); 3] = [
-    (DefaultScope::Global, "global"),
-    (DefaultScope::Workspace, "workspace"),
-    (DefaultScope::Ask, "ask"),
+    (DefaultScope::Global, "Global"),
+    (DefaultScope::Workspace, "Workspace"),
+    (DefaultScope::Ask, "Ask"),
 ];
-const SIDES: [(PanelSide, &str); 2] = [(PanelSide::Left, "left"), (PanelSide::Right, "right")];
-const KEYRING: [(bool, &str); 2] = [(true, "enabled"), (false, "disabled")];
+const SIDES: [(PanelSide, &str); 2] = [(PanelSide::Left, "Left"), (PanelSide::Right, "Right")];
+const KEYRING: [(bool, &str); 2] = [(true, "Enabled"), (false, "Disabled")];
 
 /// Where `current` sits in an option table. Falls back to the first option rather
 /// than to "nothing selected", which would read as the app having forgotten the
@@ -588,6 +596,26 @@ fn secret_keyring_selector(enabled: bool, cx: &mut Context<AppState>) -> Segment
         .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
             if let Some(&(value, _)) = KEYRING.get(ev.index) {
                 this.set_secret_keyring_enabled(value, cx);
+            }
+        }))
+}
+
+/// Hidden-refresh choices as `(persisted seconds, label)`; `0` = Off (the default).
+const BACKGROUND_REFRESH: [(u32, &str); 5] = [
+    (0, "Off"),
+    (2, "2 s"),
+    (30, "30 s"),
+    (60, "60 s"),
+    (300, "5 min"),
+];
+
+fn background_refresh_selector(secs: u32, cx: &mut Context<AppState>) -> SegmentedControl {
+    SegmentedControl::new("settings-background-refresh")
+        .segments(BACKGROUND_REFRESH.map(|(_, label)| label))
+        .selected(selected_index(&BACKGROUND_REFRESH, &secs))
+        .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
+            if let Some(&(secs, _)) = BACKGROUND_REFRESH.get(ev.index) {
+                this.set_background_refresh_pref(secs, cx);
             }
         }))
 }
@@ -670,12 +698,22 @@ fn split_status_detail(message: &str) -> (&str, Option<&str>) {
     (message, None)
 }
 
+/// A row of cards that fill the width and wrap on a narrow window — the Appearance
+/// layout (`flex_1` + a minimum width per card), shared by Behaviour and Storage.
+fn card_row(cards: impl IntoIterator<Item = Card>) -> gpui::Div {
+    let mut row = div().flex().flex_row().flex_wrap().gap_3().items_start();
+    for card in cards {
+        row = row.child(div().flex_1().min_w(scaled(360.)).child(card));
+    }
+    row
+}
+
 /// The Storage section: the global data dir + the two files that live under it,
 /// plus a note that the encrypted-file secret vault (round-D §A) is dormant.
 /// Paths are recomputed here rather than exposed from `app.rs` — `data_dir()` is
 /// already `pub`, and `store.redb`/`demo.db` are the exact literal filenames
 /// `app::open_store`/`app::seed_if_empty` join onto it.
-fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
+fn storage_section(chrome: &theme::Theme) -> impl IntoElement + use<> {
     let data_dir = crate::app::data_dir();
     let store_path = data_dir.join("store.redb");
     let demo_db_path = data_dir.join("demo.db");
@@ -692,13 +730,18 @@ fn storage_section(chrome: &theme::Theme) -> impl IntoElement {
         )
     };
 
-    Card::new()
-        .child(path_row("Data directory", data_dir))
-        .child(path_row("Store file", store_path))
-        .child(path_row("Demo database", demo_db_path))
-        .child(caveat_line(
-            "Secrets are kept in your OS keyring, or in memory if no keyring is available.",
-        ))
+    card_row([
+        Card::new()
+            .child(div().text_heading(chrome).child("Locations"))
+            .child(path_row("Data directory", data_dir))
+            .child(path_row("Store file", store_path))
+            .child(path_row("Demo database", demo_db_path)),
+        Card::new()
+            .child(div().text_heading(chrome).child("Secrets"))
+            .child(caveat_line(
+                "Secrets are kept in your OS keyring, or in memory if no keyring is available.",
+            )),
+    ])
 }
 
 impl AppState {
@@ -1024,7 +1067,8 @@ impl AppState {
             None => backend,
         };
 
-        Card::new()
+        let general = Card::new()
+            .child(div().text_heading(chrome).child("General"))
             .child(
                 Switch::new(
                     "settings-desktop-notifications",
@@ -1044,17 +1088,38 @@ impl AppState {
             ))
             .child(labeled_row(
                 chrome,
-                "default scope for new items",
+                "Refresh System while hidden",
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.))
+                    .gap_1p5()
+                    .child(background_refresh_selector(
+                        settings.background_refresh_secs,
+                        cx,
+                    ))
+                    .child(div().text_meta(chrome).child(
+                        "Off keeps sid idle when you're not looking at those tabs. \
+                         Live connections (SSH, queries) always keep running.",
+                    )),
+            ));
+        let defaults = Card::new()
+            .child(div().text_heading(chrome).child("Defaults"))
+            .child(labeled_row(
+                chrome,
+                "Default scope for new items",
                 default_scope_selector(settings.default_scope, cx),
             ))
             .child(labeled_row(
                 chrome,
-                "file browser side",
+                "File browser side",
                 file_browser_side_selector(settings.file_browser_side, cx),
-            ))
+            ));
+        let secrets = Card::new()
+            .child(div().text_heading(chrome).child("Secrets"))
             .child(labeled_row(
                 chrome,
-                "secret keyring",
+                "Secret keyring",
                 div()
                     .flex()
                     .flex_col()
@@ -1062,18 +1127,15 @@ impl AppState {
                     .gap_1p5()
                     .child(secret_keyring_selector(settings.secret_keyring_enabled, cx))
                     // The restart caveat belongs to THIS control and to nothing else on
-                    // the screen: a theme switch is live, a scope default applies to the
-                    // next item, and the dock side fans out to every open session at
-                    // once. Only the secret backend is chosen once, at startup. It used
-                    // to sit at the bottom of the section, where it read as a warning
-                    // about all three.
+                    // the screen: only the secret backend is chosen once, at startup.
                     .child(
                         div()
                             .text_meta(chrome)
-                            .child("changes take effect on restart"),
+                            .child("Changes take effect on restart"),
                     )
                     .child(backend),
-            ))
+            ));
+        card_row([general, defaults, secrets])
     }
 
     pub(crate) fn set_default_scope(&mut self, scope: DefaultScope, cx: &mut Context<Self>) {
@@ -1117,6 +1179,19 @@ impl AppState {
                 self.settings.error = None;
             }
             Err(e) => self.settings.error = Some(format!("Couldn't save reduce motion: {e}")),
+        }
+        cx.notify();
+    }
+
+    /// Persist the hidden-refresh cadence and apply it to the live System tab.
+    pub(crate) fn set_background_refresh_pref(&mut self, secs: u32, cx: &mut Context<Self>) {
+        match persist_background_refresh(&self.store, secs) {
+            Ok(()) => {
+                self.settings.cached.background_refresh_secs = secs;
+                self.settings.error = None;
+                self.set_background_refresh(BackgroundRefresh::from_secs(secs), cx);
+            }
+            Err(e) => self.settings.error = Some(format!("Couldn't save refresh setting: {e}")),
         }
         cx.notify();
     }
