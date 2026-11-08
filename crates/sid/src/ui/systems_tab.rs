@@ -923,7 +923,7 @@ impl AppState {
                     // number; the first tick after focus returns refreshes at once.
                     if cx.active_window().is_none() {
                         unfocused_ticks += 1;
-                        if unfocused_ticks % UNFOCUSED_TICK_DIVISOR != 0 {
+                        if !unfocused_ticks.is_multiple_of(UNFOCUSED_TICK_DIVISOR) {
                             return true;
                         }
                     } else {
