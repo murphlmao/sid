@@ -162,7 +162,7 @@ impl DbClient for SqliteClient {
                 let mut stmt = guard.prepare(&wrapped).map_err(|e| {
                     map_wrapped_rusqlite_error(e, SQLITE_WRAP_PREFIX.len(), user_len)
                 })?;
-                let columns: Vec<Column> = stmt
+                let mut columns: Vec<Column> = stmt
                     .columns()
                     .map(|c| Column {
                         name: c.name().to_string(),
@@ -172,6 +172,17 @@ impl DbClient for SqliteClient {
                         ),
                     })
                     .collect();
+                // SQLite renames duplicate names inside a subquery (`id`, `id:1`). Ask
+                // the user's own statement for the names it really has, so the UI can
+                // disambiguate them itself (`id`, `id (2)`).
+                if let Ok(orig) = guard.prepare(stripped) {
+                    let names: Vec<String> = orig.column_names().map(str::to_string).collect();
+                    if names.len() == columns.len() {
+                        for (c, n) in columns.iter_mut().zip(names) {
+                            c.name = n;
+                        }
+                    }
+                }
                 let col_count = columns.len();
                 let mut rows_out: Vec<Row> = Vec::with_capacity(page_size as usize);
                 let mut rs = stmt.query([]).map_err(map_rusqlite_error)?;
@@ -551,6 +562,27 @@ fn render_sqlite_value(v: rusqlite::types::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn duplicate_result_columns_keep_their_real_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.sqlite");
+        let client = SqliteClient::factory()
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: path.to_string_lossy().into_owned(),
+                password: None,
+                sqlite_mode: Some(SqliteMode::CreateNew),
+            })
+            .await
+            .unwrap();
+        let page = client
+            .query_paged("select 1 as id, 2 as id", None, 10)
+            .await
+            .unwrap();
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "id"]);
+    }
 
     #[tokio::test]
     async fn open_existing_fails_when_file_is_missing() {
