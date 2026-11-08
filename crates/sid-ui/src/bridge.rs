@@ -281,25 +281,29 @@ fn hex_alpha(color: u32) -> Option<SharedString> {
 
 /// The `gpui-component` theme configuration for a sid palette. Pure — no globals, no
 /// window — so the mapping is unit-testable on its own.
+///
+/// `ThemeConfig` is `#[non_exhaustive]` since gpui-component 0.9, so it is built by
+/// assignment onto `default()` rather than as a struct literal; every field is still
+/// named here so a reader sees the whole decision.
 pub fn theme_config(t: &Theme) -> ThemeConfig {
-    ThemeConfig {
-        is_default: false,
-        name: format!("sid-{}", t.name).into(),
-        mode: theme::component_mode(t),
-        // Fonts: library defaults already match sid (see module docs).
-        font_size: None,
-        font_family: None,
-        mono_font_family: None,
-        mono_font_size: None,
-        // `rounded_md` — the corner spec every sid row/chip/card already uses.
-        radius: Some(6),
-        radius_lg: Some(8),
-        // Design law: depth is borders + surface shifts. No shadows, anywhere.
-        shadow: Some(false),
-        colors: config_colors(t),
-        // Left at the library's per-mode default — see module docs.
-        highlight: None,
-    }
+    let mut config = ThemeConfig::default();
+    config.is_default = false;
+    config.name = format!("sid-{}", t.name).into();
+    config.mode = theme::component_mode(t);
+    // Fonts: library defaults already match sid (see module docs).
+    config.font_size = None;
+    config.font_family = None;
+    config.mono_font_family = None;
+    config.mono_font_size = None;
+    // `rounded_md` — the corner spec every sid row/chip/card already uses.
+    config.radius = Some(6);
+    config.radius_lg = Some(8);
+    // Design law: depth is borders + surface shifts. No shadows, anywhere.
+    config.shadow = Some(false);
+    config.colors = config_colors(t);
+    // Left at the library's per-mode default — see module docs.
+    config.highlight = None;
+    config
 }
 
 /// The colour block of [`theme_config`].
@@ -337,7 +341,7 @@ fn map_colors(colors: &mut ThemeConfigColors, t: &Theme) {
     // The theme-agnostic scrim behind dialogs/sheets.
     colors.overlay = hex_alpha(SCRIM);
     colors.window_border = hex(t.border);
-    colors.tiles = hex(t.bg);
+    // (`tiles` was dropped upstream in gpui-component 0.9 with the Tiles widget.)
 
     // -- primary = sid's "engage" accent ---------------------------------
     colors.primary = hex(t.accent);

@@ -17,7 +17,8 @@
 //! dropping a binding the parser did not know.
 
 use gpui::{
-    App, IntoElement, Keystroke, ParentElement, RenderOnce, SharedString, Styled, Window, div, rgb,
+    App, IntoElement, Keystroke, OperatingSystem, ParentElement, RenderOnce, SharedString, Styled,
+    Window, div, rgb,
 };
 use gpui_component::kbd::Kbd as ComponentKbd;
 
@@ -65,11 +66,21 @@ fn normalize(stroke: &str) -> String {
 /// Split a spec into chips: whitespace separates the strokes of a chord sequence
 /// (`ctrl-k ctrl-s` is two chips), and each stroke is parsed independently.
 pub fn chips(spec: &str) -> Vec<Chip> {
+    // gpui-pre 0.3.11 narrowed `Keystroke::parse` to `&'static str`; runtime specs go
+    // through `parse_with_os`, whose OS only decides what `secondary-` means. The
+    // compile-time OS keeps the old `parse` rule: cmd on macOS, ctrl everywhere else.
+    let os = if cfg!(target_os = "macos") {
+        OperatingSystem::Mac
+    } else {
+        OperatingSystem::Linux
+    };
     spec.split_whitespace()
-        .map(|stroke| match Keystroke::parse(&normalize(stroke)) {
-            Ok(parsed) => Chip::Stroke(parsed),
-            Err(_) => Chip::Literal(stroke.to_string().into()),
-        })
+        .map(
+            |stroke| match Keystroke::parse_with_os(&normalize(stroke), os) {
+                Ok(parsed) => Chip::Stroke(parsed),
+                Err(_) => Chip::Literal(stroke.to_string().into()),
+            },
+        )
         .collect()
 }
 
