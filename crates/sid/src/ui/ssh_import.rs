@@ -406,7 +406,11 @@ impl Render for SshImportModal {
 
         let body = match &self.phase {
             Phase::Loading => div()
-                .child(EmptyState::new("Reading SSH config").icon(Icon::File).compact())
+                .child(
+                    EmptyState::new("Reading SSH config")
+                        .icon(Icon::File)
+                        .compact(),
+                )
                 .into_any_element(),
             Phase::Unreadable(msg) => div()
                 .child(

@@ -347,10 +347,7 @@ mod tests {
         assert_eq!(arm.press(7, early), Confirm::Armed);
         assert!(arm.is_armed(7, early), "still armed, not disarmed");
         // The clock was not restarted by the ignored press.
-        assert_eq!(
-            arm.press(7, start + MIN_CONFIRM_DELAY),
-            Confirm::Fire
-        );
+        assert_eq!(arm.press(7, start + MIN_CONFIRM_DELAY), Confirm::Fire);
     }
 
     #[test]

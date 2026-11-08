@@ -24,8 +24,7 @@ fn clean(s: &str, max: usize, keep_newlines: bool) -> String {
     let mut out: String = s
         .chars()
         .filter(|c| {
-            (!c.is_control() || (keep_newlines && *c == '\n'))
-                && !sid_core::text::is_deceptive(*c)
+            (!c.is_control() || (keep_newlines && *c == '\n')) && !sid_core::text::is_deceptive(*c)
         })
         .take(max + 1)
         .collect();

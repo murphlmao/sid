@@ -1508,7 +1508,12 @@ mod tests {
 
         save_preserving_permissions(&link, "b\n").unwrap();
 
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read_to_string(&target).unwrap(), "b\n");
     }
 
