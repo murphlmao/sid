@@ -23,8 +23,8 @@ pub mod workspace;
 
 pub use composer::{ViewFilters, compose};
 pub use entities::{
-    AuthMethod, DbConnection, DefaultScope, Host, Identity, KeyBinding, PanelSide, PinnedFile,
-    QuickAction, Settings,
+    AuthMethod, DbConnection, DefaultScope, HOST_HISTORY_CAP, HistoryEntry, Host, HostHistory,
+    Identity, KeyBinding, PanelSide, PinnedFile, QuickAction, Settings,
 };
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;
