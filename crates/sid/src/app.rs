@@ -727,14 +727,6 @@ impl AppState {
         });
     }
 
-    /// Open the "Import from ~/.ssh/config" dialog. The dialog itself lives in
-    /// `ui/ssh_import.rs` (built by the SSH-home work); until that module is on this
-    /// branch this is the single connection point and opens nothing. Wiring it is one
-    /// call in this method.
-    pub(crate) fn open_ssh_import(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.notify();
-    }
-
     /// Which primary tab is active. `pub(crate)` (rather than exposing `active_tab`
     /// itself) so `ui::systems_tab`'s periodic refresh loop can check "is the Systems
     /// tab still the one on screen" without the field itself needing wider visibility.
