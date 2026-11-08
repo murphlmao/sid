@@ -84,6 +84,7 @@ use gpui::{
 };
 use gpui_component::FocusTrapElement as _;
 
+use crate::TestSupportExt as _;
 use crate::button::{ButtonSize, IconButton};
 use crate::copy::sentence_case;
 use crate::elevation::Elevation;
@@ -379,6 +380,8 @@ impl RenderOnce for Modal {
             .children(self.children);
 
         let mut panel = v_flex()
+            .id(self.id.clone())
+            .test_support()
             .w(geometry.width)
             .max_h(geometry.max_height)
             .elevation(Elevation::Overlay, &theme)

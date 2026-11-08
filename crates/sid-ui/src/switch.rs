@@ -10,6 +10,8 @@
 
 use std::rc::Rc;
 
+use crate::TestSupportExt as _;
+
 use gpui::{
     Animation, AnimationExt as _, App, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -183,6 +185,7 @@ impl RenderOnce for Switch {
 
         h_flex()
             .id(self.id)
+            .test_support()
             .flex_none()
             .gap_2()
             .min_h(scaled(f32::from(MIN_HIT)))

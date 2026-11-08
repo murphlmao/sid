@@ -38,6 +38,7 @@ use gpui::{
     prelude::FluentBuilder as _, px, rgb, uniform_list,
 };
 
+use crate::TestSupportExt as _;
 use crate::bridge::hover_of;
 use crate::icon::Icon;
 use crate::metrics::{Density, Radius, Rounded as _};
@@ -602,6 +603,7 @@ impl TreeState {
         let key = row.key.clone();
         let base = h_flex()
             .id((self.id.clone(), ix))
+            .test_support()
             .relative()
             .w_full()
             .h(Density::Dense.row_len())
@@ -741,6 +743,7 @@ impl Render for TreeState {
         let count = self.visible.len();
         div()
             .id(self.id.clone())
+            .test_support()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .size_full()

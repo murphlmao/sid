@@ -76,6 +76,9 @@ pub mod tooltip;
 pub mod tree;
 pub mod typography;
 
+/// Identity registration for the headless UI test harness (`.test_support()`); a no-op in
+/// shipping builds. Re-exported so call sites name `sid_ui`, not `gpui_base` (rule 1).
+pub use gpui_base::TestSupportExt;
 pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
 pub use badge::{Badge, BadgeFill, BadgeTone};
 pub use button::{ALL_BUTTON_SIZES, Button, ButtonSize, ButtonState, ButtonVariant, IconButton};
