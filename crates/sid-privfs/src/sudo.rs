@@ -348,7 +348,49 @@ async fn read_with(
 /// ownership preserved, no shell involved. See the module doc for the three steps and
 /// what each one buys.
 pub(crate) async fn write(path: &Path, bytes: &[u8], secret: &Passphrase) -> Result<(), PrivError> {
+    check_parent_dir_trusted(path)?;
     write_with(&sudo_program(), path, bytes, secret, ELEVATION_TIMEOUT).await
+}
+
+/// Why an elevated write into a directory with this owner and mode is unsafe, or `None`.
+///
+/// The write is three separate root steps on a sibling path; if another account can
+/// create entries in the directory it can plant a symlink between them (GNU `cp
+/// --attributes-only` follows a symlinked destination). Mirrors `sudoedit`'s refusal:
+/// the directory must be owned by root and not group- or world-writable.
+pub(crate) fn parent_dir_untrusted(uid: u32, mode: u32) -> Option<&'static str> {
+    if uid != 0 {
+        Some("its directory is not owned by root")
+    } else if mode & 0o022 != 0 {
+        Some("its directory is writable by group or others")
+    } else {
+        None
+    }
+}
+
+/// Refuse an elevated write whose parent directory another account could tamper with.
+#[cfg(unix)]
+fn check_parent_dir_trusted(path: &Path) -> Result<(), PrivError> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let meta = std::fs::metadata(parent)
+        .map_err(|e| PrivError::Io(format!("cannot inspect {}: {e}", parent.display())))?;
+    match parent_dir_untrusted(meta.uid(), meta.mode()) {
+        Some(why) => Err(PrivError::UnsafePath(format!(
+            "refusing to write {} as root: {why} ({}), so another account could swap files mid-write",
+            path.display(),
+            parent.display()
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn check_parent_dir_trusted(_path: &Path) -> Result<(), PrivError> {
+    Ok(())
 }
 
 /// [`write`] against a named authenticator — the seam the protocol tests drive with a
@@ -479,6 +521,17 @@ fn stage_content(bytes: &[u8]) -> Result<tempfile::NamedTempFile, PrivError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parent_dir_trust_rules() {
+        use super::parent_dir_untrusted as u;
+        assert!(u(0, 0o755).is_none());
+        assert!(u(0, 0o700).is_none());
+        assert!(u(1000, 0o755).is_some());
+        assert!(u(0, 0o775).is_some());
+        assert!(u(0, 0o757).is_some());
+        assert!(u(0, 0o1777).is_some());
+    }
+
     use super::*;
 
     const SECRET: &str = "hunter2";
