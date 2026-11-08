@@ -14,8 +14,8 @@
 //! separate `Entity`/event-emitter like `HostForm`.
 
 use gpui::{
-    ClickEvent, ClipboardItem, Context, Entity, IntoElement, SharedString, Window, anchored,
-    deferred, div, point, prelude::*, px, rgba,
+    ClickEvent, ClipboardItem, Context, Entity, IntoElement, ScrollHandle, SharedString, Window,
+    anchored, deferred, div, point, prelude::*, px, rgba,
 };
 
 use crate::app::{AppState, Tab};
@@ -30,6 +30,10 @@ const MAX_RESULTS: usize = 30;
 
 /// How many compact rows the palette's list shows before it scrolls.
 const VISIBLE_ROWS: f32 = 9.;
+
+/// The one height every palette row gets, subtitle or not, so the list can scroll by
+/// whole rows (see the snap in `render_palette`) and never clip one mid-way.
+const ROW_H: f32 = 44.;
 
 /// How many recently run entries are remembered (persisted in Settings).
 pub(crate) const MAX_RECENT: usize = sid_store::PALETTE_RECENTS_CAP;
@@ -148,6 +152,10 @@ struct PaletteEntry {
 pub(crate) struct PaletteState {
     query: Entity<InputState>,
     selection: usize,
+    /// Scroll state of the results list; its offset is snapped to whole rows each frame.
+    scroll: ScrollHandle,
+    /// The row currently at the top of the viewport (the snapped scroll position).
+    top_row: std::cell::Cell<usize>,
 }
 
 /// Recents key for a host row: origin + alias, so a workspace host that shares an alias
@@ -210,6 +218,8 @@ impl AppState {
             self.palette = Some(PaletteState {
                 query,
                 selection: 0,
+                scroll: ScrollHandle::new(),
+                top_row: std::cell::Cell::new(0),
             });
             cx.notify();
         }
@@ -509,6 +519,23 @@ impl AppState {
         let viewport = window.viewport_size();
         let no_matches = entries.is_empty();
 
+        // Snap the scroll to whole rows: any wheel movement since last frame moves the
+        // list exactly one row that way (rows are a uniform `ROW_H`), clamped to the end.
+        let row_px = f32::from(scaled(ROW_H).to_pixels(window.rem_size()));
+        let scroll = palette.scroll.clone();
+        let max_top = entries.len().saturating_sub(VISIBLE_ROWS as usize);
+        let last = palette.top_row.get().min(max_top);
+        let wheel = -f32::from(scroll.offset().y);
+        let top = if wheel > last as f32 * row_px + 0.5 {
+            (last + 1).min(max_top)
+        } else if wheel < last as f32 * row_px - 0.5 {
+            last.saturating_sub(1)
+        } else {
+            last
+        };
+        palette.top_row.set(top);
+        scroll.set_offset(point(px(0.), px(-(top as f32 * row_px))));
+
         let rows: Vec<_> = entries
             .iter()
             .enumerate()
@@ -538,10 +565,11 @@ impl AppState {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
+                    .track_scroll(&scroll)
                     .p_1()
-                    // A whole number of 36px compact rows plus the 4px padding either
+                    // A whole number of `ROW_H` rows plus the 4px padding either
                     // side, so the list ends on a row edge instead of mid-row.
-                    .max_h(scaled(VISIBLE_ROWS * 36. + 8.))
+                    .max_h(scaled(VISIBLE_ROWS * ROW_H + 8.))
                     .children(rows)
                     .when(no_matches, |this| {
                         this.child(
@@ -607,6 +635,8 @@ impl AppState {
             );
         let mut row = Row::new(("palette-row", ix))
             .compact()
+            .h(scaled(ROW_H))
+            .flex_none()
             .selected(selected)
             .leading(entry.icon.small())
             .child(text)
