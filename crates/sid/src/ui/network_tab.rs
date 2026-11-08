@@ -736,6 +736,11 @@ impl TableDelegate for PortsDelegate {
 /// owning process with that process's CPU and memory. Read-only, same shape as
 /// [`DockerDelegate`] plus the usage map [`PortsDelegate`] carries.
 struct ConnectionsDelegate {
+    provider: Arc<Mutex<SysinfoProvider>>,
+    /// Two-step kill confirm keyed by the owning pid (never by row), so a re-sort or
+    /// refresh between the two clicks can't redirect it. Same pattern as the Ports table.
+    kill_arm: ConfirmArm<Pid>,
+    kill_error: Option<String>,
     all_connections: Vec<Connection>,
     connections: Vec<Connection>,
     usage: HashMap<Pid, ProcUsage>,
@@ -746,8 +751,11 @@ struct ConnectionsDelegate {
 }
 
 impl ConnectionsDelegate {
-    fn new() -> Self {
+    fn new(provider: Arc<Mutex<SysinfoProvider>>) -> Self {
         Self {
+            provider,
+            kill_arm: ConfirmArm::new(),
+            kill_error: None,
             all_connections: Vec::new(),
             connections: Vec::new(),
             usage: HashMap::new(),
@@ -758,15 +766,15 @@ impl ConnectionsDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("local", "Local").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(160.),
+                    ColumnWidth::grow().weight(1.0).min_width(120.),
                 ),
                 (
                     Column::new("remote", "Remote").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(160.),
+                    ColumnWidth::grow().weight(1.0).min_width(120.),
                 ),
                 (
                     Column::new("state", "State").sortable(),
-                    ColumnWidth::Fixed(130.),
+                    ColumnWidth::Fixed(136.),
                 ),
                 (
                     Column::new("pid", "PID").sortable(),
@@ -774,7 +782,7 @@ impl ConnectionsDelegate {
                 ),
                 (
                     Column::new("process", "Process").sortable(),
-                    ColumnWidth::grow().weight(0.8).min_width(130.),
+                    ColumnWidth::grow().weight(0.8).min_width(110.),
                 ),
                 (
                     Column::new("cpu", "CPU").sortable(),
@@ -784,9 +792,44 @@ impl ConnectionsDelegate {
                     Column::new("mem", "Memory").sortable(),
                     ColumnWidth::Fixed(108.),
                 ),
+                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
             ]),
             active_sort: None,
         }
+    }
+
+    /// Second click on an armed row: SIGTERM the owning process. Drops every connection
+    /// that process owned (they die with it); failures land in `kill_error`.
+    fn kill(&mut self, pid: Pid, cx: &mut Context<TableState<Self>>) {
+        self.kill_arm.disarm();
+        self.kill_error = None;
+        let provider = self.provider.clone();
+        cx.spawn(async move |this, cx| {
+            let handle = ssh_runtime().spawn(async move {
+                provider
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .kill_process(pid, Signal::Term)
+            });
+            let outcome = handle.await;
+            let _ = this.update(cx, |state, cx| {
+                match outcome {
+                    Ok(Ok(())) => {
+                        let d = state.delegate_mut();
+                        d.all_connections.retain(|c| c.pid != Some(pid));
+                        d.connections.retain(|c| c.pid != Some(pid));
+                    }
+                    Ok(Err(e)) => state.delegate_mut().kill_error = Some(e.to_string()),
+                    Err(join_err) => {
+                        state.delegate_mut().kill_error =
+                            Some(format!("kill task panicked: {join_err}"));
+                    }
+                }
+                state.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn set_connections(
@@ -798,6 +841,8 @@ impl ConnectionsDelegate {
         self.all_connections = connections;
         self.usage = usage;
         self.cpu_ready = cpu_ready;
+        let live: HashSet<Pid> = self.all_connections.iter().filter_map(|c| c.pid).collect();
+        self.kill_arm.retain(|pid| live.contains(&pid));
         self.recompute();
     }
 
@@ -902,7 +947,30 @@ impl TableDelegate for ConnectionsDelegate {
                 },
             ),
             5 => data_cell(t, muted, cpu_label(usage, self.cpu_ready)),
-            _ => data_cell(t, muted, mem_label(usage)),
+            6 => data_cell(t, muted, mem_label(usage)),
+            _ => {
+                let Some(PortAction::Kill(pid)) = port_action(c.pid) else {
+                    return div().size_full().child(ActionCell::new());
+                };
+                let armed = self.kill_arm.is_armed(pid, Instant::now());
+                // Keyed by pid so the id follows the process, not the row slot.
+                div().size_full().child(
+                    ActionCell::new().child(
+                        ConfirmButton::new(("conn-kill", pid.as_u32() as usize), "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("Ask the owning process to stop (SIGTERM)")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
+            }
         }
     }
 }
@@ -1693,9 +1761,13 @@ impl AppState {
             // fact `port_action` renders as an empty cell, not a `—`, still needs
             // saying once rather than looking like an inconsistent table.
             .when(unowned > 0, |el| {
-                el.child(div().flex_none().px_3().pt_2().child(caveat_line(format!(
-                    "{unowned} ports have no owner info. Run sid as root to see them."
-                ))))
+                el.child(
+                    div()
+                        .flex_none()
+                        .px_3()
+                        .pt_2()
+                        .child(caveat_line(unowned_caveat(unowned))),
+                )
             })
             .into_any_element()
     }
@@ -1716,12 +1788,16 @@ impl AppState {
                     "Nothing on this machine is connected out right now. Refresh to look again.",
                 ))
         });
+        let kill_error = table
+            .as_ref()
+            .and_then(|t| t.read(cx).delegate().kill_error.clone());
         self.sub_view_panel(NetSubTab::Connections, count, refreshing, None, cx)
             .children(notice_row(
                 "Couldn't read connections",
                 self.network.error.clone(),
             ))
             .child(table_pane(table.as_ref(), empty))
+            .children(notice_row("Couldn't stop that process", kill_error))
             .into_any_element()
     }
 
@@ -1738,13 +1814,28 @@ impl AppState {
         let action_error = table
             .as_ref()
             .and_then(|t| t.read(cx).delegate().action_error.clone());
-        let empty = (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
-            EmptyState::new("No service units")
+        let unsupported = self
+            .network
+            .svc_error
+            .as_deref()
+            .is_some_and(svc_unsupported);
+        let empty = unsupported.then(|| {
+            EmptyState::new("Services aren't available here")
                 .icon(Icon::Settings)
-                .guidance(empty_guidance(
-                    &self.network_query(cx),
-                    "This systemd manager reports no units. Try the other scope.",
-                ))
+                .guidance(
+                    "sid manages services through systemd, which this system doesn't use. \
+                     Ports, Connections, Docker and Kubernetes work as usual.",
+                )
+        });
+        let empty = empty.or_else(|| {
+            (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
+                EmptyState::new("No service units")
+                    .icon(Icon::Settings)
+                    .guidance(empty_guidance(
+                        &self.network_query(cx),
+                        "This systemd manager reports no units. Try the other scope.",
+                    ))
+            })
         });
 
         // The scope control is a *secondary* header action, between the filter and
@@ -1759,7 +1850,10 @@ impl AppState {
             .title(format!("{} services", svc_scope_label(scope)))
             .children(notice_row(
                 "Couldn't read services",
-                self.network.svc_error.clone(),
+                self.network
+                    .svc_error
+                    .clone()
+                    .filter(|e| !svc_unsupported(e)),
             ))
             .child(table_pane(table.as_ref(), empty))
             .children(notice_row("That service action failed", action_error))
@@ -2010,7 +2104,9 @@ impl AppState {
             self.network.table = Some(table);
         }
         if self.network.connections_table.is_none() {
-            let table = cx.new(|cx| TableState::new(ConnectionsDelegate::new(), window, cx));
+            let provider = self.network.provider.clone();
+            let table =
+                cx.new(|cx| TableState::new(ConnectionsDelegate::new(provider), window, cx));
             self.network.connections_table = Some(table);
         }
         if self.network.services_table.is_none() {
@@ -2631,6 +2727,28 @@ fn port_action(pid: Option<Pid>) -> Option<PortAction> {
 /// user's or the kernel's socket, unreadable without root). Backs the panel's one
 /// Meta-role note, so the tab says *why* some rows have no `kill` instead of leaving
 /// it to look inconsistent.
+/// Friendly caveat under the ports table. There is deliberately no "unlock with sudo"
+/// action: `sid-privfs` only reads *files* through sudo, and per-socket owner info comes
+/// from /proc of other users, which only a root-run sid can read. Inventing an elevation
+/// path for that would be a new privilege boundary, so the line explains why instead.
+/// True when the service provider reported "not supported on <os> (systemd only)" — an
+/// expected state on macOS/Windows, shown as a friendly empty state, not an error toast.
+fn svc_unsupported(err: &str) -> bool {
+    err.contains("not supported on") && err.contains("systemd only")
+}
+
+fn unowned_caveat(n: usize) -> String {
+    let (count, verb) = if n == 1 {
+        ("1 port has".to_string(), "it likely belongs")
+    } else {
+        (format!("{n} ports have"), "they likely belong")
+    };
+    format!(
+        "{count} no owner info: a regular user can't see which program holds another \
+         user's sockets, so {verb} to root or another account. Run sid as root to see them."
+    )
+}
+
 fn ports_without_owner(ports: &[ListeningPort]) -> usize {
     ports.iter().filter(|p| p.pid.is_none()).count()
 }
@@ -3374,6 +3492,50 @@ mod tests {
         PortsDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())))
     }
 
+    #[test]
+    fn svc_unsupported_recognises_the_provider_message_only() {
+        assert!(svc_unsupported(
+            "service management is not supported on macos (systemd only)"
+        ));
+        assert!(!svc_unsupported("systemctl failed: access denied"));
+    }
+
+    #[test]
+    fn unowned_caveat_pluralises_and_explains_why() {
+        assert!(unowned_caveat(1).starts_with("1 port has no owner info"));
+        assert!(unowned_caveat(3).starts_with("3 ports have no owner info"));
+        assert!(unowned_caveat(3).contains("another user"));
+    }
+
+    /// Connections kill is bound to the pid: a connection list that re-sorts (or whose
+    /// owner vanishes on refresh) can never redirect the armed confirm.
+    #[test]
+    fn connection_kill_arm_is_pid_bound_and_survives_only_while_the_pid_lives() {
+        let mut d = conns_delegate();
+        let pid = Pid::from_u32(77);
+        let now = Instant::now();
+        assert_eq!(d.kill_arm.press(pid, now), Confirm::Armed);
+        let conn = |p: u32| Connection {
+            protocol: Protocol::Tcp,
+            local_addr: "127.0.0.1".into(),
+            local_port: 1,
+            remote_addr: "1.1.1.1".into(),
+            remote_port: 443,
+            state: sid_core::sys::SocketState::Established,
+            state_label: "established".into(),
+            pid: Some(Pid::from_u32(p)),
+            command: "x".into(),
+        };
+        d.set_connections(vec![conn(5), conn(77)], HashMap::new(), true);
+        assert!(d.kill_arm.is_armed(pid, Instant::now()));
+        d.set_connections(vec![conn(5)], HashMap::new(), true);
+        assert!(!d.kill_arm.is_armed(pid, Instant::now()));
+    }
+
+    fn conns_delegate() -> ConnectionsDelegate {
+        ConnectionsDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())))
+    }
+
     fn services_delegate() -> ServicesDelegate {
         ServicesDelegate::new(Arc::new(SvcctlProvider::new()), SvcScope::System)
     }
@@ -3805,7 +3967,7 @@ mod tests {
         let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
-        let mut conns = ConnectionsDelegate::new();
+        let mut conns = conns_delegate();
         let plans: [(&str, &mut FillColumns); 5] = [
             ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
@@ -3833,7 +3995,7 @@ mod tests {
         let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
-        let mut conns = ConnectionsDelegate::new();
+        let mut conns = conns_delegate();
         let plans: [(&str, &mut FillColumns); 5] = [
             ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
@@ -3888,7 +4050,7 @@ mod tests {
     #[test]
     fn every_column_plan_has_the_arity_its_comparator_dispatch_assumes() {
         assert_eq!(ports_delegate().columns.len(), 8);
-        assert_eq!(ConnectionsDelegate::new().columns.len(), 7);
+        assert_eq!(conns_delegate().columns.len(), 8);
         assert_eq!(services_delegate().columns.len(), 5);
         assert_eq!(DockerDelegate::new().columns.len(), 5);
         assert_eq!(KubePodsDelegate::new().columns.len(), 6);
