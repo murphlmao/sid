@@ -9,7 +9,10 @@ after the user unlocks with their password. Implements `sid_core::privfs::Privil
 
 ## Invariants
 - Uses `sudo -S`, no shell; the passphrase is borrowed for one operation and never stored here.
-- The caller (config editor) drops the passphrase after its grace period.
+- The caller (config editor, `crates/sid/src/ui/config_editor.rs`) holds the passphrase only
+  while its modal is open and in use: it drops it when the modal closes, when the user leaves
+  the System tab, and after `ELEVATION_IDLE` (5 min) without an edit or save. An unlock attempt
+  whose prompt was dismissed mid-flight keeps nothing. There is no other grace period.
 - Debug builds honour `SID_SUDO_PROGRAM` (point it at `scripts/mock-sudo`); release always uses real `sudo`.
 
 ## Test

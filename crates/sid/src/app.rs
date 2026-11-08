@@ -921,7 +921,13 @@ impl AppState {
     /// live session, else `root_focus` — see that field's doc comment for why this
     /// matters (a stale focus target silently kills all further keyboard dispatch).
     /// Called by every path that mutates either field.
-    fn refocus_stable_target(&self, window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// Being that one choke point, it is also where leaving the System tab drops the
+    /// config editor's held sudo password (`ui::config_editor`'s lifetime rule).
+    fn refocus_stable_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab != Tab::System {
+            self.lock_config_editor(window, cx);
+        }
         if self.active_tab == Tab::Ssh
             && let Some(ix) = self.active_session
             && let Some(tab) = self.ssh_sessions.get(ix)
