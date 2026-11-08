@@ -2449,6 +2449,7 @@ impl Render for AppState {
         // Glyph antialiasing follows the Settings preference + this window's scale factor.
         self.sync_text_rendering(window, cx);
 
+        self.ssh_home.viewport_w = f32::from(window.viewport_size().width);
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),
             // `db_tab` needs `window` (W5) to lazily build the SQL editor/results table

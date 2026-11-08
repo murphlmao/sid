@@ -219,6 +219,20 @@ fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
 }
 
+/// `path` with a leading `home` component shown as `~` (display only; the tooltip keeps
+/// the full path). Matches whole components, so `/home/murphy2/x` is not `~2/x`.
+fn tilde_path(path: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return path.to_string();
+    }
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
 /// Tilde-expand a leading `~` component: `~/x` -> `{home}/x`, a bare `~` -> `home`. Any
 /// other path is returned unchanged. Mirrors `systems_tab::expand_tilde` exactly (kept
 /// as its own copy — neither module depends on the other, and it's three lines).
@@ -733,30 +747,6 @@ fn overview_columns(viewport_w: f32, cards: usize) -> usize {
         .rev()
         .find(|n| cards.is_multiple_of(*n))
         .unwrap_or(1)
-}
-
-/// `cards` laid out `cols` to a line, every card on a line sharing it equally and the
-/// lines stretching to the pane — `CardGrid`'s wrap-and-cap leaves a short last line
-/// stranded at its cap, which is the hole this replaces.
-fn even_card_rows(cards: Vec<AnyElement>, cols: usize) -> impl IntoElement {
-    let cols = cols.max(1);
-    let mut rows = v_flex().gap(sid_ui::SECTION_GAP.len());
-    let mut it = cards.into_iter().peekable();
-    while it.peek().is_some() {
-        let line: Vec<AnyElement> = it.by_ref().take(cols).collect();
-        rows = rows.child(
-            div()
-                .flex()
-                .flex_row()
-                .w_full()
-                .gap(sid_ui::SECTION_GAP.len())
-                .children(
-                    line.into_iter()
-                        .map(|c| div().flex().flex_1().min_w_0().child(c)),
-                ),
-        );
-    }
-    rows
 }
 
 // ---- state --------------------------------------------------------------------------
@@ -1562,7 +1552,7 @@ impl AppState {
             .child(
                 div()
                     .text_meta(t)
-                    .child("~/ ok · a directory of repos becomes a fleet"),
+                    .child("Add a repo — or a folder of repos to see them as a fleet"),
             )
     }
 
@@ -1714,6 +1704,7 @@ impl AppState {
                 .into_any_element()
         };
 
+        let full_path = meta.root.display().to_string();
         let row_id = meta.id.clone();
         let row_id_for_menu = meta.id.clone();
 
@@ -1734,37 +1725,31 @@ impl AppState {
             // name — `MonoMeta` for the path because it is one, `Meta` for the rest.
             .child(
                 div()
+                    .id(("ws-row-path", ix))
+                    .min_w(px(0.))
+                    .clamp_one_line_middle()
+                    .text_mono_meta(t)
+                    .tip(full_path)
+                    .child(tilde_path(&meta.root.display().to_string(), &home_dir())),
+            )
+            // The status line (branch / error) gets its own line when there is one:
+            // sharing a line with the counts squeezed it to a bare `..` in a 300px sidebar.
+            .when(!git_label.is_empty(), |el| {
+                el.child(
+                    div()
+                        .min_w(px(0.))
+                        .clamp_one_line()
+                        .text_meta(t)
+                        .text_color(rgb(git_color))
+                        .child(git_label),
+                )
+            })
+            .child(
+                div()
                     .min_w(px(0.))
                     .clamp_one_line()
-                    .text_mono_meta(t)
-                    .child(meta.root.display().to_string()),
-            )
-            // Left-aligned, not `justify_between`: that pushed the counts to the far
-            // edge even when `git_label` is empty (a non-git row), because the empty
-            // label still claimed `flex_1` and left the counts nowhere else to sit but
-            // the trailing edge. The label div — and its grow — only renders when
-            // there is a label to show; a bare row just carries the counts at the
-            // start, under the name/path above it.
-            .child(
-                h_flex()
-                    .gap_2()
-                    .when(!git_label.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .clamp_one_line()
-                                .text_meta(t)
-                                .text_color(rgb(git_color))
-                                .child(git_label),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_meta(t)
-                            .child(scope_counts_label(hosts_n, conns_n)),
-                    ),
+                    .text_meta(t)
+                    .child(scope_counts_label(hosts_n, conns_n)),
             )
             .action(rename_btn)
             .action(unregister_btn)
@@ -2064,10 +2049,12 @@ impl AppState {
             .gap_3()
             .child(
                 div()
+                    .id("ws-detail-path")
                     .min_w(px(0.))
-                    .clamp_one_line()
+                    .clamp_one_line_middle()
                     .text_mono_meta(t)
-                    .child(meta.root.display().to_string()),
+                    .tip(meta.root.display().to_string())
+                    .child(tilde_path(&meta.root.display().to_string(), &home_dir())),
             )
             .child(self.scope_items_section(&id, &hosts, &connections, cx))
             .into_any_element();
@@ -2418,7 +2405,7 @@ impl AppState {
             .flex()
             .flex_col()
             .gap(sid_ui::SECTION_GAP.len())
-            .child(even_card_rows(
+            .child(sid_ui::even_card_rows(
                 vec![
                     branch_card.w_full().h_full().into_any_element(),
                     commit_card.w_full().h_full().into_any_element(),
@@ -2474,6 +2461,14 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn tilde_path_replaces_only_a_whole_home_component() {
+        assert_eq!(tilde_path("/home/m/vcs/sid", "/home/m"), "~/vcs/sid");
+        assert_eq!(tilde_path("/home/m", "/home/m/"), "~");
+        assert_eq!(tilde_path("/home/m2/x", "/home/m"), "/home/m2/x");
+        assert_eq!(tilde_path("/tmp/x", "/home/m"), "/tmp/x");
     }
 
     #[test]

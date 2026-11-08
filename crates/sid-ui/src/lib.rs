@@ -95,7 +95,7 @@ pub use empty_state::EmptyState;
 /// Identity registration for the headless UI test harness (`.test_support()`); a no-op in
 /// shipping builds. Re-exported so call sites name `sid_ui`, not `gpui_base` (rule 1).
 pub use gpui_base::TestSupportExt;
-pub use grid::{CardGrid, CardPaint, GridCard};
+pub use grid::{CardGrid, CardPaint, GridCard, even_card_rows, fit_columns};
 pub use icon::Icon;
 pub use input::{
     FIELD_MIN_W, FieldWidth, InputState, SearchInput, TextInput, is_field_submit, on_submit,

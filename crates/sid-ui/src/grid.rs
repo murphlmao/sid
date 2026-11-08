@@ -350,6 +350,40 @@ impl RenderOnce for CardGrid {
     }
 }
 
+/// `cards` laid out `cols` to a line, every card on a line sharing it equally and the
+/// lines stretching to the pane — `CardGrid`'s wrap-and-cap leaves a short last line
+/// stranded at its cap, which is the hole this replaces.
+pub fn even_card_rows(cards: Vec<AnyElement>, cols: usize) -> impl IntoElement {
+    let cols = cols.max(1);
+    let mut rows = v_flex().gap(crate::SECTION_GAP.len());
+    let mut it = cards.into_iter().peekable();
+    while it.peek().is_some() {
+        let line: Vec<AnyElement> = it.by_ref().take(cols).collect();
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_row()
+                .w_full()
+                .gap(crate::SECTION_GAP.len())
+                .children(
+                    line.into_iter()
+                        .map(|c| div().flex().flex_1().min_w_0().child(c)),
+                ),
+        );
+    }
+    rows
+}
+
+/// How many cards share a line in `available` pixels at `min_col` each, never more than
+/// `cards`. Lines past the first stretch to the pane (see [`even_card_rows`]), so a short
+/// last line spans rather than stranding a half-width card beside a void.
+pub fn fit_columns(available: f32, min_col: f32, cards: usize) -> usize {
+    let fit = ((available.max(0.) + GAP_F) / (min_col.max(1.) + GAP_F)).floor() as usize;
+    fit.clamp(1, cards.max(1))
+}
+
+const GAP_F: f32 = 16.;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +530,14 @@ mod tests {
         let custom = CardGrid::new().min_col(px(160.)).max_col(px(240.));
         assert_eq!(custom.min_col, px(160.));
         assert_eq!(custom.max_col, px(240.));
+    }
+
+    #[test]
+    fn fit_columns_is_bounded_by_cards_and_never_zero() {
+        assert_eq!(fit_columns(912., 320., 3), 2);
+        assert_eq!(fit_columns(1888., 320., 3), 3);
+        assert_eq!(fit_columns(100., 320., 3), 1);
+        assert_eq!(fit_columns(5000., 320., 3), 3);
+        assert_eq!(fit_columns(500., 320., 0), 1);
     }
 }
