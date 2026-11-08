@@ -11,7 +11,7 @@ sid-core.workspace = true
 serde.workspace = true
 # Stamp file format — same crate/line `sid-store` already resolves for the
 # committed workspace config, so this adds nothing new to the lock.
-toml = "0.8"
+toml = "1"
 log = "0.4"
 
 [dev-dependencies]
