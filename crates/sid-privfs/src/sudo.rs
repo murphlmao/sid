@@ -1181,6 +1181,8 @@ mod tests {
         assert_eq!(mode & 0o777, 0o640, "the mode must survive the replace");
     }
 
+    // GNU-coreutils behaviour (attribute-only copy / non-root identity); macOS runs the BSD plan.
+    #[cfg(not(target_os = "macos"))]
     #[cfg(unix)]
     #[tokio::test]
     async fn a_write_preserves_even_a_mode_that_forbids_writing() {
@@ -1342,7 +1344,11 @@ mod tests {
 
         assert_eq!(
             elevated_commands(&log),
-            vec!["head", "cp", "cp", "mv"],
+            if cfg!(target_os = "macos") {
+                vec!["head", "cp", "dd", "mv"]
+            } else {
+                vec!["head", "cp", "cp", "mv"]
+            },
             "an unexpected program was elevated"
         );
         let logged = std::fs::read_to_string(&log).unwrap();
@@ -1352,6 +1358,8 @@ mod tests {
         );
     }
 
+    // GNU-coreutils behaviour (attribute-only copy / non-root identity); macOS runs the BSD plan.
+    #[cfg(not(target_os = "macos"))]
     #[cfg(unix)]
     #[tokio::test]
     async fn a_0440_file_saves_through_a_helper_that_holds_no_privilege_at_all() {
@@ -1522,6 +1530,8 @@ mod tests {
         );
     }
 
+    // GNU-coreutils behaviour (attribute-only copy / non-root identity); macOS runs the BSD plan.
+    #[cfg(not(target_os = "macos"))]
     #[tokio::test]
     async fn an_attribute_step_that_fails_leaves_the_original_intact_and_no_temp() {
         // The mid-save failure: the temp exists and is full of the new content, and the
@@ -1579,6 +1589,8 @@ mod tests {
         );
     }
 
+    // GNU-coreutils behaviour (attribute-only copy / non-root identity); macOS runs the BSD plan.
+    #[cfg(not(target_os = "macos"))]
     #[cfg(unix)]
     #[tokio::test]
     async fn cp_derives_a_fresh_temps_mode_from_its_source_whatever_the_umask() {
