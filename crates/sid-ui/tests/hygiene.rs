@@ -599,6 +599,63 @@ fn the_rendering_library_is_named_only_in_sid_ui_and_the_composition_root() {
     );
 }
 
+// ---------------------------------------------------------------------------------
+// Depth is named, never hand-typed (design system v2)
+// ---------------------------------------------------------------------------------
+
+/// `gpui`'s shadow shorthands. v2 amended "no shadows" to "soft, theme-aware shadows on
+/// the rungs above the canvas" — which only holds if every shadow in the app comes from
+/// one place. A tab module that types `.shadow_lg()` gets the library's grey, alpha and
+/// geometry, on one palette's terms, beside cards whose shadow follows the theme.
+const RAW_SHADOW_CALLS: &[&str] = &[
+    ".shadow(",
+    ".shadow_2xs(",
+    ".shadow_xs(",
+    ".shadow_sm(",
+    ".shadow_md(",
+    ".shadow_lg(",
+    ".shadow_xl(",
+    ".shadow_2xl(",
+];
+
+fn raw_shadow_calls(line: &str) -> Vec<&'static str> {
+    RAW_SHADOW_CALLS
+        .iter()
+        .copied()
+        .filter(|call| line.contains(call))
+        .collect()
+}
+
+#[test]
+fn no_hand_typed_shadows_outside_sid_ui() {
+    let mut offences = Vec::new();
+    for file in rust_files(&app_crate_src()) {
+        let text = std::fs::read_to_string(&file).expect("utf-8 source");
+        for (n, line) in shipping_lines(&text) {
+            for call in raw_shadow_calls(line) {
+                offences.push(format!(
+                    "{}:{n}: {call} — name a depth rung: .elevation(Elevation::Surface | \
+                     Floating | Overlay, &t) (sid_ui::elevation)",
+                    file.display()
+                ));
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "shadows come from sid_ui::Elevation, never a hand-typed shadow:\n{}",
+        offences.join("\n")
+    );
+}
+
+#[test]
+fn the_shadow_scanner_flags_calls_and_not_names() {
+    assert_eq!(raw_shadow_calls("div().shadow_lg()"), vec![".shadow_lg("]);
+    assert_eq!(raw_shadow_calls(".shadow(vec![])"), vec![".shadow("]);
+    assert!(raw_shadow_calls(".elevation(Elevation::Floating, &t)").is_empty());
+    assert!(raw_shadow_calls("let shadow = rung.shadow_layers();").is_empty());
+}
+
 #[test]
 fn the_test_region_split_skips_each_test_module_and_resumes_after_it() {
     let src = "fn a() { rgb(0x111111) }\n\

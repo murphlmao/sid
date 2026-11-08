@@ -5,16 +5,23 @@ theme bridge, and the component gallery. The only crate besides `sid` that may n
 
 ## Surface
 - `theme.rs` (`Theme`, `theme::active(cx)`, four palettes: cosmos/void/dusk/cosmos-light),
-  `typography.rs` (roles: `.text_body(&t)` etc.), `elevation.rs`, `styled.rs` (`StyledExt`:
-  `clamp_one_line`, `focus_ring`), `scale.rs` (`UiScale`, `scaled`).
+  `typography.rs` (ten roles: `.text_display/title/heading/body/control/label/meta/mono/cell(&t)`),
+  `metrics.rs` (`Space`, `Radius` + `.corners()`, `Density`, semantic gaps), `motion.rs`
+  (`motion::enter`, durations, reduced motion), `elevation.rs` (rungs incl. shadows),
+  `copy.rs` (`sentence_case`), `styled.rs` (`StyledExt`: `clamp_one_line`, `focus_ring`),
+  `scale.rs` (`UiScale`, `scaled`). Design law: `.interface-design/system.md` (v2).
 - Components re-exported in `lib.rs`: `Button`/`IconButton`, `Badge`, `Card::panel`, `Toolbar`,
-  `Modal`, `List`, `table::FillTable`, `input::*`, `StatusBar`, `Meter`/`StatCluster`, `toast`, ...
+  `Modal`, `List`/`Row`, `table::FillTable`, `input::*`, `StatusBar`, `Meter`/`StatCluster`, `toast`,
+  `Tree`/`TreeState`, `ContextMenu`/`MenuItem`, `Checkbox`, `Switch`, `Skeleton`, `EmptyState`, ...
 - `bridge.rs` — projects the sid palette onto gpui-component's theme; `bridge::SCRIM` is the only
   allowed raw colour; `bridge::sync` is called before first paint.
 - `gallery.rs` — every widget/variant/state; mounted by `SID_GALLERY=1`.
 
 ## Invariants
-- Semantic tokens only; depth by border/surface shift, no shadows; `accent` = "engage".
+- Semantic tokens only; depth by a named `Elevation` rung (soft theme-aware shadows since v2,
+  never a hand-typed `.shadow*` — hygiene enforces it in `crates/sid`); `accent` = "engage".
+- Measurements come from `metrics` (spacing, radius, control heights 24/32/36/44, row
+  densities); components own the sentence casing of their UI-vocabulary slots.
 - Call sites name a type ROLE, never raw size/weight/family.
 - Anything wrapping a gpui-component widget must go through `bridge`.
 - Every new component appears in the gallery.

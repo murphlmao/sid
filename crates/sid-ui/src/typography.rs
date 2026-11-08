@@ -1,76 +1,77 @@
 //! The type scale — sid's font sizes, weights and families, decided once.
 //!
-//! # The problem this replaces
+//! # The problem this replaced
 //!
 //! Before this module the app had **222 hand-typed text-size calls** across 23 files
 //! and no scale: 140 `text_xs()`, 75 `text_sm()`, a bare `text_size(px(14.))`, six
 //! separate `const MONO` declarations holding *two different font names*, and four
-//! weights chosen ad hoc (`BOLD` in five places, `MEDIUM` in five others). Worse, the
-//! component crate's own `Badge`, `Card`, `List` row, `Toolbar` and table header set
-//! **no size at all** — so the same badge rendered 12px inside a `text_xs` panel and
-//! 16px at the root, because `gpui` text styles cascade. "Font sizes all over the
-//! place" was a literal description of the source.
+//! weights chosen ad hoc. The component crate's own `Badge`, `Card`, `List` row,
+//! `Toolbar` and table header set **no size at all**, so the same badge rendered 12px
+//! inside a `text_xs` panel and 16px at the root, because `gpui` text styles cascade.
 //!
-//! # The scale
+//! # v2: five rungs, three weights (2026-11-07)
 //!
-//! Three sizes, two weights, one mono family. That is the whole vocabulary:
+//! v1 was three sizes (12 / 14 / 16) and two weights, on the argument that sid is a dense
+//! instrument panel. It worked, and it was most of why the app read as clinical: nothing
+//! on any screen was bigger than 16px or heavier than 500, so no screen had a place for
+//! the eye to land, and every section header was 12px UPPERCASE fine print. Design system
+//! v2 (`docs/design/2026-11-07-friendly-ui-v2.md`) keeps the discipline — a role is still
+//! the only way to size text — and widens the ladder:
 //!
-//! | Role          | Size | Weight | Ink          | For                                     |
-//! |---------------|------|--------|--------------|-----------------------------------------|
-//! | [`Title`]     | 16px | Medium | `fg_strong`  | screen / panel / modal headings         |
-//! | [`Body`]      | 14px | Normal | `fg`         | rows, values, fields, buttons, copy     |
-//! | [`Label`]     | 12px | Medium | `muted`      | UPPERCASE section headers               |
-//! | [`Meta`]      | 12px | Normal | `muted`      | hints, counts, timestamps, badge words  |
-//! | [`Mono`]      | 14px | Normal | `fg`         | paths, addresses, data cells            |
-//! | [`MonoMeta`]  | 12px | Normal | `muted`      | dim paths, ids, hashes in a row's tail  |
+//! | Role          | Size | Weight   | Ink          | For                                         |
+//! |---------------|------|----------|--------------|---------------------------------------------|
+//! | [`Display`]   | 22px | Semibold | `fg_strong`  | the screen's page heading, one per screen   |
+//! | [`Title`]     | 18px | Semibold | `fg_strong`  | modal titles, detail-pane headings          |
+//! | [`Heading`]   | 15px | Semibold | `fg_strong`  | card / panel / group headers                |
+//! | [`Body`]      | 15px | Normal   | `fg`         | rows, values, fields, copy                  |
+//! | [`Control`]   | 15px | Medium   | `fg`         | button, tab and segment labels              |
+//! | [`Label`]     | 13px | Medium   | `muted`      | field labels, small-control labels          |
+//! | [`Meta`]      | 13px | Normal   | `muted`      | hints, counts, timestamps, badge words      |
+//! | [`Mono`]      | 14px | Normal   | `fg`         | data cells, paths, hosts, ports             |
+//! | [`Cell`]      | 14px | Normal   | `fg`         | an English value inside a data table        |
+//! | [`MonoMeta`]  | 13px | Normal   | `muted`      | ids, hashes, dim paths                      |
 //!
-//! Six roles, and every one of them is *absolute*: a role sets size **and** weight
-//! **and** family **and** ink, so a `Meta` inside a `Title` is still 12px Normal. The
-//! old helpers only set what they happened to care about, which is why the cascade
-//! leaked. Colour stays overridable — `.text_meta(&t).text_color(rgb(t.danger))` is
-//! the intended spelling for a dim *error* hint — but size, weight and family are the
-//! role's to decide.
+//! Every role is still *absolute*: it sets size **and** weight **and** family **and** ink,
+//! so a `Meta` inside a `Title` is still 13px Normal. Colour stays overridable —
+//! `.text_meta(&t).text_color(rgb(t.danger))` is the intended spelling for a dim *error*
+//! hint — but size, weight and family are the role's to decide.
 //!
-//! # Why three sizes and not five
+//! ## Why these rungs
 //!
-//! sid is a dense instrument panel, not a document. A 12/14/16 ladder gives exactly
-//! three legible steps at the distances involved; anything wider makes a tab strip
-//! look like a landing page. Note that the top of the ladder is genuinely new — before
-//! this module *no* heading was larger than body text, and the only 16px text in the
-//! app was accidental (unsized elements inheriting `gpui`'s 16px default). Hierarchy
-//! now comes from the scale rather than from bold-at-the-same-size.
+//! Body and Meta move up one pixel each (14 → 15, 12 → 13): the "a little bigger" Murphy
+//! asked for, everywhere text is actually read. The top grows a Display rung (22) and a
+//! real Title (18) so a screen has a heading and a modal has a title, and a Heading at
+//! body size but semibold so a card header can be *strong* without being *loud*. 14 is
+//! the *table* rung: DejaVu Sans Mono is roughly a fifth wider per glyph than the UI
+//! sans, so a 15px data cell would cost a results grid a column; tables stay
+//! instrument-sized, which is also why "bigger" is this ladder and not a default zoom.
+//! [`Cell`] is the proportional twin on that rung, so a table that mixes identifiers and
+//! English (Workspaces' fleet view) still sits on one size.
 //!
-//! # Why two weights
+//! ## Why semibold is allowed now, and bold still is not
 //!
-//! `BOLD` (700) at 12-16px on a dark panel blooms — it reads as a colour change, not
-//! an emphasis, and sid already spends colour on meaning. `MEDIUM` (500) is the whole
-//! emphasis budget, and it is spent on [`Title`] and [`Label`] only.
+//! v1 banned everything above Medium because `BOLD` (700) at 12–16px blooms on a dark
+//! panel. That is still true, and 700 is still absent. Semibold (600) at 15–22px is a
+//! different animal: the system UI face here (Noto Sans) ships a true SemiBold master, so
+//! it renders as a weight rather than a smeared synthetic bold, and at heading sizes it
+//! reads as hierarchy, not as a colour change.
 //!
 //! # Authored in px, emitted in rems
 //!
-//! The ladder is *stated* in pixels — [`TypeRole::size`] returns 12/14/16 and that is
-//! the number this module is about. What reaches `gpui` is [`TypeRole::length`], the
-//! same measurement expressed in rems.
+//! The ladder is *stated* in pixels — [`TypeRole::size`] — and what reaches `gpui` is
+//! [`TypeRole::length`], the same measurement in rems, so app zoom (`rem_size`, GitHub #4)
+//! scales text together with the rem-based spacing around it. At 100% zoom the two are
+//! identical.
 //!
-//! This module used to say "px, not rems", on the grounds that `gpui`'s
-//! `text_xs()`/`text_sm()` are `rems(0.75)`/`rems(0.875)` against a 16px `rem_size` sid
-//! never changed — so they were 12px and 14px in disguise and the indirection bought
-//! nothing. App zoom (GitHub #4) retired that premise: `rem_size` is now the one lever
-//! the whole UI scales by, because `gpui`'s spacing shorthands (`.p_2()`, `.gap_1()`,
-//! `.h_8()`, `.rounded_md()`) are themselves rems and move with it. Text measured in
-//! absolute pixels would have been the one thing that *didn't* — the type scale and the
-//! spacing scale would desynchronize the moment a user pressed `ctrl +`.
-//!
-//! So the currency changed and the ladder did not: [`crate::scale::scaled`] converts an
-//! authored pixel into rems at the base rem size, which is exactly the identity at 100%
-//! zoom. `gpui` pixels are *logical* — the compositor scale factor is applied below this
-//! layer — so the scale is still HiDPI-correct, and app zoom is a second factor on top.
-//!
+//! [`Display`]: TypeRole::Display
 //! [`Title`]: TypeRole::Title
+//! [`Heading`]: TypeRole::Heading
 //! [`Body`]: TypeRole::Body
+//! [`Control`]: TypeRole::Control
 //! [`Label`]: TypeRole::Label
 //! [`Meta`]: TypeRole::Meta
 //! [`Mono`]: TypeRole::Mono
+//! [`Cell`]: TypeRole::Cell
 //! [`MonoMeta`]: TypeRole::MonoMeta
 
 use gpui::{FontWeight, Pixels, Rems, Styled, px, rgb};
@@ -81,101 +82,108 @@ use crate::theme::Theme;
 
 /// The UI's monospace family: paths, addresses, ids, data cells.
 ///
-/// One name, in one place — it replaces six `const MONO` declarations that had drifted
+/// One name, in one place — it replaced six `const MONO` declarations that had drifted
 /// into two different fonts. Deliberately a boring, universally-present family: this
-/// text is *read*, not admired, and a missing font falls back to whatever the system
-/// picks, which is how the app used to end up with two mono looks on one screen.
+/// text is *read*, not admired.
 ///
 /// The **terminal grid** is not this. `sid-term` paints a PTY at a font the user
-/// configures (CaskaydiaCove Nerd Font Mono by default, for the shell-prompt glyphs)
-/// with kitty cell geometry; it is an instrument with its own metrics, not UI text.
+/// configures (CaskaydiaCove Nerd Font Mono by default) with kitty cell geometry; it is
+/// an instrument with its own metrics, not UI text.
 pub const UI_MONO: &str = "DejaVu Sans Mono";
 
-/// The three sizes on the ladder, in pixels. Nothing else is a size.
-const TITLE_PX: f32 = 16.;
-const BODY_PX: f32 = 14.;
-const META_PX: f32 = 12.;
+/// The five rungs, in pixels. Nothing else is a size.
+const DISPLAY_PX: f32 = 22.;
+const TITLE_PX: f32 = 18.;
+const BODY_PX: f32 = 15.;
+const MONO_PX: f32 = 14.;
+const SMALL_PX: f32 = 13.;
 
 /// What a role decides: everything about a run of text except the words.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TypeSpec {
     /// Font size, in logical pixels **at 100% zoom** — the number the ladder is about.
-    /// What is handed to `gpui` is [`TypeSpec::length`]; see the module docs.
     pub size: Pixels,
-    /// The same font size in rems, which is the form `gpui` resolves against the
-    /// window's rem size — i.e. the form that carries app zoom.
+    /// The same font size in rems — the form that carries app zoom.
     pub length: Rems,
-    /// Font weight — only `NORMAL` or `MEDIUM` ever appear.
+    /// Font weight — `NORMAL`, `MEDIUM` or `SEMIBOLD`, never heavier.
     pub weight: FontWeight,
     /// `Some(UI_MONO)` for the monospace roles, `None` for the proportional ones.
     pub family: Option<&'static str>,
-    /// The role's default ink, read from the active palette. Overridable at the call
-    /// site; the role only decides what it means to be *unremarkable*.
+    /// The role's default ink, read from the active palette.
     pub ink: u32,
 }
 
 /// A named place on sid's type scale.
-///
-/// Call sites name the *role*, never a size — see the module docs for the ladder and
-/// [`Typography`] for the helpers that apply one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypeRole {
-    /// A screen, panel or modal heading. The only step above body text.
+    /// The screen's page heading. One per screen.
+    Display,
+    /// A modal title or a detail pane's heading.
     Title,
-    /// Primary readable content: row labels, values, field text, button labels, copy.
+    /// A card, panel or group header: body-sized, semibold, strong ink.
+    Heading,
+    /// Primary readable content: row labels, values, field text, copy.
     Body,
-    /// An UPPERCASE section header. Uppercasing is the caller's (the string is theirs);
-    /// the role supplies the size, the weight that keeps small caps legible, and the
-    /// muted ink that keeps a header from competing with its own contents.
+    /// The label inside a control — a button, a tab, a segment. Body-sized, medium, so a
+    /// control's words read as something to press rather than as prose.
+    Control,
+    /// A field label or a small control's label. **Sentence case** — v2 retired the
+    /// UPPERCASE section header this role used to carry.
     Label,
     /// Secondary orientation text: hints, counts, timestamps, footnotes, empty-state
     /// subtext, the words inside a badge.
     Meta,
-    /// Monospace content at body weight: paths, addresses, hosts, ports, data cells.
+    /// Monospace content: paths, addresses, hosts, ports, data cells.
     Mono,
+    /// A proportional value inside a data table — "3 days ago", a commit subject — on the
+    /// same rung as [`TypeRole::Mono`], because a table's columns differ by family and
+    /// ink, never by size.
+    Cell,
     /// Monospace content that is also secondary: a dim path, an opaque id, a hash.
     MonoMeta,
 }
 
 /// Every role, for the gallery's type specimen and for exhaustive tests.
 pub const ALL_TYPE_ROLES: &[TypeRole] = &[
+    TypeRole::Display,
     TypeRole::Title,
+    TypeRole::Heading,
     TypeRole::Body,
+    TypeRole::Control,
     TypeRole::Label,
     TypeRole::Meta,
     TypeRole::Mono,
+    TypeRole::Cell,
     TypeRole::MonoMeta,
 ];
 
 impl TypeRole {
-    /// This role's font size in logical pixels at 100% zoom. One of exactly three values.
-    ///
-    /// The ladder as authored. To *apply* a size, use [`TypeRole::length`] (or, better,
-    /// [`Typography`]) — an absolute pixel would sit out app zoom while every gpui
-    /// spacing shorthand around it scaled.
+    /// This role's font size in logical pixels at 100% zoom. One of exactly five values.
     pub const fn size(self) -> Pixels {
         match self {
+            TypeRole::Display => px(DISPLAY_PX),
             TypeRole::Title => px(TITLE_PX),
-            TypeRole::Body | TypeRole::Mono => px(BODY_PX),
-            TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => px(META_PX),
+            TypeRole::Heading | TypeRole::Body | TypeRole::Control => px(BODY_PX),
+            TypeRole::Mono | TypeRole::Cell => px(MONO_PX),
+            TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => px(SMALL_PX),
         }
     }
 
     /// This role's font size as a zoomable length — [`TypeRole::size`] in rems.
-    ///
-    /// Exactly the authored pixel count at the base rem size, and 1.5x that at 150%
-    /// zoom. This is what [`Typography::text_role`] emits.
     pub fn length(self) -> Rems {
         scaled(f32::from(self.size()))
     }
 
-    /// This role's font weight. `MEDIUM` is the entire emphasis budget.
+    /// This role's font weight.
     pub const fn weight(self) -> FontWeight {
         match self {
-            TypeRole::Title | TypeRole::Label => FontWeight::MEDIUM,
-            TypeRole::Body | TypeRole::Meta | TypeRole::Mono | TypeRole::MonoMeta => {
-                FontWeight::NORMAL
-            }
+            TypeRole::Display | TypeRole::Title | TypeRole::Heading => FontWeight::SEMIBOLD,
+            TypeRole::Control | TypeRole::Label => FontWeight::MEDIUM,
+            TypeRole::Body
+            | TypeRole::Meta
+            | TypeRole::Mono
+            | TypeRole::Cell
+            | TypeRole::MonoMeta => FontWeight::NORMAL,
         }
     }
 
@@ -183,7 +191,7 @@ impl TypeRole {
     pub const fn family(self) -> Option<&'static str> {
         match self {
             TypeRole::Mono | TypeRole::MonoMeta => Some(UI_MONO),
-            TypeRole::Title | TypeRole::Body | TypeRole::Label | TypeRole::Meta => None,
+            _ => None,
         }
     }
 
@@ -192,11 +200,19 @@ impl TypeRole {
         matches!(self, TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta)
     }
 
+    /// Whether this role is a heading — the strong-ink, semibold top of the ladder.
+    pub const fn is_heading(self) -> bool {
+        matches!(
+            self,
+            TypeRole::Display | TypeRole::Title | TypeRole::Heading
+        )
+    }
+
     /// This role's default ink in `theme`.
     pub const fn ink(self, theme: &Theme) -> u32 {
         match self {
-            TypeRole::Title => theme.fg_strong,
-            TypeRole::Body | TypeRole::Mono => theme.fg,
+            TypeRole::Display | TypeRole::Title | TypeRole::Heading => theme.fg_strong,
+            TypeRole::Body | TypeRole::Control | TypeRole::Mono | TypeRole::Cell => theme.fg,
             TypeRole::Label | TypeRole::Meta | TypeRole::MonoMeta => theme.muted,
         }
     }
@@ -215,11 +231,15 @@ impl TypeRole {
     /// The role's name, for the gallery specimen and for diagnostics.
     pub const fn name(self) -> &'static str {
         match self {
+            TypeRole::Display => "display",
             TypeRole::Title => "title",
+            TypeRole::Heading => "heading",
             TypeRole::Body => "body",
+            TypeRole::Control => "control",
             TypeRole::Label => "label",
             TypeRole::Meta => "meta",
             TypeRole::Mono => "mono",
+            TypeRole::Cell => "cell",
             TypeRole::MonoMeta => "mono-meta",
         }
     }
@@ -242,9 +262,19 @@ pub trait Typography: Styled + Sized {
         familied.text_color(rgb(spec.ink))
     }
 
-    /// [`TypeRole::Title`] — a screen, panel or modal heading.
+    /// [`TypeRole::Display`] — the screen's page heading.
+    fn text_display(self, theme: &Theme) -> Self {
+        self.text_role(TypeRole::Display, theme)
+    }
+
+    /// [`TypeRole::Title`] — a modal title or detail-pane heading.
     fn text_title(self, theme: &Theme) -> Self {
         self.text_role(TypeRole::Title, theme)
+    }
+
+    /// [`TypeRole::Heading`] — a card, panel or group header.
+    fn text_heading(self, theme: &Theme) -> Self {
+        self.text_role(TypeRole::Heading, theme)
     }
 
     /// [`TypeRole::Body`] — primary readable content.
@@ -252,7 +282,12 @@ pub trait Typography: Styled + Sized {
         self.text_role(TypeRole::Body, theme)
     }
 
-    /// [`TypeRole::Label`] — an UPPERCASE section header (the caller uppercases).
+    /// [`TypeRole::Control`] — the label inside a button, tab or segment.
+    fn text_control(self, theme: &Theme) -> Self {
+        self.text_role(TypeRole::Control, theme)
+    }
+
+    /// [`TypeRole::Label`] — a field or small-control label, sentence case.
     fn text_label(self, theme: &Theme) -> Self {
         self.text_role(TypeRole::Label, theme)
     }
@@ -262,9 +297,14 @@ pub trait Typography: Styled + Sized {
         self.text_role(TypeRole::Meta, theme)
     }
 
-    /// [`TypeRole::Mono`] — monospace content at body weight.
+    /// [`TypeRole::Mono`] — monospace content.
     fn text_mono(self, theme: &Theme) -> Self {
         self.text_role(TypeRole::Mono, theme)
+    }
+
+    /// [`TypeRole::Cell`] — a proportional value inside a data table.
+    fn text_cell(self, theme: &Theme) -> Self {
+        self.text_role(TypeRole::Cell, theme)
     }
 
     /// [`TypeRole::MonoMeta`] — monospace content that is also secondary.
@@ -287,46 +327,70 @@ mod tests {
     }
 
     /// Read back a `Div`'s refined style — enough to assert a helper set what it
-    /// claims, without a renderer. Same trick as `styled.rs`'s tests.
+    /// claims, without a renderer.
     fn style_of(mut d: Div) -> StyleRefinement {
         d.style().clone()
     }
 
     #[test]
-    fn the_whole_ladder_is_three_sizes() {
-        // The point of the module. If a seventh role arrives wanting an 18px step, this
-        // test is the conversation about whether sid is still an instrument panel.
+    fn the_whole_ladder_is_five_rungs() {
+        // v2's ladder. A sixth size is a design conversation, not a call-site fix.
         let mut sizes: Vec<f32> = ALL_TYPE_ROLES.iter().map(|r| f32::from(r.size())).collect();
         sizes.sort_by(f32::total_cmp);
         sizes.dedup();
-        assert_eq!(sizes, vec![12., 14., 16.], "the scale is 12 / 14 / 16");
+        assert_eq!(
+            sizes,
+            vec![13., 14., 15., 18., 22.],
+            "the scale is 13/14/15/18/22"
+        );
     }
 
     #[test]
-    fn the_ladder_is_ordered_title_over_body_over_meta() {
-        assert!(
-            TypeRole::Title.size() > TypeRole::Body.size(),
-            "a heading must outrank its contents by size, not only by weight"
-        );
+    fn v2_is_bigger_where_text_is_read() {
+        // The point of v2: body and meta each gained a pixel over v1's 14/12, and a
+        // heading now outranks 16px.
+        assert!(TypeRole::Body.size() > px(14.));
+        assert!(TypeRole::Meta.size() > px(12.));
+        assert!(TypeRole::Title.size() > px(16.));
+    }
+
+    #[test]
+    fn the_ladder_is_ordered_display_over_title_over_body_over_meta() {
+        assert!(TypeRole::Display.size() > TypeRole::Title.size());
+        assert!(TypeRole::Title.size() > TypeRole::Body.size());
         assert!(TypeRole::Body.size() > TypeRole::Meta.size());
-        // The mono roles ride the same two rungs as their proportional twins, so a
-        // monospace address in a row lines up with the words beside it.
-        assert_eq!(TypeRole::Mono.size(), TypeRole::Body.size());
+        // Heading and Control are body-sized; they differ by weight, not size.
+        assert_eq!(TypeRole::Heading.size(), TypeRole::Body.size());
+        assert_eq!(TypeRole::Control.size(), TypeRole::Body.size());
+        // Mono sits one rung under body (wider glyphs), and its dim twin on meta's rung.
+        assert!(TypeRole::Mono.size() < TypeRole::Body.size());
+        assert!(TypeRole::Mono.size() > TypeRole::Meta.size());
         assert_eq!(TypeRole::MonoMeta.size(), TypeRole::Meta.size());
         assert_eq!(TypeRole::Label.size(), TypeRole::Meta.size());
+        // A table's English column sits on the mono rung, not on body's.
+        assert_eq!(TypeRole::Cell.size(), TypeRole::Mono.size());
     }
 
     #[test]
-    fn only_two_weights_ship() {
+    fn nothing_ships_heavier_than_semibold() {
         for &role in ALL_TYPE_ROLES {
             let w = role.weight();
             assert!(
-                w == FontWeight::NORMAL || w == FontWeight::MEDIUM,
-                "{}: {w:?} — the scale spends MEDIUM and nothing heavier",
+                w == FontWeight::NORMAL || w == FontWeight::MEDIUM || w == FontWeight::SEMIBOLD,
+                "{}: {w:?} — 700 still blooms on dark at these sizes",
                 role.name()
             );
         }
-        assert_eq!(TypeRole::Title.weight(), FontWeight::MEDIUM);
+        // Semibold is exactly the heading half of the ladder.
+        for &role in ALL_TYPE_ROLES {
+            assert_eq!(
+                role.weight() == FontWeight::SEMIBOLD,
+                role.is_heading(),
+                "{}",
+                role.name()
+            );
+        }
+        assert_eq!(TypeRole::Control.weight(), FontWeight::MEDIUM);
         assert_eq!(TypeRole::Label.weight(), FontWeight::MEDIUM);
         assert_eq!(TypeRole::Body.weight(), FontWeight::NORMAL);
     }
@@ -335,25 +399,14 @@ mod tests {
     fn exactly_the_mono_roles_carry_the_mono_family() {
         for &role in ALL_TYPE_ROLES {
             let is_mono = matches!(role, TypeRole::Mono | TypeRole::MonoMeta);
-            assert_eq!(
-                role.family().is_some(),
-                is_mono,
-                "{} family: {:?}",
-                role.name(),
-                role.family()
-            );
+            assert_eq!(role.family().is_some(), is_mono, "{}", role.name());
         }
-        // One family name, not six. The regression this pins: `const MONO` was declared
-        // in six modules and two of them disagreed on the font.
         assert_eq!(TypeRole::Mono.family(), Some(UI_MONO));
         assert_eq!(TypeRole::MonoMeta.family(), Some(UI_MONO));
     }
 
     #[test]
     fn secondary_roles_are_actually_dimmer_in_every_palette() {
-        // "Meta" has to be a visual fact, not just a name. `muted` sits between `fg`
-        // and the background in all four palettes, so the comparison is directional:
-        // dim means "closer to the background than body text is".
         for t in palettes() {
             let bg = brightness(t.bg);
             let body_gap = (brightness(TypeRole::Body.ink(&t)) - bg).abs();
@@ -366,20 +419,20 @@ mod tests {
                     role.name()
                 );
             }
-            // ...and the title has to advance, or the top of the ladder is decoration.
-            let title_gap = (brightness(TypeRole::Title.ink(&t)) - bg).abs();
-            assert!(
-                title_gap >= body_gap,
-                "{}: a heading may not be dimmer than its body",
-                t.name
-            );
+            for &role in ALL_TYPE_ROLES.iter().filter(|r| r.is_heading()) {
+                let gap = (brightness(role.ink(&t)) - bg).abs();
+                assert!(
+                    gap >= body_gap,
+                    "{}/{}: a heading may not be dimmer",
+                    t.name,
+                    role.name()
+                );
+            }
         }
     }
 
     #[test]
     fn is_secondary_agrees_with_the_ink_it_picks() {
-        // The classifier and the palette lookup are two statements of one fact; if they
-        // ever disagree, `is_secondary` is lying to the gallery and to future roles.
         for t in palettes() {
             for &role in ALL_TYPE_ROLES {
                 assert_eq!(
@@ -414,8 +467,8 @@ mod tests {
         assert_eq!(
             TypeRole::MonoMeta.spec(&t),
             TypeSpec {
-                size: px(12.),
-                length: crate::scale::scaled(12.),
+                size: px(13.),
+                length: crate::scale::scaled(13.),
                 weight: FontWeight::NORMAL,
                 family: Some(UI_MONO),
                 ink: t.muted,
@@ -426,8 +479,7 @@ mod tests {
     #[test]
     fn applying_a_role_sets_size_weight_family_and_ink() {
         let t = cosmos();
-        let s = style_of(div().text_mono_meta(&t));
-        let text = s.text.clone();
+        let text = style_of(div().text_mono_meta(&t)).text.clone();
         assert_eq!(text.font_size, Some(TypeRole::MonoMeta.length().into()));
         assert_eq!(text.font_weight, Some(FontWeight::NORMAL));
         assert_eq!(text.font_family.as_deref(), Some(UI_MONO));
@@ -437,46 +489,41 @@ mod tests {
     #[test]
     fn a_proportional_role_leaves_the_family_alone() {
         let t = cosmos();
-        let text = style_of(div().text_title(&t)).text.clone();
+        let text = style_of(div().text_display(&t)).text.clone();
         assert_eq!(text.font_family, None, "only the mono roles set a family");
-        assert_eq!(text.font_size, Some(TypeRole::Title.length().into()));
-        assert_eq!(text.font_weight, Some(FontWeight::MEDIUM));
+        assert_eq!(text.font_size, Some(TypeRole::Display.length().into()));
+        assert_eq!(text.font_weight, Some(FontWeight::SEMIBOLD));
         assert_eq!(text.color, Some(Hsla::from(rgb(t.fg_strong))));
     }
 
     #[test]
     fn a_role_pins_weight_even_when_it_is_the_default() {
-        // The cascade bug this fixes: `text_xs()` set a size and nothing else, so a hint
-        // inside a bold header inherited the bold. A role is absolute.
+        // The cascade bug this module fixed: a hint inside a heading must not inherit the
+        // heading's weight. A role is absolute.
         let t = cosmos();
         let text = style_of(div().text_meta(&t)).text.clone();
-        assert_eq!(
-            text.font_weight,
-            Some(FontWeight::NORMAL),
-            "Normal is stated, not assumed"
-        );
+        assert_eq!(text.font_weight, Some(FontWeight::NORMAL));
     }
 
     #[test]
     fn each_helper_applies_its_own_role() {
         let t = cosmos();
-        let by_helper: Vec<(&str, StyleRefinement)> = vec![
-            (TypeRole::Title.name(), style_of(div().text_title(&t))),
-            (TypeRole::Body.name(), style_of(div().text_body(&t))),
-            (TypeRole::Label.name(), style_of(div().text_label(&t))),
-            (TypeRole::Meta.name(), style_of(div().text_meta(&t))),
-            (TypeRole::Mono.name(), style_of(div().text_mono(&t))),
-            (
-                TypeRole::MonoMeta.name(),
-                style_of(div().text_mono_meta(&t)),
-            ),
+        let by_helper: Vec<(TypeRole, StyleRefinement)> = vec![
+            (TypeRole::Display, style_of(div().text_display(&t))),
+            (TypeRole::Title, style_of(div().text_title(&t))),
+            (TypeRole::Heading, style_of(div().text_heading(&t))),
+            (TypeRole::Body, style_of(div().text_body(&t))),
+            (TypeRole::Control, style_of(div().text_control(&t))),
+            (TypeRole::Label, style_of(div().text_label(&t))),
+            (TypeRole::Meta, style_of(div().text_meta(&t))),
+            (TypeRole::Mono, style_of(div().text_mono(&t))),
+            (TypeRole::Cell, style_of(div().text_cell(&t))),
+            (TypeRole::MonoMeta, style_of(div().text_mono_meta(&t))),
         ];
-        for (name, style) in by_helper {
-            let role = ALL_TYPE_ROLES
-                .iter()
-                .find(|r| r.name() == name)
-                .expect("named role");
+        assert_eq!(by_helper.len(), ALL_TYPE_ROLES.len(), "one helper per role");
+        for (role, style) in by_helper {
             let text = style.text.clone();
+            let name = role.name();
             assert_eq!(text.font_size, Some(role.length().into()), "{name} size");
             assert_eq!(text.font_weight, Some(role.weight()), "{name} weight");
             assert_eq!(
@@ -489,40 +536,32 @@ mod tests {
 
     #[test]
     fn a_roles_emitted_length_is_its_authored_pixel_size_when_unzoomed() {
-        // The no-op property for the currency change: moving the ladder from absolute
-        // pixels to rems must not move a single glyph at 100% zoom.
         for &role in ALL_TYPE_ROLES {
             assert_eq!(
                 role.length()
                     .to_pixels(crate::scale::UiScale::DEFAULT.rem_size()),
                 role.size(),
-                "{}: {:?} != {:?} at 100%",
-                role.name(),
-                role.length(),
-                role.size()
+                "{}",
+                role.name()
             );
         }
     }
 
     #[test]
     fn the_whole_ladder_moves_with_the_rem_size() {
-        // The reason for the change: text has to scale with the spacing around it. If a
-        // role ever went back to an absolute pixel this is the test that notices.
-        let zoomed = crate::scale::UiScale::from_percent(150).rem_size();
-        assert_eq!(TypeRole::Title.length().to_pixels(zoomed), px(24.));
-        assert_eq!(TypeRole::Body.length().to_pixels(zoomed), px(21.));
-        assert_eq!(TypeRole::Meta.length().to_pixels(zoomed), px(18.));
+        let zoomed = crate::scale::UiScale::from_percent(200).rem_size();
+        assert_eq!(TypeRole::Display.length().to_pixels(zoomed), px(44.));
+        assert_eq!(TypeRole::Body.length().to_pixels(zoomed), px(30.));
+        assert_eq!(TypeRole::Meta.length().to_pixels(zoomed), px(26.));
     }
 
     #[test]
     fn applying_a_role_emits_the_zoomable_length_not_the_authored_pixel() {
-        // A `px(..)` here would render 14px at every zoom level while its padding grew.
         let t = cosmos();
         let text = style_of(div().text_body(&t)).text.clone();
         assert_eq!(
             text.font_size,
             Some(gpui::AbsoluteLength::Rems(TypeRole::Body.length())),
-            "the scale emits rems, so it rides `Window::set_rem_size`"
         );
     }
 
@@ -534,8 +573,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total);
         assert_eq!(
-            total, 6,
-            "six roles — adding a seventh is a design decision"
+            total, 10,
+            "ten roles — adding an eleventh is a design decision"
         );
     }
 }

@@ -32,6 +32,8 @@ use gpui::{
 };
 
 use crate::bridge::hover_of;
+use crate::elevation::Elevation;
+use crate::metrics::{CARD_PADDING, Radius, Rounded as _};
 use crate::scale::scaled;
 use crate::styled::v_flex;
 use crate::theme::{self, Theme};
@@ -60,9 +62,11 @@ pub const MIN_COL: Pixels = px(300.);
 /// trailing gap on short lines. Uniformity is worth more than the last 20px.
 pub const MAX_COL: Pixels = px(340.);
 
-/// The gutter between cards, in both axes. Matches the `gap_3` the render path sets —
+/// The gutter between cards, in both axes. Matches the `gap_4` the render path sets —
 /// they must agree or [`CardGrid::columns`] is predicting a layout that isn't happening.
-pub const GAP: Pixels = px(12.);
+/// v2: 16 (`metrics::SECTION_GAP`), up from 12 — cards are objects with a shadow now, and
+/// a shadow needs room to fall.
+pub const GAP: Pixels = px(16.);
 
 /// The resolved fills for one (selected, actionable, palette).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,12 +214,14 @@ impl RenderOnce for GridCard {
             // with its neighbours however tall the tallest one is.
             .w_full()
             .h_full()
-            .gap_1p5()
-            .p_3()
-            .rounded_md()
+            .gap_2()
+            .p(CARD_PADDING.len())
+            .corners(Radius::Lg)
             .bg(rgb(paint.fill))
             .border_1()
             .border_color(rgb(paint.border))
+            // A grid card is a raised object: the Surface rung's soft shadow.
+            .shadow(Elevation::Surface.shadow(&theme))
             .text_color(rgb(theme.fg))
             .when(actionable, |this| this.cursor_pointer())
             // gpui permits exactly one hover style per element (it debug-asserts on a
@@ -326,7 +332,7 @@ impl RenderOnce for CardGrid {
             .flex_row()
             .flex_wrap()
             .w_full()
-            .gap_3()
+            .gap_4()
             .children(self.children.into_iter().map(move |child| {
                 div()
                     // A flex container, so the card inside stretches to the line height.
