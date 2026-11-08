@@ -169,8 +169,7 @@ fn holds_repo(p: &Path) -> bool {
         return false;
     };
     rd.flatten().any(|e| {
-        e.file_name() == META
-            || (e.file_type().is_ok_and(|t| t.is_dir()) && holds_repo(&e.path()))
+        e.file_name() == META || (e.file_type().is_ok_and(|t| t.is_dir()) && holds_repo(&e.path()))
     })
 }
 

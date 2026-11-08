@@ -70,11 +70,7 @@ pub fn noninteractive_env(
     existing_ssh: Option<&str>,
     global_ssh: Option<&str>,
 ) -> BTreeMap<String, String> {
-    let pick = |o: Option<&str>| {
-        o.map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-    };
+    let pick = |o: Option<&str>| o.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let ssh = match pick(existing_ssh).or_else(|| pick(global_ssh)) {
         Some(s) => format!("{s} -o BatchMode=yes"),
         None => "ssh -o BatchMode=yes".to_string(),
@@ -573,7 +569,9 @@ pub fn push(workdir: &Path, timeout: Duration) -> Result<PushReport, GitError> {
         .and_then(|r| r.url().ok().map(String::from))
         .unwrap_or_default();
     if let Some(why) = refusal_reason(&url) {
-        return Err(GitError::Other(format!("refusing to push '{remote}': {why}")));
+        return Err(GitError::Other(format!(
+            "refusing to push '{remote}': {why}"
+        )));
     }
     if !is_network_url(&url) {
         // Local / file remotes: libgit2 (no hooks, no `receivepack` command from config).
@@ -637,7 +635,10 @@ fn push_local(
     }
     res.map_err(|e| {
         let m = e.message().to_ascii_lowercase();
-        if m.contains("non-fast-forward") || m.contains("not fast") || m.contains("not present locally") {
+        if m.contains("non-fast-forward")
+            || m.contains("not fast")
+            || m.contains("not present locally")
+        {
             GitError::Conflict(
                 "the remote has newer commits — fetch and integrate them before pushing".into(),
             )

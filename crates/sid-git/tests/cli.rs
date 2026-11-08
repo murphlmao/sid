@@ -190,7 +190,10 @@ fn ext_remote_is_refused_and_runs_nothing() {
     let f = p.fetch("evil");
     assert!(f.is_err(), "{f:?}");
     let pu = p.push();
-    assert!(matches!(&pu, Err(GitError::Other(m)) if m.contains("not supported")), "{pu:?}");
+    assert!(
+        matches!(&pu, Err(GitError::Other(m)) if m.contains("not supported")),
+        "{pu:?}"
+    );
     // And directly on the CLI, where GIT_ALLOW_PROTOCOL must still block it.
     let _ = cli::fetch(work.path(), "evil", Duration::from_secs(20));
     assert!(!mark.exists(), "ext:: command ran");
@@ -199,7 +202,14 @@ fn ext_remote_is_refused_and_runs_nothing() {
 #[test]
 fn plain_http_push_is_refused_clearly() {
     let (_origin, work, _s) = origin_and_clone();
-    set(work.path(), "remote.origin.url", "http://example.invalid/x.git");
+    set(
+        work.path(),
+        "remote.origin.url",
+        "http://example.invalid/x.git",
+    );
     let r = open(work.path()).push();
-    assert!(matches!(&r, Err(GitError::Other(m)) if m.contains("plain http")), "{r:?}");
+    assert!(
+        matches!(&r, Err(GitError::Other(m)) if m.contains("plain http")),
+        "{r:?}"
+    );
 }
