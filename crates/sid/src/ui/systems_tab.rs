@@ -901,13 +901,29 @@ impl AppState {
     /// stops (without rescheduling itself) the instant that check fails, rather than
     /// refreshing one more time off-tab.
     fn start_systems_refresh_loop(&mut self, cx: &mut Context<Self>) {
+        /// Unfocused ticks per probe — see the gate in the loop body.
+        const UNFOCUSED_TICK_DIVISOR: u32 = 5;
         cx.spawn(async move |this, cx| {
+            let mut unfocused_ticks = 0u32;
             loop {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
                 let keep_going = this.update(cx, |state, cx| {
                     if state.active_tab() != Tab::System {
                         state.systems.refresh_loop_running = false;
                         return false;
+                    }
+                    // No sid window has keyboard focus (behind another app, other
+                    // workspace): probe at a fifth of the rate. The probe is the
+                    // heaviest item in the app (0.6-2.5G instructions a tick) and a
+                    // glance at an unfocused dashboard only needs a slowly-moving
+                    // number; the first tick after focus returns refreshes at once.
+                    if cx.active_window().is_none() {
+                        unfocused_ticks += 1;
+                        if unfocused_ticks % UNFOCUSED_TICK_DIVISOR != 0 {
+                            return true;
+                        }
+                    } else {
+                        unfocused_ticks = 0;
                     }
                     // Silent: the tick is nobody's click. See `refresh_systems_inner`.
                     state.refresh_systems_inner(false, cx);
