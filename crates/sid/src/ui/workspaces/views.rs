@@ -25,6 +25,11 @@ use crate::app::AppState;
 /// Widest a ref badge (branch / tag name) grows in the log before it ellipsises.
 const REF_BADGE_MAX_W: f32 = 220.;
 
+/// Log table column widths (design px).
+const LOG_HASH_W: f32 = 84.;
+const LOG_AUTHOR_W: f32 = 200.;
+const LOG_DATE_W: f32 = 120.;
+
 /// Diff rows painted per file. The provider already caps bytes; this caps elements so a
 /// long generated file cannot stall a frame.
 const MAX_DIFF_ROWS: usize = 3000;
@@ -36,8 +41,15 @@ fn tint(color: u32, alpha: f32) -> Hsla {
     h.opacity(alpha)
 }
 
-fn section_label(t: &Theme, ink: u32, text: String) -> Div {
-    div().text_label(t).text_color(rgb(ink)).child(text)
+/// A v2 group header: sentence-case Heading plus a count pill, the same pair a `Card`
+/// header draws. A small tone dot carries the group's meaning (staged = success, ...)
+/// that the UPPERCASE coloured label used to.
+fn section_heading(t: &Theme, ink: u32, label: &str, n: usize) -> Div {
+    h_flex()
+        .gap_2()
+        .child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(ink)))
+        .child(div().text_heading(t).child(label.to_string()))
+        .child(div().flex_none().child(Badge::count(n).pill()))
 }
 
 impl AppState {
@@ -195,14 +207,14 @@ impl AppState {
                 .justify_between()
                 .px_2()
                 .pt_2()
-                .child(section_label(t, ink, format!("{label} · {n}")))
+                .child(section_heading(t, ink, label, n))
                 .children(action)
                 .into_any_element()
         };
 
         let mut list = div().flex().flex_col().gap_1();
         if !b.conflicted.is_empty() {
-            list = list.child(header("CONFLICTED", b.conflicted.len(), danger, None)).child(
+            list = list.child(header("Conflicted", b.conflicted.len(), danger, None)).child(
                 div().px_2().child(
                     Toast::warning(
                         "These files have merge conflicts. Resolve them in your editor, then stage them.",
@@ -219,7 +231,7 @@ impl AppState {
                 .disabled(busy)
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| this.unstage_all(cx)))
                 .into_any_element();
-            list = list.child(header("STAGED", staged_n, success, Some(unstage_all)));
+            list = list.child(header("Staged", staged_n, success, Some(unstage_all)));
             list = list.child(List::stack().children(file_rows(&b.staged, Side::Staged, cx)));
         }
         let unstaged_total = b.unstaged.len() + b.untracked.len();
@@ -231,7 +243,7 @@ impl AppState {
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| this.stage_all(cx)))
                 .into_any_element();
             list = list.child(header(
-                "CHANGES",
+                "Changes",
                 b.unstaged.len(),
                 warning,
                 Some(stage_all),
@@ -247,7 +259,7 @@ impl AppState {
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| this.stage_all(cx)))
                     .into_any_element()
             });
-            list = list.child(header("UNTRACKED", b.untracked.len(), muted, stage_all));
+            list = list.child(header("Untracked", b.untracked.len(), muted, stage_all));
             list = list.child(List::stack().children(file_rows(&b.untracked, Side::Untracked, cx)));
         }
         let nothing = staged_n == 0 && unstaged_total == 0 && b.conflicted.is_empty();
@@ -854,16 +866,26 @@ impl AppState {
                                     .into_any_element()
                             })
                             .collect();
-                        Row::new(("ws-log", ix))
-                            .compact()
-                            .leading(
+                        h_flex()
+                            .id(("ws-log", ix))
+                            .w_full()
+                            .flex_none()
+                            .h(scaled(36.))
+                            .px_3()
+                            .gap_3()
+                            .border_b_1()
+                            .border_color(tint(t.border, 0.5))
+                            .child(
                                 div()
+                                    .flex_none()
+                                    .w(scaled(LOG_HASH_W))
                                     .text_mono_meta(t)
                                     .text_color(rgb(t.muted))
                                     .child(short_oid(&e.commit.oid).to_string()),
                             )
                             .child(
                                 h_flex()
+                                    .flex_1()
                                     .gap_2()
                                     .min_w(px(0.))
                                     .child(
@@ -876,9 +898,19 @@ impl AppState {
                                     )
                                     .children(badges),
                             )
-                            .meta(div().text_meta(t).child(e.commit.author_name.clone()))
-                            .meta(
+                            .child(
                                 div()
+                                    .flex_none()
+                                    .w(scaled(LOG_AUTHOR_W))
+                                    .clamp_one_line()
+                                    .text_meta(t)
+                                    .child(e.commit.author_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(scaled(LOG_DATE_W))
+                                    .clamp_one_line()
                                     .text_meta(t)
                                     .child(commit_age(now, e.commit.timestamp_secs)),
                             )
@@ -899,10 +931,31 @@ impl AppState {
                                 })),
                         )
                     });
+                let th = |w: Option<f32>, label: &'static str| {
+                    let d = div().text_label(t).text_color(rgb(t.muted));
+                    match w {
+                        Some(w) => d.flex_none().w(scaled(w)).child(label),
+                        None => d.flex_1().min_w(px(0.)).child(label),
+                    }
+                };
+                let head = h_flex()
+                    .w_full()
+                    .flex_none()
+                    .h(scaled(32.))
+                    .px_3()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(rgb(t.border))
+                    .child(th(Some(LOG_HASH_W), "Commit"))
+                    .child(th(None, "Message"))
+                    .child(th(Some(LOG_AUTHOR_W), "Author"))
+                    .child(th(Some(LOG_DATE_W), "Date"));
                 div()
                     .flex()
                     .flex_col()
-                    .child(List::stack().children(rows))
+                    .w_full()
+                    .child(head)
+                    .children(rows)
                     .children(more)
                     .into_any_element()
             }

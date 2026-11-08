@@ -58,6 +58,8 @@ pub(crate) struct GitV2 {
 
     pub log: Option<Fetch<LogState>>,
     pub log_more_loading: bool,
+    /// Remote names, for the Overview's Remotes card.
+    pub remotes: Option<Fetch<Vec<String>>>,
 
     pub _subs: Vec<Subscription>,
 }
@@ -86,6 +88,7 @@ impl GitV2 {
             branch_input_clear: false,
             log: None,
             log_more_loading: false,
+            remotes: None,
             _subs: Vec::new(),
         }
     }
@@ -105,6 +108,7 @@ impl GitV2 {
         self.force_delete = None;
         self.log = None;
         self.log_more_loading = false;
+        self.remotes = None;
     }
 }
 
@@ -418,6 +422,21 @@ impl AppState {
     }
 
     // ---- stash ------------------------------------------------------------------------
+
+    pub(super) fn ensure_remotes_loaded(&mut self, cx: &mut Context<Self>) {
+        if self.workspaces.v2.remotes.is_some() {
+            return;
+        }
+        self.workspaces.v2.remotes = Some(Fetch::Loading);
+        self.run_git(
+            true,
+            cx,
+            |r| r.remotes(),
+            |this, out, _| {
+                this.workspaces.v2.remotes = Some(Fetch::Done(out.map_err(GitPanelError::from)));
+            },
+        );
+    }
 
     pub(super) fn ensure_stash_loaded(&mut self, cx: &mut Context<Self>) {
         if self.workspaces.v2.stash.is_some() {
