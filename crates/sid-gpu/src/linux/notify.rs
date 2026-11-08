@@ -17,5 +17,5 @@ pub(crate) fn notify_failure(diagnosis: &Diagnosis) {
         format!("sid can't start: {}", diagnosis.summary),
         diagnosis.remedy.clone(),
     ];
-    let _ = crate::probe::run_silenced(&cmd, Duration::from_secs(2));
+    let _ = crate::linux::probe::run_silenced(&cmd, Duration::from_secs(2));
 }

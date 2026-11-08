@@ -85,6 +85,12 @@ gpui-component.workspace = true
 # `DataTable` columns, etc.) — wired in via `gpui_platform::application().with_assets(..)`.
 gpui-kit-assets.workspace = true
 
+
+# Linux windowing backends only (the workspace entry carries the platform-neutral features);
+# macOS and Windows use their native backends, which need no extra features.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["x11", "wayland"] }
+
 [dev-dependencies]
 # `app::seed_if_empty`'s tests (perf audit finding #7) need a real, throwaway `Store`
 # on disk — same pattern `sid-store`/`sid-db` already use in their own tests.

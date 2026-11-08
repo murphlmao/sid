@@ -3,9 +3,9 @@
 //! `KeyringStore` maps every [`SecretId`] to a `keyring_core::Entry` under the service
 //! name `"sid"`. keyring-core selects the concrete keystore at **runtime**: a backend
 //! store must be registered via [`install_default_backend`] before any operation, or
-//! every op fails. sid registers the pure-Rust zbus Secret Service store on Linux (see
-//! this crate's `Cargo.toml` for the load-bearing feature notes); other platforms are
-//! empty slots for now (`CLAUDE.md`: cross-platform is accommodated, not solved).
+//! every op fails. sid registers the pure-Rust zbus Secret Service store on Linux, the
+//! login Keychain on macOS and Credential Manager on Windows (see this crate's
+//! `Cargo.toml` for the load-bearing feature notes); other platforms fall back to memory.
 //!
 //! `KeyringStore` is generic over `B: KeyringBackend` so tests can inject a fake
 //! (`FakeKeyring`) without touching the real OS keyring daemon. Use [`KeyringStore::new`]
@@ -54,9 +54,25 @@ pub fn install_default_backend() -> Result<(), String> {
     Ok(())
 }
 
-/// Unsupported platform: no OS keyring backend is compiled in. This is an intentional
-/// empty slot (`CLAUDE.md`: keep the seams; don't write Mac/Windows code yet).
-#[cfg(not(target_os = "linux"))]
+/// macOS: the login Keychain via the Apple-native store.
+#[cfg(target_os = "macos")]
+pub fn install_default_backend() -> Result<(), String> {
+    let store = apple_native_keyring_store::keychain::Store::new().map_err(|e| e.to_string())?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// Windows: Credential Manager via the Windows-native store.
+#[cfg(target_os = "windows")]
+pub fn install_default_backend() -> Result<(), String> {
+    let store = windows_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// Any other platform has no OS keyring backend compiled in; the caller falls back to
+/// the in-memory store.
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub fn install_default_backend() -> Result<(), String> {
     Err("no OS keyring backend is compiled for this platform".into())
 }
