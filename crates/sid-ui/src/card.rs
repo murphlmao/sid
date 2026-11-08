@@ -172,6 +172,11 @@ pub const PANEL_FILTER_FLOOR: Pixels = px(120.);
 fn header_actions(actions: Vec<AnyElement>) -> gpui::Div {
     h_flex()
         .flex_initial()
+        // Without this the cluster's min-content width is the sum of its children's
+        // *declared* widths (a `Fixed(240)` filter counts as 240 whatever its own
+        // `min_w`), so flexbox refuses to shrink it and the actions overflow the card
+        // instead of the filter yielding. Found by `tests/fill_table_floor.rs`.
+        .min_w_0()
         .gap(CONTROL_GAP.len())
         .children(actions)
 }

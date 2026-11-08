@@ -58,3 +58,7 @@ mcp:
 gallery theme="cosmos":
     mkdir -p target/caps
     scripts/sid-cap.sh --env SID_GALLERY=1 --theme {{theme}} --size 1920x1600 --out target/caps/gallery-{{theme}}.png
+
+# Headless UI interaction tests (gpui-kit harness: find/click/press/input over a real window; no compositor needed).
+ui-test *args:
+    cargo test -p sid-ui --test button_activation --test focus_trap --test text_input_editing --test tree_keyboard --test fill_table_floor {{args}}

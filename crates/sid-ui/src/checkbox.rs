@@ -12,6 +12,8 @@
 
 use std::rc::Rc;
 
+use crate::TestSupportExt as _;
+
 use gpui::{
     App, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, RenderOnce,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -197,6 +199,7 @@ impl RenderOnce for Checkbox {
 
         h_flex()
             .id(self.id)
+            .test_support()
             .flex_none()
             .gap_2()
             .min_h(scaled(f32::from(MIN_HIT)))

@@ -228,6 +228,9 @@ struct FieldSpec {
     clearable: bool,
     disabled: bool,
     tab_index: isize,
+    /// Stable id the headless UI harness finds the field by (`window.find(id)`). None in the
+    /// app: the library registers the field only when it is given one.
+    test_id: Option<&'static str>,
 }
 
 impl FieldSpec {
@@ -240,6 +243,7 @@ impl FieldSpec {
             clearable: false,
             disabled: false,
             tab_index: 0,
+            test_id: None,
         }
     }
 
@@ -331,6 +335,12 @@ impl TextInput {
         self.spec.tab_index = index;
         self
     }
+
+    /// Name this field for the UI test harness (`window.find(id)`).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.spec.test_id = Some(id);
+        self
+    }
 }
 
 impl Styled for TextInput {
@@ -395,6 +405,12 @@ impl SearchInput {
         self.spec.tab_index = index;
         self
     }
+
+    /// Name this field for the UI test harness (`window.find(id)`).
+    pub fn test_id(mut self, id: &'static str) -> Self {
+        self.spec.test_id = Some(id);
+        self
+    }
 }
 
 impl Styled for SearchInput {
@@ -418,6 +434,7 @@ fn paint(
     theme: &Theme,
 ) -> impl IntoElement + use<> {
     let field = Input::new(state)
+        .when_some(spec.test_id, |this, id| this.id(id))
         .with_size(spec.size.component())
         .disabled(spec.disabled)
         .cleanable(spec.clearable)

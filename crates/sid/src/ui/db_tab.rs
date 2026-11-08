@@ -1702,13 +1702,16 @@ impl AppState {
                     // (120px) once the header is squeezed, so it is *this* that gives up
                     // width at a 700px window (this pane is only ~390px wide there), not
                     // the `RESULTS` title beside it (`card.rs`'s `header_actions`).
-                    div().children(self.db.result_filter.clone().map(|f| {
-                        TextInput::new(&f)
-                            .small()
-                            .fixed(px(160.))
-                            .flex_shrink_1()
-                            .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
-                    })),
+                    div()
+                        .flex()
+                        .min_w_0()
+                        .children(self.db.result_filter.clone().map(|f| {
+                            TextInput::new(&f)
+                                .small()
+                                .fixed(px(160.))
+                                .flex_shrink_1()
+                                .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
+                        })),
                 )
                 .when_some(next_page, Card::action)
                 // Far right, after the rest (Murphy: "download as csv should be on the far

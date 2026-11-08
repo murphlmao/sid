@@ -35,6 +35,7 @@ use gpui::{
     prelude::FluentBuilder as _, rgb, transparent_black,
 };
 
+use crate::TestSupportExt as _;
 use crate::bridge::pressed_of;
 use crate::button::ButtonSize;
 use crate::elevation::Elevation;
@@ -293,6 +294,7 @@ impl RenderOnce for SegmentedControl {
                 let id: ElementId = SharedString::from(format!("{base}-{ix}")).into();
                 h_flex()
                     .id(id)
+                    .test_support()
                     // A segment carries a caller's string — a sub-view name, or a kube
                     // context, which is `gke_project_europe-west1_cluster-name`. Without
                     // `min_w_0` the chip's minimum is that whole string (gpui reports a
