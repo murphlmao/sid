@@ -98,14 +98,75 @@ use sid_sysinfo::SysinfoProvider;
 
 use crate::app::AppState;
 use crate::ui::session::ssh_runtime;
-use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
+use sid_ui::component::{
+    Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableEvent, TableState,
+};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Badge, BadgeTone, Card, CellText, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
-    PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl, StyledExt as _, Switch,
-    TextInput, Toast, Typography as _, caveat_line, h_flex, scaled, sortable_th, v_flex,
+    ActionCell, Badge, BadgeTone, Card, CardGrid, CellText, ColumnWidth, Confirm, ConfirmArm,
+    ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, GridCard, Icon,
+    IconButton, InputState, PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl,
+    StyledExt as _, Switch, TextInput, Tipped as _, Toast, Typography as _, caveat_line, h_flex,
+    scaled, sortable_th, v_flex,
 };
+
+// ---- row actions: shown on hover / selection, not on every row ------------------------
+
+/// A delegate that remembers which row its table has selected, so that row's action
+/// cell stays visible while the rest reveal on hover.
+pub(crate) trait SelectableRows {
+    fn set_selected_row(&mut self, row: Option<usize>);
+}
+
+/// The hover-group name for one table row (`kind` keeps tables from sharing groups).
+pub(crate) fn row_group(kind: &'static str, row_ix: usize) -> SharedString {
+    format!("{kind}-row-{row_ix}").into()
+}
+
+/// An action cell that is laid out on every row (so nothing reflows) but only *seen* on
+/// the hovered row, the selected row, or a row mid-confirm (`shown`). The cell stays
+/// focusable and clickable, so keyboard and context-menu paths are unchanged.
+pub(crate) fn reveal_on_row(group: SharedString, shown: bool, cell: impl IntoElement) -> Div {
+    div()
+        .size_full()
+        .opacity(if shown { 1. } else { 0. })
+        .group_hover(group, |s| s.opacity(1.))
+        .child(cell)
+}
+
+/// Keep `delegate.selected_row` in step with the table's own selection.
+pub(crate) fn track_selection<D: TableDelegate + SelectableRows + 'static>(
+    table: &Entity<TableState<D>>,
+    cx: &mut Context<AppState>,
+) {
+    cx.subscribe(table, |_this, table, ev: &TableEvent, cx| {
+        if let TableEvent::SelectRow(ix) = ev {
+            let ix = *ix;
+            table.update(cx, |t, cx| {
+                t.delegate_mut().set_selected_row(Some(ix));
+                cx.notify();
+            });
+        }
+    })
+    .detach();
+}
+
+/// Whether this process is root (uid 0). Only meaningful on unix; elsewhere there is no
+/// uid concept to gate on, so it reports true (nothing is hidden).
+pub(crate) fn running_as_root() -> bool {
+    static ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ROOT.get_or_init(|| {
+        if !cfg!(unix) {
+            return true;
+        }
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .is_some_and(|s| s.trim() == "0")
+    })
+}
 
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,6 +452,8 @@ impl SortDir {
 /// two-click kill-confirm state and spawns its own kill task, since `render_td`'s `cx`
 /// is scoped to `TableState<Self>`, not the outer `AppState`.
 struct PortsDelegate {
+    /// The row the table has selected (its actions stay visible; others reveal on hover).
+    selected_row: Option<usize>,
     provider: Arc<Mutex<SysinfoProvider>>,
     /// The full row set from the last refresh — never shown directly; `ports` (the
     /// filtered view) is what `TableDelegate` reads.
@@ -428,6 +491,7 @@ struct PortsDelegate {
 impl PortsDelegate {
     fn new(provider: Arc<Mutex<SysinfoProvider>>) -> Self {
         Self {
+            selected_row: None,
             provider,
             all_ports: Vec::new(),
             ports: Vec::new(),
@@ -573,6 +637,12 @@ impl FillTableDelegate for PortsDelegate {
     }
 }
 
+impl SelectableRows for PortsDelegate {
+    fn set_selected_row(&mut self, row: Option<usize>) {
+        self.selected_row = row;
+    }
+}
+
 impl TableDelegate for PortsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -648,6 +718,16 @@ impl TableDelegate for PortsDelegate {
                 });
             }),
         )
+    }
+
+    /// Names the row so its action cell can reveal on hover (see `reveal_on_row`).
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> gpui::Stateful<Div> {
+        div().id(("row", row_ix)).group(row_group("port", row_ix))
     }
 
     fn render_td(
@@ -728,27 +808,25 @@ impl TableDelegate for PortsDelegate {
                 // one row's hover/press state to another. The *button* needs an id; the
                 // cell wrapping it does not.
                 let button_id = ("net-kill", pid.as_u32() as usize);
-                div()
-                    .size_full()
-                    .child(
-                        ActionCell::new().child(
-                            ConfirmButton::new(button_id, "kill")
-                                .armed(armed)
-                                .armed_label("confirm")
-                                .tooltip("Ask this process to stop (SIGTERM)")
-                                .on_press(cx.listener(
-                                    move |this, _ev: &ClickEvent, _window, cx| {
-                                        let outcome =
-                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                        match outcome {
-                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                            Confirm::Armed => cx.notify(),
-                                        }
-                                    },
-                                )),
-                        ),
-                    )
-                    .into_any_element()
+                reveal_on_row(
+                    row_group("port", row_ix),
+                    armed || self.selected_row == Some(row_ix),
+                    ActionCell::new().child(
+                        ConfirmButton::new(button_id, "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("Ask this process to stop (SIGTERM)")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element()
             }
         }
     }
@@ -758,6 +836,8 @@ impl TableDelegate for PortsDelegate {
 /// owning process with that process's CPU and memory. Read-only, same shape as
 /// [`DockerDelegate`] plus the usage map [`PortsDelegate`] carries.
 struct ConnectionsDelegate {
+    /// The row the table has selected (its actions stay visible; others reveal on hover).
+    selected_row: Option<usize>,
     provider: Arc<Mutex<SysinfoProvider>>,
     /// Two-step kill confirm keyed by the owning pid (never by row), so a re-sort or
     /// refresh between the two clicks can't redirect it. Same pattern as the Ports table.
@@ -775,6 +855,7 @@ struct ConnectionsDelegate {
 impl ConnectionsDelegate {
     fn new(provider: Arc<Mutex<SysinfoProvider>>) -> Self {
         Self {
+            selected_row: None,
             provider,
             kill_arm: ConfirmArm::new(),
             kill_error: None,
@@ -895,6 +976,12 @@ impl FillTableDelegate for ConnectionsDelegate {
     }
 }
 
+impl SelectableRows for ConnectionsDelegate {
+    fn set_selected_row(&mut self, row: Option<usize>) {
+        self.selected_row = row;
+    }
+}
+
 impl TableDelegate for ConnectionsDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -928,6 +1015,16 @@ impl TableDelegate for ConnectionsDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         sortable_th(col_ix, self.columns.column(col_ix), cx)
+    }
+
+    /// Names the row so its action cell can reveal on hover (see `reveal_on_row`).
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> gpui::Stateful<Div> {
+        div().id(("row", row_ix)).group(row_group("conn", row_ix))
     }
 
     fn render_td(
@@ -980,27 +1077,25 @@ impl TableDelegate for ConnectionsDelegate {
                 };
                 let armed = self.kill_arm.is_armed(pid, Instant::now());
                 // Keyed by pid so the id follows the process, not the row slot.
-                div()
-                    .size_full()
-                    .child(
-                        ActionCell::new().child(
-                            ConfirmButton::new(("conn-kill", pid.as_u32() as usize), "kill")
-                                .armed(armed)
-                                .armed_label("confirm")
-                                .tooltip("Ask the owning process to stop (SIGTERM)")
-                                .on_press(cx.listener(
-                                    move |this, _ev: &ClickEvent, _window, cx| {
-                                        let outcome =
-                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                        match outcome {
-                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                            Confirm::Armed => cx.notify(),
-                                        }
-                                    },
-                                )),
-                        ),
-                    )
-                    .into_any_element()
+                reveal_on_row(
+                    row_group("conn", row_ix),
+                    armed || self.selected_row == Some(row_ix),
+                    ActionCell::new().child(
+                        ConfirmButton::new(("conn-kill", pid.as_u32() as usize), "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("Ask the owning process to stop (SIGTERM)")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element()
             }
         }
     }
@@ -1012,6 +1107,8 @@ impl TableDelegate for ConnectionsDelegate {
 /// [`NetworkTabState::svc_scope`] by `AppState::set_svc_scope` so `perform` always
 /// controls the unit in the scope currently selected in the UI.
 struct ServicesDelegate {
+    /// The row the table has selected (its actions stay visible; others reveal on hover).
+    selected_row: Option<usize>,
     svc_provider: Arc<dyn ServiceProvider>,
     scope: SvcScope,
     all_services: Vec<ServiceInfo>,
@@ -1038,6 +1135,7 @@ struct ServicesDelegate {
 impl ServicesDelegate {
     fn new(svc_provider: Arc<dyn ServiceProvider>, scope: SvcScope) -> Self {
         Self {
+            selected_row: None,
             svc_provider,
             scope,
             all_services: Vec::new(),
@@ -1161,6 +1259,12 @@ impl FillTableDelegate for ServicesDelegate {
     }
 }
 
+impl SelectableRows for ServicesDelegate {
+    fn set_selected_row(&mut self, row: Option<usize>) {
+        self.selected_row = row;
+    }
+}
+
 impl TableDelegate for ServicesDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -1195,6 +1299,16 @@ impl TableDelegate for ServicesDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         sortable_th(col_ix, self.columns.column(col_ix), cx)
+    }
+
+    /// Names the row so its action cell can reveal on hover (see `reveal_on_row`).
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> gpui::Stateful<Div> {
+        div().id(("row", row_ix)).group(row_group("svc", row_ix))
     }
 
     fn render_td(
@@ -1253,7 +1367,28 @@ impl TableDelegate for ServicesDelegate {
                     (SvcAction::Stop, "stop"),
                     (SvcAction::Kill, "kill"),
                 ];
-                div().size_full().child(
+                // System units need root to control; a user session can only read them.
+                // The provider has no capability probe, so gate on the process uid for the
+                // system scope (user-scope units are always the user's own).
+                if self.scope == SvcScope::System && !running_as_root() {
+                    return reveal_on_row(
+                        row_group("svc", row_ix),
+                        false,
+                        ActionCell::new().child(
+                            div()
+                                .id(("svc-needs-root", row_ix))
+                                .text_meta(t)
+                                .child("needs root")
+                                .tip(NEEDS_ROOT_TIP),
+                        ),
+                    );
+                }
+                reveal_on_row(
+                    row_group("svc", row_ix),
+                    self.armed_action
+                        .as_ref()
+                        .is_some_and(|(n, _)| n == &svc.name)
+                        || self.selected_row == Some(row_ix),
                     ActionCell::new().children(actions.into_iter().enumerate().map(
                         |(action_ix, (action, label))| {
                             let armed =
@@ -1285,6 +1420,9 @@ impl TableDelegate for ServicesDelegate {
         }
     }
 }
+
+/// Why a system-scope unit shows no actions for a non-root user.
+const NEEDS_ROOT_TIP: &str = "Needs root — run sid with sudo or use systemctl";
 
 /// Backs the Docker [`Table`]. Read-only (no per-row actions, unlike
 /// [`PortsDelegate`]/[`ServicesDelegate`]) — closer in shape to `db_tab.rs`'s
@@ -1325,11 +1463,11 @@ impl DockerDelegate {
                 ),
                 (
                     Column::new("status", "Status").sortable(),
-                    ColumnWidth::Min(160.),
+                    ColumnWidth::Min(230.),
                 ),
                 (
                     Column::new("ports", "Ports").sortable(),
-                    ColumnWidth::grow().weight(1.2).min_width(200.),
+                    ColumnWidth::grow().weight(0.8).min_width(180.),
                 ),
             ]),
             active_sort: None,
@@ -1627,8 +1765,8 @@ impl AppState {
 
         v_flex()
             .flex_1()
-            .p_3()
-            .gap_2()
+            .p(sid_ui::PAGE_GUTTER.len())
+            .gap(sid_ui::SECTION_GAP.len())
             .child(self.network_sub_view_strip(sub_tab, cx))
             // The one flexible child, so whichever sub-view is showing gets the whole
             // remaining canvas. Each sub-view is a `Card::panel` that declares `flex_1` +
@@ -1948,11 +2086,47 @@ impl AppState {
             table_pane(table.as_ref(), empty)
         };
 
+        // A strip of summary cards above the table: with a handful of containers the
+        // table alone leaves most of a wide window empty, and these are the three
+        // numbers one opens this view to read.
+        let summary = table.as_ref().and_then(|t| {
+            let all = &t.read(cx).delegate().all_containers;
+            if not_installed || all.is_empty() {
+                return None;
+            }
+            let running = all.iter().filter(|c| c.state == "running").count();
+            let images: std::collections::HashSet<&str> =
+                all.iter().map(|c| c.image.as_str()).collect();
+            Some((running, all.len() - running, images.len()))
+        });
+        let theme = theme::active(cx).clone();
+        let summary_strip = summary.map(|(running, stopped, images)| {
+            let stat = |ix: usize, label: &'static str, n: usize| {
+                GridCard::new(("net-docker-stat", ix))
+                    .child(div().text_meta(&theme).child(label))
+                    .child(
+                        div()
+                            .text_mono(&theme)
+                            .text_color(rgb(theme.fg_strong))
+                            .child(n.to_string()),
+                    )
+            };
+            div().flex_none().w_full().p_3().child(
+                CardGrid::new()
+                    .min_col(px(180.))
+                    .max_col(px(260.))
+                    .child(stat(0, "Running", running))
+                    .child(stat(1, "Stopped", stopped))
+                    .child(stat(2, "Images in use", images)),
+            )
+        });
+
         self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
             .children(notice_row(
                 "Couldn't read containers",
                 self.network.docker_error.clone(),
             ))
+            .children(summary_strip)
             .child(body)
             .into_any_element()
     }
@@ -2065,15 +2239,28 @@ impl AppState {
             .network
             .visible_interfaces
             .iter()
-            .map(|iface| render_iface_row(iface, default_name.as_deref(), theme).into_any_element())
+            .enumerate()
+            .map(|(ix, iface)| {
+                render_iface_row(ix, iface, default_name.as_deref(), theme).into_any_element()
+            })
             .collect();
         let hidden_rows: Vec<AnyElement> = self
             .network
             .hidden_interfaces
             .iter()
-            .map(|iface| render_iface_row(iface, default_name.as_deref(), theme).into_any_element())
+            .enumerate()
+            .map(|(ix, iface)| {
+                render_iface_row(1000 + ix, iface, default_name.as_deref(), theme)
+                    .into_any_element()
+            })
             .collect();
         let hidden_count = hidden_rows.len();
+        let visible_count = visible_rows.len();
+        let (hidden_cards, hidden_rows_vec) = if visible_count <= 3 {
+            (hidden_rows, Vec::new())
+        } else {
+            (Vec::new(), hidden_rows)
+        };
         let expanded = self.network.interfaces_expanded;
         let nothing_to_show = visible_rows.is_empty() && hidden_count == 0;
 
@@ -2081,8 +2268,22 @@ impl AppState {
         // inside it was two hairlines and two fills for one list.
         let list = v_flex()
             .w_full()
-            .child(v_flex().w_full().children(visible_rows))
-            .children((hidden_count > 0).then(|| {
+            .child(CardGrid::new().children(visible_rows))
+            // With only a few primary interfaces the rest of the window would be empty,
+            // so the virtual/bridge ones are listed right below instead of behind a toggle.
+            .children((hidden_count > 0 && visible_count <= 3).then(|| {
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .pt_4()
+                    .child(
+                        div()
+                            .text_meta(theme)
+                            .child(format!("Virtual and bridge interfaces ({hidden_count})")),
+                    )
+                    .child(CardGrid::new().children(hidden_cards))
+            }))
+            .children((hidden_count > 0 && visible_count > 3).then(|| {
                 let this = cx.entity();
                 v_flex()
                     .w_full()
@@ -2098,7 +2299,7 @@ impl AppState {
                                 }),
                         ),
                     )
-                    .children(expanded.then(|| v_flex().w_full().children(hidden_rows)))
+                    .children(expanded.then(|| CardGrid::new().children(hidden_rows_vec)))
             }))
             .children(nothing_to_show.then(|| {
                 EmptyState::new("No network interfaces")
@@ -2135,12 +2336,14 @@ impl AppState {
         if self.network.table.is_none() {
             let provider = self.network.provider.clone();
             let table = cx.new(|cx| TableState::new(PortsDelegate::new(provider), window, cx));
+            track_selection(&table, cx);
             self.network.table = Some(table);
         }
         if self.network.connections_table.is_none() {
             let provider = self.network.provider.clone();
             let table =
                 cx.new(|cx| TableState::new(ConnectionsDelegate::new(provider), window, cx));
+            track_selection(&table, cx);
             self.network.connections_table = Some(table);
         }
         if self.network.services_table.is_none() {
@@ -2148,6 +2351,7 @@ impl AppState {
             let scope = self.network.svc_scope;
             let table = cx
                 .new(|cx| TableState::new(ServicesDelegate::new(svc_provider, scope), window, cx));
+            track_selection(&table, cx);
             self.network.services_table = Some(table);
         }
         if self.network.docker_table.is_none() {
@@ -3270,90 +3474,81 @@ fn partition_interfaces<'a>(
 /// now, which is the same treatment the Services/Docker/Kubernetes state columns get, so
 /// one reading applies across the whole tab.
 fn render_iface_row(
+    ix: usize,
     iface: &NetInterface,
     default_name: Option<&str>,
     theme: &Theme,
 ) -> impl IntoElement + use<> {
     let is_default = default_name == Some(iface.name.as_str());
-    let addrs: SharedString = if iface.addrs.is_empty() {
-        "no addrs".into()
-    } else {
-        iface.addrs.join(", ").into()
-    };
     let (status_label, status_tone) = if iface.is_up {
         ("up", BadgeTone::Success)
     } else {
         ("down", BadgeTone::Neutral)
     };
-    let throughput: SharedString = format!(
-        "rx {} · tx {}",
-        humanize_bytes(iface.rx_bytes),
-        humanize_bytes(iface.tx_bytes)
-    )
-    .into();
-    h_flex()
-        .w_full()
-        .gap_3()
-        .row_padding()
-        .child(
-            // Fixed and clipped, not wrapped: a docker bridge name
-            // (`br-ad668dcc2335`) is 15 characters and wrapping one made its row twice
-            // as tall as its neighbours, which is the only thing the eye notices in a
-            // list of 17.
-            // Mono, not the proportional MEDIUM this used to be: `enp5s0` / `br-ad668dcc`
-            // is a device identifier, and the type scale spends `MEDIUM` on headings only
-            // — a row label in the emphasis weight made every one of 17 rows a heading.
-            // `fg_strong` still separates the name from the muted data beside it.
+    // One address per line, in mono: they are identifiers, and a card has the height
+    // for the full list that a one-line row had to join with commas and truncate.
+    let addrs: Vec<AnyElement> = if iface.addrs.is_empty() {
+        vec![
             div()
-                .w(px(184.))
-                .flex_none()
-                .clamp_one_line()
-                .text_mono(theme)
-                .text_color(rgb(theme.fg_strong))
-                .child(iface.name.clone()),
-        )
-        .when(is_default, |el| {
-            // Outline, not the soft fill: accent means "engage", and on cosmos a filled
-            // accent chip is a red block. This is orientation — exactly one row on the
-            // screen carries it at all, which is signal enough without shouting.
-            el.child(
-                Badge::new("default route")
-                    .tone(BadgeTone::Accent)
-                    .outline(),
-            )
-        })
-        .child(
-            // The row's payload, so it rides the same rung as the name and separates from
-            // it by ink alone — and in mono, because these are addresses.
-            div()
-                .flex_1()
-                .min_w_0()
-                .clamp_one_line()
-                .text_mono(theme)
-                .text_color(rgb(theme.muted))
-                .child(addrs),
-        )
-        // The trailing two are fixed-width so the status chips line up down the list.
-        // Left to size themselves they tracked the throughput string's length and the
-        // column zig-zagged by 60px a row.
+                .text_meta(theme)
+                .child("no addresses")
+                .into_any_element(),
+        ]
+    } else {
+        iface
+            .addrs
+            .iter()
+            .map(|a| {
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .clamp_one_line()
+                    .text_mono(theme)
+                    .text_color(rgb(theme.muted))
+                    .child(a.clone())
+                    .into_any_element()
+            })
+            .collect()
+    };
+    GridCard::new(("net-iface", ix))
         .child(
             h_flex()
-                .w(px(72.))
-                .flex_none()
-                .justify_end()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .clamp_one_line()
+                        .text_mono(theme)
+                        .text_color(rgb(theme.fg_strong))
+                        .child(iface.name.clone()),
+                )
+                .when(is_default, |el| {
+                    // Outline, not the soft fill: orientation, not "engage".
+                    el.child(
+                        Badge::new("default route")
+                            .tone(BadgeTone::Accent)
+                            .outline(),
+                    )
+                })
                 .child(Badge::new(status_label).tone(status_tone)),
         )
+        .child(v_flex().w_full().gap_1().children(addrs))
         .child(
-            // Counters, not identity: the row's one genuinely secondary field, so it drops
-            // a rung rather than merely dimming — and stays monospace so the digits of a
-            // right-aligned column line up down the list.
-            div()
-                .w(px(180.))
-                .flex_none()
-                .text_right()
-                .clamp_one_line()
-                .text_mono_meta(theme)
-                .child(throughput),
+            h_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    div()
+                        .text_mono_meta(theme)
+                        .child(format!("rx {}", humanize_bytes(iface.rx_bytes))),
+                )
+                .child(
+                    div()
+                        .text_mono_meta(theme)
+                        .child(format!("tx {}", humanize_bytes(iface.tx_bytes))),
+                ),
         )
 }
 

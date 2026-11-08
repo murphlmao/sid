@@ -72,7 +72,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, IntoElement, KeyDownEvent, MouseButton,
+    AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
@@ -82,6 +82,7 @@ use sid_sysinfo::SysinfoProvider;
 use super::is_field_submit;
 use crate::app::{AppState, Tab};
 use crate::ui::config_editor::ConfigEditorState;
+use crate::ui::network_tab::{SelectableRows, reveal_on_row, row_group, track_selection};
 use crate::ui::session::ssh_runtime;
 use sid_ui::component::{
     Column, ColumnSort, ContextMenuExt, PopupMenu, PopupMenuItem, TableDelegate, TableState,
@@ -282,6 +283,8 @@ const PROCESS_SORT_KEYS: [ProcessSortKey; 6] = [
 /// `TableState<Self>`, not the outer `AppState`). Adds sort state on top, which
 /// `PortsDelegate` doesn't have yet (sortable network tables are a separate track).
 struct ProcessesDelegate {
+    /// The row the table has selected (its actions stay visible; others reveal on hover).
+    selected_row: Option<usize>,
     provider: Arc<Mutex<SysinfoProvider>>,
     /// The full row set from the last refresh — never shown directly; `processes` (the
     /// filtered + sorted view) is what `TableDelegate` reads.
@@ -319,6 +322,7 @@ struct ProcessesDelegate {
 impl ProcessesDelegate {
     fn new(provider: Arc<Mutex<SysinfoProvider>>) -> Self {
         Self {
+            selected_row: None,
             provider,
             all_processes: Vec::new(),
             processes: Vec::new(),
@@ -472,6 +476,12 @@ fn rows_changed<D: TableDelegate>(cx: &mut Context<TableState<D>>) {
     cx.notify();
 }
 
+impl SelectableRows for ProcessesDelegate {
+    fn set_selected_row(&mut self, row: Option<usize>) {
+        self.selected_row = row;
+    }
+}
+
 impl TableDelegate for ProcessesDelegate {
     fn columns_count(&self, _cx: &App) -> usize {
         self.columns.len()
@@ -555,6 +565,16 @@ impl TableDelegate for ProcessesDelegate {
         )
     }
 
+    /// Names the row so its action cell can reveal on hover (see `reveal_on_row`).
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> gpui::Stateful<Div> {
+        div().id(("row", row_ix)).group(row_group("proc", row_ix))
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -612,27 +632,25 @@ impl TableDelegate for ProcessesDelegate {
                 // hand one row's hover/press state to another. The *button* needs an id;
                 // the cell wrapping it does not.
                 let button_id = ("proc-kill", pid.as_u32() as usize);
-                div()
-                    .size_full()
-                    .child(
-                        ActionCell::new().child(
-                            ConfirmButton::new(button_id, "kill")
-                                .armed(armed)
-                                .armed_label("confirm")
-                                .tooltip("Ask this process to stop (SIGTERM)")
-                                .on_press(cx.listener(
-                                    move |this, _ev: &ClickEvent, _window, cx| {
-                                        let outcome =
-                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                        match outcome {
-                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                            Confirm::Armed => cx.notify(),
-                                        }
-                                    },
-                                )),
-                        ),
-                    )
-                    .into_any_element()
+                reveal_on_row(
+                    row_group("proc", row_ix),
+                    armed || self.selected_row == Some(row_ix),
+                    ActionCell::new().child(
+                        ConfirmButton::new(button_id, "kill")
+                            .armed(armed)
+                            .armed_label("confirm")
+                            .tooltip("Ask this process to stop (SIGTERM)")
+                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                let outcome =
+                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                match outcome {
+                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                    Confirm::Armed => cx.notify(),
+                                }
+                            })),
+                    ),
+                )
+                .into_any_element()
             }
         }
     }
@@ -688,8 +706,8 @@ impl AppState {
 
         v_flex()
             .flex_1()
-            .p_3()
-            .gap_3()
+            .p(sid_ui::PAGE_GUTTER.len())
+            .gap(sid_ui::SECTION_GAP.len())
             .child(overview)
             .child(self.system_sub_view_strip(sub_view, cx))
             // The one flexible child, so whichever sub-view is showing gets the whole
@@ -813,6 +831,7 @@ impl AppState {
         if self.systems.table.is_none() {
             let provider = self.systems.provider.clone();
             let table = cx.new(|cx| TableState::new(ProcessesDelegate::new(provider), window, cx));
+            track_selection(&table, cx);
             self.systems.table = Some(table);
         }
         if self.systems.filter.is_none() {
@@ -949,6 +968,9 @@ impl AppState {
         self.systems.loop_gen += 1;
         let generation = self.systems.loop_gen;
         cx.spawn(async move |this, cx| {
+            // The very first wait after (re)starting is short when the history is empty:
+            // a quick second sample gives CPU a delta and the sparklines a second point.
+            let mut warmup = true;
             loop {
                 // Decide the next wait; `None` means truly idle: no timer, no probe,
                 // no repaint until something calls `resume_systems_refresh`.
@@ -961,12 +983,16 @@ impl AppState {
                         cx.active_window().is_some(),
                         state.systems.background,
                     );
+                    // Only ever shortens a foreground tick: a hidden/unfocused tab still
+                    // idles (BackgroundRefresh), the warmup never forces background work.
+                    let wait = warmup_wait(wait, warmup, state.systems.history.cpu.len());
                     if wait.is_none() {
                         state.systems.refresh_loop_running = false;
                     }
                     wait
                 });
                 let Ok(Some(wait)) = wait else { break };
+                warmup = false;
                 cx.background_executor().timer(wait).await;
                 let keep_going = this.update(cx, |state, cx| {
                     if state.systems.loop_gen != generation {
@@ -1563,15 +1589,17 @@ impl AppState {
                     .gap_2()
                     .child(div().flex_none().child(m))
                     .child(sparkline(&theme, samples, chart_h))
-                    .child(div().text_meta(&theme).clamp_one_line().child(line)),
+                    // Wraps rather than clips: at 1280 the three cards are ~400px each
+                    // and a one-line footer cut "31.1 GB t…" off mid-figure.
+                    .child(div().w_full().min_w_0().text_meta(&theme).child(line)),
             )
         };
         let mem_line = format!(
-            "{} used · {} cached · {} available · {} total",
+            // No total: the meter's value above already reads "used / total".
+            "{} used · {} cached · {} available",
             humanize_bytes(ov.mem_used),
             humanize_bytes(ov.mem_cached),
             humanize_bytes(ov.mem_total.saturating_sub(ov.mem_used)),
-            humanize_bytes(ov.mem_total)
         );
         let swap_line = if ov.swap_total > 0 {
             format!(
@@ -1591,12 +1619,19 @@ impl AppState {
         v_flex()
             .w_full()
             .gap_2()
-            .child(div().text_meta(&theme).child(summary))
+            // Inset by the card padding so the line starts where the card contents do,
+            // not flush with the card edge.
+            .child(
+                div()
+                    .px(sid_ui::CARD_PADDING.len())
+                    .text_meta(&theme)
+                    .child(summary),
+            )
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_3()
+                    .gap(sid_ui::SECTION_GAP.len())
                     .child(card(cpu, &hist.cpu, cpu_line, 56.))
                     .child(card(memory, &hist.mem, mem_line, 112.))
                     .child(card(swap, &hist.swap, swap_line, 112.)),
@@ -1613,7 +1648,10 @@ const HISTORY_CAP: usize = 120;
 const SPARK_BARS: usize = 60;
 /// Below this many samples a sparkline shows its "Collecting…" state instead of a
 /// mostly-empty full-width chart.
-const MIN_SPARK_SAMPLES: usize = 8;
+const MIN_SPARK_SAMPLES: usize = 3;
+/// The delay before the quick second sample taken right after the tab opens, so CPU
+/// deltas exist and the sparklines are real within ~2-3s instead of ~16s.
+const WARMUP_DELAY: Duration = Duration::from_millis(500);
 
 /// Rolling utilisation (0..=1) for the three overview cards.
 #[derive(Default)]
@@ -1659,6 +1697,16 @@ fn next_tick(visible: bool, focused: bool, policy: BackgroundRefresh) -> Option<
     match policy {
         BackgroundRefresh::Off => None,
         BackgroundRefresh::Every(d) => Some(d),
+    }
+}
+
+/// Shorten the first foreground wait after (re)starting the loop while the history is
+/// nearly empty, so a second sample (and with it CPU deltas) lands in ~500ms. Never turns
+/// an idle (`None`) decision into work: hidden/unfocused stays idle.
+fn warmup_wait(wait: Option<Duration>, first: bool, samples: usize) -> Option<Duration> {
+    match wait {
+        Some(w) if first && samples < 2 => Some(w.min(WARMUP_DELAY)),
+        other => other,
     }
 }
 
@@ -1883,6 +1931,19 @@ fn humanize_uptime(total_secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn warmup_shortens_only_the_first_foreground_wait() {
+        let tick = Some(FOREGROUND_TICK);
+        assert_eq!(warmup_wait(tick, true, 1), Some(WARMUP_DELAY));
+        assert_eq!(warmup_wait(tick, false, 1), tick);
+        assert_eq!(warmup_wait(tick, true, 2), tick);
+    }
+
+    #[test]
+    fn warmup_never_wakes_an_idle_loop() {
+        assert_eq!(warmup_wait(None, true, 0), None);
+    }
+
     use super::*;
 
     fn proc(pid: u32, name: &str, cpu: f32, mem: u64, user: Option<&str>) -> ProcessInfo {
