@@ -522,3 +522,73 @@ impl Identity for PinnedFile {
         &self.path
     }
 }
+
+/// Most commands kept per host; the oldest are evicted past this.
+pub const HOST_HISTORY_CAP: usize = 500;
+
+/// One remembered SSH command line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// The command line exactly as entered.
+    pub command: String,
+    /// When it was last entered, seconds since the UNIX epoch.
+    pub at_unix: i64,
+}
+
+/// The command history of one host, keyed by [`Host::alias`] (the host identity).
+///
+/// Stored global-only in its own redb table (codec version 1), one row per host, entries
+/// **oldest first**. Rules, enforced by [`HostHistory::push`]:
+/// - blank commands are ignored;
+/// - a command equal to the most recent entry is *collapsed* (its timestamp is refreshed,
+///   no second row);
+/// - at most [`HOST_HISTORY_CAP`] entries are kept, evicting the oldest.
+///
+/// # Recording contract
+///
+/// This type is a dumb store. **The caller decides what is recorded** and must never
+/// pass input typed at a password / passphrase / sudo prompt, nor anything it knows to be
+/// a secret: history is plaintext on disk, unlike credentials, which live in the keyring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HostHistory {
+    /// Oldest first.
+    pub entries: Vec<HistoryEntry>,
+}
+
+impl HostHistory {
+    /// Record `command` at `at_unix`. Returns `true` when a new entry was appended,
+    /// `false` when ignored (blank) or collapsed into the previous identical entry.
+    pub fn push(&mut self, command: &str, at_unix: i64) -> bool {
+        if command.trim().is_empty() {
+            return false;
+        }
+        if let Some(last) = self.entries.last_mut()
+            && last.command == command
+        {
+            last.at_unix = at_unix;
+            return false;
+        }
+        self.entries.push(HistoryEntry {
+            command: command.to_string(),
+            at_unix,
+        });
+        if self.entries.len() > HOST_HISTORY_CAP {
+            let excess = self.entries.len() - HOST_HISTORY_CAP;
+            self.entries.drain(..excess);
+        }
+        true
+    }
+
+    /// Newest-first entries whose command starts with `prefix` (all when `None`/empty),
+    /// at most `limit`.
+    pub fn search(&self, prefix: Option<&str>, limit: usize) -> Vec<HistoryEntry> {
+        let prefix = prefix.unwrap_or("");
+        self.entries
+            .iter()
+            .rev()
+            .filter(|e| e.command.starts_with(prefix))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}

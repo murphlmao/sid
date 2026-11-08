@@ -16,8 +16,9 @@ use serde::de::DeserializeOwned;
 
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
-    DbConnection, DbConnectionV1, DbConnectionV2, Host, HostV1, HostV2, Identity, KeyBinding,
-    PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3, SettingsV4,
+    DbConnection, DbConnectionV1, DbConnectionV2, HistoryEntry, Host, HostHistory, HostV1, HostV2,
+    Identity, KeyBinding, PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
+    SettingsV4,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -36,6 +37,13 @@ const PINNED_FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("pinned_
 /// yet, keyed by the entity's own identity. A separate table rather than fields on
 /// [`Settings`] — see [`KeyBinding`]'s doc comment for why.
 const KEYBINDINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("keybindings");
+
+/// Per-host SSH command history, keyed by [`Host::alias`]; one [`HostHistory`] row per
+/// host, global-only (command history is machine-local, never committed).
+const HOST_HISTORY: TableDefinition<&str, &[u8]> = TableDefinition::new("host_history");
+
+/// Codec version of [`HostHistory`] rows.
+pub(crate) const HOST_HISTORY_VERSION: u8 = 1;
 
 /// The single key under which [`Settings`] lives in the [`SETTINGS`] table.
 const SETTINGS_KEY: &str = "settings";
@@ -79,6 +87,7 @@ impl GlobalStore {
         write_table(&txn, SETTINGS, "open settings")?;
         write_table(&txn, PINNED_FILES, "open pinned_files")?;
         write_table(&txn, KEYBINDINGS, "open keybindings")?;
+        write_table(&txn, HOST_HISTORY, "open host_history")?;
         txn.commit()
             .map_err(|e| StoreError::Storage(format!("commit: {e}")))?;
         Ok(Self { db })
@@ -249,6 +258,79 @@ impl GlobalStore {
         self.remove(PINNED_FILES, path)
     }
 
+    // ---- per-host command history (global-only; see `HostHistory` for the contract) ----
+
+    /// Record `command` for the host `alias` (atomic read-modify-write). Returns whether a
+    /// new entry was appended (`false`: blank, or collapsed into an identical latest
+    /// entry). The caller must not pass password-prompt input - see [`HostHistory`].
+    pub fn record_host_command(&self, alias: &str, command: &str, at_unix: i64) -> Result<bool> {
+        self.with_write("commit", |txn| {
+            let mut tbl = write_table(txn, HOST_HISTORY, "open host_history")?;
+            let mut hist = match tbl
+                .get(alias)
+                .map_err(|e| StoreError::Storage(format!("get: {e}")))?
+            {
+                Some(g) => decode_history(g.value())?,
+                None => HostHistory::default(),
+            };
+            let appended = hist.push(command, at_unix);
+            let bytes = encode_versioned(HOST_HISTORY_VERSION, &hist)?;
+            tbl.insert(alias, &bytes[..])
+                .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+            Ok(appended)
+        })
+    }
+
+    /// Newest-first history of `alias`, filtered to commands starting with `prefix`
+    /// (`None` = all), at most `limit` entries.
+    pub fn host_history(
+        &self,
+        alias: &str,
+        prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>> {
+        Ok(self
+            .get_with(HOST_HISTORY, alias, decode_history)?
+            .map(|h| h.search(prefix, limit))
+            .unwrap_or_default())
+    }
+
+    /// Forget `alias`'s history; returns whether any existed.
+    pub fn clear_host_history(&self, alias: &str) -> Result<bool> {
+        self.remove(HOST_HISTORY, alias)
+    }
+
+    /// Move `old`'s history under `new` (call when a host is renamed). Refuses with
+    /// [`StoreError::Conflict`] if `new` already has history; a no-op if `old` has none.
+    pub fn rename_host_history(&self, old: &str, new: &str) -> Result<()> {
+        if old == new {
+            return Ok(());
+        }
+        self.with_write("commit", |txn| {
+            let mut tbl = write_table(txn, HOST_HISTORY, "open host_history")?;
+            let exists_new = tbl
+                .get(new)
+                .map_err(|e| StoreError::Storage(format!("get: {e}")))?
+                .is_some();
+            let moved = tbl
+                .remove(old)
+                .map_err(|e| StoreError::Storage(format!("remove: {e}")))?
+                .map(|g| g.value().to_vec());
+            let Some(bytes) = moved else { return Ok(()) };
+            if exists_new {
+                // put it back untouched, then refuse
+                tbl.insert(old, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                return Err(StoreError::Conflict(format!(
+                    "history for `{new}` already exists"
+                )));
+            }
+            tbl.insert(new, &bytes[..])
+                .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+            Ok(())
+        })
+    }
+
     // ---- keybinding overrides (Settings -> Keymap; global-only) ----
 
     /// Every user override. Order is redb's key order (the action id) — the frontend
@@ -390,6 +472,18 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
         4 => Ok(decode_versioned::<SettingsV4>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
+    }
+}
+
+/// Decode a [`HostHistory`] row, branching on its version byte.
+fn decode_history(bytes: &[u8]) -> Result<HostHistory> {
+    match bytes.first().copied() {
+        Some(HOST_HISTORY_VERSION) => Ok(decode_versioned::<HostHistory>(bytes)?.1),
+        Some(other) => Err(StoreError::UnsupportedVersion(other)),
+        None => Err(StoreError::Decode {
+            version: 0,
+            msg: "empty payload".into(),
+        }),
     }
 }
 

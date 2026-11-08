@@ -12,6 +12,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+mod v2;
+pub use v2::{
+    Diff, DiffHunk, DiffLimits, DiffLine, DiffLineKind, DiffStatus, DiffTarget, FetchReport,
+    FileDiff, FileStatus, LogEntry, LogPage, LogQuery, RefDecoration, RefKind, StashEntry,
+    StatusCounts, StatusOptions, WorktreeInfo,
+};
+
 /// Domain-shaped git error. Concrete impls map their library errors into this.
 ///
 /// # Examples
@@ -35,6 +42,40 @@ pub enum GitError {
     InvalidRef(String),
     #[error("git operation failed: {0}")]
     Other(String),
+    /// The provider does not implement this operation.
+    #[error("not supported by this git provider: {0}")]
+    Unsupported(&'static str),
+    #[error("commit message is empty")]
+    EmptyMessage,
+    /// `user.name` / `user.email` missing from git config; the payload says how to fix it.
+    #[error("git identity not configured: {0}")]
+    MissingIdentity(String),
+    #[error("nothing to commit — no staged changes")]
+    NothingToCommit,
+    #[error("nothing to stash — no local changes")]
+    NothingToStash,
+    /// Unresolved merge conflicts block the operation.
+    #[error("{0} conflicted path(s) — resolve them first")]
+    Conflicts(usize),
+    /// An apply/merge-style operation hit conflicting local changes.
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("branch '{0}' already exists")]
+    BranchExists(String),
+    #[error("cannot delete '{0}': it is the current branch")]
+    BranchIsCurrent(String),
+    #[error("branch '{0}' is not fully merged — use force to delete it")]
+    BranchNotMerged(String),
+    #[error("stash entry {0} not found")]
+    StashNotFound(usize),
+    #[error("remote '{0}' not found")]
+    RemoteNotFound(String),
+    /// Authentication failed; sid never prompts, so only ssh-agent / default
+    /// credentials are tried.
+    #[error("authentication failed: {0}")]
+    AuthFailed(String),
+    #[error("timed out: {0}")]
+    TimedOut(String),
 }
 
 /// One local branch.
@@ -101,21 +142,42 @@ pub enum StatusKind {
     Renamed,
     Untracked,
     Conflicted,
+    Typechange,
+    /// Only reported when [`StatusOptions::include_ignored`] is set.
+    Ignored,
 }
 
 /// Aggregate status for a repo, plus a quick `is_clean` flag.
+///
+/// `entries` is the per-side view (a path changed in both index and worktree yields
+/// two rows); `files` folds each path into one [`FileStatus`] with both sides;
+/// `counts` rolls the buckets up.
 ///
 /// # Examples
 ///
 /// ```
 /// use sid_core::git::GitStatus;
-/// let s = GitStatus { entries: vec![], is_clean: true };
+/// let s = GitStatus::default();
 /// assert!(s.is_clean);
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitStatus {
     pub entries: Vec<StatusEntry>,
     pub is_clean: bool,
+    /// One row per path, both sides folded. Sorted by path.
+    pub files: Vec<FileStatus>,
+    pub counts: StatusCounts,
+}
+
+impl Default for GitStatus {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            is_clean: true,
+            files: Vec::new(),
+            counts: StatusCounts::default(),
+        }
+    }
 }
 
 /// One commit, condensed for log display.
@@ -227,7 +289,7 @@ impl RepoSummary {
 ///     fn list_branches(&self) -> Result<Vec<Branch>, GitError> { Ok(vec![]) }
 ///     fn current_branch(&self) -> Result<Option<Branch>, GitError> { Ok(None) }
 ///     fn status(&self) -> Result<GitStatus, GitError> {
-///         Ok(GitStatus { entries: vec![], is_clean: true })
+///         Ok(GitStatus::default())
 ///     }
 ///     fn commit_log(&self, _max: usize) -> Result<Vec<CommitInfo>, GitError> { Ok(vec![]) }
 ///     fn summary(&self) -> Result<RepoSummary, GitError> {
@@ -269,4 +331,137 @@ pub trait GitProvider: Send + Sync {
     /// [`GitError::DirtyWorkingTree`] when any tracked change exists — sid never
     /// destroys uncommitted work.
     fn checkout_branch(&mut self, name: &str) -> Result<(), GitError>;
+
+    // ─── v2 surface ─────────────────────────────────────────────────────────
+    // Every method below has a default returning [`GitError::Unsupported`] so
+    // minimal providers (and test doubles) keep compiling; `sid-git` implements all.
+
+    /// Status with explicit inclusion options (e.g. ignored files). [`Self::status`]
+    /// is this with [`StatusOptions::default`].
+    fn status_with(&self, _opts: &StatusOptions) -> Result<GitStatus, GitError> {
+        Err(GitError::Unsupported("status_with"))
+    }
+
+    /// Stage `paths` (repo-relative; files, or a directory = everything under it).
+    /// A path that no longer exists stages its deletion. Paths escaping the repo
+    /// (absolute or `..`) are [`GitError::InvalidRef`].
+    fn stage_paths(&mut self, _paths: &[String]) -> Result<(), GitError> {
+        Err(GitError::Unsupported("stage_paths"))
+    }
+
+    /// Stage every change, untracked files and deletions included (`git add -A`).
+    fn stage_all(&mut self) -> Result<(), GitError> {
+        Err(GitError::Unsupported("stage_all"))
+    }
+
+    /// Unstage `paths`: reset their index entries to HEAD (working tree untouched).
+    /// Works on an unborn HEAD (the entries are just removed from the index).
+    fn unstage_paths(&mut self, _paths: &[String]) -> Result<(), GitError> {
+        Err(GitError::Unsupported("unstage_paths"))
+    }
+
+    /// Unstage everything.
+    fn unstage_all(&mut self) -> Result<(), GitError> {
+        Err(GitError::Unsupported("unstage_all"))
+    }
+
+    /// DESTRUCTIVE: overwrite the working-tree copy of tracked `paths` with the
+    /// index version (restoring deleted files). Unsaved edits are unrecoverable, so
+    /// the UI MUST confirm (two-click arm) first. Untracked paths are refused
+    /// ([`GitError::InvalidRef`]); use [`Self::remove_untracked`] for those.
+    fn discard_paths(&mut self, _paths: &[String]) -> Result<(), GitError> {
+        Err(GitError::Unsupported("discard_paths"))
+    }
+
+    /// DESTRUCTIVE: delete untracked files/directories at `paths` from disk. Tracked
+    /// paths are refused ([`GitError::InvalidRef`]). The UI MUST confirm first.
+    fn remove_untracked(&mut self, _paths: &[String]) -> Result<(), GitError> {
+        Err(GitError::Unsupported("remove_untracked"))
+    }
+
+    /// Structured, size-capped diff — see [`DiffTarget`] and [`DiffLimits`].
+    fn diff(&self, _target: &DiffTarget, _limits: &DiffLimits) -> Result<Diff, GitError> {
+        Err(GitError::Unsupported("diff"))
+    }
+
+    /// Commit the index. `message` is refused when blank ([`GitError::EmptyMessage`]);
+    /// identity comes from git config ([`GitError::MissingIdentity`] when unset);
+    /// no staged change is [`GitError::NothingToCommit`] (except `amend`, which may
+    /// just reword); unresolved conflicts are [`GitError::Conflicts`]. `amend`
+    /// rewrites HEAD (keeping its author). Works for the first commit on an unborn HEAD.
+    fn commit(&mut self, _message: &str, _amend: bool) -> Result<CommitInfo, GitError> {
+        Err(GitError::Unsupported("commit"))
+    }
+
+    /// The stash stack, newest (index 0) first.
+    fn stash_list(&self) -> Result<Vec<StashEntry>, GitError> {
+        Err(GitError::Unsupported("stash_list"))
+    }
+
+    /// Stash local changes, optionally including untracked files. Returns the new
+    /// entry. [`GitError::NothingToStash`] when there is nothing to save.
+    fn stash_push(
+        &mut self,
+        _message: Option<&str>,
+        _include_untracked: bool,
+    ) -> Result<StashEntry, GitError> {
+        Err(GitError::Unsupported("stash_push"))
+    }
+
+    /// Apply stash `index`, keeping it. Local edits that collide with it are
+    /// [`GitError::Conflict`] (working tree untouched); a content conflict is applied
+    /// with markers and reported as [`GitError::Conflicts`].
+    fn stash_apply(&mut self, _index: usize) -> Result<(), GitError> {
+        Err(GitError::Unsupported("stash_apply"))
+    }
+
+    /// Apply then drop stash `index`; the entry is kept when the apply fails or conflicts.
+    fn stash_pop(&mut self, _index: usize) -> Result<(), GitError> {
+        Err(GitError::Unsupported("stash_pop"))
+    }
+
+    /// Drop stash `index` without applying it.
+    fn stash_drop(&mut self, _index: usize) -> Result<(), GitError> {
+        Err(GitError::Unsupported("stash_drop"))
+    }
+
+    /// Create a local branch at `from` (any rev; `None` = HEAD). Does not switch to
+    /// it. [`GitError::BranchExists`] on a name clash.
+    fn create_branch(&mut self, _name: &str, _from: Option<&str>) -> Result<Branch, GitError> {
+        Err(GitError::Unsupported("create_branch"))
+    }
+
+    /// Delete a local branch. Refuses the current branch
+    /// ([`GitError::BranchIsCurrent`]) and, unless `force`, one not merged into HEAD
+    /// ([`GitError::BranchNotMerged`]).
+    fn delete_branch(&mut self, _name: &str, _force: bool) -> Result<(), GitError> {
+        Err(GitError::Unsupported("delete_branch"))
+    }
+
+    /// Rename a local branch (HEAD follows when it is the current one).
+    fn rename_branch(&mut self, _old: &str, _new: &str) -> Result<(), GitError> {
+        Err(GitError::Unsupported("rename_branch"))
+    }
+
+    /// Configured remote names.
+    fn remotes(&self) -> Result<Vec<String>, GitError> {
+        Err(GitError::Unsupported("remotes"))
+    }
+
+    /// Fetch `remote`'s configured refspecs. Credentials: ssh-agent, then default
+    /// credentials — never a prompt; exhaustion is [`GitError::AuthFailed`]. The call
+    /// is time-bounded ([`GitError::TimedOut`]). Reports ahead/behind afterwards.
+    fn fetch(&self, _remote: &str) -> Result<FetchReport, GitError> {
+        Err(GitError::Unsupported("fetch"))
+    }
+
+    /// The main worktree plus linked ones (read-only).
+    fn worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
+        Err(GitError::Unsupported("worktrees"))
+    }
+
+    /// A page of history with branch/tag/HEAD decorations — see [`LogQuery`].
+    fn log_page(&self, _query: &LogQuery) -> Result<LogPage, GitError> {
+        Err(GitError::Unsupported("log_page"))
+    }
 }

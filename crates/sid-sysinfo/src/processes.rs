@@ -63,12 +63,61 @@ pub(crate) fn resolve_cmd(name: &str, raw_cmd: &str) -> (String, bool) {
     }
 }
 
+/// How long a uid -> username table stays fresh. `/etc/passwd` changes rarely; the
+/// process poll runs every couple of seconds.
+const USER_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// uid -> username table, refreshed at most every [`USER_TTL`].
+pub(crate) struct UserNames {
+    names: std::collections::HashMap<String, String>,
+    loaded: Option<std::time::Instant>,
+}
+
+impl UserNames {
+    pub(crate) fn new() -> Self {
+        Self {
+            names: std::collections::HashMap::new(),
+            loaded: None,
+        }
+    }
+
+    /// Pure resolution: the username for `uid`, or the uid string itself when unknown.
+    pub(crate) fn resolve_in(
+        names: &std::collections::HashMap<String, String>,
+        uid: &str,
+    ) -> String {
+        names.get(uid).cloned().unwrap_or_else(|| uid.to_string())
+    }
+
+    /// Reload the table when it has never been loaded or is older than the TTL.
+    fn ensure_fresh(&mut self) {
+        if self.loaded.is_some_and(|t| t.elapsed() < USER_TTL) {
+            return;
+        }
+        let users = sysinfo::Users::new_with_refreshed_list();
+        self.names = users
+            .list()
+            .iter()
+            .map(|u| (u.id().to_string(), u.name().to_string()))
+            .collect();
+        self.loaded = Some(std::time::Instant::now());
+    }
+
+    pub(crate) fn resolve(&mut self, uid: &str) -> String {
+        self.ensure_fresh();
+        Self::resolve_in(&self.names, uid)
+    }
+}
+
 /// Refresh + collect the list of processes. Cleaned up between calls by
 /// `sysinfo::System::refresh_specifics` (sysinfo prunes dead processes
 /// itself on each refresh).
 ///
 /// Threads of a listed process are filtered out — see [`is_listable`].
-pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInfo>, SysError> {
+pub(crate) fn list_processes(
+    sys: &mut sysinfo::System,
+    users: &mut UserNames,
+) -> Result<Vec<ProcessInfo>, SysError> {
     sys.refresh_specifics(RefreshKind::nothing().with_processes(refresh_kind()));
 
     let mut out = Vec::with_capacity(sys.processes().len());
@@ -93,7 +142,7 @@ pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInf
             rss_bytes: proc.memory(),
             started_unix_secs: proc.start_time() as i64,
             parent: proc.parent().map(|p| Pid::from_u32(p.as_u32())),
-            user: proc.user_id().map(|u| u.to_string()),
+            user: proc.user_id().map(|u| users.resolve(&u.to_string())),
         });
     }
     Ok(out)
@@ -102,6 +151,24 @@ pub(crate) fn list_processes(sys: &mut sysinfo::System) -> Result<Vec<ProcessInf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_resolution_maps_known_uids_and_falls_back_to_the_number() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("0".to_string(), "root".to_string());
+        assert_eq!(UserNames::resolve_in(&m, "0"), "root");
+        assert_eq!(UserNames::resolve_in(&m, "4242"), "4242");
+    }
+
+    #[test]
+    fn listed_processes_show_names_not_numbers_for_root() {
+        let mut sys = sysinfo::System::new();
+        let procs = list_processes(&mut sys, &mut UserNames::new()).unwrap();
+        assert!(
+            procs.iter().all(|p| p.user.as_deref() != Some("0")),
+            "uid 0 must resolve to root on any real host"
+        );
+    }
 
     /// The fallback decision this fixes: an empty/unreadable command line falls back
     /// to the process name, and the `bool` says so — the fact the Command column's
@@ -151,7 +218,8 @@ mod tests {
     #[test]
     fn list_processes_returns_processes_not_tasks() {
         let mut sys = sysinfo::System::new();
-        let procs = list_processes(&mut sys).expect("list_processes should not error");
+        let procs = list_processes(&mut sys, &mut UserNames::new())
+            .expect("list_processes should not error");
         assert!(!procs.is_empty(), "a real host always has some process");
 
         let tasks = sys.processes().len();
@@ -173,7 +241,8 @@ mod tests {
     #[test]
     fn the_command_line_is_populated_on_first_sight() {
         let mut sys = sysinfo::System::new();
-        let procs = list_processes(&mut sys).expect("list_processes should not error");
+        let procs = list_processes(&mut sys, &mut UserNames::new())
+            .expect("list_processes should not error");
         let me = std::process::id();
         let mine = procs
             .iter()

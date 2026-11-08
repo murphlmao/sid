@@ -7,9 +7,11 @@
 
 pub mod containers;
 pub mod db;
+pub mod editor;
 pub mod git;
 pub mod gpu;
 pub mod keys;
+pub mod notify;
 pub mod privfs;
 pub mod ssh;
 pub mod svc;

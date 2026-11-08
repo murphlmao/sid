@@ -329,6 +329,22 @@ pub trait SysProvider: Send + Sync {
     fn default_route_iface_name(&mut self) -> Result<Option<String>, SysError> {
         Ok(None)
     }
+
+    /// List non-listening TCP connections (established, closing, ...), each attributed
+    /// to its owning process. Default: none, so existing impls compile unchanged.
+    fn list_connections(&mut self) -> Result<Vec<Connection>, SysError> {
+        Ok(Vec::new())
+    }
+
+    /// Current CPU/memory for just `pids` - for callers (the Network tab) that never list
+    /// the full process table. CPU is a delta, so the first call reads `0.0` and later
+    /// calls on the same provider are meaningful. Default: empty.
+    fn process_usage(
+        &mut self,
+        _pids: &[Pid],
+    ) -> Result<std::collections::HashMap<Pid, ProcUsage>, SysError> {
+        Ok(std::collections::HashMap::new())
+    }
 }
 
 /// One process row.
@@ -374,6 +390,142 @@ pub struct ProcessInfo {
     pub parent: Option<Pid>,
     /// User identifier (stringified UID), if known.
     pub user: Option<String>,
+}
+
+/// One non-listening TCP connection row (established, closing, ...).
+///
+/// UDP is not listed: `netstat2` has no remote endpoint for UDP sockets, so a "connection"
+/// row would be a bound-socket row that `list_listening_ports` already covers.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::sys::{Connection, Protocol, SocketState};
+/// let c = Connection {
+///     protocol: Protocol::Tcp,
+///     state: SocketState::Established,
+///     state_label: "ESTABLISHED".into(),
+///     local_addr: "10.0.0.2".into(),
+///     local_port: 50000,
+///     remote_addr: "93.184.216.34".into(),
+///     remote_port: 443,
+///     pid: None,
+///     command: String::new(),
+/// };
+/// assert_eq!(c.remote_port, 443);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Connection {
+    /// Transport protocol (always TCP today).
+    pub protocol: Protocol,
+    /// Coarse state; `Established` or `Other` (a listener is never a connection row).
+    pub state: SocketState,
+    /// Precise TCP state for display ("ESTABLISHED", "TIME_WAIT", "CLOSE_WAIT", ...).
+    pub state_label: String,
+    /// Local address as a printable string.
+    pub local_addr: String,
+    /// Local port.
+    pub local_port: u16,
+    /// Remote address as a printable string.
+    pub remote_addr: String,
+    /// Remote port.
+    pub remote_port: u16,
+    /// Owning PID, when attributable.
+    pub pid: Option<Pid>,
+    /// Owning process name; empty when `pid` is `None` or the lookup failed.
+    pub command: String,
+}
+
+/// A process's current CPU and memory, joined onto socket rows.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::sys::ProcUsage;
+/// let u = ProcUsage { cpu_pct: 1.5, rss_bytes: 4096 };
+/// assert_eq!(u.rss_bytes, 4096);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProcUsage {
+    /// CPU percent (delta since the previous refresh; `0.0` on the first sample).
+    pub cpu_pct: f32,
+    /// Resident set size in bytes.
+    pub rss_bytes: u64,
+}
+
+/// A socket row plus its owning process's usage (`None` when the PID is unknown or the
+/// process is gone / unreadable).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WithUsage<T> {
+    /// The socket row.
+    pub row: T,
+    /// Owner's CPU/memory, if resolved.
+    pub usage: Option<ProcUsage>,
+}
+
+/// Index a process snapshot by PID.
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::sys::{usage_by_pid, Pid, ProcessInfo};
+/// let p = ProcessInfo {
+///     pid: Pid::from_u32(7), name: "x".into(), cmd: "x".into(), cmd_is_fallback: false,
+///     cpu_pct: 2.0, rss_bytes: 10, started_unix_secs: 0, parent: None, user: None,
+/// };
+/// assert_eq!(usage_by_pid(&[p])[&Pid::from_u32(7)].rss_bytes, 10);
+/// ```
+pub fn usage_by_pid(procs: &[ProcessInfo]) -> std::collections::HashMap<Pid, ProcUsage> {
+    procs
+        .iter()
+        .map(|p| {
+            (
+                p.pid,
+                ProcUsage {
+                    cpu_pct: p.cpu_pct,
+                    rss_bytes: p.rss_bytes,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Join per-process usage onto any rows, keyed by the row's PID. Order is preserved.
+pub fn join_usage<T: Clone>(
+    rows: &[T],
+    pid_of: impl Fn(&T) -> Option<Pid>,
+    usage: &std::collections::HashMap<Pid, ProcUsage>,
+) -> Vec<WithUsage<T>> {
+    rows.iter()
+        .map(|r| WithUsage {
+            usage: pid_of(r).and_then(|p| usage.get(&p).copied()),
+            row: r.clone(),
+        })
+        .collect()
+}
+
+/// Join usage onto listening-port rows.
+pub fn ports_with_usage(
+    ports: &[ListeningPort],
+    usage: &std::collections::HashMap<Pid, ProcUsage>,
+) -> Vec<WithUsage<ListeningPort>> {
+    join_usage(ports, |p| p.pid, usage)
+}
+
+/// Join usage onto connection rows.
+pub fn connections_with_usage(
+    conns: &[Connection],
+    usage: &std::collections::HashMap<Pid, ProcUsage>,
+) -> Vec<WithUsage<Connection>> {
+    join_usage(conns, |c| c.pid, usage)
+}
+
+/// The distinct PIDs owning any of `rows`, sorted - what to hand `process_usage`.
+pub fn owner_pids<T>(rows: &[T], pid_of: impl Fn(&T) -> Option<Pid>) -> Vec<Pid> {
+    let mut v: Vec<Pid> = rows.iter().filter_map(pid_of).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 #[cfg(test)]
@@ -476,5 +628,80 @@ mod tests {
         }
         let mut p = Bare;
         assert_eq!(p.default_route_iface_name().unwrap(), None);
+    }
+
+    fn lp(port: u16, pid: Option<u32>) -> ListeningPort {
+        ListeningPort {
+            port,
+            pid: pid.map(Pid::from_u32),
+            command: String::new(),
+            protocol: Protocol::Tcp,
+            state: SocketState::Listen,
+            local_addr: "0.0.0.0".into(),
+        }
+    }
+
+    fn proc(pid: u32, cpu: f32, rss: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid: Pid::from_u32(pid),
+            name: "p".into(),
+            cmd: "p".into(),
+            cmd_is_fallback: false,
+            cpu_pct: cpu,
+            rss_bytes: rss,
+            started_unix_secs: 0,
+            parent: None,
+            user: None,
+        }
+    }
+
+    #[test]
+    fn usage_joins_onto_ports_by_pid_and_keeps_order() {
+        let usage = usage_by_pid(&[proc(1, 5.0, 100), proc(2, 0.5, 200)]);
+        let rows = ports_with_usage(
+            &[
+                lp(80, Some(2)),
+                lp(22, Some(1)),
+                lp(9, None),
+                lp(7, Some(99)),
+            ],
+            &usage,
+        );
+        let got: Vec<(u16, Option<u64>)> = rows
+            .iter()
+            .map(|r| (r.row.port, r.usage.map(|u| u.rss_bytes)))
+            .collect();
+        assert_eq!(
+            got,
+            [(80, Some(200)), (22, Some(100)), (9, None), (7, None)]
+        );
+        assert_eq!(rows[1].usage.unwrap().cpu_pct, 5.0);
+    }
+
+    #[test]
+    fn usage_joins_onto_connections() {
+        let usage = usage_by_pid(&[proc(3, 1.0, 9)]);
+        let c = Connection {
+            protocol: Protocol::Tcp,
+            state: SocketState::Established,
+            state_label: "ESTABLISHED".into(),
+            local_addr: "1.1.1.1".into(),
+            local_port: 1,
+            remote_addr: "2.2.2.2".into(),
+            remote_port: 2,
+            pid: Some(Pid::from_u32(3)),
+            command: String::new(),
+        };
+        let out = connections_with_usage(&[c], &usage);
+        assert_eq!(out[0].usage.map(|u| u.rss_bytes), Some(9));
+    }
+
+    #[test]
+    fn owner_pids_are_sorted_and_distinct() {
+        let rows = [lp(1, Some(5)), lp(2, None), lp(3, Some(2)), lp(4, Some(5))];
+        assert_eq!(
+            owner_pids(&rows, |r| r.pid),
+            [Pid::from_u32(2), Pid::from_u32(5)]
+        );
     }
 }
