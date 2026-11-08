@@ -8,9 +8,10 @@ use std::path::Path;
 
 use sid_core::git::{
     Branch, CommitInfo, Diff, DiffLimits, DiffTarget, FetchReport, GitError, GitProvider,
-    GitStatus, LogPage, LogQuery, RepoSummary, StashEntry, StatusKind, StatusOptions, WorktreeInfo,
+    GitStatus, LogPage, LogQuery, PushReport, RepoSummary, StashEntry, StatusKind, StatusOptions, WorktreeInfo,
 };
 
+pub mod cli;
 mod diff;
 mod history;
 mod remote;
@@ -278,7 +279,30 @@ impl GitProvider for Git2Provider {
     fn fetch(&self, remote_name: &str) -> Result<FetchReport, GitError> {
         // Lock only for validation; the network work must not block other calls.
         let gitdir = remote::precheck(&*self.repo()?, remote_name)?;
+        // Network remotes (ssh/https/git) go through the `git` CLI; libgit2 here has
+        // no such transports. Local/file remotes stay on libgit2.
+        let (url, workdir) = {
+            let repo = self.repo()?;
+            let url = repo
+                .find_remote(remote_name)
+                .ok()
+                .and_then(|r| r.url().map(String::from))
+                .unwrap_or_default();
+            (url, repo.workdir().map(Path::to_path_buf))
+        };
+        if let (true, Some(workdir)) = (cli::is_network_url(&url), workdir) {
+            return cli::fetch(&workdir, remote_name, cli::CLI_TIMEOUT);
+        }
         remote::fetch(gitdir, remote_name, remote::FETCH_TIMEOUT)
+    }
+
+    fn push(&self) -> Result<PushReport, GitError> {
+        let workdir = self
+            .repo()?
+            .workdir()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| GitError::Other("bare repository has no working tree".into()))?;
+        cli::push(&workdir, cli::CLI_TIMEOUT)
     }
 
     fn worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
