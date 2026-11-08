@@ -189,6 +189,8 @@ enum Phase {
     /// The config could not be read (missing file...). The message says what to try.
     Unreadable(SharedString),
     Review,
+    /// The config is being read and parsed on a background task.
+    Loading,
 }
 
 pub(crate) struct SshImportModal {
@@ -211,34 +213,46 @@ impl SshImportModal {
         let env = ImportEnv::from_process();
         let path = env.default_config_path();
         let home = env.home.display().to_string();
-        let tilde = |text: &str| match home.is_empty() {
+        let tilde = move |text: &str| match home.is_empty() {
             true => text.to_string(),
             false => text.replace(&home, "~"),
         };
-        let (phase, selection) = match parse_file(&path, &env) {
-            Ok(parsed) => (
-                Phase::Review,
-                {
-                    let mut sel = ImportSelection::from_parsed(parsed, &env.local_user, existing);
-                    sel.notes = sel.notes.iter().map(|n| tilde(n)).collect();
-                    sel
-                },
-            ),
-            Err(e) => (
-                Phase::Unreadable(
-                    format!(
-                        "Couldn't read {}: {e}. Check that the file exists and that sid can read it.",
-                        path.display()
-                    )
-                    .into(),
-                ),
-                ImportSelection::default(),
-            ),
-        };
+        let shown_path: SharedString = tilde(&path.display().to_string()).into();
+        // Reading and parsing (Includes, globs) touches the disk: do it off the UI thread.
+        let existing = existing.to_vec();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    match parse_file(&path, &env) {
+                        Ok(parsed) => {
+                            let mut sel =
+                                ImportSelection::from_parsed(parsed, &env.local_user, &existing);
+                            sel.notes = sel.notes.iter().map(|n| tilde(n)).collect();
+                            (Phase::Review, sel)
+                        }
+                        Err(e) => (
+                            Phase::Unreadable(
+                                format!(
+                                    "Couldn't read {}: {e}. Check that the file exists and that sid can read it.",
+                                    path.display()
+                                )
+                                .into(),
+                            ),
+                            ImportSelection::default(),
+                        ),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |m, cx| {
+                (m.phase, m.selection) = result;
+                cx.notify();
+            });
+        })
+        .detach();
         Self {
-            phase,
-            selection,
-            path: tilde(&path.display().to_string()).into(),
+            phase: Phase::Loading,
+            selection: ImportSelection::default(),
+            path: shown_path,
             save_to: preselect(default_scope, workspace.is_some()),
             workspace,
             error: None,
@@ -391,6 +405,13 @@ impl Render for SshImportModal {
         let ws_active = self.workspace.is_some();
 
         let body = match &self.phase {
+            Phase::Loading => div()
+                .child(
+                    EmptyState::new("Reading SSH config")
+                        .icon(Icon::File)
+                        .compact(),
+                )
+                .into_any_element(),
             Phase::Unreadable(msg) => div()
                 .child(
                     EmptyState::new("No SSH config to import")

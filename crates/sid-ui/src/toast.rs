@@ -183,7 +183,7 @@ impl Toast {
     pub fn new(tone: ToastTone, message: impl Into<SharedString>) -> Self {
         Self {
             tone,
-            message: message.into(),
+            message: neutralize(&message.into()),
             title: None,
             actions: Vec::new(),
             on_dismiss: None,
@@ -214,7 +214,7 @@ impl Toast {
     /// A headline above the message, for a notice whose *subject* is not obvious from
     /// its sentence. Most notices need none.
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
-        self.title = Some(title.into());
+        self.title = Some(neutralize(&title.into()));
         self
     }
 
@@ -306,6 +306,33 @@ impl RenderOnce for Toast {
     }
 }
 
+/// Mirror of `sid_core::text::is_deceptive` (sid-ui cannot depend on sid-core).
+fn is_deceptive(c: char) -> bool {
+    matches!(
+        c,
+        '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{061C}'
+            | '\u{2060}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Strip bidi/zero-width characters and non-newline control characters from untrusted text.
+fn neutralize(s: &SharedString) -> SharedString {
+    if !s
+        .chars()
+        .any(|c| is_deceptive(c) || (c.is_control() && c != '\n'))
+    {
+        return s.clone();
+    }
+    s.chars()
+        .filter(|&c| !is_deceptive(c) && (!c.is_control() || c == '\n'))
+        .collect::<String>()
+        .into()
+}
+
 /// A stable key for a notice's content, so its entrance plays once per message.
 fn content_key(tone: ToastTone, message: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -342,6 +369,12 @@ mod tests {
                 assert_ne!(p.border, p.fill, "{}/{}: no hairline", t.name, tone.label());
             }
         }
+    }
+
+    #[test]
+    fn neutralize_strips_bidi_and_controls() {
+        let s: SharedString = "a\u{202E}b\u{200D}c\u{7}d\ne".into();
+        assert_eq!(neutralize(&s).as_ref(), "abcd\ne");
     }
 
     #[test]

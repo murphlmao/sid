@@ -1227,7 +1227,15 @@ fn gate_loaded_bytes(bytes: Vec<u8>) -> Result<String, String> {
 /// the old predictable `.<name>.sid-tmp-<pid>` + `fs::write` would follow a symlink
 /// planted at that name and write the buffer wherever it pointed. If any step fails the
 /// temp file is removed (`NamedTempFile`'s drop).
+///
+/// A symlink at `path` is resolved first and the *target* is replaced, so the link
+/// survives (dotfile-managed configs are symlinks; renaming over the link would silently
+/// turn it into a regular file and leave the managed original stale). Resolving is the
+/// safer of the two options here: refusing would strand legitimate dotfile setups, and
+/// the target is the very file the editor loaded and the permission probe checked.
 fn save_preserving_permissions(path: &Path, contents: &str) -> io::Result<()> {
+    let resolved = fs::canonicalize(path)?;
+    let path = resolved.as_path();
     let perms = fs::metadata(path)?.permissions();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -1487,6 +1495,26 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "PermitRootLogin yes\n");
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "mode bits must survive the save");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn save_through_a_symlink_writes_the_target_and_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::write(&target, "a\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        save_preserving_permissions(&link, "b\n").unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "b\n");
     }
 
     /// The readonly case: even a file whose *own* mode has no write bit set saves fine

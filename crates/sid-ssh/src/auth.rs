@@ -57,13 +57,41 @@ async fn auth_password(
     Ok(())
 }
 
+/// Private keys are small; the path may come from committed config, so refuse anything
+/// that is not a regular file or is over this cap rather than reading it.
+const MAX_KEY_BYTES: u64 = 64 * 1024;
+
+fn read_key_file(path: &Path) -> Result<String, SshError> {
+    use std::io::Read;
+    let fail = |why: String| SshError::AuthFailed(format!("load key {path:?}: {why}"));
+    if !std::fs::metadata(path)
+        .map_err(|e| fail(e.to_string()))?
+        .is_file()
+    {
+        return Err(fail("not a regular file".into()));
+    }
+    let file = std::fs::File::open(path).map_err(|e| fail(e.to_string()))?;
+    if !file.metadata().map_err(|e| fail(e.to_string()))?.is_file() {
+        return Err(fail("not a regular file".into()));
+    }
+    let mut text = String::new();
+    file.take(MAX_KEY_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| fail(e.to_string()))?;
+    if text.len() as u64 > MAX_KEY_BYTES {
+        return Err(fail(format!("larger than {MAX_KEY_BYTES} bytes")));
+    }
+    Ok(text)
+}
+
 async fn auth_key(
     handle: &mut Handle<ClientHandler>,
     user: &str,
     path: &Path,
     passphrase: Option<&str>,
 ) -> Result<(), SshError> {
-    let key = russh::keys::load_secret_key(path, passphrase)
+    let pem = read_key_file(path)?;
+    let key = russh::keys::decode_secret_key(&pem, passphrase)
         .map_err(|e| SshError::AuthFailed(format!("load key {path:?}: {e}")))?;
     let key_with_hash =
         PrivateKeyWithHashAlg::new(Arc::new(key), Some(russh::keys::HashAlg::Sha512));
@@ -257,5 +285,21 @@ mod tests {
             rendered.starts_with("authentication failed: no SSH agent"),
             "{rendered}"
         );
+    }
+}
+
+#[cfg(test)]
+mod key_read_tests {
+    use super::*;
+
+    #[test]
+    fn key_file_must_be_small_and_regular() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(read_key_file(d.path()).is_err());
+        let f = d.path().join("k");
+        std::fs::write(&f, "x".repeat(MAX_KEY_BYTES as usize + 1)).unwrap();
+        assert!(read_key_file(&f).is_err());
+        std::fs::write(&f, "ok").unwrap();
+        assert_eq!(read_key_file(&f).unwrap(), "ok");
     }
 }
