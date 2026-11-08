@@ -846,8 +846,9 @@ impl AppState {
             self.systems._filter_sub = Some(sub);
         }
         if self.systems.pin_input.is_none() {
-            self.systems.pin_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("pin a file… (~/ ok)")));
+            self.systems.pin_input = Some(cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Path to a config file, e.g. ~/.config/…")
+            }));
         }
     }
 
@@ -1264,7 +1265,7 @@ impl AppState {
                             EmptyState::new("nothing pinned yet")
                                 .icon(Icon::Star)
                                 .guidance(
-                                    "pin a file above, or from the common list, to keep \
+                                    "Pin a file above, or from the common list, to keep \
                                      it one click away",
                                 )
                                 .into_any_element()
