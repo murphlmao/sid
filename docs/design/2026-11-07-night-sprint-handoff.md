@@ -21,7 +21,10 @@ last batch is **ungated** on purpose.
     the arrow-key bug, table/column icons, sentence-case label test, folder headers).
   - Still on their own branches (pushed, ungated) because they CONFLICT with the wrap
     branch — resolve and merge next session:
-    - `night/ssh-session` @ b907100 (wip, not compiled): session v2, SFTP edit-in-place UI,
+    - `night/ssh-session` @ b907100 (wip — DOES NOT COMPILE: `esc_wrap` in
+      `crates/sid/src/ui/session/edit.rs` ~L548 needs `use<M>` (or return `AnyElement`) and a
+      `gpui::InteractiveElement` import for `.key_context`; `18175d4` is the last gate-green
+      commit on that branch): session v2, SFTP edit-in-place UI,
       keep-server-copy backup, Esc on modals. Conflict: `crates/sid/src/ui/session.rs`
       vs sec-binding's host-key prompt / bounded view+download (their logic wins, its
       presentation wins).
