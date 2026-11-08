@@ -1105,7 +1105,7 @@ impl SshSession {
     /// `⧉ copy path`: put the entry's absolute remote path — never its contents — on the
     /// system clipboard. Valid for files *and* directories.
     fn copy_path(&mut self, path: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(path));
+        cx.write_to_clipboard(ClipboardItem::new_string(clipboard_safe(&path)));
     }
 
     /// Dismiss the preview overlay (`✕ close`).
@@ -1208,6 +1208,13 @@ fn is_deceptive_char(c: char) -> bool {
             c,
             '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
         )
+}
+
+/// Text bound for the clipboard with every [`is_deceptive_char`] removed: a hostile
+/// remote path or host field must not paste into a terminal as an escape sequence or a
+/// reordered (bidi) string.
+pub(crate) fn clipboard_safe(text: &str) -> String {
+    text.chars().filter(|c| !is_deceptive_char(*c)).collect()
 }
 
 /// A remote (server-controlled) name or path as it may be shown: every

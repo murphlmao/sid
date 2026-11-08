@@ -566,7 +566,11 @@ impl AppState {
             host_key_prompt: HostKeyPrompts::default(),
             palette: None,
             cheat_sheet_open: false,
-            recent_commands: prefs.palette_recents.clone(),
+            recent_commands: prefs
+                .palette_recents
+                .iter()
+                .map(|k| crate::ui::command_palette::migrate_recent_key(k))
+                .collect(),
             notifier: std::sync::Arc::new(sid_os::DbusNotifier::new()),
             ssh_config_present,
             import_banner_dismissed: prefs.import_banner_dismissed,
