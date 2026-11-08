@@ -17,6 +17,8 @@ async-trait.workspace = true
 tempfile.workspace = true
 # Unpredictable names for exclusive remote temp files.
 getrandom.workspace = true
+# Content hash for conflict detection.
+sha2 = "0.11"
 
 [dev-dependencies]
 sid-term.workspace = true

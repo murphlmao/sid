@@ -14,17 +14,27 @@
 //!    non-awaitable `xdg-open` launch): one last `sync`, then [`RemoteEdit::close`].
 //!
 //! The temp dir lives under the user cache dir (`$XDG_CACHE_HOME/sid/remote-edit`, not
-//! the RAM-backed `/tmp`), is mode 0700, the file 0600, and is removed on close or drop.
+//! the RAM-backed `/tmp`), is mode 0700, the file 0600.
 //!
-//! Upload strategy: [`UploadStrategy::Overwrite`] (default) truncates and rewrites the
-//! remote in place, which preserves its mode and owner. [`UploadStrategy::TmpRename`]
-//! writes an exclusively-created, randomly named `.<name>.sid-<hex>` and renames over the target (atomic for readers), falling back
-//! to overwrite when the server refuses the rename (plain SFTP rename generally will not
-//! replace an existing file). The rename path creates a *new* inode with default mode, so
-//! it is opt-in.
+//! Never lose edits: every exit goes through [`RemoteEdit::close_or_preserve`]. If the
+//! working copy differs from the last successful upload it is COPIED into a durable
+//! backups directory ([`RemoteEditConfig::backups_root`], in the app data dir, not the
+//! cache) and only then is the temp dir removed; if the backup cannot be written the temp
+//! dir is kept and its path reported. An unchanged copy is simply removed.
+//!
+//! Upload strategy: [`UploadStrategy::TmpRename`] (default) writes an exclusively-created,
+//! randomly named `.<name>.sid-<hex>`, restores the target's permission bits, and renames
+//! over the target, so a disconnect mid-upload can never truncate the real file. When the
+//! server cannot do that (exclusive create, chmod or rename-over unsupported - plain SFTP
+//! rename usually refuses to replace, and `russh-sftp` does not expose
+//! `posix-rename@openssh.com`) it falls back to rewriting in place, reported as
+//! `Uploaded { atomic: false }`. A rename creates a new inode, so ownership is not
+//! preserved (permission bits are). [`UploadStrategy::Overwrite`] forces the in-place path.
+//!
+//! Conflict detection compares a SHA-256 of the remote's current bytes with the hash of
+//! what was downloaded / last uploaded, so a same-size, same-second edit is still caught.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -38,10 +48,11 @@ pub const DEFAULT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// How an upload replaces the remote file.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UploadStrategy {
-    /// Rewrite in place (keeps mode/owner).
-    #[default]
+    /// Rewrite in place (keeps mode/owner, but a disconnect mid-write truncates).
     Overwrite,
-    /// Write `<name>.sid-tmp`, rename over the target; fall back to overwrite.
+    /// Write `.<name>.sid-<hex>`, restore the mode, rename over the target; fall back to
+    /// overwrite when the server can't.
+    #[default]
     TmpRename,
 }
 
@@ -50,6 +61,8 @@ pub enum UploadStrategy {
 pub struct RemoteEditConfig {
     /// Parent of the per-edit private directory.
     pub cache_root: PathBuf,
+    /// Durable home of preserved local edits (`<root>/<host>/<name>.local-<ts>`).
+    pub backups_root: PathBuf,
     /// Refuse files larger than this.
     pub max_bytes: u64,
     /// Upload strategy.
@@ -65,6 +78,7 @@ impl RemoteEditConfig {
     pub fn with_root(cache_root: PathBuf) -> Self {
         Self {
             cache_root,
+            backups_root: default_backups_root(),
             max_bytes: DEFAULT_MAX_BYTES,
             strategy: UploadStrategy::default(),
         }
@@ -85,6 +99,19 @@ pub fn default_cache_root() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("sid").join("remote-edit")
+}
+
+/// `$XDG_DATA_HOME/sid/remote-edit-backups`, else `~/.local/share/sid/remote-edit-backups`.
+/// The app overrides this with its own data dir.
+pub fn default_backups_root() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("sid").join("remote-edit-backups")
 }
 
 /// The remote file's identity as seen by SFTP `stat`.
@@ -195,17 +222,70 @@ pub enum EditorState {
     HandOff,
 }
 
+type Digest32 = [u8; 32];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LocalSig {
     mtime: Option<SystemTime>,
     len: u64,
-    hash: u64,
+    hash: Digest32,
 }
 
-fn hash_bytes(b: &[u8]) -> u64 {
-    let mut h = DefaultHasher::new();
-    b.hash(&mut h);
-    h.finish()
+fn hash_bytes(b: &[u8]) -> Digest32 {
+    Sha256::digest(b).into()
+}
+
+/// What [`RemoteEdit::close_or_preserve`] did with the working copy.
+#[derive(Debug)]
+pub enum Preserved {
+    /// Unchanged since the last upload; the temp dir was removed.
+    Removed,
+    /// Changed and not uploaded; copied here, then the temp dir was removed.
+    BackedUp(PathBuf),
+    /// Changed, and the backup could not be written: nothing was deleted.
+    Failed {
+        /// Why the backup failed.
+        error: io::Error,
+        /// The working copy, left in place.
+        kept: PathBuf,
+    },
+}
+
+/// `<name>.local-<YYYYmmdd-HHMMSS>` (UTC).
+fn backup_file_name(name: &str, epoch_secs: i64) -> String {
+    let days = epoch_secs.div_euclid(86_400);
+    let rem = epoch_secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe as i64 + era * 400 + i64::from(m <= 2);
+    format!(
+        "{name}.local-{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// A single path component made of `[A-Za-z0-9._-]` only (for host labels in paths).
+fn safe_component(s: &str) -> String {
+    let c: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let c = c.trim_start_matches(['.', '-']).to_string();
+    if c.is_empty() { "host".to_string() } else { c }
 }
 
 fn looks_binary(b: &[u8]) -> bool {
@@ -214,29 +294,70 @@ fn looks_binary(b: &[u8]) -> bool {
 
 /// Extensions whose desktop handler would *run* or *render* the file rather than edit it.
 const DANGEROUS_EXTS: &[&str] = &[
-    "desktop", "html", "htm", "xhtml", "svg", "sh", "bash", "zsh", "py", "pl", "rb", "js", "jar",
-    "exe", "appimage", "run", "command", "url", "webloc", "lnk", "bat", "cmd", "ps1",
+    "desktop",
+    "html",
+    "htm",
+    "xhtml",
+    "svg",
+    "sh",
+    "bash",
+    "zsh",
+    "py",
+    "pl",
+    "rb",
+    "js",
+    "jar",
+    "exe",
+    "appimage",
+    "run",
+    "command",
+    "url",
+    "webloc",
+    "lnk",
+    "bat",
+    "cmd",
+    "ps1",
+    "code-workspace",
+    "sublime-project",
+    "sublime-workspace",
 ];
 
 const MAX_NAME_CHARS: usize = 100;
 
-/// The local working-copy name for a remote path: control characters and backslashes
-/// removed, length capped, and `.txt` appended when the extension is one whose handler
-/// would execute or render it (the name is chosen by the remote party). Other extensions
-/// are kept so the editor still gets its syntax hint.
+/// Bidi overrides/isolates and zero-width/format characters: invisible, so stripped.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}')
+}
+
+/// The local working-copy name for a remote path. The remote party chooses it, and it ends
+/// up in an absolute path handed to an editor (possibly via a terminal emulator's `-e`,
+/// which some terminals join into one shell string), so it keeps only `[A-Za-z0-9._-]`:
+/// control and bidi characters are stripped, everything else becomes `_`, it never starts
+/// with `-` or `.`, is length-capped keeping the extension, and gets `.txt` appended when
+/// the extension is one whose handler would execute or render it.
 fn safe_local_name(remote_path: &str) -> String {
     let base = remote_path.rsplit('/').next().unwrap_or("");
-    let mut name: String = base
+    let mapped: String = base
         .chars()
-        .filter(|c| !c.is_control() && *c != '\\')
+        .filter(|c| !c.is_control() && !is_invisible_format(*c))
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
+    let lead = |s: &str| s.trim_start_matches(['.', '-']).to_string();
+    let mut name = lead(&mapped);
     let n = name.chars().count();
     if n > MAX_NAME_CHARS {
         // keep the tail so the extension survives
-        name = name.chars().skip(n - MAX_NAME_CHARS).collect();
+        name = lead(&name.chars().skip(n - MAX_NAME_CHARS).collect::<String>());
     }
-    let name = name.trim().to_string();
-    if name.is_empty() || name == "." || name == ".." {
+    if name.is_empty() {
         return "file.txt".to_string();
     }
     let ext = name
@@ -258,6 +379,9 @@ pub struct RemoteEdit {
     strategy: UploadStrategy,
     max_bytes: u64,
     baseline: RemoteSig,
+    /// SHA-256 of the remote bytes as of download / last upload.
+    baseline_hash: Digest32,
+    backups_root: PathBuf,
     synced: LocalSig,
     handle: Option<Box<dyn EditorHandle>>,
     #[cfg(test)]
@@ -311,6 +435,30 @@ fn write_private(p: &Path, bytes: &[u8]) -> io::Result<()> {
         o.mode(0o600);
     }
     o.open(p)?.write_all(bytes)
+}
+
+/// Copy `src` to a fresh file under `dir` (created 0700), named `file_name`, or
+/// `file_name-1`, `-2`, ... if taken. Never overwrites. Fsynced before returning.
+fn write_backup(src: &Path, dir: &Path, file_name: &str) -> io::Result<PathBuf> {
+    private_dir_all(dir)?;
+    let bytes = std::fs::read(src)?;
+    for i in 0..1000 {
+        let name = if i == 0 {
+            file_name.to_string()
+        } else {
+            format!("{file_name}-{i}")
+        };
+        let dest = dir.join(name);
+        match write_private(&dest, &bytes) {
+            Ok(()) => {
+                std::fs::File::open(&dest)?.sync_all()?;
+                return Ok(dest);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other("too many backups with the same name"))
 }
 
 impl RemoteEdit {
@@ -374,6 +522,8 @@ impl RemoteEdit {
                 mtime_secs: st.mtime_secs,
                 size: st.size,
             },
+            baseline_hash: hash_bytes(&bytes),
+            backups_root: cfg.backups_root.clone(),
             synced: LocalSig {
                 mtime,
                 len: bytes.len() as u64,
@@ -457,15 +607,27 @@ impl RemoteEdit {
         sftp: &mut dyn SftpSession,
         force: bool,
     ) -> Result<SyncOutcome, RemoteEditError> {
+        let mut remote_mode = 0u32;
         if !force {
             match sftp.stat(&self.remote_path).await? {
                 None => return Err(RemoteEditError::Conflict(ConflictKind::RemoteDeleted)),
                 Some(e) => {
+                    remote_mode = e.mode;
                     let now = RemoteSig {
                         mtime_secs: e.mtime_secs,
                         size: e.size,
                     };
-                    if now != self.baseline {
+                    // mtime+size are only a hint (same-size edits within one second slip
+                    // through); the content hash decides.
+                    let same = match sftp.get_bounded(&self.remote_path, self.max_bytes).await {
+                        Ok(b) => hash_bytes(&b) == self.baseline_hash,
+                        Err(SshError::TooLarge(_)) => false,
+                        Err(SshError::PathNotFound(_)) => {
+                            return Err(RemoteEditError::Conflict(ConflictKind::RemoteDeleted));
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
+                    if !same {
                         return Err(RemoteEditError::Conflict(ConflictKind::RemoteChanged {
                             now,
                         }));
@@ -494,8 +656,19 @@ impl RemoteEdit {
                 // create is unsupported) we do NOT write through it and do NOT remove it;
                 // we simply overwrite the real target in place instead.
                 if sftp.put_exclusive(&tmp, &bytes).await.is_ok() {
-                    // From here the tmp file is ours, so it is ours to clean up.
-                    if sftp.rename(&tmp, &self.remote_path).await.is_ok() {
+                    // From here the tmp file is ours, so it is ours to clean up. The
+                    // target's permission bits are restored first (the tmp is created
+                    // 0600); if that is impossible we do not rename, so a 0644 file can
+                    // never silently change mode.
+                    if remote_mode & 0o7777 == 0 {
+                        // Unknown (forced upload or no bits sent): ask.
+                        if let Ok(Some(e)) = sftp.stat(&self.remote_path).await {
+                            remote_mode = e.mode;
+                        }
+                    }
+                    let mode_ok = remote_mode & 0o7777 != 0
+                        && sftp.chmod(&tmp, remote_mode & 0o7777).await.is_ok();
+                    if mode_ok && sftp.rename(&tmp, &self.remote_path).await.is_ok() {
                         atomic = true;
                     } else {
                         let res = sftp.put(&self.remote_path, &bytes).await;
@@ -513,6 +686,7 @@ impl RemoteEdit {
                 size: e.size,
             };
         }
+        self.baseline_hash = hash_bytes(&bytes);
         self.synced = LocalSig {
             mtime,
             len: bytes.len() as u64,
@@ -521,9 +695,50 @@ impl RemoteEdit {
         Ok(SyncOutcome::Uploaded { atomic })
     }
 
-    /// Remove the private directory and its contents.
+    /// Remove the private directory and its contents, UNCONDITIONALLY. Only for a copy
+    /// that is known to be disposable; every user-facing exit uses
+    /// [`Self::close_or_preserve`].
     pub fn close(self) -> io::Result<()> {
         self.dir.close()
+    }
+
+    /// Has the working copy changed since the last successful upload (or download)? A
+    /// working copy that can't be read counts as changed; one that is gone does not.
+    pub fn has_unsaved_changes(&mut self) -> bool {
+        match self.local_changed() {
+            Ok(c) => c,
+            Err(RemoteEditError::Io(e)) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(_) => true,
+        }
+    }
+
+    /// The one exit path (disconnect, stop, keep-server-copy, session close). Unchanged
+    /// since the last upload: remove the temp dir. Changed: copy the working copy to
+    /// `<backups_root>/<host>/<name>.local-<timestamp>` (dirs 0700, file 0600, never
+    /// overwriting) and only then remove the temp dir. If the backup fails, NOTHING is
+    /// deleted ([`Preserved::Failed`]).
+    pub fn close_or_preserve(mut self, host: &str, epoch_secs: i64) -> Preserved {
+        if !self.has_unsaved_changes() {
+            let _ = self.dir.close();
+            return Preserved::Removed;
+        }
+        let name = self
+            .local
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file.txt".into());
+        let dir = self.backups_root.join(safe_component(host));
+        match write_backup(&self.local, &dir, &backup_file_name(&name, epoch_secs)) {
+            Ok(dest) => {
+                let _ = self.dir.close();
+                Preserved::BackedUp(dest)
+            }
+            Err(error) => {
+                let kept = self.local.clone();
+                let _ = self.dir.keep();
+                Preserved::Failed { error, kept }
+            }
+        }
     }
 }
 
@@ -546,6 +761,8 @@ mod tests {
         mode: u32,
         puts: Vec<String>,
         renames: usize,
+        chmod_fails: bool,
+        chmods: Vec<(String, u32)>,
     }
 
     #[derive(Clone, Default)]
@@ -646,6 +863,14 @@ mod tests {
                 .remove(from)
                 .ok_or_else(|| SshError::PathNotFound(from.into()))?;
             s.files.insert(to.into(), f);
+            Ok(())
+        }
+        async fn chmod(&mut self, p: &str, mode: u32) -> Result<(), SshError> {
+            let mut s = self.0.lock().unwrap();
+            if s.chmod_fails {
+                return Err(SshError::Other("no chmod".into()));
+            }
+            s.chmods.push((p.into(), mode));
             Ok(())
         }
         async fn close(&mut self) -> Result<(), SshError> {
@@ -937,14 +1162,42 @@ mod tests {
         assert_eq!(safe_local_name("/a/x.sh.bak"), "x.sh.bak");
         assert_eq!(
             safe_local_name("/a/we\nird\x07na\x1b[me.txt"),
-            "weirdna[me.txt"
+            "weirdna_me.txt"
         );
         assert_eq!(safe_local_name("/a/dir/"), "file.txt");
         assert_eq!(safe_local_name("/a/.."), "file.txt");
-        assert_eq!(safe_local_name("/a/-rf"), "-rf");
+        assert_eq!(safe_local_name("/a/-rf"), "rf");
         let long = format!("/a/{}.rs", "n".repeat(300));
         let n = safe_local_name(&long);
         assert!(n.chars().count() <= MAX_NAME_CHARS && n.ends_with(".rs"));
+    }
+
+    #[test]
+    fn hostile_names_become_shell_inert() {
+        let cases = [
+            ("/a/$(touch x).sh", "__touch_x_.sh.txt"),
+            ("/a/a;b", "a_b"),
+            ("/a/`id`", "_id_"),
+            ("/a/-rf", "rf"),
+            ("/a/.bashrc", "bashrc"),
+            ("/a/--help.md", "help.md"),
+            ("/a/x\u{202E}gnp.exe", "xgnp.exe.txt"),
+            ("/a/a b|c&d>e.txt", "a_b_c_d_e.txt"),
+            ("/a/w.code-workspace", "w.code-workspace.txt"),
+            ("/a/p.sublime-project", "p.sublime-project.txt"),
+            ("/a/p.sublime-workspace", "p.sublime-workspace.txt"),
+            ("/a/h\u{e9}llo.rs", "h_llo.rs"),
+        ];
+        for (input, want) in cases {
+            let got = safe_local_name(input);
+            assert_eq!(got, want, "{input:?}");
+            assert!(
+                got.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+                "{got}"
+            );
+            assert!(!got.starts_with(['-', '.']), "{got}");
+        }
     }
 
     #[tokio::test]
@@ -955,7 +1208,7 @@ mod tests {
         let mut re = RemoteEdit::open(&mut sftp, hostile, &cfg(root.path()))
             .await
             .unwrap();
-        assert_eq!(re.local_path().file_name().unwrap(), "-evil.desktop.txt");
+        assert_eq!(re.local_path().file_name().unwrap(), "evil.desktop.txt");
         assert!(re.local_path().is_absolute());
         let ed = FakeEditorLauncher::new();
         re.launch(&ed).unwrap();
@@ -980,5 +1233,182 @@ mod tests {
     fn default_cache_root_is_not_tmp_when_home_is_set() {
         let r = default_cache_root();
         assert!(r.ends_with("sid/remote-edit"));
+    }
+
+    fn cfg_b(root: &Path) -> RemoteEditConfig {
+        let mut c = cfg(root);
+        c.backups_root = root.join("backups");
+        c
+    }
+
+    #[tokio::test]
+    async fn close_or_preserve_removes_an_unchanged_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"x");
+        let re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        let dir = re.local_path().parent().unwrap().to_path_buf();
+        assert!(matches!(re.close_or_preserve("web1", 0), Preserved::Removed));
+        assert!(!dir.exists());
+        assert!(!root.path().join("backups").exists());
+    }
+
+    #[tokio::test]
+    async fn close_or_preserve_moves_unsaved_edits_to_a_private_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"x");
+        let re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        edit_local(&re, b"unsaved work");
+        let dir = re.local_path().parent().unwrap().to_path_buf();
+        let Preserved::BackedUp(dest) = re.close_or_preserve("web 1/../x", 1_794_090_605) else {
+            panic!("expected a backup");
+        };
+        assert!(!dir.exists(), "temp dir removed only after the backup");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"unsaved work");
+        let rel = dest.strip_prefix(root.path().join("backups")).unwrap();
+        assert_eq!(
+            rel.to_str().unwrap(),
+            "web_1_.._x/conf.toml.local-20261107-223005"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(m(&dest), 0o600);
+            assert_eq!(m(dest.parent().unwrap()), 0o700);
+        }
+    }
+
+    #[tokio::test]
+    async fn close_or_preserve_never_deletes_after_a_backup_error() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"x");
+        let mut c = cfg_b(root.path());
+        // A regular file where the backups dir must go: creating it fails.
+        std::fs::write(root.path().join("blocker"), b"").unwrap();
+        c.backups_root = root.path().join("blocker");
+        let re = RemoteEdit::open(&mut sftp, P, &c).await.unwrap();
+        edit_local(&re, b"precious");
+        let local = re.local_path().to_path_buf();
+        match re.close_or_preserve("h", 0) {
+            Preserved::Failed { kept, .. } => assert_eq!(kept, local),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&local).unwrap(), b"precious");
+    }
+
+    #[tokio::test]
+    async fn a_second_backup_of_the_same_name_never_overwrites() {
+        let root = tempfile::tempdir().unwrap();
+        let mut got = Vec::new();
+        for body in [&b"one"[..], b"two"] {
+            let mut sftp = FakeSftp::with(P, b"x");
+            let re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+                .await
+                .unwrap();
+            edit_local(&re, body);
+            let Preserved::BackedUp(d) = re.close_or_preserve("h", 5) else {
+                panic!()
+            };
+            got.push(d);
+        }
+        assert_ne!(got[0], got[1]);
+        assert_eq!(std::fs::read(&got[0]).unwrap(), b"one");
+        assert_eq!(std::fs::read(&got[1]).unwrap(), b"two");
+    }
+
+    #[tokio::test]
+    async fn an_uploaded_edit_counts_as_saved() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"x");
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        edit_local(&re, b"saved");
+        re.sync(&mut sftp).await.unwrap();
+        assert!(matches!(re.close_or_preserve("h", 0), Preserved::Removed));
+    }
+
+    #[tokio::test]
+    async fn same_size_same_mtime_remote_change_is_still_a_conflict() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"aaaa");
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        // identical size and mtime, different bytes
+        sftp.0
+            .lock()
+            .unwrap()
+            .files
+            .insert(P.into(), (b"bbbb".to_vec(), 1000));
+        edit_local(&re, b"mine");
+        assert!(matches!(
+            re.sync(&mut sftp).await,
+            Err(RemoteEditError::Conflict(ConflictKind::RemoteChanged { .. }))
+        ));
+        assert_eq!(sftp.body(P).unwrap(), b"bbbb");
+    }
+
+    #[tokio::test]
+    async fn a_touched_but_identical_remote_is_not_a_conflict() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"same");
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        sftp.remote_edit_behind_our_back(P, b"same");
+        edit_local(&re, b"mine!");
+        assert!(re.sync(&mut sftp).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn default_strategy_is_tmp_rename_and_restores_the_mode() {
+        assert_eq!(UploadStrategy::default(), UploadStrategy::TmpRename);
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"v1\n");
+        {
+            let mut s = sftp.0.lock().unwrap();
+            s.rename_ok = true;
+            s.exclusive_ok = true;
+            s.mode = 0o100640;
+        }
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        edit_local(&re, b"v2 longer\n");
+        assert_eq!(
+            re.sync(&mut sftp).await.unwrap(),
+            SyncOutcome::Uploaded { atomic: true }
+        );
+        let chmods = sftp.0.lock().unwrap().chmods.clone();
+        assert_eq!(chmods.len(), 1);
+        assert_eq!(chmods[0].1, 0o640);
+    }
+
+    #[tokio::test]
+    async fn if_the_mode_cannot_be_restored_it_rewrites_in_place_instead_of_renaming() {
+        let root = tempfile::tempdir().unwrap();
+        let mut sftp = FakeSftp::with(P, b"v1\n");
+        {
+            let mut s = sftp.0.lock().unwrap();
+            s.rename_ok = true;
+            s.exclusive_ok = true;
+            s.chmod_fails = true;
+        }
+        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+            .await
+            .unwrap();
+        edit_local(&re, b"v2 longer\n");
+        assert_eq!(
+            re.sync(&mut sftp).await.unwrap(),
+            SyncOutcome::Uploaded { atomic: false }
+        );
+        assert_eq!(sftp.0.lock().unwrap().renames, 0);
+        assert_eq!(sftp.body(P).unwrap(), b"v2 longer\n");
+        assert_eq!(sftp.0.lock().unwrap().files.len(), 1, "tmp cleaned");
     }
 }

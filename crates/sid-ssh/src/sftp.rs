@@ -162,6 +162,18 @@ impl SftpSession for RusshSftp {
             .map_err(map_sftp_error)
     }
 
+    async fn chmod(&mut self, path: &str, mode: u32) -> Result<(), SshError> {
+        use russh_sftp::protocol::FileAttributes;
+        let attrs = FileAttributes {
+            permissions: Some(mode),
+            ..FileAttributes::empty()
+        };
+        self.inner
+            .set_metadata(path.to_string(), attrs)
+            .await
+            .map_err(map_sftp_error)
+    }
+
     async fn close(&mut self) -> Result<(), SshError> {
         let _ = self.inner.close().await;
         Ok(())

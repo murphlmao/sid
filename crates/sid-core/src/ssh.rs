@@ -209,6 +209,11 @@ pub trait SftpSession: Send + Sync {
     async fn rename(&mut self, _from: &str, _to: &str) -> Result<(), SshError> {
         Err(SshError::Other("sftp rename not supported".into()))
     }
+    /// Set the permission bits of `path`. Default: unsupported (callers that need it,
+    /// e.g. the rename-over upload, then fall back to rewriting in place).
+    async fn chmod(&mut self, _path: &str, _mode: u32) -> Result<(), SshError> {
+        Err(SshError::Other("sftp chmod not supported".into()))
+    }
     async fn close(&mut self) -> Result<(), SshError>;
 }
 
