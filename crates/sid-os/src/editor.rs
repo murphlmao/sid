@@ -153,6 +153,12 @@ fn is_terminal_editor(prog: &str, args: &[String]) -> bool {
 }
 
 /// How a terminal emulator is told to run a command.
+///
+/// Security note: some terminals (xterm, ghostty, konsole, ...) join the `-e` arguments
+/// into one shell string, so the file path must never contain shell-significant
+/// characters. The remote-edit caller guarantees that: its working-copy name is reduced to
+/// `[A-Za-z0-9._-]` and never starts with `-` or `.` (`sid_ssh::remote_edit`), and the
+/// path is absolute, so nothing here can be read as an option or a command.
 fn terminal_invocation(term: &str) -> (Vec<String>, bool) {
     // (prefix args placed before the command, ok)
     match basename(term) {

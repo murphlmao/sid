@@ -14,7 +14,18 @@
 //! 3. A save uploads and toasts "Saved <name> to <host>". A [`RemoteEditError::Conflict`]
 //!    parks that edit and raises the conflict dialog; the user picks overwrite or keep.
 //! 4. The edit ends on "Stop editing", on a kept server copy, or when the session
-//!    disconnects (a last best-effort sync runs first). Ending removes the temp dir.
+//!    disconnects. EVERY exit goes through `RemoteEdit::close_or_preserve`: edits not yet
+//!    uploaded are copied to a durable backup (app data dir) and the user is told where;
+//!    the working copy is deleted only when unchanged, never after a backup error. "Stop
+//!    editing" and session close try a final upload first (a conflict on stop re-raises the
+//!    dialog instead of losing the edit).
+//!
+//! Conflicts are queued FIFO: each parked edit remembers when it conflicted, and one
+//! dialog at a time shows the oldest.
+//!
+//! LOCK ORDER (deadlock avoidance): always the edit's own mutex FIRST, then the shared
+//! SFTP channel's. Every path here (poll, overwrite, stop, flush) follows it; never lock an
+//! edit while holding the SFTP guard.
 //!
 //! The editor's own exit is deliberately *not* what ends an edit: GUI editors commonly
 //! fork and return at once (`code` without `--wait`), which would otherwise stop syncing
@@ -22,21 +33,20 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     ClickEvent, ClipboardItem, Context, InteractiveElement, IntoElement, ParentElement,
     SharedString, Styled, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use sid_core::editor::{EditorError, EditorLauncher};
-use sid_core::ssh::SftpSession;
 use sid_ssh::remote_edit::{
-    ConflictKind, RemoteEdit, RemoteEditConfig, RemoteEditError, SyncOutcome,
+    ConflictKind, Preserved, RemoteEdit, RemoteEditConfig, RemoteEditError, SyncOutcome,
 };
 use sid_ui::{Button, Modal, Toast, ToastTone, Typography as _, modal, scaled, theme, v_flex};
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::{SessionStatus, SshSession, abs_remote_path, ssh_runtime};
+use super::{SessionStatus, SharedSftp, SshSession, abs_remote_path, ssh_runtime};
 
 /// How often active edits are checked for a save.
 const EDIT_POLL: Duration = Duration::from_millis(1500);
@@ -44,6 +54,8 @@ const EDIT_POLL: Duration = Duration::from_millis(1500);
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
 /// A toast carrying a path the user may want to copy stays longer.
 const TOAST_LIFETIME_LONG: Duration = Duration::from_secs(15);
+/// A final upload on stop/close must not hang on a dead connection.
+const FINAL_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) type SharedEdit = Arc<AsyncMutex<Option<RemoteEdit>>>;
 
@@ -56,6 +68,8 @@ pub(super) enum EditPhase {
     Watching,
     /// Parked on a conflict, waiting for the user's choice.
     Conflict,
+    /// "Stop editing" is making its final upload.
+    Stopping,
 }
 
 /// One remote file open in the user's editor.
@@ -68,6 +82,8 @@ pub(super) struct ActiveEdit {
     pub(super) phase: EditPhase,
     /// `None` until `RemoteEdit::open` returns.
     edit: Option<SharedEdit>,
+    /// Set while parked on a conflict: when it happened (FIFO order) and what it was.
+    conflict: Option<(Instant, ConflictKind)>,
 }
 
 /// A dialog the edit flow can raise.
@@ -77,8 +93,8 @@ pub(super) enum EditDialog {
         remote_path: String,
         name: String,
         kind: ConflictKind,
-        /// Where "Keep server copy" will save the user's edits.
-        backup: PathBuf,
+        /// The folder "Keep server copy" will save the user's edits into.
+        backups: PathBuf,
     },
     NoEditor,
 }
@@ -93,56 +109,10 @@ pub(super) struct SessionToast {
     copy_path: Option<String>,
 }
 
-/// `<cache_root>/backups`: where kept-local copies live. A sibling of the per-edit private
-/// directories (never inside one), so `RemoteEdit::close` and the temp-dir cleanup cannot
-/// touch it.
-pub(super) fn backups_dir(cache_root: &Path) -> PathBuf {
-    cache_root.join("backups")
-}
-
-/// `<name>.local-<YYYYmmdd-HHMMSS>` (UTC) for a backup of `name` taken at `epoch_secs`.
-pub(super) fn backup_file_name(name: &str, epoch_secs: i64) -> String {
-    let days = epoch_secs.div_euclid(86_400);
-    let rem = epoch_secs.rem_euclid(86_400);
-    let (y, mo, d) = super::civil_from_days(days);
-    format!(
-        "{name}.local-{y:04}{mo:02}{d:02}-{:02}{:02}{:02}",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
-}
-
-/// The backup path for `name` at `epoch_secs`. `name` is remote-chosen, so only its final
-/// component is used.
-pub(super) fn backup_path(cache_root: &Path, name: &str, epoch_secs: i64) -> PathBuf {
-    let bare = super::safe_local_name(name).unwrap_or_else(|| "file".to_string());
-    backups_dir(cache_root).join(backup_file_name(&bare, epoch_secs))
-}
-
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
-}
-
-/// Copy the working copy to `dest` (creating the backups directory, private to the user).
-/// Never overwrites an existing backup.
-pub(super) fn write_backup(src: &Path, dest: &Path) -> std::io::Result<()> {
-    if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut from = std::fs::File::open(src)?;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut to = opts.open(dest)?;
-    std::io::copy(&mut from, &mut to)?;
-    Ok(())
 }
 
 /// The copy for "Saved <name> to <host>".
@@ -151,10 +121,10 @@ pub(super) fn saved_message(name: &str, host: &str) -> String {
 }
 
 /// Body text for the conflict dialog.
-pub(super) fn conflict_body(name: &str, kind: ConflictKind, backup: &Path) -> String {
+pub(super) fn conflict_body(name: &str, kind: ConflictKind, backups: &Path) -> String {
     let keep = format!(
-        "Keeping the server copy leaves it as it is and saves your edits to {}.",
-        backup.display()
+        "Keeping the server copy leaves it as it is and saves your edits under {}.",
+        backups.display()
     );
     match kind {
         ConflictKind::RemoteChanged { .. } => format!(
@@ -245,6 +215,7 @@ impl SshSession {
             name: name.clone(),
             phase: EditPhase::Opening,
             edit: None,
+            conflict: None,
         });
         cx.notify();
         let cfg: RemoteEditConfig = self.edit_cfg.clone();
@@ -324,9 +295,9 @@ impl SshSession {
     /// One poll pass. Returns whether polling should continue.
     fn poll_edits(&mut self, cx: &mut Context<Self>) -> bool {
         if self.status != SessionStatus::Connected {
-            // The connection is gone: nothing can be uploaded. Dropping the handles
-            // removes the private directories.
-            self.drop_edits();
+            // The connection is gone: nothing can be uploaded, but nothing may be lost
+            // either - unsaved edits are backed up and the user told where.
+            self.drop_edits(cx);
             return false;
         }
         let Some(sftp) = self.sftp.clone() else {
@@ -343,6 +314,7 @@ impl SshSession {
             cx.spawn(async move |this, cx| {
                 let result = ssh_runtime()
                     .spawn(async move {
+                        // Lock order: the edit, then SFTP.
                         let mut slot = edit.lock().await;
                         let Some(e) = slot.as_mut() else {
                             return Ok(SyncOutcome::Unchanged);
@@ -373,23 +345,16 @@ impl SshSession {
     ) {
         match result {
             Ok(Ok(SyncOutcome::Unchanged)) => {}
-            Ok(Ok(SyncOutcome::Uploaded { .. })) => {
-                let msg = saved_message(name, &self.host_label);
+            Ok(Ok(SyncOutcome::Uploaded { atomic })) => {
+                let mut msg = saved_message(name, &self.host_label);
+                if !atomic {
+                    msg.push_str(
+                        " (rewritten in place: the server can't replace files atomically)",
+                    );
+                }
                 self.toast(ToastTone::Success, msg, cx);
             }
-            Ok(Err(RemoteEditError::Conflict(kind))) => {
-                if let Some(a) = self.edits.iter_mut().find(|a| a.remote_path == remote_path) {
-                    a.phase = EditPhase::Conflict;
-                }
-                let backup = backup_path(&self.edit_cfg.cache_root, name, now_secs());
-                self.edit_dialog = Some(EditDialog::Conflict {
-                    remote_path: remote_path.to_string(),
-                    name: name.to_string(),
-                    kind,
-                    backup,
-                });
-                cx.notify();
-            }
+            Ok(Err(RemoteEditError::Conflict(kind))) => self.park_conflict(remote_path, kind, cx),
             Ok(Err(e)) => {
                 // Keep the edit alive (the next save may succeed) but say what happened.
                 let msg = format!("Couldn't save {name} to {}: {e}", self.host_label);
@@ -405,6 +370,38 @@ impl SshSession {
         }
     }
 
+    /// Park an edit on a conflict (queued behind any earlier ones) and show its dialog if
+    /// none is up.
+    fn park_conflict(&mut self, remote_path: &str, kind: ConflictKind, cx: &mut Context<Self>) {
+        if let Some(a) = self.edits.iter_mut().find(|a| a.remote_path == remote_path) {
+            a.phase = EditPhase::Conflict;
+            a.conflict.get_or_insert((Instant::now(), kind));
+        }
+        self.show_next_conflict(cx);
+    }
+
+    /// If no dialog is up, raise the oldest parked conflict's.
+    fn show_next_conflict(&mut self, cx: &mut Context<Self>) {
+        if self.edit_dialog.is_some() {
+            return;
+        }
+        let backups = self.edit_cfg.backups_root.clone();
+        let next = self
+            .edits
+            .iter()
+            .filter_map(|a| a.conflict.map(|(at, kind)| (at, kind, a)))
+            .min_by_key(|(at, _, _)| *at);
+        if let Some((_, kind, a)) = next {
+            self.edit_dialog = Some(EditDialog::Conflict {
+                remote_path: a.remote_path.clone(),
+                name: a.name.clone(),
+                kind,
+                backups,
+            });
+        }
+        cx.notify();
+    }
+
     /// The conflict dialog's "Overwrite server copy".
     pub(super) fn resolve_conflict_overwrite(&mut self, cx: &mut Context<Self>) {
         let Some(EditDialog::Conflict {
@@ -413,7 +410,6 @@ impl SshSession {
         else {
             return;
         };
-        cx.notify();
         let (Some(sftp), Some(edit)) = (
             self.sftp.clone(),
             self.edits
@@ -421,11 +417,23 @@ impl SshSession {
                 .find(|a| a.remote_path == remote_path)
                 .and_then(|a| a.edit.clone()),
         ) else {
+            self.toast(
+                ToastTone::Danger,
+                format!("Couldn't overwrite {name}: the connection is gone. Your edits are kept."),
+                cx,
+            );
+            self.show_next_conflict(cx);
             return;
         };
+        if let Some(a) = self.edits.iter_mut().find(|a| a.remote_path == remote_path) {
+            a.conflict = None;
+            a.phase = EditPhase::Stopping; // not polled while the upload runs
+        }
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let result = ssh_runtime()
                 .spawn(async move {
+                    // Lock order: the edit, then SFTP.
                     let mut slot = edit.lock().await;
                     let Some(e) = slot.as_mut() else {
                         return Ok(SyncOutcome::Unchanged);
@@ -439,102 +447,218 @@ impl SshSession {
                     a.phase = EditPhase::Watching;
                 }
                 s.handle_sync_result(&remote_path, &name, result, cx);
+                s.show_next_conflict(cx);
             });
         })
         .detach();
     }
 
     /// The conflict dialog's "Keep server copy": the server is left alone, the user's
-    /// edits are copied to a backup that outlives the edit, then the edit ends.
+    /// edits are preserved in the backups folder, then the edit ends.
     pub(super) fn resolve_conflict_keep(&mut self, cx: &mut Context<Self>) {
         let Some(EditDialog::Conflict {
-            remote_path,
-            name,
-            backup,
-            ..
+            remote_path, name, ..
         }) = self.edit_dialog.take()
         else {
             return;
         };
-        let edit = self
-            .edits
-            .iter()
-            .find(|a| a.remote_path == remote_path)
-            .and_then(|a| a.edit.clone());
-        self.stop_edit_keep_working_copy(&remote_path, cx);
-        let Some(edit) = edit else { return };
+        let edit = self.take_active(&remote_path);
+        cx.notify();
+        let host = self.host_label.clone();
+        let Some(edit) = edit else {
+            self.toast(
+                ToastTone::Warning,
+                format!("Kept the server copy of {name}. (It was already closed here.)"),
+                cx,
+            );
+            self.show_next_conflict(cx);
+            return;
+        };
         cx.spawn(async move |this, cx| {
-            let saved: Result<PathBuf, String> = ssh_runtime()
-                .spawn(async move {
-                    let Some(e) = edit.lock().await.take() else {
-                        return Err("the working copy was already closed".to_string());
-                    };
-                    let result = write_backup(e.local_path(), &backup)
-                        .map(|()| backup.clone())
-                        .map_err(|err| err.to_string());
-                    let _ = e.close();
-                    result
-                })
-                .await
-                .unwrap_or_else(|j| Err(j.to_string()));
-            let _ = this.update(cx, |s, cx| match saved {
-                Ok(path) => {
-                    let shown = path.display().to_string();
-                    s.toast_with(
-                        ToastTone::Info,
-                        format!("Kept the server copy. Your edits were saved to {shown}"),
-                        Some(shown),
+            let done = ssh_runtime()
+                .spawn(async move { finish_edit(edit, &host, None).await })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                match done {
+                    Ok(Some(p)) => s.report_preserved(&name, p, true, cx),
+                    Ok(None) | Err(_) => s.toast(
+                        ToastTone::Warning,
+                        format!("Kept the server copy of {name}. (It was already closed here.)"),
                         cx,
-                    );
+                    ),
                 }
-                Err(e) => s.toast(
-                    ToastTone::Danger,
-                    format!("Kept the server copy of {name}, but couldn't save your edits: {e}"),
-                    cx,
-                ),
+                s.show_next_conflict(cx);
             });
         })
         .detach();
     }
 
-    /// Remove the edit from the list without closing its working copy (the caller owns
-    /// that handle and still needs the file).
-    fn stop_edit_keep_working_copy(&mut self, remote_path: &str, cx: &mut Context<Self>) {
-        self.edits.retain(|a| a.remote_path != remote_path);
-        cx.notify();
-    }
-
-    /// Esc on a dialog or the preview.
-    pub(super) fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.edit_dialog, Some(EditDialog::Conflict { .. })) {
-            // Keeping the server copy is non-destructive now (edits are backed up), so
-            // it is the safe reading of "dismiss".
-            self.resolve_conflict_keep(cx);
-        }
-        self.edit_dialog = None;
-        self.preview = None;
-        cx.notify();
-    }
-
-    /// End one edit and remove its working copy.
-    pub(super) fn stop_edit(&mut self, remote_path: &str, cx: &mut Context<Self>) {
-        let mut taken = Vec::new();
+    /// Remove an edit from the list and return its shared handle.
+    fn take_active(&mut self, remote_path: &str) -> Option<SharedEdit> {
+        let mut taken = None;
         self.edits.retain_mut(|a| {
             if a.remote_path == remote_path {
-                taken.extend(a.edit.take());
+                taken = a.edit.take();
                 false
             } else {
                 true
             }
         });
-        close_edits(taken);
+        taken
+    }
+
+    /// Tell the user what `close_or_preserve` did.
+    fn report_preserved(
+        &mut self,
+        name: &str,
+        p: Preserved,
+        kept_server: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let lead = if kept_server {
+            "Kept the server copy. "
+        } else {
+            ""
+        };
+        match p {
+            Preserved::Removed => {
+                if kept_server {
+                    self.toast(
+                        ToastTone::Info,
+                        format!("Kept the server copy of {name}"),
+                        cx,
+                    );
+                }
+            }
+            Preserved::BackedUp(path) => {
+                let shown = path.display().to_string();
+                self.toast_with(
+                    ToastTone::Warning,
+                    format!("{lead}Your unsaved edits to {name} were saved to {shown}"),
+                    Some(shown),
+                    cx,
+                );
+            }
+            Preserved::Failed { error, kept } => {
+                let shown = kept.display().to_string();
+                self.toast_with(
+                    ToastTone::Danger,
+                    format!(
+                        "{lead}Couldn't back up your edits to {name} ({error}). \
+                         They are still at {shown}"
+                    ),
+                    Some(shown),
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// Esc on a dialog or the preview.
+    pub(super) fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.edit_dialog, Some(EditDialog::Conflict { .. })) {
+            // Keeping the server copy is non-destructive (edits are backed up), so it is
+            // the safe reading of "dismiss". It also raises the next queued dialog.
+            self.resolve_conflict_keep(cx);
+            self.preview = None;
+            cx.notify();
+            return;
+        }
+        self.edit_dialog = None;
+        self.preview = None;
+        self.show_next_conflict(cx);
         cx.notify();
     }
 
-    /// Forget every edit and remove the working copies (connection gone).
-    pub(super) fn drop_edits(&mut self) {
-        let taken: Vec<SharedEdit> = self.edits.drain(..).filter_map(|a| a.edit).collect();
-        close_edits(taken);
+    /// "Stop editing": one last upload of any unsaved change, then the working copy goes
+    /// through `close_or_preserve`. A conflict on that upload re-raises the conflict
+    /// dialog instead of ending the edit; any other failure backs the edit up.
+    pub(super) fn stop_edit(&mut self, remote_path: &str, cx: &mut Context<Self>) {
+        let Some(a) = self.edits.iter_mut().find(|a| a.remote_path == remote_path) else {
+            return;
+        };
+        let Some(edit) = a.edit.clone() else {
+            // Still opening: drop the entry; the open task cleans up its own download.
+            self.edits.retain(|a| a.remote_path != remote_path);
+            cx.notify();
+            return;
+        };
+        if a.phase == EditPhase::Stopping {
+            return;
+        }
+        a.phase = EditPhase::Stopping;
+        let name = a.name.clone();
+        let remote_path = remote_path.to_string();
+        let sftp = self.sftp.clone();
+        let host = self.host_label.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let done = ssh_runtime()
+                .spawn(async move { finish_edit_stop(edit, &host, sftp).await })
+                .await;
+            let _ = this.update(cx, |s, cx| match done {
+                Ok(StopResult::Conflict(kind)) => s.park_conflict(&remote_path, kind, cx),
+                Ok(StopResult::Done(p, err)) => {
+                    s.take_active(&remote_path);
+                    if let Some(e) = err {
+                        s.toast(
+                            ToastTone::Danger,
+                            format!("Couldn't save {name} to {}: {e}", s.host_label),
+                            cx,
+                        );
+                    }
+                    s.report_preserved(&name, p, false, cx);
+                    cx.notify();
+                }
+                Err(j) => {
+                    if let Some(a) = s.edits.iter_mut().find(|a| a.remote_path == remote_path) {
+                        a.phase = EditPhase::Watching;
+                    }
+                    s.toast(
+                        ToastTone::Danger,
+                        format!("Stopping {name} failed unexpectedly: {j}"),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Connection gone: back up every unsaved edit (no upload is possible) and tell the
+    /// user where they went.
+    pub(super) fn drop_edits(&mut self, cx: &mut Context<Self>) {
+        let taken: Vec<(String, SharedEdit)> = self
+            .edits
+            .drain(..)
+            .filter_map(|a| a.edit.map(|e| (a.name, e)))
+            .collect();
+        self.edit_dialog = None;
+        cx.notify();
+        if taken.is_empty() {
+            return;
+        }
+        let host = self.host_label.clone();
+        cx.spawn(async move |this, cx| {
+            let done = ssh_runtime()
+                .spawn(async move {
+                    let mut out = Vec::new();
+                    for (name, e) in taken {
+                        if let Some(p) = finish_edit(e, &host, None).await {
+                            out.push((name, p));
+                        }
+                    }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+            let _ = this.update(cx, |s, cx| {
+                for (name, p) in done {
+                    s.report_preserved(&name, p, false, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// For `disconnect`: the live edits, to flush before the channels close.
@@ -609,7 +733,10 @@ impl SshSession {
         let t = theme::active(cx).clone();
         let modal_el = match dialog {
             EditDialog::Conflict {
-                name, kind, backup, ..
+                name,
+                kind,
+                backups,
+                ..
             } => {
                 let overwrite = match kind {
                     ConflictKind::RemoteChanged { .. } => "Overwrite server copy",
@@ -621,7 +748,7 @@ impl SshSession {
                         div()
                             .text_body(&t)
                             .text_color(rgb(t.fg))
-                            .child(conflict_body(&name, kind, &backup)),
+                            .child(conflict_body(&name, kind, &backups)),
                     )
                     .footer(
                         Button::new("session-edit-keep", "Keep server copy").on_click(
@@ -641,6 +768,7 @@ impl SshSession {
                 .width(px(480.))
                 .on_dismiss(cx.listener(|s, _ev: &ClickEvent, _w, cx| {
                     s.edit_dialog = None;
+                    s.show_next_conflict(cx);
                     cx.notify();
                 }))
                 .child(
@@ -661,6 +789,7 @@ impl SshSession {
                         .primary()
                         .on_click(cx.listener(|s, _ev: &ClickEvent, _w, cx| {
                             s.edit_dialog = None;
+                            s.show_next_conflict(cx);
                             cx.notify();
                         })),
                 )
@@ -670,31 +799,71 @@ impl SshSession {
     }
 }
 
-/// Remove working copies on the SSH runtime; never blocks the UI thread.
-fn close_edits(edits: Vec<SharedEdit>) {
-    if edits.is_empty() {
-        return;
-    }
-    ssh_runtime().spawn(async move {
-        for e in edits {
-            if let Some(edit) = e.lock().await.take() {
-                let _ = edit.close();
-            }
-        }
-    });
+/// What "Stop editing" ended up doing.
+enum StopResult {
+    /// The edit is finished. The error, if any, is why the final upload failed (the edit
+    /// was then preserved).
+    Done(Preserved, Option<RemoteEditError>),
+    /// The final upload conflicted: nothing was closed.
+    Conflict(ConflictKind),
 }
 
-/// Best-effort final sync then cleanup, run before the SFTP channel closes.
-pub(super) async fn flush_and_close(
-    edits: Vec<SharedEdit>,
-    mut sftp: Option<&mut dyn SftpSession>,
-) {
-    for e in edits {
-        if let Some(mut edit) = e.lock().await.take() {
-            if let Some(s) = sftp.as_deref_mut() {
-                let _ = edit.sync(s).await;
+fn epoch_now() -> i64 {
+    now_secs()
+}
+
+/// Close one edit through `close_or_preserve`, optionally after a bounded final upload
+/// (lock order: edit, then SFTP). `None` if the edit was already closed.
+async fn finish_edit(edit: SharedEdit, host: &str, sftp: Option<SharedSftp>) -> Option<Preserved> {
+    let mut slot = edit.lock().await;
+    let mut e = slot.take()?;
+    if let Some(sftp) = sftp
+        && e.has_unsaved_changes()
+    {
+        let mut guard = sftp.lock().await;
+        let _ = tokio::time::timeout(FINAL_UPLOAD_TIMEOUT, e.sync(&mut **guard)).await;
+    }
+    Some(e.close_or_preserve(host, epoch_now()))
+}
+
+/// "Stop editing": final upload, but a conflict leaves the edit open for the dialog.
+async fn finish_edit_stop(edit: SharedEdit, host: &str, sftp: Option<SharedSftp>) -> StopResult {
+    let mut slot = edit.lock().await;
+    let Some(e) = slot.as_mut() else {
+        return StopResult::Done(Preserved::Removed, None);
+    };
+    let mut upload_err = None;
+    if e.has_unsaved_changes()
+        && let Some(sftp) = sftp
+    {
+        let mut guard = sftp.lock().await;
+        match tokio::time::timeout(FINAL_UPLOAD_TIMEOUT, e.sync(&mut **guard)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(RemoteEditError::Conflict(kind))) => return StopResult::Conflict(kind),
+            Ok(Err(other)) => upload_err = Some(other),
+            Err(_) => {
+                upload_err = Some(RemoteEditError::Io(std::io::Error::other(
+                    "the upload timed out",
+                )));
             }
-            let _ = edit.close();
+        }
+    }
+    let Some(e) = slot.take() else {
+        return StopResult::Done(Preserved::Removed, upload_err);
+    };
+    StopResult::Done(e.close_or_preserve(host, epoch_now()), upload_err)
+}
+
+/// Session close: best-effort bounded final upload for each edit, then
+/// `close_or_preserve` (a conflicted or failed edit is backed up, never dropped). Edits
+/// are locked before the SFTP channel, matching every other path.
+pub(super) async fn flush_and_close(edits: Vec<SharedEdit>, sftp: Option<SharedSftp>, host: &str) {
+    for e in edits {
+        if let Some(Preserved::BackedUp(path)) = finish_edit(e, host, sftp.clone()).await {
+            // The session UI is going away, so there is no toast; leave a trail.
+            eprintln!("sid: unsaved edits were preserved at {}", path.display());
+        } else {
+            // nothing to report
         }
     }
 }
@@ -711,7 +880,7 @@ mod tests {
 
     #[test]
     fn conflict_copy_differs_for_deleted() {
-        let b = Path::new("/c/backups/x.local-1");
+        let b = Path::new("/c/backups");
         let changed = conflict_body(
             "x",
             ConflictKind::RemoteChanged {
@@ -726,62 +895,8 @@ mod tests {
         assert!(changed.contains("changed"));
         assert!(deleted.contains("deleted"));
         // Both say where the user's edits go.
-        assert!(changed.contains("/c/backups/x.local-1"));
-        assert!(deleted.contains("/c/backups/x.local-1"));
-    }
-
-    #[test]
-    fn backup_names_carry_a_utc_timestamp() {
-        // 2026-11-07 22:30:05 UTC
-        assert_eq!(
-            backup_file_name("a.conf", 1_794_090_605),
-            "a.conf.local-20261107-223005"
-        );
-    }
-
-    #[test]
-    fn backup_path_uses_only_the_final_component() {
-        let p = backup_path(Path::new("/cache"), "../../etc/passwd", 0);
-        assert_eq!(
-            p.parent().unwrap(),
-            Path::new("/cache/backups"),
-            "backup stays inside the backups dir"
-        );
-        assert!(
-            p.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("passwd.local-")
-        );
-    }
-
-    /// The backup's name comes from the session's `safe_local_name`, so a bidi override in
-    /// a remote name never reaches a file the user will later find on disk.
-    #[test]
-    fn a_backup_name_never_carries_a_bidi_override() {
-        let p = backup_path(Path::new("/cache"), "invoice\u{202E}fdp.exe", 0);
-        let name = p.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("invoice_fdp.exe.local-"), "{name:?}");
-    }
-
-    #[test]
-    fn cleanup_of_an_edit_directory_never_removes_backups() {
-        let cache = tempfile::tempdir().unwrap();
-        // Mimic RemoteEdit: a private per-edit TempDir under the cache root.
-        let edit_dir = tempfile::Builder::new().tempdir_in(cache.path()).unwrap();
-        let work = edit_dir.path().join("work.txt");
-        std::fs::write(&work, b"my edits").unwrap();
-        let dest = backup_path(cache.path(), "work.txt", 1_794_090_605);
-        write_backup(&work, &dest).unwrap();
-        // Cleanup = dropping/closing the edit's directory.
-        edit_dir.close().unwrap();
-        assert!(!work.exists());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"my edits");
-        // A second backup with the same name is refused, never overwritten.
-        let again = tempfile::NamedTempFile::new().unwrap();
-        assert!(write_backup(again.path(), &dest).is_err());
-        assert_eq!(std::fs::read(&dest).unwrap(), b"my edits");
+        assert!(changed.contains("/c/backups"));
+        assert!(deleted.contains("/c/backups"));
     }
 
     #[test]
@@ -791,6 +906,7 @@ mod tests {
             name: "a".into(),
             phase: EditPhase::Watching,
             edit: None,
+            conflict: None,
         }];
         assert!(is_editing(&edits, "/etc/a"));
         assert!(!is_editing(&edits, "/etc/b"));
