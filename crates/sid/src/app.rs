@@ -526,6 +526,7 @@ impl AppState {
         // why the Settings screen keeps its own snapshot rather than re-reading
         // `store.settings()` from `render`.
         let settings = SettingsTabState::new(&store);
+        let prefs = settings.cached_settings().clone();
         // The last tab and the reduce-motion switch ride in the same cached snapshot: one
         // read at startup, none from `render`.
         let last_tab = tab_from_str(&settings.cached_settings().last_tab);
@@ -565,10 +566,10 @@ impl AppState {
             host_key_prompt: HostKeyPrompts::default(),
             palette: None,
             cheat_sheet_open: false,
-            recent_commands: Vec::new(),
+            recent_commands: prefs.palette_recents.clone(),
             notifier: std::sync::Arc::new(sid_os::DbusNotifier::new()),
             ssh_config_present,
-            import_banner_dismissed: false,
+            import_banner_dismissed: prefs.import_banner_dismissed,
             root_focus: cx.focus_handle(),
         };
         state.apply_seed_lists(seed_lists);
@@ -2100,6 +2101,17 @@ impl AppState {
 
     /// First-run banner: no saved hosts yet and an `~/.ssh/config` to start from. Friendly
     /// and dismissible; the import itself is [`Self::open_ssh_import`].
+    /// Remember "Not now" on the import banner across restarts.
+    fn persist_import_banner_dismissed(&self) {
+        let saved = self.store.settings().and_then(|mut s| {
+            s.import_banner_dismissed = true;
+            self.store.set_settings(&s)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not save banner dismissal: {e}");
+        }
+    }
+
     fn import_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         if !import_banner_visible(
             self.hosts.len(),
@@ -2155,6 +2167,7 @@ impl AppState {
                         .ghost()
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                             this.import_banner_dismissed = true;
+                            this.persist_import_banner_dismissed();
                             cx.notify();
                         })),
                 ),
@@ -2413,6 +2426,10 @@ impl Render for AppState {
         // cost (element construction), `total=` is the whole frame including gpui's
         // layout/prepaint/paint, which is where scroll lag actually lives.
         let perf_start = std::env::var_os("SID_PERF").map(|_| std::time::Instant::now());
+        // Glyph antialiasing follows the Settings preference + this window's scale factor.
+        self.sync_text_rendering(window, cx);
+        // Glyph antialiasing follows the Settings preference + this window's scale factor.
+        self.sync_text_rendering(window, cx);
 
         let content = match self.active_tab {
             Tab::Ssh => self.ssh_tab(cx).into_any_element(),

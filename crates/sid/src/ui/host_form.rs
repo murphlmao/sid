@@ -1054,6 +1054,12 @@ pub(crate) fn mint_secret_id(alias: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    // Coarse clocks (macOS: microseconds) can return the same instant twice; keep the
+    // suffix strictly increasing within the process so ids never collide.
+    static LAST: std::sync::Mutex<u128> = std::sync::Mutex::new(0);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let nanos = nanos.max(*last + 1);
+    *last = nanos;
     format!("ssh-{alias}-{nanos}")
 }
 

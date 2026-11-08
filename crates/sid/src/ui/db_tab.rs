@@ -3686,7 +3686,7 @@ impl AppState {
     /// whose match arm lives in `app.rs` — a file this slice does not own — so a third
     /// variant would be a cross-file change for a case with a one-step workaround: Run
     /// prompts, and Explain works from then on.
-    fn explain_query(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn explain_query(&mut self, cx: &mut Context<Self>) {
         if self.db.running {
             return;
         }
@@ -4133,7 +4133,7 @@ impl AppState {
     /// CSV formula injection (see [`csv_escape_field`]'s doc comment — this is the
     /// security-load-bearing piece of this increment). Reports success/failure as a
     /// transient `db.notice`, mirroring how `db.status` reports query results.
-    fn export_csv(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn export_csv(&mut self, cx: &mut Context<Self>) {
         let Some(page) = self.db.last_page.clone() else {
             self.db.notice = Some("nothing to export — run a query first".to_string());
             cx.notify();

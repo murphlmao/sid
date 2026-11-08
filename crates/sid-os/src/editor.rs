@@ -359,6 +359,14 @@ impl EditorLauncher for LinuxEditorLauncher {
 mod tests {
     use super::*;
 
+    /// An absolute path on every host (`/tmp/..` is relative on Windows); `cmdline`
+    /// maps it back to the POSIX spelling the expectations use.
+    const FILE: &str = if cfg!(windows) {
+        "C:/tmp/f.txt"
+    } else {
+        "/tmp/f.txt"
+    };
+
     fn env(visual: Option<&str>, editor: Option<&str>, term: Option<&str>) -> EditorEnv {
         EditorEnv {
             visual: visual.map(Into::into),
@@ -369,14 +377,14 @@ mod tests {
 
     fn plan(e: &EditorEnv, have: &[&str]) -> Result<LaunchPlan, EditorError> {
         let have: Vec<String> = have.iter().map(|s| s.to_string()).collect();
-        plan_launch(e, Path::new("/tmp/f.txt"), LaunchPolicy::Any, &|n| {
+        plan_launch(e, Path::new(FILE), LaunchPolicy::Any, &|n| {
             have.iter().any(|h| h == n)
         })
     }
 
     fn plan_only(e: &EditorEnv, have: &[&str]) -> Result<LaunchPlan, EditorError> {
         let have: Vec<String> = have.iter().map(|s| s.to_string()).collect();
-        plan_launch(e, Path::new("/tmp/f.txt"), LaunchPolicy::EditorOnly, &|n| {
+        plan_launch(e, Path::new(FILE), LaunchPolicy::EditorOnly, &|n| {
             have.iter().any(|h| h == n)
         })
     }
@@ -414,7 +422,7 @@ mod tests {
     }
 
     fn cmdline(p: &LaunchPlan) -> String {
-        format!("{} {}", p.program, p.args.join(" "))
+        format!("{} {}", p.program, p.args.join(" ")).replace(FILE, "/tmp/f.txt")
     }
 
     #[test]
@@ -443,7 +451,7 @@ mod tests {
     #[test]
     fn editor_arguments_are_preserved_and_quotes_honored() {
         let p = plan(&env(None, Some("vim -u 'my rc'"), Some("kitty")), &[]).unwrap();
-        assert_eq!(p.args, ["vim", "-u", "my rc", "/tmp/f.txt"]);
+        assert_eq!(p.args, ["vim", "-u", "my rc", FILE]);
         assert_eq!(p.program, "kitty");
     }
 
