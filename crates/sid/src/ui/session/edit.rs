@@ -61,6 +61,9 @@ pub(super) enum EditPhase {
 /// One remote file open in the user's editor.
 pub(super) struct ActiveEdit {
     pub(super) remote_path: String,
+    /// The file's name as it may be *shown* ([`super::display_name`]): it is
+    /// server-controlled, and only ever reaches toasts and dialogs. SFTP calls use
+    /// `remote_path`.
     pub(super) name: String,
     pub(super) phase: EditPhase,
     /// `None` until `RemoteEdit::open` returns.
@@ -226,6 +229,9 @@ impl SshSession {
             return;
         };
         let remote_path = abs_remote_path(&self.path, &name);
+        // From here on `name` is only ever shown (toasts, dialogs): display-safe it, as
+        // every other remote name in the session is. The raw name lives in `remote_path`.
+        let name = super::display_name(&name);
         if is_editing(&self.edits, &remote_path) {
             self.toast(
                 ToastTone::Info,
@@ -748,6 +754,15 @@ mod tests {
                 .unwrap()
                 .starts_with("passwd.local-")
         );
+    }
+
+    /// The backup's name comes from the session's `safe_local_name`, so a bidi override in
+    /// a remote name never reaches a file the user will later find on disk.
+    #[test]
+    fn a_backup_name_never_carries_a_bidi_override() {
+        let p = backup_path(Path::new("/cache"), "invoice\u{202E}fdp.exe", 0);
+        let name = p.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("invoice_fdp.exe.local-"), "{name:?}");
     }
 
     #[test]
