@@ -30,6 +30,17 @@ expect 0 "forbidden only in comment"   Write "$R/sid-core/src/x.rs"  content    
 expect 0 "non-rust file"               Write "$R/sid-core/README.md" content    'use redb::Database;'
 expect 0 "outside crates/"             Write "/repo/scripts/x.rs"    content    'use gpui::App;'
 expect 0 "non-edit tool"               Bash  "$R/sid-core/src/x.rs"  content    'use redb::Database;'
+# MultiEdit carries edits[] instead of new_string/content.
+multi() {
+  local want="$1" name="$2" file="$3" a="$4" b="$5" got
+  jq -n --arg f "$file" --arg a "$a" --arg b "$b" \
+    '{tool_name:"MultiEdit", tool_input:{file_path:$f, edits:[{old_string:"x",new_string:$a},{old_string:"y",new_string:$b}]}}' | "$HOOK" >/dev/null 2>&1
+  got=$?
+  if [[ "$got" -eq "$want" ]]; then echo "ok   $name"; else echo "FAIL $name (want $want, got $got)"; fails=$((fails+1)); fi
+}
+multi 2 "MultiEdit: violation in 2nd edit" "$R/sid-core/src/x.rs" 'fn a() {}' 'use redb::Database;'
+multi 0 "MultiEdit: clean edits"           "$R/sid-core/src/x.rs" 'fn a() {}' 'fn b() {}'
+multi 0 "MultiEdit: gpui in sid-ui"        "$R/sid-ui/src/x.rs"   'use gpui::App;' 'fn b() {}'
 printf '' | "$HOOK"; [[ $? -eq 0 ]] && echo "ok   empty payload" || { echo "FAIL empty payload"; fails=$((fails+1)); }
 
 [[ $fails -eq 0 ]] && echo "all passed" || { echo "$fails failed"; exit 1; }

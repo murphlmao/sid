@@ -2,6 +2,7 @@
 //! Stash and Log, plus the Fetch/Push controls and the notice banner. Render-only: every
 //! click routes into [`super::ops`].
 
+use crate::ui::session::display_name;
 use std::time::Instant;
 
 use gpui::{
@@ -60,7 +61,7 @@ impl AppState {
                 Button::new("ws-push", "Push")
                     .small()
                     .icon(Icon::ArrowUp)
-                    .tooltip("Push the current branch to its upstream")
+                    .tooltip("Push the current branch to its upstream. Hooks are skipped by sid.")
                     .loading(pushing)
                     .disabled(busy.is_some())
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| this.push_current(cx))),
@@ -173,7 +174,7 @@ impl AppState {
                                 .clamp_one_line()
                                 .text_mono(t)
                                 .text_color(rgb(name_ink))
-                                .child(f.path.clone()),
+                                .child(display_name(&f.path)),
                         )
                         .meta(Badge::new(letter).tone(match side {
                             Side::Staged => BadgeTone::Success,
@@ -326,6 +327,7 @@ impl AppState {
                         ),
                 )
                 .children(hint.map(|h| div().text_meta(t).child(h)))
+                .child(div().text_meta(t).child("Hooks are skipped by sid."))
         });
 
         let left = div()
@@ -420,7 +422,7 @@ impl AppState {
                     .clamp_one_line()
                     .text_mono(t)
                     .text_color(rgb(t.fg_strong))
-                    .child(path.clone()),
+                    .child(display_name(&path)),
             )
             .child(Badge::new(diff_status_label(file.status)))
             .child(
@@ -542,7 +544,7 @@ impl AppState {
             Some(Fetch::Done(Ok(entries))) => {
                 let rows: Vec<AnyElement> = entries
                     .iter()
-                    .map(|e| self.stash_row(e, armed == Some(e.index), busy, cx))
+                    .map(|e| self.stash_row(e, armed.as_deref() == Some(e.oid.as_str()), busy, cx))
                     .collect();
                 List::stack().children(rows).into_any_element()
             }
@@ -566,6 +568,7 @@ impl AppState {
     ) -> AnyElement {
         let t = theme::active(cx);
         let i = e.index;
+        let (oid_apply, oid_pop, oid_drop) = (e.oid.clone(), e.oid.clone(), e.oid.clone());
         Row::new(("ws-stash", i))
             .compact()
             .leading(Badge::new(format!("stash@{{{i}}}")))
@@ -585,7 +588,7 @@ impl AppState {
                     .tooltip("Re-apply it and keep the stash")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
-                        this.stash_apply(i, false, cx)
+                        this.stash_apply(oid_apply.clone(), false, cx)
                     })),
             )
             .action(
@@ -595,7 +598,7 @@ impl AppState {
                     .tooltip("Re-apply it and remove it from the list")
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
-                        this.stash_apply(i, true, cx)
+                        this.stash_apply(oid_pop.clone(), true, cx)
                     })),
             )
             .action(
@@ -604,9 +607,9 @@ impl AppState {
                     .armed_label("Sure?")
                     .icon(Icon::Trash)
                     .tooltip("Delete this stash for good")
-                    .on_press(
-                        cx.listener(move |this, _ev: &ClickEvent, _w, cx| this.stash_drop(i, cx)),
-                    ),
+                    .on_press(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
+                        this.stash_drop(oid_drop.clone(), cx)
+                    })),
             )
             .into_any_element()
     }
@@ -869,7 +872,7 @@ impl AppState {
                                             .clamp_one_line()
                                             .text_body(t)
                                             .text_color(rgb(t.fg))
-                                            .child(e.commit.summary.clone()),
+                                            .child(display_name(&e.commit.summary)),
                                     )
                                     .children(badges),
                             )
@@ -981,7 +984,12 @@ fn diff_line(t: &Theme, l: &DiffLine) -> AnyElement {
                     ink
                 }))
                 .whitespace_nowrap()
-                .child(l.text.replace('\t', "    ")),
+                .child(display_name(
+                    l.text
+                        .trim_end_matches(['\n', '\r'])
+                        .replace('\t', "    ")
+                        .as_str(),
+                )),
         )
         .into_any_element()
 }

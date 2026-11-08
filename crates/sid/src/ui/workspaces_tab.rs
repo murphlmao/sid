@@ -1811,10 +1811,10 @@ impl AppState {
                             "select a workspace"
                         })
                         .guidance(if nothing_registered {
-                            "register one on the left to see its branches, status, log and \
+                            "Register one on the left to see its branches, status, log and \
                              scope items here"
                         } else {
-                            "pick one on the left to see its branches, status, log and \
+                            "Pick one on the left to see its branches, status, log and \
                              scope items — or register another"
                         })
                         .icon(Icon::Folder)
@@ -2468,7 +2468,10 @@ mod tests {
         let now = Instant::now();
         let mut arm: ConfirmArm<WsKey> = ConfirmArm::new();
         assert_eq!(arm.press(ws_key(&a), now), Confirm::Armed);
-        assert_eq!(arm.press(ws_key(&a), now), Confirm::Fire);
+        assert_eq!(
+            arm.press(ws_key(&a), now + std::time::Duration::from_millis(400)),
+            Confirm::Fire
+        );
     }
 
     #[test]

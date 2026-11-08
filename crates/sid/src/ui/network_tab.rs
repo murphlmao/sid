@@ -3601,7 +3601,10 @@ mod tests {
         // A different pid moves the arm rather than firing on either.
         assert_eq!(arm.press(other, now), Confirm::Armed);
         assert!(!arm.is_armed(pid, now));
-        assert_eq!(arm.press(other, now), Confirm::Fire);
+        assert_eq!(
+            arm.press(other, now + std::time::Duration::from_millis(400)),
+            Confirm::Fire
+        );
     }
 
     /// The bug `sid_ui::action_cell` was written about, pinned at this call site: the

@@ -1213,7 +1213,7 @@ fn is_deceptive_char(c: char) -> bool {
 /// A remote (server-controlled) name or path as it may be shown: every
 /// [`is_deceptive_char`] replaced with U+FFFD, so the user sees that something was there
 /// rather than its effect. Display only — the raw name is still what SFTP calls use.
-fn display_name(remote: &str) -> String {
+pub(crate) fn display_name(remote: &str) -> String {
     remote
         .chars()
         .map(|c| if is_deceptive_char(c) { '\u{FFFD}' } else { c })

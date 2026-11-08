@@ -15,6 +15,13 @@ Claude Code launches it from the repo root, which is how it finds the workspace
 (otherwise set `SID_ROOT`). `cargo run` re-checks the build on every start; a prebuilt
 `target/debug/sid-mcp` starts instantly, so for daily use point `command` at that path.
 
+Why the committed config still uses `cargo run`: `.mcp.json` takes a single `command` with
+no "binary if present, else build" fallback, and a relative binary path would silently break
+on a fresh clone. The implication is that **opening the repo in Claude Code compiles and runs
+workspace code (`sid-mcp` and its build scripts/dependencies) on server start**, so only
+approve the project MCP server in a checkout you trust. Prefer a local override (for example
+`claude mcp add` at user/local scope) pointing at your own built binary.
+
 ## Tools
 
 | tool | what it does |
