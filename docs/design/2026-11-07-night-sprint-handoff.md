@@ -10,11 +10,16 @@
 > - M-1, the git CLI path honoured repo config and hooks: env scrubbed, `GIT_ALLOW_PROTOCOL=ssh:https`,
 >   hooks/fsmonitor/askPass neutralised via `-c`, `ext::`/http/git remotes refused (`a35aec2`).
 > - M-4, discard treated a path as a glob: now literal; `remove_untracked` spares nested repos (`7c5baca`).
-> - M-2 and M-3 are the remote-edit and secret-binding findings (mapped here by commit subject, not
->   from the review text): edit-in-place never loses edits, shell-inert local names, SHA-256
->   conflict check (`11134b1`, `f226209`); tmp-rename sets mode at open and swaps only safe
->   targets, and is opt-in (`93e7689`); a binding's layer is derived from the key (`1a468ed`),
->   promote/demote mints a fresh ref (`520058e`), a moved record never keeps the old ref (`97b90c8`).
+> - M-2, a remote-chosen filename reached a terminal emulator's command line: local working-copy
+>   names keep only `[A-Za-z0-9._-]`, never start with `-`/`.`, strip bidi/control chars, and
+>   append `.txt` to dangerous extensions (`11134b1`).
+> - M-3, SFTP edit-in-place could destroy the only copy of local edits: one `close_or_preserve`
+>   exit path backs changed copies up under the data dir, "Stop editing" uploads first, conflict
+>   dialogs queue, one lock order, SHA-256 conflict check (`11134b1`, `f226209`); tmp-rename sets
+>   the mode at open, swaps only safe targets, and is opt-in (`93e7689`).
+> - Binding LOWs (L3/L4 + a follow-up MEDIUM from the push-time review): a binding's layer is
+>   derived from the key (`1a468ed`), promote/demote mints a fresh ref (`520058e`), a moved record
+>   never keeps the other layer's ref (`97b90c8`).
 > - LOWs: deceptive bidi/zero-width characters stripped from notifications and toasts
 >   (`a8c5f62`), bounded regular-file config and identity reads (`e83b096`), config-editor saves
 >   through a symlink (`52f1905`), ssh_config import parsed off the UI thread (`2af7817`),
