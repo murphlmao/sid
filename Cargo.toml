@@ -63,12 +63,12 @@ vt100 = "0.18"
 # embedded SQLite that ships its own C source (no system SQLite install needed),
 # with column_decltype exposing declared column types for the type mapping.
 tokio-postgres = "0.7"
-rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_decltype"] }
 
-# DU-TLS: Postgres TLS, pure-Rust rustls stack (verified against tokio-postgres
-# 0.7 by resolving a scratch lockfile: tokio-postgres 0.7.18 + rustls 0.23.41 +
-# tokio-postgres-rustls 0.14.0 + rustls-native-certs 0.8.4 all resolve together
-# with no conflicts). `ring` chosen over the default `aws_lc_rs` provider to
+# DU-TLS: Postgres TLS, pure-Rust rustls stack (the lock resolves tokio-postgres
+# 0.7.18 + rustls 0.23.46 + tokio-postgres-rustls 0.14.0 + rustls-native-certs 0.8.5
+# together with no conflicts; rustls 0.24 is still a pre-release, so 0.23 is the
+# newest line). `ring` chosen over the default `aws_lc_rs` provider to
 # avoid a cmake/nasm build dependency; rustls needs one crypto provider
 # installed process-wide (installed once, idempotently, at connect time).
 tokio-postgres-rustls = { version = "0.14", default-features = false }
