@@ -37,9 +37,7 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, SharedString, Window, div, prelude::*, px, rgb,
 };
-use sid_core::git::{
-    Branch, CommitInfo, GitError, GitStatus, RepoSummary, StatusEntry, StatusKind,
-};
+use sid_core::git::{Branch, GitError, GitStatus, RepoSummary};
 use sid_store::{DbConnection, Host, Scope, ViewFilters, WorkspaceId, WorkspaceMeta};
 
 use crate::app::{AppState, Tab};
@@ -56,8 +54,14 @@ use sid_ui::{
     h_flex, scaled, sortable_th,
 };
 
-/// Recent-commits cap for the Log sub-tab, per the plan.
-const LOG_LIMIT: usize = 50;
+// Workspaces v2 git UI (Changes / Stash / Branches / Log): pure helpers, the background
+// operations, and the views. Kept beside this file so it stays reviewable.
+#[path = "workspaces/model.rs"]
+mod model;
+#[path = "workspaces/ops.rs"]
+mod ops;
+#[path = "workspaces/views.rs"]
+mod views;
 
 // ---- pure domain types ------------------------------------------------------------
 
@@ -263,19 +267,27 @@ fn ws_key(id: &WorkspaceId) -> WsKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DetailSubTab {
     Overview,
+    Changes,
     Branches,
-    Status,
+    Stash,
     Log,
 }
 
 impl DetailSubTab {
-    const ALL: [DetailSubTab; 4] = [Self::Overview, Self::Branches, Self::Status, Self::Log];
+    const ALL: [DetailSubTab; 5] = [
+        Self::Overview,
+        Self::Changes,
+        Self::Branches,
+        Self::Stash,
+        Self::Log,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
+            Self::Changes => "Changes",
             Self::Branches => "Branches",
-            Self::Status => "Status",
+            Self::Stash => "Stash",
             Self::Log => "Log",
         }
     }
@@ -731,7 +743,8 @@ pub struct WorkspacesTabState {
     overview_connections: Vec<DbConnection>,
     branches: Option<Fetch<Vec<Branch>>>,
     status: Option<Fetch<GitStatus>>,
-    log: Option<Fetch<Vec<CommitInfo>>>,
+    /// Workspaces v2 git UI state (diff, commit box, stash, branch edits, log pages).
+    v2: ops::GitV2,
     /// The branch name a checkout is currently running against, if any.
     checkout_pending: Option<String>,
     checkout_error: Option<String>,
@@ -782,7 +795,7 @@ impl WorkspacesTabState {
             overview_connections: Vec::new(),
             branches: None,
             status: None,
-            log: None,
+            v2: ops::GitV2::new(),
             checkout_pending: None,
             checkout_error: None,
             detail_generation: 0,
@@ -818,6 +831,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.ensure_workspaces_widgets(window, cx);
+        self.ensure_git_v2_widgets(window, cx);
         if !self.workspaces.loaded {
             self.workspaces.loaded = true;
             self.refresh_workspaces(cx);
@@ -827,8 +841,9 @@ impl AppState {
         {
             match self.workspaces.sub_tab {
                 DetailSubTab::Overview => {}
+                DetailSubTab::Changes => self.ensure_status_loaded(cx),
                 DetailSubTab::Branches => self.ensure_branches_loaded(cx),
-                DetailSubTab::Status => self.ensure_status_loaded(cx),
+                DetailSubTab::Stash => self.ensure_stash_loaded(cx),
                 DetailSubTab::Log => self.ensure_log_loaded(cx),
             }
         }
@@ -956,7 +971,7 @@ impl AppState {
         self.workspaces.sub_tab = DetailSubTab::Overview;
         self.workspaces.branches = None;
         self.workspaces.status = None;
-        self.workspaces.log = None;
+        self.workspaces.v2.reset_for_selection();
         self.workspaces.checkout_error = None;
         self.workspaces.checkout_pending = None;
         self.workspaces.detail_generation += 1;
@@ -1132,40 +1147,6 @@ impl AppState {
         .detach();
     }
 
-    fn ensure_log_loaded(&mut self, cx: &mut Context<Self>) {
-        if self.workspaces.log.is_some() {
-            return;
-        }
-        let Some((id, root)) = self.selected_workspace_root() else {
-            return;
-        };
-        self.workspaces.log = Some(Fetch::Loading);
-        let generation = self.workspaces.detail_generation;
-        cx.spawn(async move |this, cx| {
-            let handle = ssh_runtime().spawn(async move {
-                git_registry::factory()
-                    .open(&root)
-                    .and_then(|repo| repo.commit_log(LOG_LIMIT))
-            });
-            let outcome = match handle.await {
-                Ok(r) => r.map_err(GitPanelError::from),
-                Err(join_err) => Err(GitPanelError::Other(format!(
-                    "git task panicked: {join_err}"
-                ))),
-            };
-            let _ = this.update(cx, |this, cx| {
-                if this.workspaces.detail_generation != generation
-                    || this.workspaces.selected.as_ref() != Some(&id)
-                {
-                    return;
-                }
-                this.workspaces.log = Some(Fetch::Done(outcome));
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     /// Branches row click (non-current branch only): checkout on the shared runtime.
     /// `GitError::DirtyWorkingTree` (sid never destroys uncommitted work) surfaces
     /// inline in danger text; success refreshes branches + the summary.
@@ -1201,9 +1182,8 @@ impl AppState {
                 }
                 match outcome {
                     Ok(()) => {
-                        this.workspaces.branches = None;
-                        this.fetch_summary(id_for_apply, root, cx);
-                        this.ensure_branches_loaded(cx);
+                        let _ = (id_for_apply, root);
+                        this.after_mutation(cx);
                     }
                     Err(e) => this.workspaces.checkout_error = Some(e.to_string()),
                 }
@@ -1961,7 +1941,7 @@ impl AppState {
             // sidebar's panel header occupies — a heading whose height is set by whatever
             // its trailing control happens to be (a `Badge` here, a `SegmentedControl`
             // there) puts the detail pane's first panel at a different y per workspace.
-            .h(scaled(32.))
+            .h(scaled(40.))
             .justify_between()
             .gap_3()
             // A pane heading is the one place the scale goes above body text — 16px
@@ -1972,7 +1952,7 @@ impl AppState {
                     .flex_1()
                     .min_w(px(0.))
                     .clamp_one_line()
-                    .text_title(t)
+                    .text_display(t)
                     .child(title.into()),
             )
             .child(div().flex_none().child(trailing))
@@ -2029,13 +2009,26 @@ impl AppState {
         let sub_tab = self.workspaces.sub_tab;
         let body = match sub_tab {
             DetailSubTab::Overview => self.repo_overview(meta, cx),
+            DetailSubTab::Changes => self.repo_changes(cx),
             DetailSubTab::Branches => self.repo_branches(cx),
-            DetailSubTab::Status => self.repo_status(cx),
+            DetailSubTab::Stash => self.repo_stash(cx),
             DetailSubTab::Log => self.repo_log(cx),
         };
         // The sub-view's own count, where it has one — the `· n` half of the panel
         // header, exactly as the Network tab's sub-views spell it.
         let count = self.detail_count(sub_tab);
+
+        // Changes lays out its own two scrolling columns; the rest scroll as one body.
+        let panel_body: AnyElement = if sub_tab == DetailSubTab::Changes {
+            body
+        } else {
+            Self::detail_body("ws-repo-body", body).into_any_element()
+        };
+        let banner = self.v2_banner(cx);
+        let trailing = h_flex()
+            .gap_3()
+            .child(self.remote_controls(cx))
+            .child(self.repo_sub_tab_chips(cx));
 
         div()
             .flex_1()
@@ -2043,13 +2036,14 @@ impl AppState {
             .flex_col()
             .min_w(px(0.))
             .gap_2()
-            .child(self.detail_header(meta.name.clone(), self.repo_sub_tab_chips(cx), cx))
+            .child(self.detail_header(meta.name.clone(), trailing, cx))
+            .children(banner)
             .child(
                 Card::panel(sub_tab.label())
                     .when_some(count, Card::count)
                     .flex_1()
                     .min_h_0()
-                    .child(Self::detail_body("ws-repo-body", body)),
+                    .child(panel_body),
             )
             .into_any_element()
     }
@@ -2064,12 +2058,16 @@ impl AppState {
                 Fetch::Done(Ok(branches)) => Some(branches.len()),
                 _ => None,
             },
-            DetailSubTab::Status => match self.workspaces.status.as_ref()? {
-                Fetch::Done(Ok(status)) => Some(status.entries.len()),
+            DetailSubTab::Changes => match self.workspaces.status.as_ref()? {
+                Fetch::Done(Ok(status)) => Some(status.files.len()),
                 _ => None,
             },
-            DetailSubTab::Log => match self.workspaces.log.as_ref()? {
-                Fetch::Done(Ok(commits)) => Some(commits.len()),
+            DetailSubTab::Stash => match self.workspaces.v2.stash.as_ref()? {
+                Fetch::Done(Ok(entries)) => Some(entries.len()),
+                _ => None,
+            },
+            DetailSubTab::Log => match self.workspaces.v2.log.as_ref()? {
+                Fetch::Done(Ok(log)) => Some(log.entries.len()),
                 _ => None,
             },
         }
@@ -2157,183 +2155,6 @@ impl AppState {
             .into_any_element()
     }
 
-    fn repo_branches(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (fg, muted, danger, fg_strong) = (t.fg, t.muted, t.danger, t.fg_strong);
-
-        let error_line = self
-            .workspaces
-            .checkout_error
-            .clone()
-            .map(|e| text_cell(t, danger, format!("checkout failed: {e}")));
-
-        let body: AnyElement = match self.workspaces.branches.clone() {
-            None | Some(Fetch::Loading) => text_cell(t, muted, "loading branches…"),
-            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
-            Some(Fetch::Done(Ok(branches))) => {
-                let pending = self.workspaces.checkout_pending.clone();
-                let rows: Vec<AnyElement> = branches
-                    .into_iter()
-                    .enumerate()
-                    .map(|(ix, b)| {
-                        let name = b.name.clone();
-                        let is_current = b.is_current;
-                        let is_pending = pending.as_deref() == Some(name.as_str());
-                        // Click-to-checkout is the row itself, exactly as before — and so
-                        // is the `DirtyWorkingTree` refusal it surfaces above. What
-                        // changes is that the row now *looks* clickable (hover fill,
-                        // pointer) and the current branch is a labelled chip instead of a
-                        // `●` prefix nudging the name two spaces right.
-                        Row::new(("ws-branch", ix))
-                            .selected(is_current)
-                            // A branch name is an identifier, so it is monospace on the
-                            // body rung; its upstream is the same fact one step removed,
-                            // so it is the same family a rung down.
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .clamp_one_line()
-                                    .text_mono(t)
-                                    .text_color(rgb(if is_current { fg_strong } else { fg }))
-                                    .child(name.clone()),
-                            )
-                            .when(is_current, |row| row.meta(Badge::new("current").solid()))
-                            .when_some(b.upstream.clone(), |row, u| {
-                                row.meta(div().text_mono_meta(t).child(u))
-                            })
-                            .when(is_pending, |row| {
-                                row.meta(div().text_meta(t).child("checking out…"))
-                            })
-                            .when(!is_current, |row| {
-                                row.on_click(cx.listener(
-                                    move |this, _ev: &ClickEvent, _window, cx| {
-                                        this.checkout_branch(name.clone(), cx);
-                                    },
-                                ))
-                            })
-                            .into_any_element()
-                    })
-                    .collect();
-                List::stack().children(rows).into_any_element()
-            }
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .children(error_line)
-            .child(body)
-            .into_any_element()
-    }
-
-    fn repo_status(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (fg, muted, danger, success, warning) = (t.fg, t.muted, t.danger, t.success, t.warning);
-
-        match self.workspaces.status.clone() {
-            None | Some(Fetch::Loading) => text_cell(t, muted, "loading status…"),
-            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
-            Some(Fetch::Done(Ok(status))) => {
-                if status.is_clean {
-                    return text_cell(t, success, "clean — no changes");
-                }
-                let staged: Vec<&StatusEntry> =
-                    status.entries.iter().filter(|e| e.staged).collect();
-                let untracked: Vec<&StatusEntry> = status
-                    .entries
-                    .iter()
-                    .filter(|e| !e.staged && e.kind == StatusKind::Untracked)
-                    .collect();
-                let unstaged: Vec<&StatusEntry> = status
-                    .entries
-                    .iter()
-                    .filter(|e| !e.staged && e.kind != StatusKind::Untracked)
-                    .collect();
-
-                let group = |label: &'static str, color: u32, entries: Vec<&StatusEntry>| {
-                    // The changed paths are this view's whole payload, so they sit on the
-                    // body rung in mono rather than shrinking to metadata.
-                    let rows: Vec<AnyElement> = entries
-                        .iter()
-                        .enumerate()
-                        .map(|(ix, e)| {
-                            div()
-                                .id((label, ix))
-                                .min_w(px(0.))
-                                .clamp_one_line()
-                                .text_mono(t)
-                                .text_color(rgb(fg))
-                                .child(e.path.clone())
-                                .into_any_element()
-                        })
-                        .collect();
-                    (!rows.is_empty()).then(|| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            // `STAGED · 4` is exactly what `Label` is for: an UPPERCASE
-                            // section header, here inked by what the group means.
-                            .child(div().text_label(t).text_color(rgb(color)).child(format!(
-                                "{} · {}",
-                                label,
-                                rows.len()
-                            )))
-                            .children(rows)
-                    })
-                };
-
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .children(group("STAGED", success, staged))
-                    .children(group("UNSTAGED", warning, unstaged))
-                    .children(group("UNTRACKED", muted, untracked))
-                    .into_any_element()
-            }
-        }
-    }
-
-    fn repo_log(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
-        let (fg, muted, danger) = (t.fg, t.muted, t.danger);
-
-        match self.workspaces.log.clone() {
-            None | Some(Fetch::Loading) => text_cell(t, muted, "loading log…"),
-            Some(Fetch::Done(Err(e))) => text_cell(t, danger, e.to_string()),
-            Some(Fetch::Done(Ok(commits))) => {
-                if commits.is_empty() {
-                    return text_cell(t, muted, "no commits yet");
-                }
-                let now = now_secs();
-                let rows: Vec<AnyElement> = commits
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, c)| {
-                        // Inert rows: `Row` paints no hover on something nothing can be
-                        // done to, which is the whole difference between a log and a list
-                        // of links.
-                        Row::new(("ws-log", ix))
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .clamp_one_line()
-                                    .text_body(t)
-                                    .text_color(rgb(fg))
-                                    .child(c.summary.clone()),
-                            )
-                            .meta(div().text_meta(t).child(c.author_name.clone()))
-                            .meta(div().text_meta(t).child(commit_age(now, c.timestamp_secs)))
-                            .into_any_element()
-                    })
-                    .collect();
-                List::stack().children(rows).into_any_element()
-            }
-        }
-    }
-
     fn umbrella_detail(&mut self, meta: &WorkspaceMeta, cx: &mut Context<Self>) -> AnyElement {
         // `FillTable`, not `Table`: the columns are resized to the width this pane
         // actually got, so `Path` stops truncating `/home/murphy/vcs/…` inside 280px
@@ -2371,6 +2192,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sid_core::git::CommitInfo;
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)

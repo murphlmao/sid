@@ -417,6 +417,7 @@ async fn settings_after_explicit_set_reflects_new_value() {
             secret_file_enabled: true,
             theme: "cosmos".into(),
             ui_scale_percent: 150,
+            ..Default::default()
         })
         .unwrap();
     let client = RedbBrowseClient::wrap(store);

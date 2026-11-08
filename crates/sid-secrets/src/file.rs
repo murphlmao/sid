@@ -738,4 +738,34 @@ mod tests {
 
         assert_ne!(nonce1, nonce2, "every rewrite must draw a fresh nonce");
     }
+
+    /// A vault sealed by an earlier build still opens. The fixture was written by
+    /// `create` + two `put`s on argon2 0.6.0-rc.8 / chacha20poly1305 0.11.0 (sid at
+    /// d5947d1); a dependency bump that changed the derived key, the AEAD or the
+    /// encoding of the sealed map would lock a user out of every stored secret, and
+    /// this is the test that says so before it ships.
+    #[test]
+    fn vault_sealed_by_an_earlier_build_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/vault-argon2-0.6.0-rc.8.vault"),
+        )
+        .unwrap();
+
+        let store = EncryptedFileStore::at(&path);
+        store.unlock("correct horse battery staple").unwrap();
+        assert_eq!(
+            store
+                .get(&SecretId::new("ssh/home-server"))
+                .unwrap()
+                .as_deref(),
+            Some(&b"hunter2"[..])
+        );
+        assert_eq!(
+            store.get(&SecretId::new("db/demo")).unwrap().as_deref(),
+            Some(&[0u8, 1, 2, 255][..])
+        );
+    }
 }

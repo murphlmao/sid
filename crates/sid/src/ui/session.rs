@@ -148,6 +148,10 @@ pub enum SshSessionEvent {
     Retry,
     /// A failed session's **Edit connection**: open the host form for its host.
     EditConnection,
+    /// The connection died on its own (the read loop errored) while the session was
+    /// still open -- not a user-initiated disconnect. `AppState` turns this into a
+    /// desktop notification.
+    Dropped,
 }
 
 impl EventEmitter<SshSessionEvent> for SshSession {}
@@ -633,7 +637,11 @@ impl SshSession {
                     Ok((_, Err(_))) | Err(_) => {
                         // Adapter error or a panicked join — the session is done either way.
                         let _ = this.update(cx, |session, cx| {
+                            let was_open = session.status != SessionStatus::Closed;
                             session.status = SessionStatus::Closed;
+                            if was_open {
+                                cx.emit(SshSessionEvent::Dropped);
+                            }
                             cx.notify();
                         });
                         return;
