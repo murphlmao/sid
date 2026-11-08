@@ -17,8 +17,8 @@ use serde::de::DeserializeOwned;
 use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, HistoryEntry, Host, HostHistory, HostV1, HostV2,
-    Identity, KeyBinding, PinnedFile, QuickAction, Settings, SettingsV1, SettingsV2, SettingsV3,
-    SettingsV4,
+    Identity, KeyBinding, PinnedFile, QuickAction, SecretBinding, Settings, SettingsV1, SettingsV2,
+    SettingsV3, SettingsV4,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::WorkspaceMeta;
@@ -44,6 +44,14 @@ const HOST_HISTORY: TableDefinition<&str, &[u8]> = TableDefinition::new("host_hi
 
 /// Codec version of [`HostHistory`] rows.
 pub(crate) const HOST_HISTORY_VERSION: u8 = 1;
+
+/// What each stored secret was saved for, keyed by its keyring key — see
+/// [`SecretBinding`]. Global-only: a binding is this machine's memory of what the user
+/// typed a secret for, which is exactly what a committed file must not be able to edit.
+const SECRET_BINDINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("secret_bindings");
+
+/// Codec version of [`SecretBinding`] rows.
+pub(crate) const SECRET_BINDING_VERSION: u8 = 1;
 
 /// The single key under which [`Settings`] lives in the [`SETTINGS`] table.
 const SETTINGS_KEY: &str = "settings";
@@ -88,6 +96,7 @@ impl GlobalStore {
         write_table(&txn, PINNED_FILES, "open pinned_files")?;
         write_table(&txn, KEYBINDINGS, "open keybindings")?;
         write_table(&txn, HOST_HISTORY, "open host_history")?;
+        write_table(&txn, SECRET_BINDINGS, "open secret_bindings")?;
         txn.commit()
             .map_err(|e| StoreError::Storage(format!("commit: {e}")))?;
         Ok(Self { db })
@@ -263,6 +272,13 @@ impl GlobalStore {
     /// Record `command` for the host `alias` (atomic read-modify-write). Returns whether a
     /// new entry was appended (`false`: blank, or collapsed into an identical latest
     /// entry). The caller must not pass password-prompt input - see [`HostHistory`].
+    ///
+    /// **Not wired yet, and must never be wired from raw terminal keystrokes.** A remote
+    /// echo-off prompt (`sudo`, `su`, `mysql -p`, an `ssh` hop, a passphrase read) is
+    /// invisible to sid — the PTY simply stops echoing — so "the line typed before
+    /// Enter" is sometimes a password, and this table is plaintext on disk. Feed it only
+    /// from a source that *knows* it ran a command: a sid-issued command (quick action,
+    /// palette), or shell integration that reports the executed command line.
     pub fn record_host_command(&self, alias: &str, command: &str, at_unix: i64) -> Result<bool> {
         self.with_write("commit", |txn| {
             let mut tbl = write_table(txn, HOST_HISTORY, "open host_history")?;
@@ -329,6 +345,49 @@ impl GlobalStore {
                 .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
             Ok(())
         })
+    }
+
+    // ---- secret bindings (global-only; see `SecretBinding` for the contract) ----
+
+    /// The binding recorded for the keyring key `key`, if any.
+    pub fn secret_binding(&self, key: &str) -> Result<Option<SecretBinding>> {
+        self.get_with(SECRET_BINDINGS, key, decode_binding)
+    }
+
+    /// Record `b` only if `b.key` has no binding yet — trust-on-first-use for secrets
+    /// saved before bindings existed. Check and insert run in one write transaction, so
+    /// two first uses cannot both win; the loser gets [`StoreError::Conflict`] and must
+    /// re-read rather than assume its endpoint was recorded.
+    pub fn bind_secret_if_unbound(&self, b: &SecretBinding) -> Result<()> {
+        let bytes = encode_versioned(SECRET_BINDING_VERSION, b)?;
+        self.with_write("commit", |txn| {
+            let mut tbl = write_table(txn, SECRET_BINDINGS, "open secret_bindings")?;
+            let exists = tbl
+                .get(b.identity())
+                .map_err(|e| StoreError::Storage(format!("get: {e}")))?
+                .is_some();
+            if exists {
+                return Err(StoreError::Conflict(format!(
+                    "secret `{}` is already bound",
+                    b.key
+                )));
+            }
+            tbl.insert(b.identity(), &bytes[..])
+                .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+            Ok(())
+        })
+    }
+
+    /// Record `b`, replacing any earlier binding for `b.key`. Only for a secret the user
+    /// has just typed (a form save, a password prompt) — that act is what makes the new
+    /// endpoint trusted. Never call it to "repair" a mismatch the user did not confirm.
+    pub fn rebind_secret(&self, b: &SecretBinding) -> Result<()> {
+        self.upsert_versioned(SECRET_BINDINGS, b.identity(), SECRET_BINDING_VERSION, b)
+    }
+
+    /// Forget the binding for `key` (its secret was deleted); returns whether one existed.
+    pub fn unbind_secret(&self, key: &str) -> Result<bool> {
+        self.remove(SECRET_BINDINGS, key)
     }
 
     // ---- keybinding overrides (Settings -> Keymap; global-only) ----
@@ -479,6 +538,18 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
 fn decode_history(bytes: &[u8]) -> Result<HostHistory> {
     match bytes.first().copied() {
         Some(HOST_HISTORY_VERSION) => Ok(decode_versioned::<HostHistory>(bytes)?.1),
+        Some(other) => Err(StoreError::UnsupportedVersion(other)),
+        None => Err(StoreError::Decode {
+            version: 0,
+            msg: "empty payload".into(),
+        }),
+    }
+}
+
+/// Decode a [`SecretBinding`] row, branching on its version byte.
+fn decode_binding(bytes: &[u8]) -> Result<SecretBinding> {
+    match bytes.first().copied() {
+        Some(SECRET_BINDING_VERSION) => Ok(decode_versioned::<SecretBinding>(bytes)?.1),
         Some(other) => Err(StoreError::UnsupportedVersion(other)),
         None => Err(StoreError::Decode {
             version: 0,
@@ -999,5 +1070,125 @@ mod tests {
         assert!(!store.get_settings().unwrap().secret_keyring_enabled);
         assert!(store.get_settings().unwrap().secret_file_enabled);
         assert_eq!(store.get_settings().unwrap().ui_scale_percent, 125);
+    }
+
+    // ---- secret bindings (H2: a committed secret_ref must not be redirectable) ----
+
+    use crate::scope::{Scope, WorkspaceId};
+
+    fn binding(key: &str, scope: Scope, endpoint: &str) -> SecretBinding {
+        SecretBinding {
+            key: key.into(),
+            scope,
+            endpoint: endpoint.into(),
+        }
+    }
+
+    fn ws(id: &str) -> Scope {
+        Scope::Workspace(WorkspaceId(id.into()))
+    }
+
+    /// The migration that matters for a brand-new table: a store file written before
+    /// `secret_bindings` existed (only older tables in it) reopens, gains the table, and
+    /// reads "no binding" — which the app treats as trust-on-first-use, not as an error
+    /// that would lock everyone out of their saved passwords.
+    #[test]
+    fn a_store_from_before_bindings_existed_reopens_with_none_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        {
+            // Hand-build the pre-binding file: old tables only, no `secret_bindings`.
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            write_table(&txn, HOSTS, "seed").unwrap();
+            write_table(&txn, SETTINGS, "seed").unwrap();
+            txn.commit().unwrap();
+        }
+        let store = GlobalStore::open(&path).unwrap();
+        assert_eq!(store.secret_binding("ssh-a-1").unwrap(), None);
+        store
+            .bind_secret_if_unbound(&binding("ssh-a-1", Scope::Global, "ssh:password:a@h:22"))
+            .unwrap();
+        assert!(store.secret_binding("ssh-a-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_binding_round_trips_with_its_workspace_scope_and_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sid.redb");
+        let b = binding("k", ws("/home/me/repo"), "ssh:password:alice@db1:2222");
+        {
+            let store = GlobalStore::open(&path).unwrap();
+            store.rebind_secret(&b).unwrap();
+        }
+        let reopened = GlobalStore::open(&path).unwrap();
+        assert_eq!(reopened.secret_binding("k").unwrap(), Some(b));
+    }
+
+    #[test]
+    fn bindings_are_written_at_version_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        store
+            .rebind_secret(&binding("k", Scope::Global, "e"))
+            .unwrap();
+        let raw = store
+            .get_with(SECRET_BINDINGS, "k", |b| Ok(b[0]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw, SECRET_BINDING_VERSION);
+        assert_eq!(SECRET_BINDING_VERSION, 1);
+    }
+
+    /// A binding from a newer build must not be misread as this layout — an unknown
+    /// version is an error the caller fails closed on, never a silent "unbound".
+    #[test]
+    fn a_binding_at_an_unknown_version_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let bytes = encode_versioned(9, &binding("k", Scope::Global, "e")).unwrap();
+        store
+            .with_write("seed v9", |txn| {
+                let mut tbl = write_table(txn, SECRET_BINDINGS, "open")?;
+                tbl.insert("k", &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            store.secret_binding("k"),
+            Err(StoreError::UnsupportedVersion(9))
+        ));
+    }
+
+    /// The write guard: first-use binding may only ever claim an *unbound* key. If it
+    /// could overwrite, a record whose endpoint was swapped would simply re-bind the
+    /// stored password to the new endpoint on its first connect.
+    #[test]
+    fn first_use_binding_refuses_to_overwrite_an_existing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let original = binding("k", ws("/w"), "ssh:password:alice@good:22");
+        store.bind_secret_if_unbound(&original).unwrap();
+        let err = store
+            .bind_secret_if_unbound(&binding("k", ws("/w"), "ssh:password:alice@evil:22"))
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Conflict(_)), "{err:?}");
+        assert_eq!(store.secret_binding("k").unwrap(), Some(original));
+    }
+
+    #[test]
+    fn an_explicit_rebind_replaces_and_unbind_forgets() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        store
+            .bind_secret_if_unbound(&binding("k", Scope::Global, "old"))
+            .unwrap();
+        let new = binding("k", Scope::Global, "new");
+        store.rebind_secret(&new).unwrap();
+        assert_eq!(store.secret_binding("k").unwrap(), Some(new));
+        assert!(store.unbind_secret("k").unwrap());
+        assert!(!store.unbind_secret("k").unwrap());
+        assert_eq!(store.secret_binding("k").unwrap(), None);
     }
 }
