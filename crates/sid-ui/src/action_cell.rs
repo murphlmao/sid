@@ -55,6 +55,11 @@ type PressHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 /// arm cannot survive a distraction and turn a later stray click into a kill.
 pub const CONFIRM_WINDOW: Duration = Duration::from_secs(6);
 
+/// The earliest a second press may confirm. A double-click or a bounced key lands within
+/// milliseconds of the arming press and must not read as a deliberate confirm; such a
+/// press is ignored (the arm and its clock stay as they were).
+pub const MIN_CONFIRM_DELAY: Duration = Duration::from_millis(300);
+
 /// What a press on a two-step control did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Confirm {
@@ -99,6 +104,11 @@ impl<K: Clone + PartialEq> ConfirmArm<K> {
     /// than firing on either.
     pub fn press(&mut self, key: K, now: Instant) -> Confirm {
         if self.armed_key_ref(now) == Some(&key) {
+            if let Some((_, at)) = &self.armed
+                && now.saturating_duration_since(*at) < MIN_CONFIRM_DELAY
+            {
+                return Confirm::Armed;
+            }
             self.armed = None;
             return Confirm::Fire;
         }
@@ -326,6 +336,21 @@ mod tests {
 
     fn after(base: Instant, secs: u64) -> Instant {
         base + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn a_second_press_inside_the_minimum_delay_does_not_fire() {
+        let start = t0();
+        let mut arm = ConfirmArm::new();
+        arm.press(7u32, start);
+        let early = start + Duration::from_millis(50);
+        assert_eq!(arm.press(7, early), Confirm::Armed);
+        assert!(arm.is_armed(7, early), "still armed, not disarmed");
+        // The clock was not restarted by the ignored press.
+        assert_eq!(
+            arm.press(7, start + MIN_CONFIRM_DELAY),
+            Confirm::Fire
+        );
     }
 
     #[test]
