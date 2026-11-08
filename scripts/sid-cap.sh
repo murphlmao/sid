@@ -179,10 +179,13 @@ newer_sources() {
 }
 
 if [[ "$BUILD" -eq 1 ]]; then
-    command -v cargo >/dev/null 2>&1 \
-        || die "cargo is not on PATH — pass --no-build to capture the existing $SID_BIN as-is"
-    echo "sid-cap: building sid (cargo build -p sid; --no-build to skip)..." >&2
-    cargo build -p sid --manifest-path "$REPO_ROOT/Cargo.toml" >&2 \
+    # SID_CARGO lets a caller route the build through a wrapper (e.g. a throttled
+    # cargo when several agents share the machine); default is plain cargo.
+    SID_CARGO="${SID_CARGO:-cargo}"
+    command -v "$SID_CARGO" >/dev/null 2>&1 \
+        || die "$SID_CARGO is not on PATH — pass --no-build to capture the existing $SID_BIN as-is"
+    echo "sid-cap: building sid ($SID_CARGO build -p sid; --no-build to skip)..." >&2
+    "$SID_CARGO" build -p sid --manifest-path "$REPO_ROOT/Cargo.toml" >&2 \
         || die "cargo build -p sid FAILED — refusing to capture, the binary on disk is stale"
 fi
 
