@@ -663,7 +663,13 @@ impl AppState {
         // `SystemsTabState::refresh_loop_running`'s doc comment: the loop only ever
         // clears this itself while the tab is inactive, so "not running" here always
         // means "the tab just (re)became active."
-        if !self.systems.refresh_loop_running {
+        // Only a focused window restarts / refreshes from render: an unfocused one is
+        // hibernating (or on its slow background cadence) and must not re-probe on every
+        // repaint; focus return goes through the activation observer instead.
+        let focused = window.is_window_active();
+        if !focused {
+            // Nothing to do: the loop (if any) owns the cadence.
+        } else if !self.systems.refresh_loop_running {
             self.systems.refresh_loop_running = true;
             self.start_systems_refresh_loop(cx);
             // Coming back to the tab (not the very first load, already in flight):
