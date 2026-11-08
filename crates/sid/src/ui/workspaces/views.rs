@@ -8,9 +8,7 @@ use gpui::{
     AnyElement, ClickEvent, Context, Div, Hsla, IntoElement, KeyDownEvent, SharedString, div,
     prelude::*, px, rgb,
 };
-use sid_core::git::{
-    DiffLine, DiffLineKind, FileDiff, FileStatus, RefKind, StashEntry,
-};
+use sid_core::git::{DiffLine, DiffLineKind, FileDiff, FileStatus, RefKind, StashEntry};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, CheckState, Checkbox, ConfirmButton, EmptyState, Icon,
@@ -34,10 +32,7 @@ fn tint(color: u32, alpha: f32) -> Hsla {
 }
 
 fn section_label(t: &Theme, ink: u32, text: String) -> Div {
-    div()
-        .text_label(t)
-        .text_color(rgb(ink))
-        .child(text)
+    div().text_label(t).text_color(rgb(ink)).child(text)
 }
 
 impl AppState {
@@ -87,7 +82,8 @@ impl AppState {
     // ---- Changes ----------------------------------------------------------------------
 
     pub(super) fn repo_changes(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = theme::active(cx);
+        let theme_owned = theme::active(cx).clone();
+        let t = &theme_owned;
         let (muted, danger, success, warning) = (t.muted, t.danger, t.success, t.warning);
 
         let status = match self.workspaces.status.clone() {
@@ -112,7 +108,11 @@ impl AppState {
                 .enumerate()
                 .map(|(ix, f)| {
                     let is_sel = selected.as_ref() == Some(&(f.path.clone(), side));
-                    let letter = kind_letter(if side == Side::Staged { f.index } else { f.worktree });
+                    let letter = kind_letter(if side == Side::Staged {
+                        f.index
+                    } else {
+                        f.worktree
+                    });
                     let entity = cx.entity();
                     let p = f.path.clone();
                     let check = Checkbox::new(
@@ -138,7 +138,11 @@ impl AppState {
                         let p = p.clone();
                         ConfirmButton::new(
                             SharedString::from(format!("{row_id}-discard-{ix}")),
-                            if side == Side::Untracked { "Delete" } else { "Discard" },
+                            if side == Side::Untracked {
+                                "Delete"
+                            } else {
+                                "Discard"
+                            },
                         )
                         .armed(armed_key == Some(key))
                         .armed_label("Sure?")
@@ -148,9 +152,11 @@ impl AppState {
                         } else {
                             "Throw away your edits to this file — it can't be undone"
                         })
-                        .on_press(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
-                            this.discard(p.clone(), side, cx);
-                        }))
+                        .on_press(cx.listener(
+                            move |this, _ev: &ClickEvent, _w, cx| {
+                                this.discard(p.clone(), side, cx);
+                            },
+                        ))
                     });
                     let name_ink = if is_sel { t.fg_strong } else { t.fg };
                     Row::new((row_id, ix))
@@ -179,11 +185,7 @@ impl AppState {
                 .collect::<Vec<_>>()
         };
 
-        let header = |label: &str,
-                      n: usize,
-                      ink: u32,
-                      action: Option<AnyElement>|
-         -> AnyElement {
+        let header = |label: &str, n: usize, ink: u32, action: Option<AnyElement>| -> AnyElement {
             h_flex()
                 .justify_between()
                 .px_2()
@@ -223,7 +225,12 @@ impl AppState {
                 .disabled(busy)
                 .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| this.stage_all(cx)))
                 .into_any_element();
-            list = list.child(header("CHANGES", b.unstaged.len(), warning, Some(stage_all)));
+            list = list.child(header(
+                "CHANGES",
+                b.unstaged.len(),
+                warning,
+                Some(stage_all),
+            ));
             list = list.child(List::stack().children(file_rows(&b.unstaged, Side::Unstaged, cx)));
         }
         if !b.untracked.is_empty() {
@@ -276,7 +283,9 @@ impl AppState {
                 .border_t_1()
                 .border_color(rgb(t.border))
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
-                    if ev.keystroke.key == "enter" && ev.keystroke.modifiers.secondary() {
+                    if ev.keystroke.key == "enter"
+                        && (ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform)
+                    {
                         cx.stop_propagation();
                         let msg = this.commit_message(cx);
                         let staged = this.staged_count();
@@ -302,17 +311,14 @@ impl AppState {
                                 }),
                         )
                         .child(
-                            Button::new(
-                                "ws-commit",
-                                if amend { "Amend commit" } else { "Commit" },
-                            )
-                            .primary()
-                            .small()
-                            .disabled(!enabled)
-                            .tooltip("Ctrl+Enter")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                this.commit(cx)
-                            })),
+                            Button::new("ws-commit", if amend { "Amend commit" } else { "Commit" })
+                                .primary()
+                                .small()
+                                .disabled(!enabled)
+                                .tooltip("Ctrl+Enter")
+                                .on_click(
+                                    cx.listener(|this, _ev: &ClickEvent, _w, cx| this.commit(cx)),
+                                ),
                         ),
                 )
                 .children(hint.map(|h| div().text_meta(t).child(h)))
@@ -594,9 +600,9 @@ impl AppState {
                     .armed_label("Sure?")
                     .icon(Icon::Trash)
                     .tooltip("Delete this stash for good")
-                    .on_press(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
-                        this.stash_drop(i, cx)
-                    })),
+                    .on_press(
+                        cx.listener(move |this, _ev: &ClickEvent, _w, cx| this.stash_drop(i, cx)),
+                    ),
             )
             .into_any_element()
     }
@@ -607,11 +613,10 @@ impl AppState {
         let t = theme::active(cx);
         let busy = self.workspaces.v2.busy.is_some();
 
-        let error_line = self
-            .workspaces
-            .checkout_error
-            .clone()
-            .map(|e| Toast::danger(format!("Couldn't switch branches: {e}")).into_any_element());
+        let error_line =
+            self.workspaces.checkout_error.clone().map(|e| {
+                Toast::danger(format!("Couldn't switch branches: {e}")).into_any_element()
+            });
 
         let create = self.workspaces.v2.branch_input.clone().map(|input| {
             div()
@@ -634,9 +639,9 @@ impl AppState {
                         .icon(Icon::Add)
                         .tooltip("Create it at the current commit")
                         .disabled(busy)
-                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                            this.create_branch(cx)
-                        })),
+                        .on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| this.create_branch(cx)),
+                        ),
                 )
         });
 
@@ -744,14 +749,18 @@ impl AppState {
                                 row.meta(div().text_meta(t).child("switching…"))
                             })
                             .action(
-                                IconButton::new(("ws-branch-rename-btn", ix), Icon::Rename, "Rename branch")
-                                    .small()
-                                    .disabled(busy)
-                                    .on_click(cx.listener(
-                                        move |this, _ev: &ClickEvent, window, cx| {
-                                            this.start_rename_branch(rename_name.clone(), window, cx)
-                                        },
-                                    )),
+                                IconButton::new(
+                                    ("ws-branch-rename-btn", ix),
+                                    Icon::Rename,
+                                    "Rename branch",
+                                )
+                                .small()
+                                .disabled(busy)
+                                .on_click(cx.listener(
+                                    move |this, _ev: &ClickEvent, window, cx| {
+                                        this.start_rename_branch(rename_name.clone(), window, cx)
+                                    },
+                                )),
                             )
                             .when(!is_current, |row| {
                                 row.action(
@@ -844,7 +853,9 @@ impl AppState {
                                             .text_color(rgb(t.fg))
                                             .child(e.commit.summary.clone()),
                                     )
-                                    .children(badges.into_iter().map(|b| div().flex_none().child(b))),
+                                    .children(
+                                        badges.into_iter().map(|b| div().flex_none().child(b)),
+                                    ),
                             )
                             .meta(div().text_meta(t).child(e.commit.author_name.clone()))
                             .meta(
@@ -855,19 +866,20 @@ impl AppState {
                             .into_any_element()
                     })
                     .collect();
-                let more = has_more.then(|| {
-                    let loading = self.workspaces.v2.log_more_loading;
-                    div().flex().justify_center().py_2().child(
-                        Button::new("ws-log-more", "Load more")
-                            .small()
-                            .size(ButtonSize::Sm)
-                            .loading(loading)
-                            .disabled(loading)
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                this.load_more_log(cx)
-                            })),
-                    )
-                });
+                let more =
+                    has_more.then(|| {
+                        let loading = self.workspaces.v2.log_more_loading;
+                        div().flex().justify_center().py_2().child(
+                            Button::new("ws-log-more", "Load more")
+                                .small()
+                                .size(ButtonSize::Sm)
+                                .loading(loading)
+                                .disabled(loading)
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                    this.load_more_log(cx)
+                                })),
+                        )
+                    });
                 div()
                     .flex()
                     .flex_col()
@@ -947,7 +959,11 @@ fn diff_line(t: &Theme, l: &DiffLine) -> AnyElement {
                 .flex_none()
                 .pr_3()
                 .text_mono(t)
-                .text_color(rgb(if matches!(l.kind, DiffLineKind::Context) { t.fg } else { ink }))
+                .text_color(rgb(if matches!(l.kind, DiffLineKind::Context) {
+                    t.fg
+                } else {
+                    ink
+                }))
                 .whitespace_nowrap()
                 .child(l.text.replace('\t', "    ")),
         )

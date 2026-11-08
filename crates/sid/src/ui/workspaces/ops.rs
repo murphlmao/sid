@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use gpui::{Context, Subscription, Window};
+use gpui::{Context, Subscription, Window, prelude::*};
 use sid_core::git::{
     Diff, DiffLimits, DiffTarget, GitError, GitProvider, LogEntry, LogQuery, StashEntry,
 };
@@ -114,29 +114,22 @@ impl AppState {
     pub(super) fn ensure_git_v2_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspaces.v2.commit_input.is_none() {
             let commit = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
-            let sub = cx.subscribe_in(
-                &commit,
-                window,
-                |_this, _i, ev: &InputEvent, _w, cx| {
-                    if matches!(ev, InputEvent::Change) {
-                        cx.notify();
-                    }
-                },
-            );
+            let sub = cx.subscribe_in(&commit, window, |_this, _i, ev: &InputEvent, _w, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            });
             self.workspaces.v2._subs.push(sub);
             self.workspaces.v2.commit_input = Some(commit);
-            self.workspaces.v2.stash_input =
-                Some(cx.new(|cx| InputState::new(window, cx).placeholder("Stash message (optional)")));
-            let branch = cx.new(|cx| InputState::new(window, cx).placeholder("New branch name"));
-            let sub = cx.subscribe_in(
-                &branch,
-                window,
-                |_this, _i, ev: &InputEvent, _w, cx| {
-                    if matches!(ev, InputEvent::Change) {
-                        cx.notify();
-                    }
-                },
+            self.workspaces.v2.stash_input = Some(
+                cx.new(|cx| InputState::new(window, cx).placeholder("Stash message (optional)")),
             );
+            let branch = cx.new(|cx| InputState::new(window, cx).placeholder("New branch name"));
+            let sub = cx.subscribe_in(&branch, window, |_this, _i, ev: &InputEvent, _w, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            });
             self.workspaces.v2._subs.push(sub);
             self.workspaces.v2.branch_input = Some(branch);
         }
@@ -165,8 +158,13 @@ impl AppState {
     /// Run `work` against the selected workspace's repo off the UI thread, then `apply`
     /// the result on it. With `guard`, a result for a workspace that is no longer
     /// selected is dropped (reads); mutations pass `false` so their outcome is never lost.
-    pub(super) fn run_git<T, W, A>(&mut self, guard: bool, cx: &mut Context<Self>, work: W, apply: A)
-    where
+    pub(super) fn run_git<T, W, A>(
+        &mut self,
+        guard: bool,
+        cx: &mut Context<Self>,
+        work: W,
+        apply: A,
+    ) where
         T: Send + 'static,
         W: FnOnce(Box<dyn GitProvider>) -> Result<T, GitError> + Send + 'static,
         A: FnOnce(&mut AppState, Result<T, GitError>, &mut Context<AppState>) + 'static,
@@ -320,7 +318,12 @@ impl AppState {
     }
 
     pub(super) fn unstage(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        self.mutate("Unstaging…", cx, move |r| r.unstage_paths(&paths), |_, _| {});
+        self.mutate(
+            "Unstaging…",
+            cx,
+            move |r| r.unstage_paths(&paths),
+            |_, _| {},
+        );
     }
 
     pub(super) fn stage_all(&mut self, cx: &mut Context<Self>) {
@@ -385,7 +388,11 @@ impl AppState {
             return;
         }
         self.mutate(
-            if amend { "Amending…" } else { "Committing…" },
+            if amend {
+                "Amending…"
+            } else {
+                "Committing…"
+            },
             cx,
             move |r| r.commit(&msg, amend),
             move |this, info| {
@@ -580,7 +587,13 @@ impl AppState {
             cx.notify();
             return;
         }
-        if !force && self.workspaces.v2.delete_arm.press(key_of(&name), Instant::now()) == Confirm::Armed
+        if !force
+            && self
+                .workspaces
+                .v2
+                .delete_arm
+                .press(key_of(&name), Instant::now())
+                == Confirm::Armed
         {
             cx.notify();
             return;

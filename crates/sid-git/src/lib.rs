@@ -8,7 +8,8 @@ use std::path::Path;
 
 use sid_core::git::{
     Branch, CommitInfo, Diff, DiffLimits, DiffTarget, FetchReport, GitError, GitProvider,
-    GitStatus, LogPage, LogQuery, PushReport, RepoSummary, StashEntry, StatusKind, StatusOptions, WorktreeInfo,
+    GitStatus, LogPage, LogQuery, PushReport, RepoSummary, StashEntry, StatusKind, StatusOptions,
+    WorktreeInfo,
 };
 
 pub mod cli;

@@ -218,7 +218,9 @@ mod tests {
     #[test]
     fn branch_names_are_screened() {
         assert!(branch_name_problem("feature/x").is_none());
-        for bad in ["", "  ", "-x", "a b", "a..b", "a~1", "x.lock", "a/", "a@{1}"] {
+        for bad in [
+            "", "  ", "-x", "a b", "a..b", "a~1", "x.lock", "a/", "a@{1}",
+        ] {
             assert!(branch_name_problem(bad).is_some(), "{bad:?}");
         }
     }
