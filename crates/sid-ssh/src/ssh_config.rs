@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(
             k.auth,
             AuthMethod::Key {
-                path: home_ssh("id").into()
+                path: home_ssh("id")
             }
         );
         assert_eq!(k.user, "u");
