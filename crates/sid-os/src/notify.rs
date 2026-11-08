@@ -23,7 +23,10 @@ const MAX_BODY: usize = 400;
 fn clean(s: &str, max: usize, keep_newlines: bool) -> String {
     let mut out: String = s
         .chars()
-        .filter(|c| !c.is_control() || (keep_newlines && *c == '\n'))
+        .filter(|c| {
+            (!c.is_control() || (keep_newlines && *c == '\n'))
+                && !sid_core::text::is_deceptive(*c)
+        })
         .take(max + 1)
         .collect();
     if out.chars().count() > max {
@@ -116,6 +119,12 @@ impl Notifier for DbusNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bidi_and_zero_width_are_stripped() {
+        assert_eq!(sanitize_title("a\u{202E}b\u{200D}c\u{2066}d"), "abcd");
+        assert_eq!(sanitize_body("x\u{200F}y\nz\u{FEFF}"), "xy\nz");
+    }
 
     #[test]
     fn body_markup_from_config_names_is_escaped() {
