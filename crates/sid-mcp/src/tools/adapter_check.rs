@@ -133,7 +133,7 @@ pub fn check(root: &Path) -> Result<Vec<Violation>, String> {
             p.strip_prefix(root)
                 .unwrap_or(p)
                 .to_string_lossy()
-                .into_owned()
+                .replace('\\', "/") // stable `at` strings on Windows too
         };
 
         // Rule 1: GPUI only in sid / sid-ui.
