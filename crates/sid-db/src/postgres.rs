@@ -76,7 +76,11 @@ pub(crate) fn tls_choice(config: &tokio_postgres::Config) -> TlsChoice {
     use tokio_postgres::config::SslMode;
     let hosts = config.get_hosts();
     // Empty host list → treat as non-local (fail safe: never assume plaintext).
-    let all_local = !hosts.is_empty() && hosts.iter().all(is_local_host);
+    // `hostaddr` overrides the dial target (tokio-postgres connects to it when set), so
+    // every hostaddr must be loopback too — else `host=localhost hostaddr=<remote>` would
+    // go plaintext to a remote box.
+    let addrs_local = config.get_hostaddrs().iter().all(|a| a.is_loopback());
+    let all_local = !hosts.is_empty() && hosts.iter().all(is_local_host) && addrs_local;
     if all_local {
         // Loopback / unix-socket: plaintext is safe (no network to eavesdrop).
         // Honor an explicit TLS request (`require`/`verify-*`); otherwise plaintext.
@@ -886,6 +890,20 @@ mod tests {
             DbError::Query(msg) => assert_eq!(msg, "boom"),
             other => panic!("expected Query passthrough, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tls_choice_hostaddr_bypass_is_tls() {
+        for dsn in [
+            "host=localhost hostaddr=203.0.113.9 sslmode=disable",
+            "host=/run/postgresql hostaddr=203.0.113.9 sslmode=disable",
+        ] {
+            let config: tokio_postgres::Config = dsn.parse().expect("parse");
+            assert_eq!(tls_choice(&config), TlsChoice::Tls, "{dsn}");
+        }
+        let ok: tokio_postgres::Config =
+            "host=localhost hostaddr=127.0.0.1 sslmode=disable".parse().unwrap();
+        assert_eq!(tls_choice(&ok), TlsChoice::Plain);
     }
 
     #[test]
