@@ -166,3 +166,8 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[workspace.lints.clippy]
+# async_trait expands `#[must_use] async fn` into `#[must_use] fn -> Pin<Box<dyn Future>>`
+# (Future is itself must_use); clippy >= 1.97 flags the macro output. Not fixable at source.
+double_must_use = "allow"

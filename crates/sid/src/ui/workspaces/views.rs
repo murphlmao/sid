@@ -12,13 +12,17 @@ use sid_core::git::{DiffLine, DiffLineKind, FileDiff, FileStatus, RefKind, Stash
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
     Badge, BadgeTone, Button, ButtonSize, CheckState, Checkbox, ConfirmButton, EmptyState, Icon,
-    IconButton, List, Row, StyledExt as _, TextInput, Toast, Typography as _, h_flex, scaled,
+    IconButton, List, Row, StyledExt as _, TextInput, Tipped as _, Toast, Typography as _, h_flex,
+    scaled,
 };
 
 use super::model::{self, Side, commit_enabled, diff_status_label, gutter, kind_letter, short_oid};
 use super::ops::LogState;
 use super::{Fetch, commit_age, now_secs, text_cell};
 use crate::app::AppState;
+
+/// Widest a ref badge (branch / tag name) grows in the log before it ellipsises.
+const REF_BADGE_MAX_W: f32 = 220.;
 
 /// Diff rows painted per file. The provider already caps bytes; this caps elements so a
 /// long generated file cannot stall a frame.
@@ -821,17 +825,31 @@ impl AppState {
                         let badges: Vec<AnyElement> = e
                             .refs
                             .iter()
-                            .map(|r| match r.kind {
-                                RefKind::Head => {
-                                    Badge::new(r.name.clone()).tone(BadgeTone::Accent).solid()
-                                }
-                                RefKind::Branch => {
-                                    Badge::new(r.name.clone()).tone(BadgeTone::Success)
-                                }
-                                RefKind::RemoteBranch => Badge::new(r.name.clone()).outline(),
-                                RefKind::Tag => Badge::new(r.name.clone()).tone(BadgeTone::Warning),
+                            .enumerate()
+                            .map(|(rix, r)| {
+                                let name = r.name.clone();
+                                let badge = match r.kind {
+                                    RefKind::Head => {
+                                        Badge::new(r.name.clone()).tone(BadgeTone::Accent).solid()
+                                    }
+                                    RefKind::Branch => {
+                                        Badge::new(r.name.clone()).tone(BadgeTone::Success)
+                                    }
+                                    RefKind::RemoteBranch => Badge::new(r.name.clone()).outline(),
+                                    RefKind::Tag => {
+                                        Badge::new(r.name.clone()).tone(BadgeTone::Warning)
+                                    }
+                                };
+                                // Sized to its content up to a cap; past it the badge's own
+                                // clamp ellipsises and the tooltip carries the full name.
+                                div()
+                                    .id(("ws-ref", ix * 64 + rix))
+                                    .flex_none()
+                                    .max_w(scaled(REF_BADGE_MAX_W))
+                                    .tip(name)
+                                    .child(badge)
+                                    .into_any_element()
                             })
-                            .map(IntoElement::into_any_element)
                             .collect();
                         Row::new(("ws-log", ix))
                             .compact()
@@ -853,9 +871,7 @@ impl AppState {
                                             .text_color(rgb(t.fg))
                                             .child(e.commit.summary.clone()),
                                     )
-                                    .children(
-                                        badges.into_iter().map(|b| div().flex_none().child(b)),
-                                    ),
+                                    .children(badges),
                             )
                             .meta(div().text_meta(t).child(e.commit.author_name.clone()))
                             .meta(

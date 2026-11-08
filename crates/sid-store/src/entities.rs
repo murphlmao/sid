@@ -296,6 +296,35 @@ pub struct Settings {
     /// bump. Absent in v1..v5 stores -- empty.
     #[serde(default)]
     pub last_tab: String,
+    /// Glyph antialiasing: [`TextRendering::Auto`] picks grayscale on a fractionally
+    /// scaled display and subpixel otherwise. Absent in v1..v6 stores — `Auto`.
+    #[serde(default)]
+    pub text_rendering: TextRendering,
+    /// Command-palette recents, most recent first, capped at [`PALETTE_RECENTS_CAP`].
+    /// Opaque ids owned by the frontend; ids this build no longer knows are dropped at
+    /// resolve time, never at decode time. Absent in v1..v6 stores — empty.
+    #[serde(default)]
+    pub palette_recents: Vec<String>,
+    /// Whether the first-run "import your ~/.ssh/config" banner was dismissed for good.
+    /// Absent in v1..v6 stores — `false`.
+    #[serde(default)]
+    pub import_banner_dismissed: bool,
+}
+
+/// How many command-palette recents are kept.
+pub const PALETTE_RECENTS_CAP: usize = 20;
+
+/// How glyphs are antialiased. Stored as the choice, not the outcome: `Auto` is resolved
+/// per window by the frontend (it depends on the live scale factor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextRendering {
+    /// Grayscale on fractional scale factors, subpixel otherwise.
+    #[default]
+    Auto,
+    /// Always subpixel (LCD) antialiasing.
+    Subpixel,
+    /// Always grayscale antialiasing.
+    Grayscale,
 }
 
 impl Default for Settings {
@@ -310,6 +339,9 @@ impl Default for Settings {
             reduce_motion: false,
             desktop_notifications: true,
             last_tab: String::new(),
+            text_rendering: TextRendering::default(),
+            palette_recents: Vec::new(),
+            import_banner_dismissed: false,
         }
     }
 }
@@ -467,9 +499,9 @@ pub(crate) struct SettingsV5 {
     pub ui_scale_percent: u16,
 }
 
-impl From<SettingsV5> for Settings {
+impl From<SettingsV5> for SettingsV6 {
     fn from(v: SettingsV5) -> Self {
-        Settings {
+        SettingsV6 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
@@ -479,6 +511,50 @@ impl From<SettingsV5> for Settings {
             reduce_motion: false,
             desktop_notifications: true,
             last_tab: String::new(),
+        }
+    }
+}
+
+/// The version-6 on-disk shape of [`Settings`] (after `last_tab`, before `text_rendering`
+/// / `palette_recents` / `import_banner_dismissed`). Decode-only; postcard is positional so
+/// it must be read against this exact layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV6 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+    #[serde(default)]
+    pub reduce_motion: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub desktop_notifications: bool,
+    #[serde(default)]
+    pub last_tab: String,
+}
+
+impl From<SettingsV6> for Settings {
+    fn from(v: SettingsV6) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: v.ui_scale_percent,
+            reduce_motion: v.reduce_motion,
+            desktop_notifications: v.desktop_notifications,
+            last_tab: v.last_tab,
+            text_rendering: TextRendering::default(),
+            palette_recents: Vec::new(),
+            import_banner_dismissed: false,
         }
     }
 }
