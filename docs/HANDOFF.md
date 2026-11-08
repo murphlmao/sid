@@ -5,7 +5,7 @@ orientation doc: current state, tab by tab, what is open, where the landmines ar
 resume point for the last session is
 [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md).
 
-**Last verified:** `main @ 56ca357 — 76 suites / 2054 tests / 0 failed (fmt, clippy -D warnings clean)`
+**Last verified:** `main @ 9dd6c42 — 76 suites / 2071 tests / 0 failed (fmt, clippy -D warnings clean)`
 (rustc 1.96, Linux). Everything from the 2026-11-07 night sprint, the 2026-11-08 integration,
 security review #2 and the QA-sweep fixes is merged; there are no pending branches.
 
@@ -49,11 +49,13 @@ Chrome: app-wide `StatusBar`; command-palette hub (current-tab actions and recen
 1. Waiting on Murphy: making the CI `gate` job a required check, keeping fetch/push on
    the CLI, SFTP keep-server-copy semantics, and an async keyring probe (status bar
    "checking…") which needs a design decision.
-2. Remaining QA findings (annotated in [`design/2026-11-08-qa-sweep.md`](design/2026-11-08-qa-sweep.md)):
-   #11 (Export menu, history rows), #16, #17, #18, #19, and a full re-sweep (every tab x 4
-   themes x 1920/1280, live SFTP edit-in-place, keyboard-only pass) since the fixes landed.
+2. QA sweep (`design/2026-11-08-qa-sweep.md`): every finding is fixed (each annotated with its commit).
+   Still worth doing: a full visual re-sweep (every tab x 4 themes x 1920/1280, live SFTP
+   edit-in-place incl. a server stop mid-edit, keyboard-only pass) since the fixes landed.
 3. zbus 6 is held back (keyring store still on 5).
-4. Perf leftovers: narrower `ProcessRefreshKind` (see `design/2026-11-07-perf-pass.md`).
+4. Perf: the System process probe is already minimal (cpu + memory, user/cmd once per pid);
+   the remaining per-tick cost is sysinfo's `/proc/<pid>/task` walk — see `design/2026-11-07-perf-pass.md`.
+   Table cells still pay gpui-component's per-cell id + two nodes (needs vendoring the table).
 5. Security leftovers from `night/sec-binding`: global secrets saved before bindings existed
    bind on first use (a global record tampered with before that first connect still sends
    once); workspace secrets saved before per-workspace keys re-prompt once and leave a bare
