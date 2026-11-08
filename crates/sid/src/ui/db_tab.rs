@@ -3506,13 +3506,22 @@ impl AppState {
     ) -> Option<String> {
         let conn = conn?;
         let secret_ref = conn.secret_ref.as_deref()?;
+        let new_ref = crate::ui::db_conn_form::mint_secret_id(&conn.id);
+        let mut moved = conn.clone();
+        moved.secret_ref = Some(new_ref.clone());
         secret_binding::relocate(
             self.secrets.as_ref(),
             self.store.global(),
             from,
             to,
             secret_ref,
+            &new_ref,
             &secret_binding::db_endpoint(&conn),
+            || {
+                self.store
+                    .write_connection(&moved, to)
+                    .map_err(|e| e.to_string())
+            },
         )
         .err()
         .map(|e| format!("moved, but its saved password stays behind and will be asked for: {e}"))

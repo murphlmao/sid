@@ -243,22 +243,43 @@ pub(crate) fn carry_over(
 /// A record moved between layers (promote/demote): move its secret with it, if — and
 /// only if — the secret was verified for that record in its old layer. Anything else is
 /// left where it is; the next connect from the new layer finds nothing and prompts.
+///
+/// The secret always lands under `new_ref`, a **freshly minted** reference in the
+/// destination layer, never the old one: reusing it could overwrite a different secret
+/// that already lives at the same ref there (a global record can hold any ref). The
+/// order is copy+bind under `new_ref`, then `commit` (the caller's durable write of the
+/// record carrying `new_ref`), then delete the old key. If `commit` fails the copy is
+/// rolled back and the old secret is untouched.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn relocate(
     secrets: &dyn SecretStore,
     bindings: &GlobalStore,
     from: &Scope,
     to: &Scope,
-    secret_ref: &str,
+    old_ref: &str,
+    new_ref: &str,
     endpoint: &str,
+    commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     if from == to {
         return Ok(());
     }
-    if let Bound::Found(bytes) = fetch(secrets, bindings, from, secret_ref, endpoint)? {
-        save(secrets, bindings, to, secret_ref, endpoint, &bytes)?;
-        forget(secrets, bindings, from, secret_ref)?;
+    let Bound::Found(bytes) = fetch(secrets, bindings, from, old_ref, endpoint)? else {
+        return Ok(());
+    };
+    if secrets
+        .get(&key_for(to, new_ref))
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!("minted secret ref {new_ref:?} is already in use"));
     }
-    Ok(())
+    save(secrets, bindings, to, new_ref, endpoint, &bytes)?;
+    if let Err(e) = commit() {
+        let _ = forget(secrets, bindings, to, new_ref);
+        return Err(e);
+    }
+    forget(secrets, bindings, from, old_ref)
 }
 
 fn binding(key: &SecretId, origin: &Scope, endpoint: &str) -> SecretBinding {
@@ -659,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn promoting_a_verified_record_moves_its_secret_and_binding() {
+    fn promoting_a_verified_record_moves_its_secret_and_binding_under_a_fresh_ref() {
         let f = fixture();
         save(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD, b"pw").unwrap();
         relocate(
@@ -668,16 +689,72 @@ mod tests {
             &ws("/w"),
             &Scope::Global,
             "r",
+            "r-new",
             GOOD,
+            || Ok(()),
         )
         .unwrap();
         assert_eq!(
-            fetch(&f.secrets, &f.bindings, &Scope::Global, "r", GOOD).unwrap(),
+            fetch(&f.secrets, &f.bindings, &Scope::Global, "r-new", GOOD).unwrap(),
             Bound::Found(b"pw".to_vec())
         );
         assert!(
             unsaved(&fetch(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD).unwrap()),
             "nothing is left behind in the old layer"
+        );
+    }
+
+    /// Review L3: a global secret already living at the promoted record's old ref must
+    /// survive the promote untouched.
+    #[test]
+    fn promoting_never_overwrites_a_colliding_global_secret() {
+        let f = fixture();
+        save(&f.secrets, &f.bindings, &Scope::Global, "r", GOOD, b"global-pw").unwrap();
+        save(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD, b"ws-pw").unwrap();
+        relocate(
+            &f.secrets,
+            &f.bindings,
+            &ws("/w"),
+            &Scope::Global,
+            "r",
+            "r-new",
+            GOOD,
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            fetch(&f.secrets, &f.bindings, &Scope::Global, "r", GOOD).unwrap(),
+            Bound::Found(b"global-pw".to_vec())
+        );
+        assert_eq!(
+            fetch(&f.secrets, &f.bindings, &Scope::Global, "r-new", GOOD).unwrap(),
+            Bound::Found(b"ws-pw".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_failed_commit_rolls_the_copy_back_and_keeps_the_old_secret() {
+        let f = fixture();
+        save(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD, b"pw").unwrap();
+        let err = relocate(
+            &f.secrets,
+            &f.bindings,
+            &ws("/w"),
+            &Scope::Global,
+            "r",
+            "r-new",
+            GOOD,
+            || Err("disk full".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err, "disk full");
+        assert_eq!(
+            fetch(&f.secrets, &f.bindings, &ws("/w"), "r", GOOD).unwrap(),
+            Bound::Found(b"pw".to_vec())
+        );
+        assert_eq!(
+            fetch(&f.secrets, &f.bindings, &Scope::Global, "r-new", GOOD).unwrap(),
+            Bound::Missing
         );
     }
 
@@ -691,11 +768,13 @@ mod tests {
             &ws("/w"),
             &Scope::Global,
             "r",
+            "r-new",
             EVIL,
+            || panic!("must not commit when nothing moved"),
         )
         .unwrap();
         assert_eq!(
-            fetch(&f.secrets, &f.bindings, &Scope::Global, "r", EVIL).unwrap(),
+            fetch(&f.secrets, &f.bindings, &Scope::Global, "r-new", EVIL).unwrap(),
             Bound::Missing
         );
     }
