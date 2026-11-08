@@ -29,7 +29,7 @@ use sid_store::{AuthMethod, DefaultScope, GlobalStore, Host, Scope};
 
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    Button, Elevation, Icon, InputState, Modal, Row, SegmentSelect, SegmentedControl,
+    Button, Elevation, Icon, InputState, Modal, Radio, Row, SegmentSelect, SegmentedControl,
     StyledExt as _, TextInput, Toast, Typography as _, caveat_line, h_flex, v_flex,
 };
 
@@ -332,14 +332,14 @@ impl HostForm {
         let password_hint = if has_stored_secret {
             "leave empty to keep the stored secret"
         } else if secrets_degraded {
-            "no OS keyring — passwords last this session only; you'll be asked at connect"
+            "There's no system keyring, so sid will keep this password for this session only."
         } else {
-            "password — stored in the OS keyring"
+            "Password (kept in your system keyring)"
         };
         let passphrase_hint = if has_stored_secret {
             "leave empty to keep the stored secret"
         } else {
-            "passphrase (optional) — stored in the OS keyring"
+            "Passphrase, optional (kept in your system keyring)"
         };
 
         let (auth, key_path_value) = match prefill.map(|h| &h.auth) {
@@ -563,7 +563,10 @@ impl HostForm {
     /// not a section header — those are UPPERCASE `Label`.
     fn field_label(text: impl Into<SharedString>, cx: &App) -> impl IntoElement {
         let theme = theme::active(cx).clone();
-        div().text_meta(&theme).child(text.into())
+        let text: SharedString = text.into();
+        div()
+            .text_label(&theme)
+            .child(SharedString::from(sid_ui::sentence_case(&text)))
     }
 
     fn field(
@@ -721,7 +724,7 @@ impl HostForm {
                 // Tab could not get to. Last in the order, where it renders.
                 .tab_index(SAVE_TO_TAB_INDEX)
                 .selected(selected)
-                .leading(radio_mark(selected, enabled, theme))
+                .leading(Radio::new(selected).enabled(enabled))
                 // Title and note in the *same* slot: `Row`'s meta slot is right-anchored,
                 // which parked "— .sid/ · travels with git" 250px from the word it
                 // qualifies. The design system's own rule — a label's action never lives
@@ -748,9 +751,9 @@ impl HostForm {
         };
 
         let label: SharedString = if locked {
-            "save to — fixed while editing (use ⤒/⤓ to move a host)".into()
+            "Save to - fixed while editing (promote or demote to move a host)".into()
         } else {
-            "save to:".into()
+            "Save to".into()
         };
 
         let workspace_note =
@@ -814,33 +817,6 @@ fn auth_at(index: usize) -> AuthChoice {
 /// workspace first".
 fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
     (!ws_active).then_some("— no workspace focused")
-}
-
-/// The save-to picker's radio mark: a ring that gains a filled core when chosen.
-///
-/// Drawn rather than glyphed. The `●`/`○` pair this replaces renders in whatever the
-/// ambient font happens to have, at whatever weight, and in most families the two are
-/// visibly different sizes — so the picker jittered as the selection moved.
-fn radio_mark(selected: bool, enabled: bool, theme: &Theme) -> impl IntoElement + use<> {
-    let edge = match (selected, enabled) {
-        (true, _) => theme.accent,
-        // Was inverted: the choosable, unselected ring read fainter (`border`) than
-        // the disabled one (`faint`), so a genuinely clickable option looked less
-        // present than one you cannot click.
-        (false, true) => theme.muted,
-        (false, false) => theme.border,
-    };
-    div()
-        .size_3()
-        .rounded_full()
-        .border_1()
-        .border_color(rgb(edge))
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(selected, |mark| {
-            mark.child(div().size_1p5().rounded_full().bg(rgb(theme.accent)))
-        })
 }
 
 impl EventEmitter<HostFormEvent> for HostForm {}
