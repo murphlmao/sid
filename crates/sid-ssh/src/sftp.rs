@@ -5,7 +5,7 @@ use russh_sftp::{
     client::{SftpSession as RusshSftpSession, error::Error as RusshSftpError},
     protocol::StatusCode,
 };
-use sid_core::ssh::{SftpEntry, SftpSession, SshError};
+use sid_core::ssh::{SftpEntry, SftpIdentity, SftpSession, SshError};
 use tokio::io::AsyncWriteExt;
 
 pub struct RusshSftp {
@@ -88,10 +88,10 @@ impl SftpSession for RusshSftp {
         }
     }
 
-    async fn put_exclusive(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError> {
+    async fn put_exclusive(&mut self, path: &str, bytes: &[u8], mode: u32) -> Result<(), SshError> {
         use russh_sftp::protocol::{FileAttributes, OpenFlags};
         let attrs = FileAttributes {
-            permissions: Some(0o600),
+            permissions: Some(mode & 0o777),
             ..FileAttributes::empty()
         };
         let mut file = self
@@ -160,6 +160,28 @@ impl SftpSession for RusshSftp {
             .rename(from.to_string(), to.to_string())
             .await
             .map_err(map_sftp_error)
+    }
+
+    async fn lstat_identity(&mut self, path: &str) -> Result<Option<SftpIdentity>, SshError> {
+        match self.inner.symlink_metadata(path.to_string()).await {
+            Ok(md) => {
+                let mode = md.permissions.unwrap_or(0);
+                Ok(Some(SftpIdentity {
+                    is_symlink: md.is_symlink(),
+                    is_regular: !md.is_dir() && !md.is_symlink() && {
+                        let t = mode & 0o170000;
+                        t == 0 || t == 0o100000
+                    },
+                    uid: md.uid,
+                    gid: md.gid,
+                    mode,
+                }))
+            }
+            Err(e) => match map_sftp_error(e) {
+                SshError::PathNotFound(_) => Ok(None),
+                other => Err(other),
+            },
+        }
     }
 
     async fn close(&mut self) -> Result<(), SshError> {

@@ -514,7 +514,11 @@ impl SshSession {
                 toast_seq: 0,
                 edit_poll_running: false,
                 editor_launcher: edit::default_launcher(),
-                edit_cfg: sid_ssh::remote_edit::RemoteEditConfig::new(),
+                edit_cfg: {
+                    let mut c = sid_ssh::remote_edit::RemoteEditConfig::new();
+                    c.backups_root = crate::app::data_dir().join("remote-edit-backups");
+                    c
+                },
                 right_click_entry: None,
                 dialog_focus: cx.focus_handle(),
                 dialog_was_up: false,
@@ -895,15 +899,11 @@ impl SshSession {
         // Unsaved edits get one last upload before the SFTP channel goes away.
         let edits = self.take_edits_for_flush();
         let flush_sftp = sftp.clone();
+        let host = self.host_label.clone();
         ssh_runtime().spawn(async move {
             if !edits.is_empty() {
-                match flush_sftp {
-                    Some(s) => {
-                        let mut guard = s.lock().await;
-                        edit::flush_and_close(edits, Some(&mut **guard)).await;
-                    }
-                    None => edit::flush_and_close(edits, None).await,
-                }
+                // Lock order: each edit, then the SFTP channel (see `session::edit`).
+                edit::flush_and_close(edits, flush_sftp, &host).await;
             }
             if let Some(shell) = shell {
                 let _ = shell.lock().await.close().await;
