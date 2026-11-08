@@ -39,6 +39,8 @@
 #   --theme NAME       SID_THEME override (cosmos|void|dusk|cosmos-light)
 #   --out  PATH        where the PNG goes (required unless --tree)
 #   --size WxH         virtual output size (default 1920x1080)
+#   --scale N          compositor output scale (sway `output scale`), e.g. 1.5667 to
+#                      reproduce a fractionally scaled display (default 1)
 #   --click X,Y        move pointer + left-click (repeatable, in order)
 #   --dclick X,Y       DOUBLE-click — two clicks inside gpui's 400ms window, emitted
 #                      as ONE pointer-driver command so nothing can stretch the gap.
@@ -120,6 +122,7 @@ TAB="ssh"
 THEME=""
 OUT=""
 SIZE="1920x1080"
+OUT_SCALE=""
 WAIT=3
 REAL=0
 KEEP=0
@@ -139,6 +142,7 @@ while [[ $# -gt 0 ]]; do
         --theme) THEME="$2"; shift 2 ;;
         --out)   OUT="$2"; shift 2 ;;
         --size)  SIZE="$2"; shift 2 ;;
+        --scale) OUT_SCALE="$2"; shift 2 ;;
         --click) ACTIONS+=("click:$2"); shift 2 ;;
         --dclick) ACTIONS+=("dclick:$2"); shift 2 ;;
         --rclick) ACTIONS+=("rclick:$2"); shift 2 ;;
@@ -231,6 +235,7 @@ SWAY_CFG="$CAP_DIR/sway.cfg"
 cat > "$SWAY_CFG" <<EOF
 output HEADLESS-1 resolution ${SIZE/x/ }
 output HEADLESS-1 bg #000000 solid_color
+${OUT_SCALE:+output HEADLESS-1 scale $OUT_SCALE}
 default_border none
 exec sh -c 'echo "\$WAYLAND_DISPLAY" > $CAP_DIR/display'
 EOF

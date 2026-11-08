@@ -24,7 +24,8 @@ pub mod workspace;
 pub use composer::{ViewFilters, compose};
 pub use entities::{
     AuthMethod, DbConnection, DefaultScope, HOST_HISTORY_CAP, HistoryEntry, Host, HostHistory,
-    Identity, KeyBinding, PanelSide, PinnedFile, QuickAction, SecretBinding, Settings,
+    Identity, KeyBinding, PALETTE_RECENTS_CAP, PanelSide, PinnedFile, QuickAction, SecretBinding,
+    Settings, TextRendering,
 };
 pub use error::{Result, StoreError};
 pub use global::GlobalStore;

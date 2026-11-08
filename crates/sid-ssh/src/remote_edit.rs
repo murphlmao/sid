@@ -673,6 +673,7 @@ mod tests {
         assert!(re.local_path().starts_with(root.path().join("cache")));
         assert_eq!(re.local_path().file_name().unwrap(), "conf.toml");
         assert_eq!(std::fs::read(re.local_path()).unwrap(), b"a = 1\n");
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let dm = std::fs::metadata(re.local_path().parent().unwrap()).unwrap();

@@ -28,8 +28,8 @@ use sid_ui::{
 /// How many matches the palette shows at once.
 const MAX_RESULTS: usize = 30;
 
-/// How many recently run entries are remembered (this run only).
-pub(crate) const MAX_RECENT: usize = 8;
+/// How many recently run entries are remembered (persisted in Settings).
+pub(crate) const MAX_RECENT: usize = sid_store::PALETTE_RECENTS_CAP;
 
 /// What confirming a given row does. Index variants point into `AppState` lists that are
 /// already loaded and cheap to re-index at confirm time, which keeps [`PaletteEntry`]
@@ -47,6 +47,86 @@ enum PaletteTarget {
     Workspace(usize),
     /// Index into the Settings sections: jump to Settings on that section.
     SettingsSection(usize),
+    /// Jump straight to a tab's sub-view, or run a Database action.
+    Nav(NavTarget),
+}
+
+/// A navigation / tab-action entry. Each dispatches through the same handlers the tab's
+/// own controls use (`PrimaryTab` + the tab's `show_view`, or the DB tab's run / explain /
+/// export methods); the palette adds no behaviour of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavTarget {
+    Network(usize),
+    System(usize),
+    Workspaces(usize),
+    Db(DbAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbAction {
+    Run,
+    Explain,
+    Export,
+}
+
+impl NavTarget {
+    /// The stable id recents are persisted under. On disk: never rename.
+    fn key(self) -> String {
+        match self {
+            NavTarget::Network(i) => format!("nav:net:{i}"),
+            NavTarget::System(i) => format!("nav:sys:{i}"),
+            NavTarget::Workspaces(i) => format!("nav:ws:{i}"),
+            NavTarget::Db(DbAction::Run) => "nav:db:run".into(),
+            NavTarget::Db(DbAction::Explain) => "nav:db:explain".into(),
+            NavTarget::Db(DbAction::Export) => "nav:db:export".into(),
+        }
+    }
+}
+
+/// Every navigation entry as `(target, label, hint, icon)`, in display order.
+fn nav_candidates() -> Vec<(NavTarget, String, &'static str, Icon)> {
+    use crate::ui::{
+        network_tab::NetworkTabState, systems_tab::SystemsTabState,
+        workspaces_tab::WorkspacesTabState,
+    };
+    let mut out = Vec::new();
+    for (i, l) in NetworkTabState::view_labels().iter().enumerate() {
+        out.push((
+            NavTarget::Network(i),
+            format!("Network: {l}"),
+            "Network view",
+            Icon::Interfaces,
+        ));
+    }
+    for (i, l) in SystemsTabState::view_labels().iter().enumerate() {
+        out.push((
+            NavTarget::System(i),
+            format!("System: {l}"),
+            "System view",
+            Icon::Terminal,
+        ));
+    }
+    for (i, l) in WorkspacesTabState::view_labels().iter().enumerate() {
+        out.push((
+            NavTarget::Workspaces(i),
+            format!("Workspaces: {l}"),
+            "Workspace view",
+            Icon::Folder,
+        ));
+    }
+    for (act, label) in [
+        (DbAction::Run, "Database: Run query"),
+        (DbAction::Explain, "Database: Explain query"),
+        (DbAction::Export, "Database: Export results"),
+    ] {
+        out.push((
+            NavTarget::Db(act),
+            label.into(),
+            "Database action",
+            Icon::Database,
+        ));
+    }
+    out
 }
 
 /// One filtered/scored row.
@@ -144,6 +224,7 @@ impl AppState {
         };
         self.close_palette(cx);
         remember_recent(&mut self.recent_commands, key);
+        self.persist_recent_commands();
         match target {
             PaletteTarget::Action(action) => self.dispatch_action(action, window, cx),
             PaletteTarget::Connection(ix) => {
@@ -175,6 +256,47 @@ impl AppState {
                 self.show_settings_section(ix);
                 self.switch_to_tab(Tab::Settings, window, cx);
             }
+            PaletteTarget::Nav(nav) => self.run_nav(nav, window, cx),
+        }
+    }
+
+    fn run_nav(&mut self, nav: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
+        // Tab numbers per `Action::PrimaryTab`: 2 Database, 3 Network, 4 Workspaces, 5 System.
+        match nav {
+            NavTarget::Network(i) => {
+                self.dispatch_action(Action::PrimaryTab(3), window, cx);
+                self.network.show_view(i);
+            }
+            NavTarget::System(i) => {
+                self.dispatch_action(Action::PrimaryTab(5), window, cx);
+                self.systems.show_view(i);
+            }
+            NavTarget::Workspaces(i) => {
+                self.dispatch_action(Action::PrimaryTab(4), window, cx);
+                self.workspaces.show_view(i);
+            }
+            NavTarget::Db(act) => {
+                self.dispatch_action(Action::PrimaryTab(2), window, cx);
+                match act {
+                    DbAction::Run => self.run_query(window, cx),
+                    DbAction::Explain => self.explain_query(cx),
+                    DbAction::Export => self.export_csv(cx),
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Save the recents list to Settings. A failure only costs the memory of the recents,
+    /// so it is reported on stderr rather than surfaced.
+    fn persist_recent_commands(&mut self) {
+        let recents = self.recent_commands.clone();
+        let saved = self.store.settings().and_then(|mut s| {
+            s.palette_recents = recents;
+            self.store.set_settings(&s)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not save palette recents: {e}");
         }
     }
 
@@ -303,6 +425,23 @@ impl AppState {
                         icon: Icon::Terminal,
                         label: tab.label.clone(),
                         subtitle: Some("open session".into()),
+                        shortcut: None,
+                        score: 0,
+                    },
+                    score,
+                );
+            }
+        }
+
+        for (nav, label, hint, icon) in nav_candidates() {
+            if let Some(score) = fuzzy_score(query, &label) {
+                push(
+                    PaletteEntry {
+                        target: PaletteTarget::Nav(nav),
+                        key: nav.key(),
+                        icon,
+                        label: label.into(),
+                        subtitle: Some(hint.into()),
                         shortcut: None,
                         score: 0,
                     },
@@ -552,6 +691,29 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), recent.len());
+    }
+
+    #[test]
+    fn nav_entries_cover_every_sub_view_and_db_action_with_unique_keys() {
+        let nav = nav_candidates();
+        let labels: Vec<&str> = nav.iter().map(|c| c.1.as_str()).collect();
+        for want in [
+            "Network: Ports",
+            "Network: Connections",
+            "Network: Services",
+            "Network: Interfaces",
+            "Network: Docker",
+            "Network: Kubernetes",
+            "System: Processes",
+            "System: Config files",
+            "Database: Run query",
+            "Database: Explain query",
+            "Database: Export results",
+        ] {
+            assert!(labels.contains(&want), "missing {want}");
+        }
+        let keys: std::collections::HashSet<_> = nav.iter().map(|c| c.0.key()).collect();
+        assert_eq!(keys.len(), nav.len());
     }
 
     #[test]
