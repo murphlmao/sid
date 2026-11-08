@@ -12,8 +12,8 @@
 
 use std::path::Path;
 
-use russh::keys::{Algorithm, Error as KeysError, PublicKey};
-use sid_core::ssh::SshError;
+use russh::keys::{Algorithm, Error as KeysError, HashAlg, PublicKey};
+use sid_core::ssh::{SshError, UnknownHostKey};
 
 /// Outcome of checking a server key against the known-hosts files.
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +22,8 @@ pub(crate) enum Verdict {
     Match,
     /// An entry exists for this host but the key differs — hard fail (MITM).
     Mismatch,
-    /// No entry in either file — first contact (caller should TOFU-learn).
+    /// No entry in either file — first contact. Never learned silently: [`decide`] asks
+    /// the user first.
     Unknown,
 }
 
@@ -79,6 +80,54 @@ pub(crate) fn verify(
         Ok(Verdict::Mismatch)
     } else {
         Ok(Verdict::Unknown)
+    }
+}
+
+/// The whole host-key decision the handshake makes: `Ok(())` trusts `pubkey`, `Err`
+/// aborts with the reason.
+///
+/// - A recorded match is trusted.
+/// - A changed key ([`Verdict::Mismatch`], including the fail-closed different-algorithm
+///   case) is [`SshError::HostKeyMismatch`] — always, whatever was approved.
+/// - An unknown host is **not** learned (security review M1: silently trusting first
+///   contact made a first-contact MITM undetectable). It is
+///   [`SshError::HostKeyUnknown`] carrying the key type and `SHA256:` fingerprint for the
+///   user to check — unless `approved` is exactly this key's fingerprint, i.e. the user
+///   confirmed this key on the previous attempt; only then is it appended to the app
+///   file. A different key behind the same approval is reported as unknown again.
+pub(crate) fn decide(
+    host: &str,
+    port: u16,
+    pubkey: &PublicKey,
+    user_known_hosts: Option<&Path>,
+    app_known_hosts: &Path,
+    approved: Option<&str>,
+) -> Result<(), SshError> {
+    match verify(host, port, pubkey, user_known_hosts, app_known_hosts)? {
+        Verdict::Match => Ok(()),
+        Verdict::Mismatch => Err(SshError::HostKeyMismatch(host_id(host, port))),
+        Verdict::Unknown => {
+            let fingerprint = pubkey.fingerprint(HashAlg::Sha256).to_string();
+            if approved == Some(fingerprint.as_str()) {
+                learn(host, port, pubkey, app_known_hosts)
+            } else {
+                Err(SshError::HostKeyUnknown(UnknownHostKey {
+                    host: host_id(host, port),
+                    key_type: pubkey.algorithm().as_str().to_string(),
+                    fingerprint,
+                }))
+            }
+        }
+    }
+}
+
+/// `host`, or `[host]:port` off the default port — how known_hosts (and OpenSSH's own
+/// messages) name it.
+fn host_id(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
     }
 }
 
@@ -357,5 +406,120 @@ mod tests {
         // Neither file existing at all is also fine — never an error.
         let fx2 = fixture();
         assert!(recorded_algorithms("localhost", 22, Some(&fx2.user), &fx2.app).is_empty());
+    }
+
+    // ---- decide: first contact asks, a changed key never does (security review M1) ----
+
+    fn fingerprint(b64: &str) -> String {
+        pubkey(b64).fingerprint(HashAlg::Sha256).to_string()
+    }
+
+    #[test]
+    fn first_contact_is_reported_with_its_fingerprint_and_nothing_is_learned() {
+        let fx = fixture();
+        let err = decide(
+            "h.example",
+            2222,
+            &pubkey(KEY_A),
+            Some(&fx.user),
+            &fx.app,
+            None,
+        )
+        .unwrap_err();
+        let SshError::HostKeyUnknown(k) = err else {
+            panic!("expected HostKeyUnknown, got {err:?}");
+        };
+        assert_eq!(k.host, "[h.example]:2222");
+        assert_eq!(k.key_type, "ssh-ed25519");
+        // OpenSSH's `ssh-keygen -lf` shape: `SHA256:` + 43 chars of unpadded base64.
+        assert!(k.fingerprint.starts_with("SHA256:"), "{}", k.fingerprint);
+        assert_eq!(
+            k.fingerprint.len(),
+            "SHA256:".len() + 43,
+            "{}",
+            k.fingerprint
+        );
+        assert!(!k.fingerprint.ends_with('='));
+        assert!(!fx.app.exists(), "an unconfirmed key must never be written");
+    }
+
+    #[test]
+    fn a_confirmed_fingerprint_is_learned_and_then_matches() {
+        let fx = fixture();
+        let fp = fingerprint(KEY_A);
+        decide(
+            "localhost",
+            22,
+            &pubkey(KEY_A),
+            Some(&fx.user),
+            &fx.app,
+            Some(&fp),
+        )
+        .unwrap();
+        assert_eq!(
+            verify("localhost", 22, &pubkey(KEY_A), Some(&fx.user), &fx.app).unwrap(),
+            Verdict::Match
+        );
+        // And from now on no approval is needed.
+        decide(
+            "localhost",
+            22,
+            &pubkey(KEY_A),
+            Some(&fx.user),
+            &fx.app,
+            None,
+        )
+        .unwrap();
+    }
+
+    /// The swap between prompt and retry: the user approved key A's fingerprint, the
+    /// retry is answered with key B. B is reported as unknown — never learned on A's
+    /// approval.
+    #[test]
+    fn an_approval_for_one_key_never_trusts_another() {
+        let fx = fixture();
+        let err = decide(
+            "localhost",
+            22,
+            &pubkey(KEY_B),
+            Some(&fx.user),
+            &fx.app,
+            Some(&fingerprint(KEY_A)),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, SshError::HostKeyUnknown(k) if k.fingerprint == fingerprint(KEY_B)),
+            "{err:?}"
+        );
+        assert!(!fx.app.exists());
+    }
+
+    /// `KeyChanged` stays fatal: approving the new key's fingerprint is no way past a
+    /// recorded different one — and neither is an algorithm swap.
+    #[test]
+    fn a_changed_key_is_a_mismatch_even_with_its_fingerprint_approved() {
+        for presented in [KEY_B, KEY_RSA] {
+            let fx = fixture();
+            write_file(&fx.app, &openssh_line("localhost", KEY_A));
+            let err = decide(
+                "localhost",
+                22,
+                &pubkey(presented),
+                Some(&fx.user),
+                &fx.app,
+                Some(&fingerprint(presented)),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, SshError::HostKeyMismatch(ref h) if h == "localhost"),
+                "{err:?}"
+            );
+            let contents = std::fs::read_to_string(&fx.app).unwrap();
+            assert_eq!(
+                contents,
+                openssh_line("localhost", KEY_A),
+                "nothing appended"
+            );
+        }
     }
 }

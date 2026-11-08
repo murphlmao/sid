@@ -70,6 +70,10 @@ sid-gpu.workspace = true
 # protocol's stderr channel — the pre-flight parent parses the probe child's
 # env_logger-formatted `Adapter:` line.
 env_logger = "0.11"
+# Exclusive, randomly named sibling temp files for the config editor's atomic save
+# (`ui::config_editor::save_preserving_permissions`) — a predictable temp name written
+# with `fs::write` followed a planted symlink.
+tempfile.workspace = true
 # Grapheme/word segmentation for the TextInput element (cursor movement, masking).
 # Already in the tree transitively via gpui; pinned here as a direct dep.
 unicode-segmentation = "1"

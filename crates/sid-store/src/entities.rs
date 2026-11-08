@@ -644,3 +644,37 @@ impl HostHistory {
             .collect()
     }
 }
+
+/// What a stored secret was saved **for** — the guard that stops a committed
+/// `secret_ref` from being pointed at a different endpoint (store-review "flat secret
+/// keyspace" item).
+///
+/// A `secret_ref` is an opaque keyring id, and a workspace-scope one is committed where
+/// every collaborator can read and copy it. Without a binding, a commit that changes a
+/// record's `host`/`port`/`dsn` but keeps its `secret_ref` — or another repo that
+/// reuses a copied ref — makes the victim's next Connect send their stored password to
+/// the new endpoint. The binding records, at the moment the user typed the secret, which
+/// layer it belongs to and which endpoint it was meant for; the app refuses to auto-send
+/// it anywhere else.
+///
+/// Global-only and never committed: it lives in its own redb table (codec version 1),
+/// keyed by the secret's **keyring key** (not the bare `secret_ref` — a workspace-scope
+/// key is namespaced by its [`WorkspaceId`](crate::scope::WorkspaceId), so the same ref
+/// string in two repos is two bindings). It holds no secret material: `endpoint` is a
+/// fingerprint of where the secret goes (`user@host:port`, a password-free DSN), built
+/// by the app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretBinding {
+    /// The keyring key the secret is stored under; the identity.
+    pub key: String,
+    /// The layer whose record the secret was saved for.
+    pub scope: crate::scope::Scope,
+    /// The endpoint fingerprint the secret was saved to be sent to.
+    pub endpoint: String,
+}
+
+impl Identity for SecretBinding {
+    fn identity(&self) -> &str {
+        &self.key
+    }
+}

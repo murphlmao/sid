@@ -24,10 +24,43 @@ pub enum SshError {
         "host key for {0} changed — possible MITM; remove the entry from known_hosts to re-trust"
     )]
     HostKeyMismatch(String),
+    /// First contact: the server's host key is in no known_hosts file. Nothing has been
+    /// trusted or written — the caller must show the user `UnknownHostKey`, and only on
+    /// their confirmation retry with [`SshClient::approve_host_key`] (security review M1).
+    #[error(
+        "{} presented a host key sid has never seen ({} {}) — confirm it before connecting",
+        .0.host, .0.key_type, .0.fingerprint
+    )]
+    HostKeyUnknown(UnknownHostKey),
     #[error("remote file is larger than the {0}-byte limit")]
     TooLarge(u64),
     #[error("ssh operation failed: {0}")]
     Other(String),
+}
+
+/// A host key seen for the first time, as the user must be shown it before deciding
+/// whether to trust it — the payload of [`SshError::HostKeyUnknown`].
+///
+/// # Examples
+///
+/// ```
+/// use sid_core::ssh::UnknownHostKey;
+/// let k = UnknownHostKey {
+///     host: "[db.example]:2222".into(),
+///     key_type: "ssh-ed25519".into(),
+///     fingerprint: "SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s".into(),
+/// };
+/// assert!(k.fingerprint.starts_with("SHA256:"));
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnknownHostKey {
+    /// The host as known_hosts names it: `host`, or `[host]:port` off port 22.
+    pub host: String,
+    /// The key algorithm as OpenSSH prints it, e.g. `ssh-ed25519`.
+    pub key_type: String,
+    /// The SHA-256 fingerprint in OpenSSH's format (`SHA256:<unpadded base64>`), so it
+    /// can be compared with `ssh-keygen -lf` output character for character.
+    pub fingerprint: String,
 }
 
 /// Host + port + user.
@@ -183,6 +216,14 @@ pub trait SftpSession: Send + Sync {
 #[async_trait]
 pub trait SshClient: Send + Sync {
     async fn connect(&mut self, host: &SshHostSpec, auth: &SshAuth) -> Result<(), SshError>;
+    /// Approve, for the **next** [`Self::connect`] only, the unknown host key the user
+    /// just confirmed from a [`SshError::HostKeyUnknown`], named by its `fingerprint`.
+    /// If the server then presents that exact key, it is recorded and the connect goes
+    /// on; any other key is reported as unknown again (a key swapped between the prompt
+    /// and the retry is never trusted). It never overrides a *changed* key
+    /// ([`SshError::HostKeyMismatch`]). Default: ignored — an adapter that never reports
+    /// `HostKeyUnknown` has nothing to approve.
+    fn approve_host_key(&mut self, _fingerprint: &str) {}
     async fn disconnect(&mut self) -> Result<(), SshError>;
     fn is_connected(&self) -> bool;
     async fn exec(&mut self, cmd: &str) -> Result<ExecResult, SshError>;
@@ -232,6 +273,19 @@ mod tests {
         let e = SshError::HostKeyMismatch("h.example:2222".into());
         assert!(e.to_string().contains("h.example:2222"));
         assert!(e.to_string().contains("possible MITM"));
+    }
+
+    #[test]
+    fn an_unknown_host_key_error_shows_everything_the_user_must_compare() {
+        let e = SshError::HostKeyUnknown(UnknownHostKey {
+            host: "[h.example]:2222".into(),
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:abc".into(),
+        });
+        let s = e.to_string();
+        assert!(s.contains("[h.example]:2222"), "{s}");
+        assert!(s.contains("ssh-ed25519"), "{s}");
+        assert!(s.contains("SHA256:abc"), "{s}");
     }
 
     #[test]

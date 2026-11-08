@@ -75,8 +75,8 @@ Unchecked items from the checklist (§ numbers refer to
 [`design/2026-09-09-ui-cohesion-loop.md`](design/2026-09-09-ui-cohesion-loop.md)):
 
 - §0 (Murphy): `sudo pacman -S sway wtype`; optional a GitHub token with `workflow` scope.
-- §2: the config-editor focus-trap security item (assigned, branch `focus-followups`);
-  the focus follow-ups list (Settings rail ring, `chrome_tab`, config editor save/close
+- §2: ~~the config-editor focus-trap security item~~ — closed, see the security batch
+  below; the focus follow-ups list (Settings rail ring, `chrome_tab`, config editor save/close
   tab stops); an SSH-home empty state for zero hosts (note: `ssh_home.rs::home_empty_state`
   already renders one with an "add connection" action — worth re-checking whether this
   item is actually still open before picking it up); the light-theme follow-ups
@@ -88,6 +88,26 @@ Unchecked items from the checklist (§ numbers refer to
   `docs/HANDOFF.md` (now done by this commit — the checklist box ticks on the loop's next
   pass, not this one); the CI file's move into `.github/workflows/` (blocked on token
   scope).
+
+**Security batch `night/sec-binding` (2026-11-07):**
+
+- Closed: the config-editor focus-trap sudo-password leak — fixed in code (one trap owner,
+  `config_editor.rs::trap_owner`) and confirmed at runtime with `sid-cap.sh` + mock-sudo:
+  0444 file → unlock prompt → `Tab` ×6 → `x` lands in the password field, no dirty marker.
+- Closed: H2 (a committed `secret_ref` redirected to another endpoint: secrets are bound to
+  layer + endpoint in the global store, `crates/sid/src/secret_binding.rs`), M1 (unknown
+  SSH host keys need "Trust and connect", `ui/host_key_prompt.rs`), bounded SFTP
+  view/download + no-overwrite downloads + display-safe remote names, config-editor
+  exclusive temp files / bounded read / FIFO refusal, and the sudo password's lifetime
+  (dropped on leaving System and after 5 idle minutes).
+- Open: global secrets saved before bindings existed bind on first use, so a global record
+  tampered with before that first connect still sends once. Workspace secrets saved before
+  per-workspace keys re-prompt once; their old bare keyring entry is left behind (sid never
+  deletes a bare key through a workspace record — it could be someone's global secret).
+- Open: downloads over 256 MiB are refused (no streaming read on `SftpSession` yet).
+- Open: `GlobalStore::record_host_command` must never be wired from raw terminal keystrokes.
+- The "Where things stand" table above still lists the focus-trap bug for SSH/SFTP and
+  System; it is closed (that table was outside this branch's edit scope).
 
 **Blocked** (from the checklist's own Blocked section):
 

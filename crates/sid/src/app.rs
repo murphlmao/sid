@@ -16,18 +16,20 @@ use gpui::{
     rgb,
 };
 use sid_core::notify::{Notification, Notifier, Urgency};
-use sid_secrets::{SecretId, SecretStore};
+use sid_secrets::SecretStore;
 use sid_store::{
     Attributed, AuthMethod, Host, PanelSide, Scope, Store, ViewFilters, WorkspaceId, WorkspaceMeta,
 };
 
 use crate::keymap::{self, Action, FocusContext};
+use crate::secret_binding;
 use crate::ssh_connect;
 use crate::ui::command_palette::PaletteState;
 use crate::ui::db_tab::DbTabState;
 use crate::ui::host_form::{
-    HostForm, HostFormEvent, Submission, add_guard, plan_secret, stage_secret,
+    HostForm, HostFormEvent, SecretPlan, Submission, add_guard, plan_secret, stage_secret,
 };
+use crate::ui::host_key_prompt::HostKeyPrompts;
 use crate::ui::network_tab::NetworkTabState;
 use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
 use crate::ui::settings_tab::SettingsTabState;
@@ -404,6 +406,9 @@ pub struct AppState {
     /// password so a normal retry finds it. `None` whenever `password_prompt` is
     /// `None`.
     pending_secret_prompt: Option<PendingSecretPrompt>,
+    /// Unknown-host-key confirmations (security review M1): the one on screen plus any
+    /// waiting their turn. Owned by `ui::host_key_prompt`.
+    pub(crate) host_key_prompt: HostKeyPrompts,
     /// The command palette's open/query/selection state (`Ctrl+K`) — `None` when
     /// closed. `pub(crate)` so `ui::command_palette`'s `impl AppState` block (same
     /// convention as `ui::db_tab`/`ui::ssh_home`) can read/mutate it directly.
@@ -455,11 +460,14 @@ pub(crate) enum PendingSecretPrompt {
         source: Option<(String, Scope)>,
     },
     /// A DB action (`run_query`/`refresh_schema`) whose active connection's
-    /// `secret_ref` was dangling. The password is `secrets.put` under `secret_ref`
-    /// (always `Some` in this variant — see `db_tab::needs_password_prompt`'s doc
-    /// comment), then `retry` is re-run so the normal resolve path picks it up.
+    /// `secret_ref` was dangling, or whose stored secret was withheld (H2). The password
+    /// is saved under `secret_ref` (always `Some` in this variant — see
+    /// `db_tab::needs_password_prompt`'s doc comment) for a record in `origin`, bound to
+    /// `endpoint`, then `retry` is re-run so the normal resolve path picks it up.
     Db {
         secret_ref: String,
+        origin: Scope,
+        endpoint: String,
         retry: crate::ui::db_tab::DbRetry,
     },
 }
@@ -554,6 +562,7 @@ impl AppState {
             password_prompt: None,
             _password_prompt_subscription: None,
             pending_secret_prompt: None,
+            host_key_prompt: HostKeyPrompts::default(),
             palette: None,
             cheat_sheet_open: false,
             recent_commands: Vec::new(),
@@ -790,7 +799,12 @@ impl AppState {
             Ok(_removed) => {
                 let mut post_warning = None;
                 if let Some(id) = secret_ref
-                    && let Err(e) = self.secrets.delete(&SecretId::new(id))
+                    && let Err(e) = secret_binding::forget(
+                        self.secrets.as_ref(),
+                        self.store.global(),
+                        origin,
+                        id,
+                    )
                 {
                     post_warning =
                         Some(format!("host deleted, but deleting its secret failed: {e}"));
@@ -812,8 +826,15 @@ impl AppState {
         let Scope::Workspace(id) = origin else {
             return;
         };
+        let moving = self.host_in(alias, origin);
         match self.store.promote_host(alias, id) {
-            Ok(()) => self.refresh(),
+            Ok(()) => {
+                let warning = self.relocate_host_secret(moving, origin, &Scope::Global);
+                self.refresh();
+                if warning.is_some() {
+                    self.error = warning;
+                }
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
@@ -825,11 +846,48 @@ impl AppState {
         let Scope::Workspace(id) = self.scope.clone() else {
             return;
         };
+        let moving = self.host_in(alias, &Scope::Global);
         match self.store.demote_host(alias, &id) {
-            Ok(()) => self.refresh(),
+            Ok(()) => {
+                let to = Scope::Workspace(id);
+                let warning = self.relocate_host_secret(moving, &Scope::Global, &to);
+                self.refresh();
+                if warning.is_some() {
+                    self.error = warning;
+                }
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
+    }
+
+    /// The `alias` record in `origin`'s layer, from the composed list.
+    fn host_in(&self, alias: &str, origin: &Scope) -> Option<Host> {
+        self.hosts
+            .iter()
+            .find(|a| a.item.alias == alias && &a.origin == origin)
+            .map(|a| a.item.clone())
+    }
+
+    /// After a promote/demote moved `host` between layers, move its stored secret too —
+    /// a secret's keyring key and binding name its layer (H2), so leaving it behind
+    /// would make the moved record prompt as if its password had been redirected. Only
+    /// a secret verified for this record moves (`secret_binding::relocate`); a failure
+    /// is a warning (returned), since the record itself moved fine and the next connect
+    /// re-asks.
+    fn relocate_host_secret(&self, host: Option<Host>, from: &Scope, to: &Scope) -> Option<String> {
+        let host = host?;
+        let secret_ref = host.secret_ref.as_deref()?;
+        secret_binding::relocate(
+            self.secrets.as_ref(),
+            self.store.global(),
+            from,
+            to,
+            secret_ref,
+            &secret_binding::ssh_endpoint(&host),
+        )
+        .err()
+        .map(|e| format!("moved, but its saved password stays behind and will be asked for: {e}"))
     }
 
     // ---- SSH multi-session tabs (ssh-v3) ----------------------------------------
@@ -853,13 +911,24 @@ impl AppState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let secret = ssh_connect::resolve_secret(self.secrets.as_ref(), &host);
-        if ssh_connect::needs_password_prompt(&host.auth, &secret) {
+        // The layer the record lives in decides which keyring key its ref names and what
+        // its secret's binding must say (H2, `crate::secret_binding`). Every real caller
+        // passes the saved row's origin; a source-less dial can only be global.
+        let origin = source.as_ref().map_or(Scope::Global, |(_, s)| s.clone());
+        let resolved =
+            ssh_connect::resolve_secret(self.secrets.as_ref(), self.store.global(), &host, &origin);
+        if ssh_connect::needs_password_prompt(&host.auth, &resolved) {
             let label: SharedString = format!("{}@{}", host.user, host.host).into();
-            self.open_password_prompt(label, PendingSecretPrompt::Ssh { host, source }, window, cx);
+            self.open_password_prompt(
+                label,
+                resolved.withheld,
+                PendingSecretPrompt::Ssh { host, source },
+                window,
+                cx,
+            );
             return;
         }
-        self.finish_connect(host, source, secret, window, cx);
+        self.finish_connect(host, source, resolved.secret, window, cx);
     }
 
     /// The connect-or-open half of [`Self::connect_host`], split out so the password
@@ -961,7 +1030,13 @@ impl AppState {
     /// live session, else `root_focus` — see that field's doc comment for why this
     /// matters (a stale focus target silently kills all further keyboard dispatch).
     /// Called by every path that mutates either field.
-    fn refocus_stable_target(&self, window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// Being that one choke point, it is also where leaving the System tab drops the
+    /// config editor's held sudo password (`ui::config_editor`'s lifetime rule).
+    fn refocus_stable_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab != Tab::System {
+            self.lock_config_editor(window, cx);
+        }
         if self.active_tab == Tab::Ssh
             && let Some(ix) = self.active_session
             && let Some(tab) = self.ssh_sessions.get(ix)
@@ -986,6 +1061,11 @@ impl AppState {
     ) {
         match event {
             SshSessionEvent::ToggleDockSide => self.toggle_dock_side(cx),
+            // Security review M1: ask before trusting a first-contact host key
+            // (`ui::host_key_prompt` owns the modal and the answer).
+            SshSessionEvent::UnknownHostKey(key) => {
+                self.open_host_key_prompt(session.downgrade(), key.clone(), window, cx);
+            }
             SshSessionEvent::Dropped => {
                 let ix = self.ssh_sessions.iter().position(|t| &t.session == session);
                 let label = ix.map_or_else(
@@ -1134,14 +1214,19 @@ impl AppState {
     /// `&mut Window` to refocus `root_focus` on close (see that field's doc comment).
     /// `pub(crate)` so `ui::db_tab`'s `AppState::run_query`/`refresh_schema` can open it
     /// the same way `connect_host` does.
+    ///
+    /// `note` replaces the prompt's default "used once" caption with a warning — the H2
+    /// "the saved password was not sent: …" explanation when a stored secret was withheld
+    /// because its record no longer matches what it was saved for.
     pub(crate) fn open_password_prompt(
         &mut self,
         label: SharedString,
+        note: Option<String>,
         pending: PendingSecretPrompt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let modal = cx.new(|cx| PasswordPromptModal::new(window, cx, label));
+        let modal = cx.new(|cx| PasswordPromptModal::new(window, cx, label).with_note(note));
         modal.update(cx, |it, cx| it.focus_first(window, cx));
         self._password_prompt_subscription =
             Some(cx.subscribe_in(&modal, window, Self::on_password_prompt_event));
@@ -1183,17 +1268,35 @@ impl AppState {
         self.close_password_prompt(window, cx);
         match pending {
             PendingSecretPrompt::Ssh { host, source } => {
+                // Typing the password for this record is what (re)binds it to this
+                // record's endpoint and layer (H2) — including after a withheld one.
                 if let Some(secret_ref) = host.secret_ref.clone() {
-                    let _ = self
-                        .secrets
-                        .put(&SecretId::new(secret_ref), password.as_bytes());
+                    let origin = source.as_ref().map_or(Scope::Global, |(_, s)| s.clone());
+                    let _ = secret_binding::save(
+                        self.secrets.as_ref(),
+                        self.store.global(),
+                        &origin,
+                        &secret_ref,
+                        &secret_binding::ssh_endpoint(&host),
+                        password.as_bytes(),
+                    );
                 }
                 self.finish_connect(host, source, Ok(Some(password.into_bytes())), window, cx);
             }
-            PendingSecretPrompt::Db { secret_ref, retry } => {
-                let _ = self
-                    .secrets
-                    .put(&SecretId::new(secret_ref), password.as_bytes());
+            PendingSecretPrompt::Db {
+                secret_ref,
+                origin,
+                endpoint,
+                retry,
+            } => {
+                let _ = secret_binding::save(
+                    self.secrets.as_ref(),
+                    self.store.global(),
+                    &origin,
+                    &secret_ref,
+                    &endpoint,
+                    password.as_bytes(),
+                );
                 match retry {
                     crate::ui::db_tab::DbRetry::RunQuery => self.run_query(window, cx),
                     crate::ui::db_tab::DbRetry::RefreshSchema => self.refresh_schema(window, cx),
@@ -1217,29 +1320,52 @@ impl AppState {
             &submission.host.auth,
             submission.secret.is_some(),
         );
+        let target = &submission.target;
+        let endpoint = secret_binding::ssh_endpoint(&submission.host);
         let staged = stage_secret(
             self.secrets.as_ref(),
+            self.store.global(),
             &plan,
             &submission.host.alias,
             submission.secret.as_deref(),
+            target,
+            &endpoint,
         )?;
 
         let mut host = submission.host.clone();
         host.secret_ref = staged.secret_ref.clone();
-        if let Err(e) = self.store.write_host(&host, &submission.target) {
+        if let Err(e) = self.store.write_host(&host, target) {
             // Roll back a freshly minted secret so a failed write never orphans one.
             if staged.minted
                 && let Some(id) = &staged.secret_ref
             {
-                let _ = self.secrets.delete(&SecretId::new(id.clone()));
+                let _ =
+                    secret_binding::forget(self.secrets.as_ref(), self.store.global(), target, id);
             }
             return Err(e.to_string());
         }
 
-        // Only after the write is durable is the superseded secret deleted.
         let mut post_warning = None;
+        // An edit that kept the secret but moved the endpoint carries its binding along
+        // (only if the binding still matched the record as it was — see `carry_over`).
+        // Edits always target their origin layer, so `target` is the old layer too.
+        if let (SecretPlan::Keep(id), Some(old)) = (&plan, &submission.old)
+            && let Err(e) = secret_binding::carry_over(
+                self.store.global(),
+                target,
+                id,
+                &secret_binding::ssh_endpoint(old),
+                &endpoint,
+            )
+        {
+            post_warning = Some(format!(
+                "saved, but the stored password will be asked for again: {e}"
+            ));
+        }
+        // Only after the write is durable is the superseded secret deleted.
         if let Some(old_id) = &staged.delete_after_write
-            && let Err(e) = self.secrets.delete(&SecretId::new(old_id.clone()))
+            && let Err(e) =
+                secret_binding::forget(self.secrets.as_ref(), self.store.global(), target, old_id)
         {
             post_warning = Some(format!("saved, but deleting the old secret failed: {e}"));
         }
@@ -1310,6 +1436,7 @@ impl AppState {
             || self.db.form.is_some()
             || self.password_prompt.is_some()
             || self.ssh_home.import_open()
+            || self.host_key_prompt.is_open()
     }
 
     /// Whether the active SSH session's terminal currently holds keyboard focus — the
@@ -2319,6 +2446,8 @@ impl Render for AppState {
             .password_prompt
             .clone()
             .map(|prompt| modal::overlay(window, prompt));
+        // M1's unknown-host-key confirmation (`ui::host_key_prompt`).
+        let host_key_overlay = self.host_key_prompt_overlay(window, cx);
 
         // Keyboard-driven system (2026-07-02 plan): the palette + cheat-sheet overlays,
         // and the root-level key handler that opens/dispatches them. `capture_key_down`
@@ -2369,6 +2498,7 @@ impl Render for AppState {
             .children(db_overlay)
             .children(password_prompt_overlay)
             .children(ssh_import_overlay)
+            .children(host_key_overlay)
             .children(palette_overlay)
             .children(cheat_sheet_overlay)
             // Last child, so its paint closure runs at the very end of the paint phase.

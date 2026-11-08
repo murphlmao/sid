@@ -33,7 +33,7 @@ use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
     Row, SchemaGraph, SchemaInfo, TableInfo,
 };
-use sid_secrets::{SecretId, SecretStore};
+use sid_secrets::SecretStore;
 use sid_store::{Attributed, DbConnection, Scope, Store, ViewFilters};
 use sid_ui::component::{
     Column, ColumnSort, ContextMenuExt, Editor, EditorState, InputEvent, PopupMenu, PopupMenuItem,
@@ -42,8 +42,9 @@ use sid_ui::component::{
 
 use crate::app::{AppState, can_demote, can_promote, delete_click_executes};
 use crate::db_registry::DbRegistry;
+use crate::secret_binding::{self, Bound};
 use crate::ui::db_conn_form::{
-    DbConnForm, DbConnFormEvent, Submission, add_guard, plan_secret, stage_secret,
+    DbConnForm, DbConnFormEvent, SecretPlan, Submission, add_guard, plan_secret, stage_secret,
 };
 use crate::ui::db_diagram::DiagramView;
 use crate::ui::session::ssh_runtime;
@@ -3316,29 +3317,52 @@ impl AppState {
             has_password_field,
             submission.secret.is_some(),
         );
+        // Secrets are bound to the layer + DSN they are saved for (security review H2,
+        // `crate::secret_binding`); every keyring call below goes through it.
+        let target = &submission.target;
+        let endpoint = secret_binding::db_endpoint(&submission.connection);
         let staged = stage_secret(
             self.secrets.as_ref(),
+            self.store.global(),
             &plan,
             &submission.connection.name,
             submission.secret.as_deref(),
+            target,
+            &endpoint,
         )?;
 
         let mut connection = submission.connection.clone();
         connection.secret_ref = staged.secret_ref.clone();
-        if let Err(e) = self.store.write_connection(&connection, &submission.target) {
+        if let Err(e) = self.store.write_connection(&connection, target) {
             // Roll back a freshly minted secret so a failed write never orphans one.
             if staged.minted
                 && let Some(id) = &staged.secret_ref
             {
-                let _ = self.secrets.delete(&SecretId::new(id.clone()));
+                let _ =
+                    secret_binding::forget(self.secrets.as_ref(), self.store.global(), target, id);
             }
             return Err(e.to_string());
         }
 
-        // Only after the write is durable is the superseded secret deleted.
         let mut post_warning = None;
+        // A kept secret follows an in-form DSN edit (edits target their origin layer).
+        if let (SecretPlan::Keep(id), Some(old)) = (&plan, &submission.old)
+            && let Err(e) = secret_binding::carry_over(
+                self.store.global(),
+                target,
+                id,
+                &secret_binding::db_endpoint(old),
+                &endpoint,
+            )
+        {
+            post_warning = Some(format!(
+                "saved, but the stored password will be asked for again: {e}"
+            ));
+        }
+        // Only after the write is durable is the superseded secret deleted.
         if let Some(old_id) = &staged.delete_after_write
-            && let Err(e) = self.secrets.delete(&SecretId::new(old_id.clone()))
+            && let Err(e) =
+                secret_binding::forget(self.secrets.as_ref(), self.store.global(), target, old_id)
         {
             post_warning = Some(format!("saved, but deleting the old secret failed: {e}"));
         }
@@ -3397,7 +3421,12 @@ impl AppState {
             Ok(_removed) => {
                 let mut post_warning = None;
                 if let Some(secret_id) = secret_ref
-                    && let Err(e) = self.secrets.delete(&SecretId::new(secret_id))
+                    && let Err(e) = secret_binding::forget(
+                        self.secrets.as_ref(),
+                        self.store.global(),
+                        origin,
+                        secret_id,
+                    )
                 {
                     post_warning = Some(format!(
                         "connection deleted, but deleting its secret failed: {e}"
@@ -3419,8 +3448,15 @@ impl AppState {
         let Scope::Workspace(ws_id) = origin else {
             return;
         };
+        let moving = self.connection_in(id, origin);
         match self.store.promote_connection(id, ws_id) {
-            Ok(()) => self.refresh_db(),
+            Ok(()) => {
+                let warning = self.relocate_connection_secret(moving, origin, &Scope::Global);
+                self.refresh_db();
+                if warning.is_some() {
+                    self.error = warning;
+                }
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
@@ -3432,11 +3468,50 @@ impl AppState {
         let Scope::Workspace(ws_id) = self.scope.clone() else {
             return;
         };
+        let moving = self.connection_in(id, &Scope::Global);
         match self.store.demote_connection(id, &ws_id) {
-            Ok(()) => self.refresh_db(),
+            Ok(()) => {
+                let to = Scope::Workspace(ws_id);
+                let warning = self.relocate_connection_secret(moving, &Scope::Global, &to);
+                self.refresh_db();
+                if warning.is_some() {
+                    self.error = warning;
+                }
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
         cx.notify();
+    }
+
+    /// The `id` record in `origin`'s layer, from the composed list.
+    fn connection_in(&self, id: &str, origin: &Scope) -> Option<DbConnection> {
+        self.db
+            .connections
+            .iter()
+            .find(|a| a.item.id == id && &a.origin == origin)
+            .map(|a| a.item.clone())
+    }
+
+    /// Move a promoted/demoted connection's verified secret with it — the mirror of
+    /// `AppState::relocate_host_secret` (see there). Returns a warning on failure.
+    fn relocate_connection_secret(
+        &self,
+        conn: Option<DbConnection>,
+        from: &Scope,
+        to: &Scope,
+    ) -> Option<String> {
+        let conn = conn?;
+        let secret_ref = conn.secret_ref.as_deref()?;
+        secret_binding::relocate(
+            self.secrets.as_ref(),
+            self.store.global(),
+            from,
+            to,
+            secret_ref,
+            &secret_binding::db_endpoint(&conn),
+        )
+        .err()
+        .map(|e| format!("moved, but its saved password stays behind and will be asked for: {e}"))
     }
 
     // ---- SQL editor + results (W5) -----------------------------------------------
@@ -3474,12 +3549,12 @@ impl AppState {
             }
             return;
         }
-        let Some(conn) = self
+        let Some((conn, origin)) = self
             .db
             .connections
             .iter()
             .find(|a| a.item.id == id)
-            .map(|a| a.item.clone())
+            .map(|a| (a.item.clone(), a.origin.clone()))
         else {
             self.db.status = QueryStatus::Err("selected connection no longer exists".into());
             cx.notify();
@@ -3494,8 +3569,9 @@ impl AppState {
             cx.notify();
             return;
         }
-        let secret_result = resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref());
-        if needs_password_prompt(conn.kind, &secret_result) {
+        let resolved =
+            resolve_db_secret(self.secrets.as_ref(), self.store.global(), &conn, &origin);
+        if needs_password_prompt(conn.kind, &resolved.secret) {
             let secret_ref = conn
                 .secret_ref
                 .clone()
@@ -3503,8 +3579,11 @@ impl AppState {
             let label: SharedString = conn.name.clone().into();
             self.open_password_prompt(
                 label,
+                resolved.withheld,
                 crate::app::PendingSecretPrompt::Db {
                     secret_ref,
+                    endpoint: secret_binding::db_endpoint(&conn),
+                    origin,
                     retry: DbRetry::RunQuery,
                 },
                 window,
@@ -3512,7 +3591,7 @@ impl AppState {
             );
             return;
         }
-        let secret = match secret_result {
+        let secret = match resolved.secret {
             Ok(s) => s,
             Err(e) => {
                 self.db.status = QueryStatus::Err(e);
@@ -3628,12 +3707,12 @@ impl AppState {
         let Some(id) = self.db.active_id.clone() else {
             return;
         };
-        let Some(conn) = self
+        let Some((conn, origin)) = self
             .db
             .connections
             .iter()
             .find(|a| a.item.id == id)
-            .map(|a| a.item.clone())
+            .map(|a| (a.item.clone(), a.origin.clone()))
         else {
             self.db.status = QueryStatus::Err("selected connection no longer exists".into());
             cx.notify();
@@ -3648,7 +3727,9 @@ impl AppState {
             cx.notify();
             return;
         }
-        let secret = match resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref()) {
+        let resolved =
+            resolve_db_secret(self.secrets.as_ref(), self.store.global(), &conn, &origin);
+        let secret = match resolved.secret {
             Ok(s) => s,
             Err(e) => {
                 self.db.status = QueryStatus::Err(e);
@@ -3819,17 +3900,18 @@ impl AppState {
             cx.notify();
             return;
         }
-        let Some(conn) = self
+        let Some((conn, origin)) = self
             .db
             .connections
             .iter()
             .find(|a| a.item.id == id)
-            .map(|a| a.item.clone())
+            .map(|a| (a.item.clone(), a.origin.clone()))
         else {
             return;
         };
-        let secret_result = resolve_db_secret(self.secrets.as_ref(), conn.secret_ref.as_deref());
-        if needs_password_prompt(conn.kind, &secret_result) {
+        let resolved =
+            resolve_db_secret(self.secrets.as_ref(), self.store.global(), &conn, &origin);
+        if needs_password_prompt(conn.kind, &resolved.secret) {
             let secret_ref = conn
                 .secret_ref
                 .clone()
@@ -3837,8 +3919,11 @@ impl AppState {
             let label: SharedString = conn.name.clone().into();
             self.open_password_prompt(
                 label,
+                resolved.withheld,
                 crate::app::PendingSecretPrompt::Db {
                     secret_ref,
+                    endpoint: secret_binding::db_endpoint(&conn),
+                    origin,
                     retry: DbRetry::RefreshSchema,
                 },
                 window,
@@ -3846,7 +3931,7 @@ impl AppState {
             );
             return;
         }
-        let secret = match secret_result {
+        let secret = match resolved.secret {
             Ok(s) => s,
             Err(e) => {
                 self.db.schema_error = Some(e);
@@ -4153,29 +4238,55 @@ async fn run_explain(
     }
 }
 
-/// Fetch the secret backing `secret_ref`, if any — the DB-connection mirror of
-/// `ssh_connect::resolve_secret`. No ref → `Ok(None)` (fine for SQLite/Redb, or a
-/// Postgres connection with no password). A *dangling* ref (recorded but missing from
-/// the keyring) is always an error: the connection was configured to need a secret we
-/// can no longer deliver.
+/// What a DB action has to work with for its connection's secret — the DB mirror of
+/// `ssh_connect::ResolvedSecret`.
+#[derive(Debug, PartialEq, Eq)]
+struct DbSecret {
+    /// `Ok(None)`: no ref (fine for SQLite/Redb, or a Postgres connection with no
+    /// password). `Ok(Some)`: the secret, verified for this connection. `Err`: a dangling
+    /// ref, a lookup failure — or a withheld secret (then `withheld` says why).
+    secret: Result<Option<String>, String>,
+    /// Set when a stored secret exists but was saved for a different DSN or layer, so it
+    /// was **not** returned (security review H2 — see `crate::secret_binding`).
+    withheld: Option<String>,
+}
+
+/// Fetch the secret backing `conn.secret_ref` for a connection living in `origin`,
+/// through its endpoint binding — the DB-connection mirror of
+/// `ssh_connect::resolve_secret`. A *dangling* ref (recorded but missing from the keyring)
+/// is always an error: the connection was configured to need a secret we can no longer
+/// deliver. A withheld one is an error too (so a SQLite/Redb connection reports it), and
+/// [`needs_password_prompt`] turns it into a re-prompt for Postgres.
 fn resolve_db_secret(
     secrets: &dyn SecretStore,
-    secret_ref: Option<&str>,
-) -> Result<Option<String>, String> {
-    let Some(secret_ref) = secret_ref else {
-        return Ok(None);
+    bindings: &sid_store::GlobalStore,
+    conn: &DbConnection,
+    origin: &Scope,
+) -> DbSecret {
+    let plain = |secret| DbSecret {
+        secret,
+        withheld: None,
     };
-    let id = SecretId::new(secret_ref.to_string());
-    let bytes = secrets
-        .get(&id)
-        .map_err(|e| format!("secret lookup for {secret_ref:?} failed: {e}"))?;
-    match bytes {
-        Some(b) => String::from_utf8(b)
-            .map(Some)
-            .map_err(|_| "stored secret is not valid UTF-8".to_string()),
-        None => Err(format!(
+    let Some(secret_ref) = conn.secret_ref.as_deref() else {
+        return plain(Ok(None));
+    };
+    let endpoint = secret_binding::db_endpoint(conn);
+    match secret_binding::fetch(secrets, bindings, origin, secret_ref, &endpoint) {
+        Ok(Bound::Found(b)) => plain(
+            String::from_utf8(b)
+                .map(Some)
+                .map_err(|_| "stored secret is not valid UTF-8".to_string()),
+        ),
+        // Withheld, or a workspace record with nothing under its own key (a bare legacy
+        // key is never read for it): either way the password is asked for again.
+        Ok(Bound::Withheld { notice } | Bound::Unsaved { notice }) => DbSecret {
+            secret: Err(notice.clone()),
+            withheld: Some(notice),
+        },
+        Ok(Bound::Missing) => plain(Err(format!(
             "dangling secret_ref {secret_ref:?} — no secret in the keyring"
-        )),
+        ))),
+        Err(e) => plain(Err(e)),
     }
 }
 
@@ -4703,30 +4814,94 @@ mod connection_dot_tests {
 
 #[cfg(test)]
 mod query_secret_tests {
-    use sid_secrets::MemorySecretStore;
+    use sid_secrets::{MemorySecretStore, SecretId};
 
     use super::*;
+
+    struct Bindings {
+        _dir: tempfile::TempDir,
+        store: sid_store::GlobalStore,
+    }
+
+    fn bindings() -> Bindings {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sid_store::GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        Bindings { _dir: dir, store }
+    }
+
+    fn conn(secret_ref: Option<&str>, dsn: &str) -> DbConnection {
+        DbConnection {
+            id: "a".into(),
+            dsn: dsn.into(),
+            secret_ref: secret_ref.map(str::to_string),
+            kind: DbKind::Postgres,
+            name: "a".into(),
+            folder: None,
+        }
+    }
+
+    const DSN: &str = "postgres://alice@db:5432/app";
 
     #[test]
     fn no_ref_resolves_to_no_secret() {
         let secrets = MemorySecretStore::default();
-        assert_eq!(resolve_db_secret(&secrets, None), Ok(None));
+        let b = bindings();
+        let got = resolve_db_secret(&secrets, &b.store, &conn(None, DSN), &Scope::Global);
+        assert_eq!(got.secret, Ok(None));
     }
 
     #[test]
     fn present_ref_resolves_to_its_bytes() {
         let secrets = MemorySecretStore::default();
+        let b = bindings();
         secrets.put(&SecretId::new("db-a"), b"hunter2").unwrap();
-        assert_eq!(
-            resolve_db_secret(&secrets, Some("db-a")),
-            Ok(Some("hunter2".to_string()))
-        );
+        let got = resolve_db_secret(&secrets, &b.store, &conn(Some("db-a"), DSN), &Scope::Global);
+        assert_eq!(got.secret, Ok(Some("hunter2".to_string())));
     }
 
     #[test]
     fn dangling_ref_is_an_error() {
         let secrets = MemorySecretStore::default();
-        assert!(resolve_db_secret(&secrets, Some("db-missing")).is_err());
+        let b = bindings();
+        let c = conn(Some("db-missing"), DSN);
+        assert!(
+            resolve_db_secret(&secrets, &b.store, &c, &Scope::Global)
+                .secret
+                .is_err()
+        );
+    }
+
+    /// H2 for databases: a committed DSN re-pointed at another server (or downgraded to
+    /// plaintext) after its password was saved gets the password withheld, and the
+    /// Postgres path prompts instead of sending it.
+    #[test]
+    fn a_dsn_re_pointed_after_its_password_was_saved_gets_it_withheld() {
+        let secrets = MemorySecretStore::default();
+        let b = bindings();
+        let origin = Scope::Workspace(sid_store::WorkspaceId("/w".into()));
+        let saved = conn(Some("db-a-1"), DSN);
+        secret_binding::save(
+            &secrets,
+            &b.store,
+            &origin,
+            "db-a-1",
+            &secret_binding::db_endpoint(&saved),
+            b"hunter2",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_db_secret(&secrets, &b.store, &saved, &origin).secret,
+            Ok(Some("hunter2".into()))
+        );
+        for dsn in [
+            "postgres://alice@attacker:5432/app",
+            "postgres://alice@db:5432/app?sslmode=disable",
+        ] {
+            let got = resolve_db_secret(&secrets, &b.store, &conn(Some("db-a-1"), dsn), &origin);
+            assert!(got.withheld.is_some(), "{dsn}");
+            assert!(got.secret.is_err(), "{dsn}: never handed back");
+            assert!(needs_password_prompt(DbKind::Postgres, &got.secret));
+        }
     }
 
     // ---- needs_password_prompt (round-D §A.4) ------------------------------------

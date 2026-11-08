@@ -14,7 +14,10 @@
 //! Save writes the buffer to a sibling temp file, copies the *original* file's
 //! permissions onto it (`fs::metadata` → `set_permissions`), then renames it over the
 //! original — so an `/etc` file comes back with the same mode bits it had before, not
-//! whatever `fs::write` would have defaulted to.
+//! whatever `fs::write` would have defaulted to. The temp file is created exclusively
+//! under a random name (`tempfile`), so a symlink planted at a predictable name cannot
+//! redirect the write. Only regular files are opened at all: a FIFO or device would
+//! block the open (or never end), so it is refused from its metadata first.
 //!
 //! # Root-owned files
 //!
@@ -26,9 +29,11 @@
 //! opens straight into the locked state, with the unlock as its only action.
 //!
 //! The secret's whole life is this modal. It is held in memory as a
-//! [`Passphrase`](sid_core::privfs::Passphrase) for as long as the editor is open — so a
-//! read and the saves that follow it cost one prompt, not one per operation — and it is
-//! dropped (and zeroized) when the modal closes. It is never persisted: not to the store,
+//! [`Passphrase`](sid_core::privfs::Passphrase) while the editor is open and in use — so
+//! a read and the saves that follow it cost one prompt, not one per operation — and it is
+//! dropped (and zeroized) when the modal closes, when the user leaves the System tab
+//! ([`AppState::lock_config_editor`], from `AppState::refocus_stable_target`), and after
+//! [`ELEVATION_IDLE`] without an edit or save. It is never persisted: not to the store,
 //! not to the keyring, not to the workspace config. That is the same shape as the
 //! connect-time SSH prompt in `ui::password_prompt`, which likewise hands a plaintext
 //! back exactly once and keeps no copy.
@@ -47,9 +52,10 @@
 //! dirty buffer asks nothing in v1 — edits are simply discarded.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, SharedString,
@@ -74,6 +80,12 @@ use sid_ui::{
 /// `session.rs`'s `PREVIEW_MAX_BYTES` (private to that module, so redeclared here
 /// rather than importing it).
 const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// How long an accepted sudo password survives without being used (an edit or a save)
+/// before the editor drops it and asks again. Long enough not to nag through a real edit
+/// session; short enough that walking away from an unlocked `/etc/sudoers` does not leave
+/// root one click away indefinitely.
+const ELEVATION_IDLE: Duration = Duration::from_secs(5 * 60);
 
 actions!(config_editor, [ConfigEditorCancel]);
 
@@ -126,10 +138,12 @@ pub(crate) struct ConfigEditorState {
     body: ConfigEditorBody,
     /// How this process can reach the file, probed once at open time.
     access: Access,
-    /// The accepted sudo password, held **only** while this modal is open — see the
-    /// module doc. Dropping the `ConfigEditorState` zeroizes it; nothing else ever holds
-    /// it, and it is never written anywhere.
+    /// The accepted sudo password, held **only** while this modal is open and in use —
+    /// see the module doc. Dropping it (or the `ConfigEditorState`) zeroizes it; nothing
+    /// else ever holds it, and it is never written anywhere.
     elevated: Option<Passphrase>,
+    /// The last unlock, edit or save — what [`ELEVATION_IDLE`] is measured from.
+    last_activity: Instant,
     /// The open unlock prompt, if any.
     unlock: Option<UnlockPrompt>,
     /// Set only by a failed save; cleared on the next edit or successful save.
@@ -142,6 +156,13 @@ impl ConfigEditorState {
     /// What the editor currently offers — derived, never stored.
     fn mode(&self) -> EditorMode {
         editor_mode(self.access, self.elevated.is_some())
+    }
+
+    /// How long the held password has left before [`ELEVATION_IDLE`] drops it; `None`
+    /// when none is held.
+    fn elevation_left(&self) -> Option<Duration> {
+        self.elevated.as_ref()?;
+        Some(idle_left(self.last_activity.elapsed()))
     }
 }
 
@@ -161,6 +182,7 @@ impl AppState {
             body: ConfigEditorBody::Loading,
             access: Access::ReadWrite,
             elevated: None,
+            last_activity: Instant::now(),
             unlock: None,
             save_error: None,
             saving: false,
@@ -170,6 +192,12 @@ impl AppState {
         cx.spawn_in(window, async move |this, cx| {
             let probe_path = path.clone();
             let handle = ssh_runtime().spawn(async move {
+                // A FIFO or device would block `probe`'s opens (or never reach EOF):
+                // refuse anything but a regular file before opening it at all. `Missing`
+                // is the verdict that offers no unlock — no password makes it editable.
+                if let Some(notice) = refuse_special_file(&probe_path) {
+                    return (Access::Missing, Some(Err(notice)));
+                }
                 let access = privileged_fs().probe(&probe_path).await;
                 // Only read what this process may actually read. A `Denied` file has
                 // nothing to show until an unlock succeeds, and attempting the read
@@ -314,15 +342,20 @@ impl AppState {
                 if editor.path != path {
                     return; // superseded by another file
                 }
-                if let Some(prompt) = editor.unlock.as_mut() {
-                    prompt.busy = false;
-                }
+                let Some(prompt) = editor.unlock.as_mut() else {
+                    // The prompt was dismissed while the attempt ran (Esc, or the user
+                    // left the System tab): that was a "stop", so keep nothing it read.
+                    return;
+                };
+                prompt.busy = false;
                 match outcome {
                     Ok(UnlockOutcome::Unlocked(text)) => {
                         close_unlock_prompt(editor, window, cx);
                         editor.elevated = Some(secret);
+                        editor.last_activity = Instant::now();
                         editor.save_error = None;
                         editor.body = build_editor_body(text, window, cx);
+                        state.arm_elevation_timeout(window, cx);
                     }
                     Ok(UnlockOutcome::Retry(msg)) => {
                         if let Some(prompt) = editor.unlock.as_mut() {
@@ -348,6 +381,52 @@ impl AppState {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Drop the held sudo password (and scrub a half-typed one) without closing the
+    /// editor: leaving the System tab, or [`ELEVATION_IDLE`] running out. The editor falls
+    /// back to its read-only/locked mode and offers the unlock again. A no-op when
+    /// nothing is held or open.
+    pub(crate) fn lock_config_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.systems.editor.as_mut() else {
+            return;
+        };
+        let had_prompt = editor.unlock.is_some();
+        close_unlock_prompt(editor, window, cx);
+        if editor.elevated.take().is_some() || had_prompt {
+            cx.notify();
+        }
+    }
+
+    /// Watch the held password and drop it once it has gone [`ELEVATION_IDLE`] without
+    /// use. Sleeps until the deadline, re-reads it (an edit or save in between moves it
+    /// out), and ends as soon as nothing is held.
+    fn arm_elevation_timeout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                let left = this.update(cx, |state, _cx| {
+                    state
+                        .systems
+                        .editor
+                        .as_ref()
+                        .and_then(ConfigEditorState::elevation_left)
+                });
+                match left {
+                    Ok(Some(left)) if !left.is_zero() => {
+                        cx.background_executor().timer(left).await;
+                    }
+                    Ok(Some(_)) => {
+                        let _ = this.update_in(cx, |state, window, cx| {
+                            state.lock_config_editor(window, cx);
+                        });
+                        return;
+                    }
+                    // Nothing held any more, or the app is gone.
+                    _ => return,
+                }
+            }
         })
         .detach();
     }
@@ -380,6 +459,7 @@ impl AppState {
             && let ConfigEditorBody::Editor { dirty, .. } = &mut editor.body
         {
             *dirty = true;
+            editor.last_activity = Instant::now();
         }
         cx.notify();
     }
@@ -436,6 +516,7 @@ impl AppState {
                 editor.saving = false;
                 match outcome {
                     Ok(SaveOutcome::Saved) => {
+                        editor.last_activity = Instant::now();
                         if let ConfigEditorBody::Editor { dirty, .. } = &mut editor.body {
                             *dirty = false;
                         }
@@ -942,7 +1023,8 @@ fn unlock_prompt_layer(
                         .child(e)
                 }))
                 .child(div().text_meta(theme).text_color(rgb(theme.muted)).child(
-                    "your sudo password — held in memory while this file is open, \
+                    "your sudo password — held in memory only while you edit this file \
+                             (forgotten after 5 idle minutes or when you leave System), \
                              never written to disk or the keyring",
                 ))
                 .child(
@@ -1087,10 +1169,39 @@ pub(crate) fn save_outcome(result: Result<(), PrivError>) -> SaveOutcome {
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
 
+/// The time a held password has left after being idle for `idle_for`.
+pub(crate) fn idle_left(idle_for: Duration) -> Duration {
+    ELEVATION_IDLE.saturating_sub(idle_for)
+}
+
+/// `Some(notice)` when `path` exists but is not a regular file (a FIFO, socket, device or
+/// directory) — the editor must not open it: opening a FIFO blocks until a writer shows
+/// up, and a device can stream forever. Follows symlinks, so a link to a regular file is
+/// fine. A path that cannot be `stat`ed is left to the probe, which reports it properly.
+fn refuse_special_file(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    (!meta.is_file()).then(|| {
+        format!(
+            "{} is not a regular file — only regular files can be edited here",
+            path.display()
+        )
+    })
+}
+
 /// Read `path` and gate it through [`gate_loaded_bytes`] — the I/O glue
-/// `open_config_editor` runs on `ssh_runtime()`, off the render thread.
+/// `open_config_editor` runs on `ssh_runtime()`, off the render thread. Reads at most one
+/// byte past the cap, so an oversized (or endless) file is rejected without being read
+/// whole.
 fn read_and_gate(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let fail = |e: io::Error| format!("{}: {e}", path.display());
+    if let Some(notice) = refuse_special_file(path) {
+        return Err(notice);
+    }
+    let file = fs::File::open(path).map_err(fail)?;
+    let mut bytes = Vec::new();
+    file.take(CONFIG_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(fail)?;
     gate_loaded_bytes(bytes)
 }
 
@@ -1104,34 +1215,30 @@ fn gate_loaded_bytes(bytes: Vec<u8>) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "binary file — cannot edit as text".into())
 }
 
-/// A private sibling path to write new content to before the atomic rename:
-/// `.<name>.sid-tmp-<pid>`, in the same directory as `path` — same filesystem, so the
-/// final rename is a metadata-only operation, never a cross-device copy.
-fn sibling_temp_path(path: &Path) -> PathBuf {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    dir.join(format!(".{name}.sid-tmp-{}", std::process::id()))
-}
-
 /// Save `contents` over `path`: write to a sibling temp file, copy `path`'s *current*
 /// permissions onto it, then rename it into place. The permission copy — not a blind
 /// overwrite — is the whole point: a `sudoedit`-managed `/etc` file must come back with
 /// the same mode bits it had before, whatever they were (including a read-only mode;
 /// this function itself does no writability gating — that's `probe_writable`'s job,
-/// enforced by the UI before a save is ever attempted). Cleans up the temp file if any
-/// step after it's written fails.
+/// enforced by the UI before a save is ever attempted).
+///
+/// The temp file is `.<name>.sid-tmp-<random>` in `path`'s own directory (same
+/// filesystem, so the final rename is metadata-only), created `O_EXCL` by `tempfile`:
+/// the old predictable `.<name>.sid-tmp-<pid>` + `fs::write` would follow a symlink
+/// planted at that name and write the buffer wherever it pointed. If any step fails the
+/// temp file is removed (`NamedTempFile`'s drop).
 fn save_preserving_permissions(path: &Path, contents: &str) -> io::Result<()> {
     let perms = fs::metadata(path)?.permissions();
-    let tmp = sibling_temp_path(path);
-    let result = (|| {
-        fs::write(&tmp, contents.as_bytes())?;
-        fs::set_permissions(&tmp, perms)?;
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}.sid-tmp-"))
+        .tempfile_in(dir)?;
+    tmp.write_all(contents.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    fs::set_permissions(tmp.path(), perms)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1401,11 +1508,93 @@ mod tests {
         assert_eq!(mode & 0o777, 0o444, "readonly mode must survive the save");
     }
 
+    /// The bug: the temp name was predictable (`.<name>.sid-tmp-<pid>`) and written with
+    /// `fs::write`, which follows symlinks — a link planted at that name sent the buffer
+    /// to wherever it pointed. The save must succeed without touching the link's target,
+    /// and leave no temp file behind.
+    #[cfg(unix)]
     #[test]
-    fn sibling_temp_path_is_hidden_and_same_directory() {
-        let tmp = sibling_temp_path(Path::new("/etc/hosts"));
-        assert_eq!(tmp.parent(), Some(Path::new("/etc")));
-        let name = tmp.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with(".hosts.sid-tmp-"));
+    fn a_save_never_writes_through_a_planted_temp_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.conf");
+        fs::write(&path, "old\n").unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+        let predictable = dir
+            .path()
+            .join(format!(".app.conf.sid-tmp-{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &predictable).unwrap();
+
+        save_preserving_permissions(&path, "new\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.contains("sid-tmp") && !predictable.ends_with(n))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_original_and_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone.conf");
+        assert!(save_preserving_permissions(&missing, "x").is_err());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn read_and_gate_stops_one_byte_past_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.conf");
+        fs::write(&big, vec![b'a'; CONFIG_MAX_BYTES as usize + 4096]).unwrap();
+        let err = read_and_gate(&big).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        let ok = dir.path().join("ok.conf");
+        fs::write(&ok, "PermitRootLogin no\n").unwrap();
+        assert_eq!(read_and_gate(&ok).unwrap(), "PermitRootLogin no\n");
+    }
+
+    /// A FIFO would block `open` until a writer appears — the editor's load task would
+    /// hang forever. It is refused from its metadata, before anything opens it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_being_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("mkfifo unavailable; skipping");
+            return;
+        }
+        let notice = refuse_special_file(&fifo).expect("a FIFO is not a regular file");
+        assert!(notice.contains("not a regular file"), "{notice}");
+        // And read_and_gate refuses it the same way (this would hang if it opened it).
+        assert!(
+            read_and_gate(&fifo)
+                .unwrap_err()
+                .contains("not a regular file")
+        );
+        assert!(
+            refuse_special_file(dir.path()).is_some(),
+            "a directory neither"
+        );
+        assert_eq!(refuse_special_file(&dir.path().join("absent")), None);
+    }
+
+    #[test]
+    fn an_idle_password_runs_out_at_the_timeout_and_never_goes_negative() {
+        assert_eq!(idle_left(Duration::ZERO), ELEVATION_IDLE);
+        assert_eq!(
+            idle_left(Duration::from_secs(60)),
+            ELEVATION_IDLE - Duration::from_secs(60)
+        );
+        assert_eq!(idle_left(ELEVATION_IDLE), Duration::ZERO);
+        assert_eq!(idle_left(ELEVATION_IDLE * 3), Duration::ZERO);
     }
 }
