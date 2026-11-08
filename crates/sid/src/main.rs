@@ -125,7 +125,11 @@ fn main() {
             // "sid (dev)" when launched from a Claude Code session (`CLAUDECODE` is set
             // there) — the hook murphy's Hyprland rule keys on to park dev launches on
             // workspace 4, while a plain terminal launch opens on the terminal's workspace.
-            let title = if std::env::var_os("CLAUDECODE").is_some() { "sid (dev)" } else { "sid" };
+            let title = if std::env::var_os("CLAUDECODE").is_some() {
+                "sid (dev)"
+            } else {
+                "sid"
+            };
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
