@@ -208,6 +208,18 @@ pub struct SystemsTabState {
 }
 
 impl SystemsTabState {
+    /// Sub-view names in segmented-control order, for the command palette.
+    pub(crate) fn view_labels() -> [&'static str; 2] {
+        SystemSubView::ALL.map(SystemSubView::label)
+    }
+
+    /// Switch to the sub-view at `ix` (palette navigation); out of range is ignored.
+    pub(crate) fn show_view(&mut self, ix: usize) {
+        if let Some(view) = SystemSubView::at(ix) {
+            self.sub_view = view;
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             provider: Arc::new(Mutex::new(SysinfoProvider::new())),
@@ -2167,7 +2179,10 @@ mod tests {
         let candidates = curated_candidates("/home/murphy");
         assert_eq!(candidates.len(), curated_templates().len());
         assert!(candidates.contains(&"/home/murphy/.ssh/config".to_string()));
+        #[cfg(target_os = "linux")] // LINUX_TEMPLATES only
         assert!(candidates.contains(&"/etc/fstab".to_string()));
+        #[cfg(unix)]
+        assert!(candidates.contains(&"/etc/hosts".to_string()));
         assert!(!candidates.iter().any(|p| p.starts_with('~')));
     }
 

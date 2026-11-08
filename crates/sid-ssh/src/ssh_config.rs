@@ -545,6 +545,14 @@ pub fn find_duplicate(
 mod tests {
     use super::*;
 
+    /// `~/.ssh/<name>` under the fake home, spelled as the host joins it.
+    fn home_ssh(name: &str) -> String {
+        PathBuf::from("/home/me")
+            .join(format!(".ssh/{name}"))
+            .display()
+            .to_string()
+    }
+
     fn env() -> ImportEnv {
         ImportEnv {
             home: PathBuf::from("/home/me"),
@@ -575,7 +583,7 @@ mod tests {
         assert_eq!(c.port, 2222);
         assert_eq!(
             c.identity_file.as_deref(),
-            Some("/home/me/.ssh/web_ed25519")
+            Some(home_ssh("web_ed25519").as_str())
         );
         assert_eq!(c.proxy_jump.as_deref(), Some("bastion"));
         assert_eq!(c.source, "config:1");
@@ -851,7 +859,7 @@ mod tests {
         assert_eq!(
             k.auth,
             AuthMethod::Key {
-                path: "/home/me/.ssh/id".into()
+                path: home_ssh("id")
             }
         );
         assert_eq!(k.user, "u");

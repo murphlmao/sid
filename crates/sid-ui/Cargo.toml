@@ -31,3 +31,6 @@ unicode-segmentation.workspace = true
 # UI interaction-test harness (gpui_kit::test::TestWindowExt). DEV-only; see
 # docs/design/2026-09-16-gpui-kit-evaluation.md. 0.9.x pins gpui-pre =0.3.11.
 gpui-kit = { version = "0.9.0", features = ["test-support"] }
+
+[lints]
+workspace = true
