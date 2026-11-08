@@ -94,7 +94,9 @@ Nerd Font Mono @ 14px with kitty cell geometry. Instrument metrics, not UI type.
 
 ## Controls and states
 - Heights: **Sm 32 · Md 36 (default) · Lg 44** for `Button`, `IconButton`, `TextInput`,
-  `SearchInput`, `SegmentedControl`. Minimum hit target 32. Radius `Md` (8).
+  `SearchInput`, `SegmentedControl`. Minimum hit target 32. Radius `Md` (8). The one
+  exception is **Xs 24**, for controls inside a `FillTable` cell (a 32px instrument row
+  has a 24px content box); `ConfirmButton` defaults to it.
 - Labels use the `Control` role (Md/Lg) or `Label` (Sm); primary actions are icon +
   label; icon-only buttons must carry a tooltip (type-enforced).
 - Hover: one step toward the light ink (`hover_of`). Pressed: one step toward the dark

@@ -150,6 +150,7 @@ A 4px grid. `Space::{X1=4, X2=8, X3=12, X4=16, X5=20, X6=24, X8=32}`. Semantic t
 
 | Thing | v1 | **v2** |
 |---|---|---|
+| Button / IconButton — Xs (new: inside a FillTable cell only) | – | **24** |
 | Button / IconButton / field — Sm | 24 | **32** |
 | — Md (default) | 32 | **36** |
 | — Lg (new: page primary, empty-state action) | – | **44** |
@@ -159,7 +160,7 @@ A 4px grid. `Space::{X1=4, X2=8, X3=12, X4=16, X5=20, X6=24, X8=32}`. Semantic t
 | Panel header strip | 40 | **52** |
 | Table row (FillTable, library) | 32 | 32 (instrument — unchanged) |
 | Row padding | 12 / 8 | **12 / 6** (+ min height) |
-| Minimum hit target | 24 | **32** |
+| Minimum hit target | 24 | **32** (except Xs, in-table) |
 
 ### 2.5 Radius (`metrics::Radius`)
 
@@ -336,7 +337,10 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
    tooltips, placeholders, status words) to sentence case. Delete any
    `.to_uppercase()` and hard-coded UPPERCASE (`"FILES"`).
 7. Row lists → `Row` (44px). Sidebars of rows → `Row::compact()` (36px).
-8. Wrap a tab's content root in `motion::enter(("tab-content", tab_ix), Enter::Fade,
+8. Anything inside a `FillTable` cell is `ButtonSize::Xs` (24px): a table row is a
+   32px instrument row with 4px cell padding, so its content box is 24px and a 32px
+   control pokes out of it. `ConfirmButton` (kill/stop) already defaults to Xs.
+9. Wrap a tab's content root in `motion::enter(("tab-content", tab_ix), Enter::Fade,
    BASE, cx, el)` so switching tabs settles instead of snapping.
 
 ### 4.1 SSH / SFTP — `ssh_home.rs`, `session.rs`, `host_form.rs`, `password_prompt.rs`
@@ -391,6 +395,8 @@ the sizes, radii, shadows and sentence case; what is left is what only the scree
   panel's actions as a Badge.
 - Errors L1280 / L2202 → `Toast::danger` with title `Query failed` / `Couldn't load
   the schema`, raw error as message, Retry action.
+- Results-grid cell button (`db-cell-view`, L934, `.small()`) → `.size(ButtonSize::Xs)`
+  — it sits in a 32px table row.
 - `run` (L1609) stays the one primary; `explain` secondary; both Md in the query header.
 - `db_conn_form.rs`: the kind picker stays a `SegmentedControl`; radio marks
   (L654–661) → `Radio`.

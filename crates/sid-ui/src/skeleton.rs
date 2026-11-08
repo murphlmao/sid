@@ -108,9 +108,10 @@ const ROW_WIDTHS: [f32; 4] = [0.42, 0.58, 0.36, 0.5];
 impl RenderOnce for Skeleton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme::active(cx).clone();
-        // One step above `selection`: a skeleton sits on cards, and the bare row-fill
-        // token pulsing down to 45% was nearly invisible on the dark palettes.
-        let fill = crate::bridge::hover_of(&theme, theme.selection);
+        // `selection` nudged toward `muted`: one step *off* the card in whichever
+        // direction the palette reads (lighter on dark, darker on light). The bare row-fill
+        // token pulsing down to 45% all but vanished on both.
+        let fill = crate::bridge::mix(theme.selection, theme.muted, 0.18);
         let body: AnyElement = match self.shape {
             Shape::Line(fraction) => bar(fill)
                 .w(relative(fraction.unwrap_or(1.)))
