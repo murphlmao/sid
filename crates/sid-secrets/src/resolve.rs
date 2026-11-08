@@ -79,8 +79,18 @@ pub struct Resolved {
     pub recommendation: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 const KEYRING_RECOMMENDATION: &str = "install a Secret Service provider (e.g. `sudo pacman -S gnome-keyring`) so secrets \
      persist across restarts";
+#[cfg(target_os = "macos")]
+const KEYRING_RECOMMENDATION: &str = "unlock the login Keychain (Keychain Access) and allow sid to use it so secrets \
+     persist across restarts";
+#[cfg(target_os = "windows")]
+const KEYRING_RECOMMENDATION: &str = "make sure Windows Credential Manager is available to this user session so \
+     secrets persist across restarts";
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const KEYRING_RECOMMENDATION: &str =
+    "no OS keyring backend exists for this platform; secrets are kept in memory only";
 
 /// Select the effective secret backend and open it.
 ///

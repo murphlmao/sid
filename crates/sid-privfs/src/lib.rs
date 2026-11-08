@@ -72,11 +72,31 @@ impl PrivilegedFs for SudoPrivilegedFs {
         max_bytes: u64,
         secret: &Passphrase,
     ) -> Result<Vec<u8>, PrivError> {
+        if let Some(e) = platform_unsupported() {
+            return Err(e);
+        }
         sudo::read(guard_path(path)?, max_bytes, secret).await
     }
 
     async fn write(&self, path: &Path, bytes: &[u8], secret: &Passphrase) -> Result<(), PrivError> {
+        if let Some(e) = platform_unsupported() {
+            return Err(e);
+        }
         sudo::write(guard_path(path)?, bytes, secret).await
+    }
+}
+
+/// `sudo` and the coreutils it runs exist on Linux and macOS. On any other platform
+/// (Windows) elevation is reported as unavailable — a terminal state, so the password
+/// prompt tears down instead of asking for a secret sid could not honour.
+fn platform_unsupported() -> Option<PrivError> {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        None
+    } else {
+        Some(PrivError::Unavailable(format!(
+            "privileged file editing is not supported on {}",
+            std::env::consts::OS
+        )))
     }
 }
 

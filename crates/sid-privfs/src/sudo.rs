@@ -99,7 +99,8 @@
 //! elevates to a non-root user. Filling first works for every identity, and the mode is
 //! still in place before the rename, so the destination is never briefly wrong.
 //!
-//! GNU coreutils is assumed (CLAUDE.md: Wayland/Linux now). A symlinked destination is
+//! The steps above are the GNU spelling (Linux); macOS's BSD tools lack `-T` and the
+//! attribute-only copy, so `write_plan` swaps in an equivalent BSD sequence. A symlinked destination is
 //! replaced by a regular file, matching what the unprivileged save path already does —
 //! one behaviour, not two.
 
@@ -344,6 +345,64 @@ async fn read_with(
     Ok(bytes)
 }
 
+/// Which coreutils dialect the elevated `cp`/`mv` speak. GNU's `-T`, `--attributes-only`
+/// and `--preserve=` do not exist on macOS's BSD tools, so the three-step atomic replace
+/// has a BSD spelling too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flavor {
+    Gnu,
+    Bsd,
+}
+
+impl Flavor {
+    pub(crate) const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Flavor::Bsd
+        } else {
+            Flavor::Gnu
+        }
+    }
+}
+
+/// The ordered elevated calls that replace `dst`'s content with `staging`'s, via the
+/// sibling `tmp`. GNU: fill / stamp attributes / commit (see the module doc). BSD has no
+/// attribute-only copy, so it inverts the first two: `cp -p dst tmp` clones data *and*
+/// mode/owner, then `dd` overwrites the data in place (the inode, hence its attributes,
+/// stay), then `mv -f` commits. BSD `mv` has no `-T`; `tmp` is a fresh unguessable
+/// sibling and `dst` was already vetted as a regular file by the caller's probe.
+fn write_plan(
+    flavor: Flavor,
+    staging: &Path,
+    tmp: &Path,
+    dst: &Path,
+    secret: &Passphrase,
+) -> Vec<SudoInvocation> {
+    match flavor {
+        Flavor::Gnu => vec![
+            invocation("cp", FILL_FLAGS, &[staging, tmp], secret),
+            invocation("cp", STAMP_FLAGS, &[dst, tmp], secret),
+            invocation("mv", COMMIT_FLAGS, &[tmp, dst], secret),
+        ],
+        Flavor::Bsd => {
+            let mut dd = sudo_flags();
+            dd.push(OsString::from("dd"));
+            for (key, path) in [("if=", staging), ("of=", tmp)] {
+                let mut operand = OsString::from(key);
+                operand.push(path.as_os_str());
+                dd.push(operand);
+            }
+            vec![
+                invocation("cp", &["-p"], &[dst, tmp], secret),
+                SudoInvocation {
+                    args: dd,
+                    stdin: stdin_payload(secret),
+                },
+                invocation("mv", &["-f"], &[tmp, dst], secret),
+            ]
+        }
+    }
+}
+
 /// Replace `path`'s content with `bytes` with elevated privileges — atomic, mode and
 /// ownership preserved, no shell involved. See the module doc for the three steps and
 /// what each one buys.
@@ -366,33 +425,13 @@ async fn write_with(
     let tmp = sibling_temp_path(path);
     let fallback = format!("writing {} as root", path.display());
 
-    let step = async |flags: &[&str], command: &str, operands: [&Path; 2]| {
-        run(
-            program,
-            invocation(command, flags, &operands, secret),
-            &fallback,
-            timeout,
-        )
-        .await
-        .map(|_stdout| ())
-    };
-
-    // A — the new content, into a temp this copy creates, so it is writable whatever mode
-    // the destination carries. A `cp` that fails partway still leaves the temp behind, so
-    // even this first step's failure has to be swept up.
-    if let Err(e) = step(FILL_FLAGS, "cp", [staging.path(), &tmp]).await {
-        discard(program, &tmp, secret, timeout, &e).await;
-        return Err(e);
-    }
-    // B — the destination's own attributes, onto the temp, data untouched.
-    if let Err(e) = step(STAMP_FLAGS, "cp", [path, &tmp]).await {
-        discard(program, &tmp, secret, timeout, &e).await;
-        return Err(e);
-    }
-    // C — publish, in one rename.
-    if let Err(e) = step(COMMIT_FLAGS, "mv", [&tmp, path]).await {
-        discard(program, &tmp, secret, timeout, &e).await;
-        return Err(e);
+    // The steps depend on which coreutils dialect `sudo` will run (GNU vs BSD): see
+    // [`write_plan`]. Each failure sweeps up the temp, whichever step it was.
+    for inv in write_plan(Flavor::current(), staging.path(), &tmp, path, secret) {
+        if let Err(e) = run(program, inv, &fallback, timeout).await {
+            discard(program, &tmp, secret, timeout, &e).await;
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -507,6 +546,54 @@ mod tests {
             .position(|a| a == "--")
             .expect("sudo's own options must be terminated");
         args[end_of_flags + 1].clone()
+    }
+
+    #[test]
+    fn bsd_plan_uses_no_gnu_only_flags_and_no_shell() {
+        let secret = secret();
+        let plan = write_plan(
+            Flavor::Bsd,
+            Path::new("/tmp/stage"),
+            Path::new("/etc/.f.sid-privfs-tmp.1"),
+            Path::new("/etc/f"),
+            &secret,
+        );
+        let argv: Vec<Vec<String>> = plan.iter().map(args_of).collect();
+        assert_eq!(argv.len(), 3);
+        for call in &argv {
+            for a in call {
+                assert!(!a.starts_with("--preserve") && !a.starts_with("--no-preserve"));
+                assert_ne!(a, "-T");
+                assert_ne!(a, "--attributes-only");
+                assert!(!a.contains(SECRET));
+            }
+        }
+        assert_eq!(
+            argv[0][5..],
+            ["cp", "-p", "--", "/etc/f", "/etc/.f.sid-privfs-tmp.1"]
+        );
+        assert_eq!(
+            argv[1][5..],
+            ["dd", "if=/tmp/stage", "of=/etc/.f.sid-privfs-tmp.1"]
+        );
+        assert_eq!(
+            argv[2][5..],
+            ["mv", "-f", "--", "/etc/.f.sid-privfs-tmp.1", "/etc/f"]
+        );
+    }
+
+    #[test]
+    fn gnu_plan_is_fill_stamp_commit() {
+        let secret = secret();
+        let plan = write_plan(
+            Flavor::Gnu,
+            Path::new("/tmp/stage"),
+            Path::new("/etc/.t"),
+            Path::new("/etc/f"),
+            &secret,
+        );
+        let cmds: Vec<String> = plan.iter().map(|i| args_of(i)[5].clone()).collect();
+        assert_eq!(cmds, ["cp", "cp", "mv"]);
     }
 
     /// Interpreters. Elevating any of these hands root an entire language, so the set of

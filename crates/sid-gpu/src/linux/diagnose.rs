@@ -9,9 +9,9 @@ use sid_core::gpu::{Diagnosis, FailureCause};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::LinuxGpuPreflight;
-use crate::icd::IcdManifest;
-use crate::probe;
+use crate::linux::LinuxGpuPreflight;
+use crate::linux::icd::IcdManifest;
+use crate::linux::probe;
 
 /// What the ladder observed, reduced to the shapes the classifier reads.
 ///
@@ -590,7 +590,7 @@ fn distro_hint(sys_root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::icd;
+    use crate::linux::icd;
 
     /// A preflight over a fake root; `nvidia_smi_cmd` defaults to a command that
     /// can't match arm 2 (exits 0, no output).
@@ -599,7 +599,7 @@ mod tests {
             state_dir: state.to_path_buf(),
             probe_cmd: vec!["/bin/true".into()],
             timeout: Duration::from_secs(1),
-            ladder_budget: crate::ladder::LADDER_BUDGET,
+            ladder_budget: crate::linux::ladder::LADDER_BUDGET,
             sys_root: sys_root.to_path_buf(),
             icd_dirs: Some(vec![]),
             nvidia_smi_cmd: vec!["/bin/true".into()],

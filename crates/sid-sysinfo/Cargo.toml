@@ -10,6 +10,9 @@ repository.workspace = true
 sid-core.workspace = true
 sysinfo.workspace = true
 netstat2.workspace = true
+
+# Signal delivery is POSIX `kill(2)`; non-unix targets terminate through `sysinfo`.
+[target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
 [dev-dependencies]

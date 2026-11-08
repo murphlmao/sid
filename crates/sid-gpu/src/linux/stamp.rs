@@ -95,7 +95,7 @@ fn save_via_temp(tmp: &Path, final_path: &Path, bytes: &[u8]) -> std::io::Result
 /// a *corrupt cached verdict*, which is worse than no cache. Shares the probe
 /// captures' uniqueness primitive deliberately: one hazard, one answer.
 fn tmp_path(path: &Path) -> std::path::PathBuf {
-    path.with_extension(format!("toml.{}.tmp", crate::probe::unique_token()))
+    path.with_extension(format!("toml.{}.tmp", crate::linux::probe::unique_token()))
 }
 
 #[cfg(test)]

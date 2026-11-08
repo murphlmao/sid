@@ -8,7 +8,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
-use crate::icd::IcdManifest;
+use crate::linux::icd::IcdManifest;
 
 /// Kernel modules whose version files participate in the fingerprint. Not all
 /// drivers expose `/sys/module/<name>/version` (i915 doesn't) — absent files are
@@ -121,7 +121,7 @@ pub(crate) fn fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::icd;
+    use crate::linux::icd;
 
     fn scan_of(dir: &Path) -> Vec<IcdManifest> {
         icd::scan(Path::new("/nonexistent"), Some(&[dir.to_path_buf()]))

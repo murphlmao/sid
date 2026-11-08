@@ -113,7 +113,7 @@ zeroize = "1"
 # feature set is copied verbatim from gpui-component's own workspace so sid and the
 # widget library agree on one build of the renderer.
 gpui = { package = "gpui-pre", version = "0.3" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "runtime_shaders"] }
 gpui-component = { version = "0.6.1", features = ["tree-sitter-languages"] }
 # The unstyled half of gpui-component, which the 0.6 split carved out. Already in the
 # lock as gpui-component's own dependency; named here for the one API the styled crate
