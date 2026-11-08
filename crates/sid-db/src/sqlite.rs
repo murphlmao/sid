@@ -157,8 +157,11 @@ impl DbClient for SqliteClient {
                 // with no `;` can't reach it.
                 let stripped = crate::lexer::strip_trailing_trivia(&sql);
                 let wrapped =
-                    format!("SELECT * FROM ( {stripped}\n) LIMIT {page_size} OFFSET {offset}");
-                let mut stmt = guard.prepare(&wrapped).map_err(map_rusqlite_error)?;
+                    format!("{SQLITE_WRAP_PREFIX}{stripped}\n) LIMIT {page_size} OFFSET {offset}");
+                let user_len = sql.len();
+                let mut stmt = guard.prepare(&wrapped).map_err(|e| {
+                    map_wrapped_rusqlite_error(e, SQLITE_WRAP_PREFIX.len(), user_len)
+                })?;
                 let columns: Vec<Column> = stmt
                     .columns()
                     .map(|c| Column {
@@ -223,12 +226,16 @@ impl DbClient for SqliteClient {
                 // trailing `;` or `--` comment between the keyword and the
                 // statement it modifies.
                 let stripped = crate::lexer::strip_trailing_trivia(&sql);
-                let statement = format!("EXPLAIN QUERY PLAN {stripped}");
+                const EXPLAIN_PREFIX: &str = "EXPLAIN QUERY PLAN ";
+                let statement = format!("{EXPLAIN_PREFIX}{stripped}");
+                let user_len = sql.len();
                 // `prepare` compiles exactly one statement and returns
                 // `Error::MultipleStatement` on a trailing second one, so an
                 // EXPLAIN cannot be used to smuggle a mutation past the plan — the
                 // statement text comes straight from the editor.
-                let mut stmt = guard.prepare(&statement).map_err(map_rusqlite_error)?;
+                let mut stmt = guard
+                    .prepare(&statement)
+                    .map_err(|e| map_wrapped_rusqlite_error(e, EXPLAIN_PREFIX.len(), user_len))?;
                 // Every plan column is reported as text: they are computed columns
                 // with no declared type, and a plan is read, not calculated with.
                 let columns: Vec<Column> = stmt
@@ -451,6 +458,33 @@ fn table_primary_key(guard: &rusqlite::Connection, table: &str) -> Result<Vec<St
     Ok(rows.into_iter().map(|(_, name)| name).collect())
 }
 
+/// The `SELECT * FROM ( ` that `query_paged` puts in front of the user's statement.
+const SQLITE_WRAP_PREFIX: &str = "SELECT * FROM ( ";
+
+/// Map a prepare error on the pagination-wrapped statement back to the USER's text.
+///
+/// rusqlite's `Display` for a located error is `"<msg> in <whole sql> at offset N"`,
+/// which would show the user our `SELECT * FROM ( ... ) LIMIT .. OFFSET ..` wrapper.
+/// We keep only the engine's message, and shift the offset by the wrapper prefix so it
+/// points into what the user typed (clamped to its length).
+fn map_wrapped_rusqlite_error(e: rusqlite::Error, prefix_len: usize, user_len: usize) -> DbError {
+    match e {
+        rusqlite::Error::SqlInputError { msg, offset, .. } => {
+            if msg.contains("syntax error") || msg.starts_with("near ") {
+                DbError::Syntax {
+                    offset: (offset.max(0) as usize)
+                        .saturating_sub(prefix_len)
+                        .min(user_len),
+                    message: msg,
+                }
+            } else {
+                DbError::Query(msg)
+            }
+        }
+        e => map_rusqlite_error(e),
+    }
+}
+
 fn map_rusqlite_error(e: rusqlite::Error) -> DbError {
     match e {
         rusqlite::Error::SqliteFailure(_, Some(ref msg)) if msg.starts_with("syntax") => {
@@ -569,6 +603,39 @@ mod tests {
             .await
             .expect("open existing after create");
         assert_eq!(reopened.kind(), DbKind::Sqlite);
+    }
+
+    #[tokio::test]
+    async fn bad_sql_error_names_the_users_text_not_the_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.sqlite");
+        let client = SqliteClient::factory()
+            .open(OpenParams {
+                kind: DbKind::Sqlite,
+                dsn: path.to_string_lossy().into_owned(),
+                password: None,
+                sqlite_mode: Some(SqliteMode::CreateNew),
+            })
+            .await
+            .expect("create new");
+        let sql = "selct nonsense from";
+        let err = client.query_paged(sql, None, 100).await.unwrap_err();
+        match err {
+            DbError::Syntax { offset, message } => {
+                assert!(!message.contains("LIMIT"), "wrapper leaked: {message}");
+                assert!(
+                    !message.contains("SELECT * FROM ("),
+                    "wrapper leaked: {message}"
+                );
+                assert!(message.contains("syntax error"), "{message}");
+                assert_eq!(
+                    offset,
+                    sql.find("from").unwrap(),
+                    "offset points into user text"
+                );
+            }
+            other => panic!("expected Syntax, got {other:?}"),
+        }
     }
 
     #[tokio::test]

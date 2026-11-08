@@ -204,7 +204,7 @@ impl DbConnForm {
         secrets_degraded: bool,
     ) -> Self {
         let name = cx.new(|cx| {
-            let mut input = InputState::new(window, cx).placeholder("name — a short label");
+            let mut input = InputState::new(window, cx).placeholder("A short label");
             if let Some(v) = name_prefill {
                 input.set_value(v.to_string(), window, cx);
             }
@@ -247,11 +247,9 @@ impl DbConnForm {
                     .and_then(|p| p.get(&field.key).cloned())
                     .or_else(|| field.default.clone());
                 let widget = match &field.kind {
-                    ConnFieldKind::Password => FieldWidget::Text(cx.new(|cx| {
-                        InputState::new(window, cx)
-                            .masked(true)
-                            .placeholder(field.label.clone())
-                    })),
+                    ConnFieldKind::Password => FieldWidget::Text(
+                        cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("")),
+                    ),
                     ConnFieldKind::Choice { options } => {
                         let selected = value
                             .as_deref()
@@ -269,8 +267,7 @@ impl DbConnForm {
                     }
                     ConnFieldKind::Text | ConnFieldKind::Port | ConnFieldKind::Path => {
                         FieldWidget::Text(cx.new(|cx| {
-                            let mut input =
-                                InputState::new(window, cx).placeholder(field.label.clone());
+                            let mut input = InputState::new(window, cx).placeholder("");
                             if let Some(v) = &value {
                                 input.set_value(v.clone(), window, cx);
                             }
@@ -441,7 +438,7 @@ impl DbConnForm {
         let theme = theme::active(cx).clone();
         v_flex()
             .gap_1()
-            .child(Self::field_label("engine — locked while editing", cx))
+            .child(Self::field_label("Engine (locked while editing)", cx))
             .child(
                 div()
                     .px_2()
@@ -470,17 +467,16 @@ impl DbConnForm {
         let by_index = kinds.clone();
         v_flex()
             .gap_1()
-            .child(Self::field_label("engine", cx))
+            .child(Self::field_label("Engine", cx))
             // The `h_flex` wrapper keeps the control hugging its chips — see
             // `host_form::auth_selector` for the cross-axis stretch it prevents.
             .child(
                 h_flex().child(
                     SegmentedControl::new("db-form-kind")
                         .segments(kinds.iter().map(|k| k.label()))
-                        // Shares `name`'s index and renders after it, so gpui orders it
-                        // there by paint order. Left at the default 0 the strip would
-                        // sort ahead of every field in the form.
-                        .tab_index(NAME_TAB_INDEX)
+                        // First Tab stop: it renders above `name`, and the fields below
+                        // depend on it.
+                        .tab_index(ENGINE_TAB_INDEX)
                         .selected(selected)
                         .on_select(cx.listener(move |this, ev: &SegmentSelect, window, cx| {
                             if let Some(&kind) = by_index.get(ev.index) {
@@ -497,7 +493,7 @@ impl DbConnForm {
     /// unaffected, same as before this change.
     fn field_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let (field, widget) = &self.fields[ix];
-        let label = field.label.clone();
+        let label = sentence_case(&field.label);
         let password_hint =
             (matches!(field.kind, ConnFieldKind::Password) && self.secrets_degraded).then_some(
                 "no OS keyring — passwords last this session only; you'll be asked at connect",
@@ -591,9 +587,9 @@ impl DbConnForm {
         };
 
         let label: SharedString = if locked {
-            "save to — fixed while editing (use ⤒/⤓ to move a connection)".into()
+            "Save to (fixed while editing, use the move actions to change it)".into()
         } else {
-            "save to:".into()
+            "Save to".into()
         };
 
         let workspace_note =
@@ -635,7 +631,7 @@ fn kind_index(kinds: &[DbKind], kind: DbKind) -> usize {
 /// workspace_option_note`, which this duplicates on purpose (see this file's own
 /// "kept local so `ui` stays self-contained" rule on `radio_mark` below).
 fn workspace_option_note(ws_active: bool) -> Option<&'static str> {
-    (!ws_active).then_some("— no workspace focused")
+    (!ws_active).then_some("— focus a workspace in the top bar to enable")
 }
 
 impl EventEmitter<DbConnFormEvent> for DbConnForm {}
@@ -671,11 +667,11 @@ impl Render for DbConnForm {
                     .on_dismiss(cx.listener(|_this, _ev: &ClickEvent, _window, cx| {
                         cx.emit(DbConnFormEvent::Cancel);
                     }))
-                    .child(self.field("name", &self.name, NAME_TAB_INDEX, cx))
                     .child(match &self.mode {
                         FormMode::Add => self.kind_selector(cx).into_any_element(),
                         FormMode::Edit { .. } => self.locked_kind(cx).into_any_element(),
                     })
+                    .child(self.field("Name", &self.name, NAME_TAB_INDEX, cx))
                     .children(field_rows)
                     .child(self.save_to_selector(cx))
                     .when_some(self.error.clone(), |modal, err| {
@@ -757,7 +753,10 @@ pub(crate) fn add_guard(
 
 /// The `name` field's place in the tab order, shared with the `engine` selector that
 /// renders directly under it (gpui sorts equal indices by paint order).
-const NAME_TAB_INDEX: isize = 1;
+const NAME_TAB_INDEX: isize = 2;
+/// The engine strip comes first (the fields below depend on it), so it is the first
+/// Tab stop, ahead of the name.
+const ENGINE_TAB_INDEX: isize = 1;
 
 /// Where the descriptor field at `ix` sits: straight after `name`, in render order and
 /// regardless of widget kind, so a `Choice`/`Bool` field between two text fields does not
@@ -775,10 +774,21 @@ fn save_to_tab_index(fields: usize) -> isize {
 /// Which `save to:` option an add form preselects. Identical logic to the host form's
 /// `preselect` (duplicated per this module's own self-contained convention).
 pub(crate) fn preselect(default_scope: DefaultScope, workspace_active: bool) -> Option<SaveTarget> {
-    match default_scope {
-        DefaultScope::Ask => None,
-        DefaultScope::Global => Some(SaveTarget::Global),
-        DefaultScope::Workspace => workspace_active.then_some(SaveTarget::Workspace),
+    // Always a selection: an empty radio group reads as broken. `Ask` and an
+    // unavailable workspace fall back to the focused workspace, else global.
+    Some(match default_scope {
+        DefaultScope::Global => SaveTarget::Global,
+        DefaultScope::Workspace | DefaultScope::Ask if workspace_active => SaveTarget::Workspace,
+        DefaultScope::Workspace | DefaultScope::Ask => SaveTarget::Global,
+    })
+}
+
+/// Upper-case the first letter ("host" -> "Host"); descriptor labels are lowercase.
+fn sentence_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
     }
 }
 
@@ -901,7 +911,10 @@ mod tests {
 
     #[test]
     fn no_focused_workspace_explains_why_its_disabled() {
-        assert_eq!(workspace_option_note(false), Some("— no workspace focused"));
+        assert_eq!(
+            workspace_option_note(false),
+            Some("— focus a workspace in the top bar to enable")
+        );
     }
 
     #[test]
@@ -923,8 +936,8 @@ mod tests {
 
     #[test]
     fn a_descriptor_field_never_collides_with_the_name_field() {
-        // The engine selector shares `name`'s index deliberately (paint order separates
-        // them); a descriptor field must not, or the form's first two stops become three
+        // The engine selector owns index 1, ahead of the name (a descriptor field must not collide with either
+        // of them), or the form's first stops become three
         // in an order nothing decided.
         for ix in [0usize, 1, 7] {
             assert!(descriptor_tab_index(ix) > NAME_TAB_INDEX);
