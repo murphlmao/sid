@@ -29,6 +29,10 @@
 use crate::{SecretError, SecretId, SecretStore};
 
 /// Service name used as the keyring "service" label.
+///
+/// One flat service for every secret. Per-workspace separation lives in the *key*
+/// ([`SecretId::for_workspace`]), not in a per-workspace service, so it behaves the
+/// same on every backend this file compiles for and on the memory fallback.
 const SERVICE: &str = "sid";
 
 /// Id used for the startup durability probe canary. Never a real secret.
