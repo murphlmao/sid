@@ -109,14 +109,15 @@ serde = { version = "1", features = ["derive"] }
 # `sid-secrets`' dependency-less encrypted-file vault backend (a peer to the OS
 # keyring): argon2id KDF + XChaCha20-Poly1305 AEAD + `Zeroizing` to wipe the derived
 # key on drop. All pure-Rust RustCrypto crates — no system library dependency, which is
-# the whole point of this backend. `argon2` is pinned to the exact 0.6.0-rc.8 already
-# resolved transitively via `ssh-key` (russh's key-parsing dep), so this adds no new
-# major version to the lock; `getrandom` likewise reuses the already-resolved 0.3.x line
-# (transitive from several crates) for salt/nonce generation rather than pulling in a
-# full `rand` dependency.
-argon2 = { version = "0.6.0-rc.8", default-features = false, features = ["alloc"] }
+# the whole point of this backend. `argon2` 0.6 is the first stable release of the line
+# `ssh-key` (russh's key-parsing dep) asks for with `^0.6.0-rc.8`, so both resolve to one
+# argon2 in the lock; `getrandom` 0.4 likewise reuses a line already resolved
+# transitively, for salt/nonce generation rather than pulling in a full `rand`
+# dependency. The KDF parameters and the sealed-file format are sid's own (see
+# `sid-secrets/src/file.rs`) and do not move with these versions.
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 chacha20poly1305 = "0.11"
-getrandom = "0.3"
+getrandom = "0.4"
 zeroize = "1"
 
 # Rendering surface. Single-sourced here (rather than in each frontend crate) so the
