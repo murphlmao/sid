@@ -54,9 +54,9 @@ russh-sftp = "3"
 # API; same zbus 5 line already in the lock via sid-secrets.
 zbus = { version = "5.16", default-features = false, features = ["async-io", "blocking-api"] }
 
-# Terminal emulation — vt100 0.16 parses the SSH shell byte stream into a
+# Terminal emulation — vt100 0.18 parses the SSH shell byte stream into a
 # styled cell grid that the GPUI terminal view (Plan 3C) renders 1:1.
-vt100 = "0.16"
+vt100 = "0.18"
 
 # Database clients (Track DA, `sid-db`) — tokio-postgres = "0.7", the standard
 # async Postgres driver; rusqlite = { features = ["bundled", "column_decltype"] },
