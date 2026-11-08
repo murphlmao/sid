@@ -7842,6 +7842,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sid-os"
+version = "0.0.1"
+dependencies = [
+ "sid-core",
+ "zbus",
+]
+
+[[package]]
 name = "sid-privfs"
 version = "0.0.1"
 dependencies = [
