@@ -112,7 +112,7 @@ pub(crate) fn fetch(
     };
     // `key` was derived for `origin`, so first use may bind it there (and only there).
     let want = binding(&key, origin, endpoint);
-    Ok(match verdict(bindings, &want, origin)? {
+    Ok(match verdict(bindings, &want)? {
         None => Bound::Found(bytes),
         Some(notice) => Bound::Withheld { notice },
     })
@@ -122,7 +122,6 @@ pub(crate) fn fetch(
 fn verdict(
     bindings: &GlobalStore,
     want: &SecretBinding,
-    key_scope: &Scope,
 ) -> Result<Option<String>, String> {
     let read = |bindings: &GlobalStore| {
         bindings
@@ -131,7 +130,7 @@ fn verdict(
     };
     let existing = match read(bindings)? {
         Some(b) => b,
-        None => match bindings.bind_secret_if_unbound(want, key_scope) {
+        None => match bindings.bind_secret_if_unbound(want) {
             Ok(()) => return Ok(None),
             // Another first use got there between the read and the write: judge this
             // record against the binding that won, never against nothing.

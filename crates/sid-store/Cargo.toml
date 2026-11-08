@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 sid-core = { path = "../sid-core" }
+sid-secrets = { path = "../sid-secrets" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
 redb = "4.5"
@@ -16,7 +17,6 @@ thiserror = "2"
 tempfile = "3"
 
 [dev-dependencies]
-sid-secrets = { path = "../sid-secrets" }
 tempfile = "3"
 proptest.workspace = true
 
