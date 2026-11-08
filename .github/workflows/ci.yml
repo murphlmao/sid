@@ -1,0 +1,91 @@
+# sid CI. Linux/Wayland is the primary target; macOS and Windows are build-and-test
+# honesty checks (platform seams in sid-gpu/svcctl/privfs/secrets/sysinfo).
+# Tests needing a display, GPU, sudo or docker are #[ignore]d / env-gated, so the
+# default `cargo test --workspace` is hermetic.
+# Docker-backed integration suites (scripts/test-integration.sh, scripts/test-ssh.sh)
+# are a separate concern; see docs/ci/github-actions-ci.yml for that draft.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: linux (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (gpui build deps)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libx11-xcb-dev libvulkan-dev libfontconfig-dev libfreetype-dev \
+            libssl-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  macos:
+    name: macos (build + test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: cargo build --workspace --all-targets
+      - name: cargo test
+        run: cargo test --workspace
+
+  windows:
+    name: windows (build + test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: cargo build --workspace --all-targets
+      - name: cargo test
+        run: cargo test --workspace
+
+  gate:
+    name: gate
+    if: always()
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All platform jobs must pass
+        run: |
+          echo "linux=${{ needs.linux.result }} macos=${{ needs.macos.result }} windows=${{ needs.windows.result }}"
+          test "${{ needs.linux.result }}" = success
+          test "${{ needs.macos.result }}" = success
+          test "${{ needs.windows.result }}" = success
