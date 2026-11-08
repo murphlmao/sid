@@ -39,7 +39,20 @@ sid_app_setup_xdg() {
     if [[ -n "$xdg_src" ]]; then
         cp -r "$xdg_src"/. "$base/data/"
     fi
+    # Fonts are not credentials: link the user's font dirs into the hermetic tree so
+    # fontconfig still finds them. Without this the terminal's mono family resolves to a
+    # proportional system variant and captures stop matching what Murphy sees.
+    sid_app_link_user_fonts "$base/data/fonts"
     export XDG_DATA_HOME="$base/data" XDG_STATE_HOME="$base/state" XDG_CONFIG_HOME="$base/config"
+}
+
+# sid_app_link_user_fonts DEST — symlink the caller's real user font dir (and fontconfig
+# config, if any) at DEST / the matching hermetic paths. Read-only links; no-op if absent.
+sid_app_link_user_fonts() {
+    local dest="$1"
+    local real_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+    [[ -d "$real_data/fonts" && ! -e "$dest" ]] && ln -s "$real_data/fonts" "$dest"
+    return 0
 }
 
 # sid_app_hermetic_env_args REAL BASE_DIR
@@ -52,7 +65,12 @@ sid_app_setup_xdg() {
 sid_app_hermetic_env_args() {
     local real="$1" base="$2"
     [[ "$real" -eq 1 ]] && return 0
-    mkdir -p "$base/home"
+    mkdir -p "$base/home/.local/share"
+    # Same font carve-out as sid_app_setup_xdg, for fontconfig's HOME-relative dirs
+    # (~/.local/share/fonts, ~/.fonts). Uses the caller's real HOME, read before the swap.
+    [[ -d "$HOME/.local/share/fonts" && ! -e "$base/home/.local/share/fonts" ]] \
+        && ln -s "$HOME/.local/share/fonts" "$base/home/.local/share/fonts"
+    [[ -d "$HOME/.fonts" && ! -e "$base/home/.fonts" ]] && ln -s "$HOME/.fonts" "$base/home/.fonts"
     printf '%s\n' -u SSH_AUTH_SOCK -u DBUS_SESSION_BUS_ADDRESS "HOME=$base/home"
 }
 
