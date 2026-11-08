@@ -10,6 +10,23 @@ use gpui_kit::{
 };
 use sid_ui::TextInput;
 
+// The Input widget (gpui-base) binds the platform-native shortcuts: macOS uses alt for word
+// motion/delete and cmd for select-all/copy; Linux and Windows use ctrl.
+#[cfg(target_os = "macos")]
+mod keys {
+    pub const WORD_DELETE: &str = "alt-backspace";
+    pub const WORD_SELECT_LEFT: &str = "alt-shift-left";
+    pub const SELECT_ALL: &str = "cmd-a";
+    pub const COPY: &str = "cmd-c";
+}
+#[cfg(not(target_os = "macos"))]
+mod keys {
+    pub const WORD_DELETE: &str = "ctrl-backspace";
+    pub const WORD_SELECT_LEFT: &str = "ctrl-shift-left";
+    pub const SELECT_ALL: &str = "ctrl-a";
+    pub const COPY: &str = "ctrl-c";
+}
+
 struct Fields {
     plain: Entity<InputState>,
     secret: Entity<InputState>,
@@ -67,20 +84,20 @@ fn focused(cx: &mut TestAppContext) -> WindowHandle<Root> {
 }
 
 #[gpui_kit::test]
-fn ctrl_backspace_deletes_a_word_not_a_character(cx: &mut TestAppContext) {
+fn word_delete_removes_a_word_not_a_character(cx: &mut TestAppContext) {
     let handle = focused(cx);
-    on_plain(handle, cx, |w, cx| w.press("ctrl-backspace", cx));
+    on_plain(handle, cx, |w, cx| w.press(keys::WORD_DELETE, cx));
     assert_eq!(value(handle, "plain", cx).as_deref(), Some("one two "));
-    on_plain(handle, cx, |w, cx| w.press("ctrl-backspace", cx));
+    on_plain(handle, cx, |w, cx| w.press(keys::WORD_DELETE, cx));
     assert_eq!(value(handle, "plain", cx).as_deref(), Some("one "));
 }
 
 #[gpui_kit::test]
-fn ctrl_shift_arrows_select_by_word(cx: &mut TestAppContext) {
+fn word_select_arrows_select_by_word(cx: &mut TestAppContext) {
     let handle = focused(cx);
     on_plain(handle, cx, |w, cx| {
-        w.press("ctrl-shift-left", cx);
-        w.press("ctrl-shift-left", cx);
+        w.press(keys::WORD_SELECT_LEFT, cx);
+        w.press(keys::WORD_SELECT_LEFT, cx);
         // Typing replaces the selection: it was exactly "two three".
         w.input("X", cx);
     });
@@ -91,7 +108,7 @@ fn ctrl_shift_arrows_select_by_word(cx: &mut TestAppContext) {
 fn select_all_then_typing_replaces_everything(cx: &mut TestAppContext) {
     let handle = focused(cx);
     on_plain(handle, cx, |w, cx| {
-        w.press("ctrl-a", cx);
+        w.press(keys::SELECT_ALL, cx);
         w.input("z", cx);
     });
     assert_eq!(value(handle, "plain", cx).as_deref(), Some("z"));
@@ -111,8 +128,8 @@ fn a_masked_field_never_exposes_its_text(cx: &mut TestAppContext) {
         w.click("secret", cx);
         w.press("end", cx);
         w.input("!", cx);
-        w.press("ctrl-a", cx);
-        w.press("ctrl-c", cx);
+        w.press(keys::SELECT_ALL, cx);
+        w.press(keys::COPY, cx);
     });
     assert_eq!(value(handle, "secret", cx), None);
     assert_eq!(value(handle, "plain", cx).as_deref(), Some("one two three"));
