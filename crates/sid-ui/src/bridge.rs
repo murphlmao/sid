@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn the_ink_follows_the_fill_not_the_tone_name() {
         // Pins the cases that motivated the helper: a *pale* amber fill needs a
-        // near-black label (what `app.rs`'s badges hard-coded), a dark-red accent needs
+        // near-black label (what `app.rs`'s badges hard-coded), a mid-violet accent needs
         // white — including on cosmos-light, whose `fg_strong` is pure black.
         for t in [cosmos(), void(), dusk()] {
             assert_eq!(contrast_ink(&t, t.warning), dark_ink(&t), "{}", t.name);
@@ -914,7 +914,7 @@ mod tests {
         assert!(brightness(t.fg) < brightness(t.fg_strong));
         // Luma, not a channel average: amber reads far brighter than dark red even
         // though their channel sums are close.
-        assert!(brightness(t.warning) > brightness(t.accent) + 0.3);
+        assert!(brightness(t.warning) > brightness(0xd44141) + 0.3);
     }
 
     #[test]

@@ -108,7 +108,7 @@ pub fn void() -> Theme {
         fg_strong: 0xffffff,
         muted: 0x999999,
         faint: 0x555555,
-        accent: 0x8a7cf0,
+        accent: 0x7c6cf2,
         success: 0xc0c0c0,
         warning: 0xe0a040,
         danger: 0xff3333,
