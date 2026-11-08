@@ -158,6 +158,9 @@ pub(crate) struct HomeTabState {
     /// A stale key (the host was renamed or deleted while selected) simply matches no
     /// card and paints nothing; there is nothing to clean up.
     selected: Option<(String, Scope)>,
+    /// The window width at the last render (set by `AppState::render`, which has the
+    /// `Window` the home's `&self` render path lacks) — picks the Get-started columns.
+    pub(crate) viewport_w: f32,
 }
 
 impl HomeTabState {
@@ -203,6 +206,7 @@ impl HomeTabState {
             quick_note: None,
             right_click_target: None,
             selected: None,
+            viewport_w: 1280.,
         }
     }
 }
@@ -822,6 +826,8 @@ impl AppState {
     /// [`GET_STARTED_BELOW`] hosts.
     fn get_started(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::active(cx).clone();
+        // The app rail + the home's gutters leave the grid roughly the window less 112px.
+        let cols = sid_ui::fit_columns(self.ssh_home.viewport_w - 112., 320., 3);
         let bindings = default_bindings();
         let key = |action: Action| primary_shortcut(action, &bindings);
         let start_card =
@@ -897,12 +903,14 @@ impl AppState {
             .gap_3()
             .child(div().text_heading(&t).child("Get started"))
             .child(
-                CardGrid::new()
-                    .min_col(px(320.))
-                    .max_col(px(640.))
-                    .child(add)
-                    .child(import)
-                    .child(keys),
+                sid_ui::even_card_rows(
+                    vec![
+                        add.into_any_element(),
+                        import.into_any_element(),
+                        keys.into_any_element(),
+                    ],
+                    cols,
+                ),
             )
             .child(
                 div()
@@ -911,27 +919,27 @@ impl AppState {
                     .child("What a session gives you"),
             )
             .child(
-                CardGrid::new()
-                    .min_col(px(320.))
-                    .max_col(px(640.))
-                    .child(know_card(
+                sid_ui::even_card_rows(
+                    vec![know_card(
                         "ssh-know-files",
                         Icon::Folder,
                         "Files beside the terminal",
                         "Every session opens with an SFTP panel next to the shell. Browse, preview, upload and rename without leaving the tab.",
-                    ))
-                    .child(know_card(
+                    ).into_any_element(),
+                    know_card(
                         "ssh-know-edit",
                         Icon::Rename,
                         "Edit remote files locally",
                         "Open a remote file in your own editor; saving writes it back to the server.",
-                    ))
-                    .child(know_card(
+                    ).into_any_element(),
+                    know_card(
                         "ssh-know-secrets",
                         Icon::User,
                         "Secrets stay in your keyring",
                         "Passwords and key passphrases live in the OS keyring. Saved connections only hold a reference to them.",
-                    )),
+                    ).into_any_element()],
+                    cols,
+                ),
             )
             .into_any_element()
     }

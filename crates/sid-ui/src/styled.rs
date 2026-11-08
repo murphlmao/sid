@@ -97,6 +97,14 @@ pub trait StyledExt: Styled + Sized {
         self.line_clamp(1).text_ellipsis()
     }
 
+    /// [`StyledExt::clamp_one_line`] for a path-shaped string: when it does not fit, the
+    /// `…` replaces the *middle* (gpui's `TruncateMiddle`), so the start (`~/vcs`) and the
+    /// end (the folder name, the part that tells two paths apart) both stay readable.
+    /// The same `min_w(0)` caveat applies.
+    fn clamp_one_line_middle(self) -> Self {
+        self.line_clamp(1).text_ellipsis_middle()
+    }
+
     /// A section header's type. UPPERCASE is the caller's job (the string is theirs).
     ///
     /// Retained as an alias for [`Typography::text_label`] because the tab modules
