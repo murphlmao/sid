@@ -15,6 +15,7 @@ members = [
     "crates/sid-svcctl",
     "crates/sid-containers",
     "crates/sid-privfs",
+    "crates/sid-mcp",
 ]
 
 [workspace.package]
