@@ -1811,10 +1811,10 @@ impl AppState {
                             "select a workspace"
                         })
                         .guidance(if nothing_registered {
-                            "register one on the left to see its branches, status, log and \
+                            "Register one on the left to see its branches, status, log and \
                              scope items here"
                         } else {
-                            "pick one on the left to see its branches, status, log and \
+                            "Pick one on the left to see its branches, status, log and \
                              scope items — or register another"
                         })
                         .icon(Icon::Folder)
