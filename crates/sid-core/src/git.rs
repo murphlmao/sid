@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 mod v2;
 pub use v2::{
     Diff, DiffHunk, DiffLimits, DiffLine, DiffLineKind, DiffStatus, DiffTarget, FetchReport,
-    FileDiff, FileStatus, LogEntry, LogPage, LogQuery, PushReport, RefDecoration, RefKind, StashEntry,
-    StatusCounts, StatusOptions, WorktreeInfo,
+    FileDiff, FileStatus, LogEntry, LogPage, LogQuery, PushReport, RefDecoration, RefKind,
+    StashEntry, StatusCounts, StatusOptions, WorktreeInfo,
 };
 
 /// Domain-shaped git error. Concrete impls map their library errors into this.
