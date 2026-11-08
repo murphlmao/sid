@@ -30,17 +30,52 @@ pub const OUTPUT_CAP: usize = 64 * 1024;
 
 /// A fully-specified `git` invocation. Pure data so argv/env construction is
 /// unit-testable without spawning anything.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GitCommand {
     pub argv: Vec<OsString>,
     /// Environment overrides applied on top of the inherited environment.
     pub env: BTreeMap<String, String>,
+    /// Inherited variables to remove (they would redirect git at another repo/config).
+    pub env_remove: Vec<String>,
+}
+
+/// Inherited variables that repoint git's repo, object store, config or helper
+/// binaries; none may reach the spawned `git`.
+pub const SCRUBBED_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_EXEC_PATH",
+];
+
+/// The user's own (global/system) settings that the hardened argv re-adds, because the
+/// repo-local config is the untrusted one.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UserGit {
+    /// `(config key, value)` for every global/system `credential.*helper`, in order.
+    pub credential_helpers: Vec<(String, String)>,
+    /// The global `core.sshCommand`, if any.
+    pub ssh_command: Option<String>,
 }
 
 /// The non-interactive environment. `existing_ssh` is the caller's own
-/// `GIT_SSH_COMMAND`, if any: it is kept and made batch-mode rather than replaced.
-pub fn noninteractive_env(existing_ssh: Option<&str>) -> BTreeMap<String, String> {
-    let ssh = match existing_ssh.map(str::trim).filter(|s| !s.is_empty()) {
+/// `GIT_SSH_COMMAND`, if any (kept, made batch-mode); else `global_ssh` (the user's
+/// global `core.sshCommand`); else plain `ssh`. Setting `GIT_SSH_COMMAND` always also
+/// overrides a repo-local `core.sshCommand`.
+pub fn noninteractive_env(
+    existing_ssh: Option<&str>,
+    global_ssh: Option<&str>,
+) -> BTreeMap<String, String> {
+    let pick = |o: Option<&str>| {
+        o.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let ssh = match pick(existing_ssh).or_else(|| pick(global_ssh)) {
         Some(s) => format!("{s} -o BatchMode=yes"),
         None => "ssh -o BatchMode=yes".to_string(),
     };
@@ -49,35 +84,183 @@ pub fn noninteractive_env(existing_ssh: Option<&str>) -> BTreeMap<String, String
         ("GIT_SSH_COMMAND".into(), ssh),
         ("GCM_INTERACTIVE".into(), "never".into()),
         ("LC_ALL".into(), "C".into()),
+        // Overrides every `protocol.*.allow` in config: no `ext::`, no `file`.
+        ("GIT_ALLOW_PROTOCOL".into(), "ssh:https".into()),
+        ("GIT_ASKPASS".into(), String::new()),
+        ("SSH_ASKPASS".into(), String::new()),
+        ("GIT_PROXY_COMMAND".into(), String::new()),
     ])
 }
 
-fn base(workdir: &Path, args: &[&str]) -> GitCommand {
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+#[cfg(not(windows))]
+const NULL_DEVICE: &str = "/dev/null";
+
+/// The `-c key=value` pairs that neutralise repo-configured command execution.
+fn hardening_config(user: &UserGit) -> Vec<String> {
+    let mut v = vec![
+        format!("core.hooksPath={NULL_DEVICE}"),
+        "core.fsmonitor=false".to_string(),
+        "core.askPass=".to_string(),
+        // Reset every inherited helper (incl. repo-local `!cmd` ones), then re-add the
+        // user's own global/system ones.
+        "credential.helper=".to_string(),
+    ];
+    v.extend(
+        user.credential_helpers
+            .iter()
+            .map(|(k, val)| format!("{k}={val}")),
+    );
+    v.extend(
+        [
+            "submodule.recurse=false",
+            "push.gpgSign=false",
+            "gc.auto=0",
+            "maintenance.auto=false",
+        ]
+        .map(String::from),
+    );
+    v
+}
+
+fn base(workdir: &Path, user: &UserGit, args: &[&str]) -> GitCommand {
     let mut argv: Vec<OsString> = vec!["-C".into(), workdir.as_os_str().to_owned()];
+    for kv in hardening_config(user) {
+        argv.push("-c".into());
+        argv.push(kv.into());
+    }
     argv.extend(args.iter().map(OsString::from));
     GitCommand {
         argv,
-        env: noninteractive_env(std::env::var("GIT_SSH_COMMAND").ok().as_deref()),
+        env: noninteractive_env(
+            std::env::var("GIT_SSH_COMMAND").ok().as_deref(),
+            user.ssh_command.as_deref(),
+        ),
+        env_remove: SCRUBBED_ENV.map(String::from).to_vec(),
     }
 }
 
-/// `git -C <workdir> fetch --no-progress -- <remote>`
+/// Read the user's global/system credential helpers and `core.sshCommand` once. The
+/// discovery itself runs with the hardened environment, outside any repository.
+pub fn user_git() -> &'static UserGit {
+    static USER: std::sync::OnceLock<UserGit> = std::sync::OnceLock::new();
+    USER.get_or_init(discover_user_git)
+}
+
+fn discover_user_git() -> UserGit {
+    let mut user = UserGit::default();
+    let cwd = std::env::temp_dir();
+    let q = |scope: &str, args: &[&str]| -> Option<String> {
+        let mut c = Command::new("git");
+        c.arg("config")
+            .arg(scope)
+            .args(args)
+            .current_dir(&cwd)
+            .envs(noninteractive_env(None, None))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        for k in SCRUBBED_ENV {
+            c.env_remove(k);
+        }
+        let o = c.output().ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    for scope in ["--system", "--global"] {
+        if let Some(text) = q(scope, &["--get-regexp", r"^credential\..*helper$"]) {
+            user.credential_helpers.extend(parse_helpers(&text));
+        }
+    }
+    // Global wins over system for a single-valued key.
+    for scope in ["--global", "--system"] {
+        if let Some(t) = q(scope, &["--get", "core.sshCommand"]) {
+            let t = t.trim();
+            if !t.is_empty() {
+                user.ssh_command = Some(t.to_string());
+                break;
+            }
+        }
+    }
+    user
+}
+
+/// Parse `git config --get-regexp` output (`key value` per line).
+fn parse_helpers(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim_end();
+            let (k, v) = l.split_once(char::is_whitespace).unwrap_or((l, ""));
+            (!k.is_empty()).then(|| (k.to_string(), v.trim_start().to_string()))
+        })
+        .collect()
+}
+
+/// `git -C <workdir> <hardening> fetch … -- <remote>`
 pub fn fetch_command(workdir: &Path, remote: &str) -> GitCommand {
-    let mut c = base(workdir, &["fetch", "--no-progress", "--"]);
+    fetch_command_with(workdir, remote, user_git())
+}
+
+/// [`fetch_command`] with explicit user settings (testable).
+pub fn fetch_command_with(workdir: &Path, remote: &str, user: &UserGit) -> GitCommand {
+    let mut c = base(
+        workdir,
+        user,
+        &[
+            "fetch",
+            "--no-progress",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            "--upload-pack=git-upload-pack",
+            "--",
+        ],
+    );
     c.argv.push(remote.into());
     c
 }
 
-/// `git -C <workdir> push --no-progress -- <remote> <refspec>`
+/// `git -C <workdir> <hardening> push … -- <remote> <refspec>`
 pub fn push_command(workdir: &Path, remote: &str, refspec: &str) -> GitCommand {
-    let mut c = base(workdir, &["push", "--no-progress", "--"]);
+    push_command_with(workdir, remote, refspec, user_git())
+}
+
+/// [`push_command`] with explicit user settings (testable).
+pub fn push_command_with(
+    workdir: &Path,
+    remote: &str,
+    refspec: &str,
+    user: &UserGit,
+) -> GitCommand {
+    let mut c = base(
+        workdir,
+        user,
+        &[
+            "push",
+            "--no-progress",
+            "--no-verify",
+            "--no-recurse-submodules",
+            "--no-signed",
+            "--receive-pack=git-receive-pack",
+            "--",
+        ],
+    );
     c.argv.push(remote.into());
     c.argv.push(refspec.into());
     c
 }
 
-/// Whether `url` needs a network transport (and so the CLI) rather than libgit2.
-/// Local paths, `file://` URLs and Windows drive paths are not network.
+/// A `scheme::address` remote-helper URL (`ext::sh -c …`, `fd::`, …).
+fn is_helper_url(u: &str) -> bool {
+    match u.split_once("::") {
+        Some((h, _)) => !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        None => false,
+    }
+}
+
+/// Whether `url` needs the `git` CLI (and so the hardened spawn): only `ssh://`,
+/// `https://` and scp-style `[user@]host:path`. Remote helpers (`ext::`), `file://`,
+/// local paths, plain `http://` and `git://` are never CLI.
 ///
 /// # Examples
 ///
@@ -86,6 +269,8 @@ pub fn push_command(workdir: &Path, remote: &str, refspec: &str) -> GitCommand {
 /// assert!(is_network_url("git@github.com:murphlmao/sid.git"));
 /// assert!(is_network_url("https://example.com/x.git"));
 /// assert!(is_network_url("ssh://host/x"));
+/// assert!(!is_network_url("http://example.com/x.git"));
+/// assert!(!is_network_url("ext::sh -c id"));
 /// assert!(!is_network_url("/srv/git/x.git"));
 /// assert!(!is_network_url("file:///srv/git/x.git"));
 /// assert!(!is_network_url("C:\\repos\\x"));
@@ -93,13 +278,30 @@ pub fn push_command(workdir: &Path, remote: &str, refspec: &str) -> GitCommand {
 /// ```
 pub fn is_network_url(url: &str) -> bool {
     let u = url.trim();
+    if is_helper_url(u) || u.starts_with('-') {
+        return false;
+    }
     if let Some((scheme, _)) = u.split_once("://") {
-        return !scheme.eq_ignore_ascii_case("file");
+        return scheme.eq_ignore_ascii_case("ssh") || scheme.eq_ignore_ascii_case("https");
     }
     // scp-like `[user@]host:path` — a colon before any slash, not a drive letter.
     match u.find(':') {
         Some(i) if i > 1 => !u[..i].contains('/') && !u[..i].contains('\\'),
         _ => false,
+    }
+}
+
+/// Why sid refuses to talk to `url` at all, if it does (never reaches libgit2 or the CLI).
+pub fn refusal_reason(url: &str) -> Option<String> {
+    let u = url.trim();
+    if is_helper_url(u) {
+        return Some("remote-helper URLs (ext::, fd::, …) are not supported".into());
+    }
+    let scheme = u.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+    match scheme.as_deref() {
+        Some("http") => Some("plain http remotes are not supported — use https".into()),
+        Some("git") => Some("the unauthenticated git:// protocol is not supported".into()),
+        _ => None,
     }
 }
 
@@ -112,7 +314,10 @@ pub struct RunOutput {
     pub stderr: String,
 }
 
-fn drain<R: Read + Send + 'static>(mut r: R, cap: usize) -> std::thread::JoinHandle<Vec<u8>> {
+type Reader = std::sync::mpsc::Receiver<Vec<u8>>;
+
+fn drain<R: Read + Send + 'static>(mut r: R, cap: usize) -> Reader {
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut kept = Vec::new();
         let mut buf = [0u8; 8192];
@@ -125,8 +330,9 @@ fn drain<R: Read + Send + 'static>(mut r: R, cap: usize) -> std::thread::JoinHan
                 }
             }
         }
-        kept
-    })
+        let _ = tx.send(kept);
+    });
+    rx
 }
 
 /// Run `program` with `cmd`, bounded by `timeout`; each output stream capped at `cap`.
@@ -142,6 +348,9 @@ pub fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for k in &cmd.env_remove {
+        c.env_remove(k);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -172,16 +381,36 @@ pub fn run(
             Err(e) => return Err(GitError::Other(format!("waiting for git: {e}"))),
         }
     };
-    let join = |h: Option<std::thread::JoinHandle<Vec<u8>>>| {
-        h.and_then(|h| h.join().ok())
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default()
+    // A grandchild (ssh control master, a hook) can keep the pipes open after git
+    // exits: wait for the readers only within the deadline, then kill the group.
+    let grace = if timed_out {
+        Duration::from_secs(2)
+    } else {
+        timeout
+            .saturating_sub(started.elapsed())
+            .max(Duration::from_secs(2))
     };
+    let mut leaked = false;
+    let mut join = |h: Option<Reader>| match h {
+        Some(rx) => match rx.recv_timeout(grace) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(_) => {
+                leaked = true;
+                String::new()
+            }
+        },
+        None => String::new(),
+    };
+    let stdout = join(out);
+    let stderr = join(err);
+    if leaked {
+        kill_group(&mut child);
+    }
     Ok(RunOutput {
         success: status.is_some_and(|s| s.success()),
         timed_out,
-        stdout: join(out),
-        stderr: join(err),
+        stdout,
+        stderr,
     })
 }
 
@@ -203,7 +432,8 @@ pub fn classify_failure(what: &str, out: &RunOutput) -> GitError {
     if out.timed_out {
         return GitError::TimedOut(what.to_string());
     }
-    let text = out.stderr.trim();
+    let clean = sanitize_remote_text(&out.stderr, STDERR_DISPLAY_CAP);
+    let text = clean.trim();
     let lower = text.to_ascii_lowercase();
     const AUTH: [&str; 7] = [
         "permission denied",
@@ -230,6 +460,38 @@ pub fn classify_failure(what: &str, out: &RunOutput) -> GitError {
     } else {
         last_lines(text, 4)
     })
+}
+
+/// Longest server-written text that may reach a toast.
+pub const STDERR_DISPLAY_CAP: usize = 600;
+
+/// Characters that must never render as-is: controls (terminal escapes, CR overwrites)
+/// and the Unicode bidi controls that reorder display.
+pub fn is_deceptive_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// Server-written text made safe for display: deceptive characters dropped (newlines
+/// kept, tabs become spaces) and the result capped to `max` chars.
+pub fn sanitize_remote_text(s: &str, max: usize) -> String {
+    let mut out: String = s
+        .chars()
+        .filter_map(|c| match c {
+            '\n' => Some('\n'),
+            '\t' => Some(' '),
+            c if is_deceptive_char(c) => None,
+            c => Some(c),
+        })
+        .take(max)
+        .collect();
+    if s.chars().count() > max {
+        out.push('…');
+    }
+    out
 }
 
 fn last_lines(s: &str, n: usize) -> String {
@@ -305,6 +567,18 @@ pub fn push(workdir: &Path, timeout: Duration) -> Result<PushReport, GitError> {
         return Err(GitError::RemoteNotFound(remote));
     }
     let refspec = format!("refs/heads/{branch}:{merge}");
+    let url = repo
+        .find_remote(&remote)
+        .ok()
+        .and_then(|r| r.url().ok().map(String::from))
+        .unwrap_or_default();
+    if let Some(why) = refusal_reason(&url) {
+        return Err(GitError::Other(format!("refusing to push '{remote}': {why}")));
+    }
+    if !is_network_url(&url) {
+        // Local / file remotes: libgit2 (no hooks, no `receivepack` command from config).
+        return push_local(&repo, &remote, &branch, &merge, &refspec);
+    }
     let out = run(
         "git",
         &push_command(workdir, &remote, &refspec),
@@ -323,46 +597,175 @@ pub fn push(workdir: &Path, timeout: Duration) -> Result<PushReport, GitError> {
     })
 }
 
+/// Push to a local-path remote through libgit2.
+fn push_local(
+    repo: &git2::Repository,
+    remote: &str,
+    branch: &str,
+    merge: &str,
+    refspec: &str,
+) -> Result<PushReport, GitError> {
+    let mut r = repo.find_remote(remote).map_err(map_git2_error)?;
+    let up_to_date = {
+        let local = repo
+            .find_reference(&format!("refs/heads/{branch}"))
+            .ok()
+            .and_then(|x| x.target());
+        let tracking = repo
+            .find_reference(&format!("refs/remotes/{remote}/{branch}"))
+            .ok()
+            .and_then(|x| x.target());
+        local.is_some() && local == tracking
+    };
+    let rejected = std::cell::RefCell::new(None::<String>);
+    let mut cb = git2::RemoteCallbacks::new();
+    cb.push_update_reference(|name, status| {
+        if let Some(msg) = status {
+            *rejected.borrow_mut() = Some(format!("{name}: {msg}"));
+        }
+        Ok(())
+    });
+    let res = {
+        let mut opts = git2::PushOptions::new();
+        opts.remote_callbacks(cb);
+        r.push(&[refspec], Some(&mut opts))
+    };
+    if let Some(msg) = rejected.take() {
+        return Err(GitError::Conflict(format!(
+            "the remote rejected the push ({msg}) — fetch and integrate before pushing"
+        )));
+    }
+    res.map_err(|e| {
+        let m = e.message().to_ascii_lowercase();
+        if m.contains("non-fast-forward") || m.contains("not fast") || m.contains("not present locally") {
+            GitError::Conflict(
+                "the remote has newer commits — fetch and integrate them before pushing".into(),
+            )
+        } else {
+            map_git2_error(e)
+        }
+    })?;
+    Ok(PushReport {
+        remote: remote.to_string(),
+        branch: branch.to_string(),
+        upstream_ref: merge.to_string(),
+        up_to_date,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn env_is_noninteractive() {
-        let e = noninteractive_env(None);
+        let e = noninteractive_env(None, None);
         assert_eq!(e["GIT_TERMINAL_PROMPT"], "0");
         assert_eq!(e["GIT_SSH_COMMAND"], "ssh -o BatchMode=yes");
+        assert_eq!(e["GIT_ALLOW_PROTOCOL"], "ssh:https");
+        for k in ["GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND"] {
+            assert_eq!(e[k], "", "{k}");
+        }
     }
 
     #[test]
     fn existing_ssh_command_is_kept_and_batched() {
-        let e = noninteractive_env(Some("ssh -i /k"));
+        let e = noninteractive_env(Some("ssh -i /k"), Some("ssh -i /global"));
         assert_eq!(e["GIT_SSH_COMMAND"], "ssh -i /k -o BatchMode=yes");
         assert_eq!(
-            noninteractive_env(Some("  "))["GIT_SSH_COMMAND"],
+            noninteractive_env(Some("  "), None)["GIT_SSH_COMMAND"],
             "ssh -o BatchMode=yes"
+        );
+        assert_eq!(
+            noninteractive_env(None, Some("ssh -i /global"))["GIT_SSH_COMMAND"],
+            "ssh -i /global -o BatchMode=yes"
         );
     }
 
     #[test]
     fn argv_is_exact_and_names_follow_double_dash() {
-        let c = fetch_command(Path::new("/r"), "--upload-pack=evil");
+        let user = UserGit {
+            credential_helpers: vec![
+                ("credential.helper".into(), "store".into()),
+                ("credential.https://h.example.helper".into(), "cache".into()),
+            ],
+            ssh_command: None,
+        };
+        let c = fetch_command_with(Path::new("/r"), "--upload-pack=evil", &user);
         let a: Vec<_> = c.argv.iter().map(|s| s.to_str().unwrap()).collect();
+        let dd = a.iter().position(|x| *x == "--").unwrap();
+        assert_eq!(a[dd + 1..], ["--upload-pack=evil"]);
+        assert_eq!(a[..2], ["-C", "/r"]);
+        let joined = a.join(" ");
+        for want in [
+            "-c core.hooksPath=",
+            "-c core.fsmonitor=false",
+            "-c core.askPass=",
+            "-c credential.helper= -c credential.helper=store -c credential.https://h.example.helper=cache",
+            "-c submodule.recurse=false",
+            "-c push.gpgSign=false",
+            "-c gc.auto=0",
+            "-c maintenance.auto=false",
+            "fetch --no-progress --no-recurse-submodules --no-auto-maintenance --upload-pack=git-upload-pack --",
+        ] {
+            assert!(joined.contains(want), "missing {want}: {joined}");
+        }
+        for k in SCRUBBED_ENV {
+            assert!(c.env_remove.iter().any(|x| x == k), "{k}");
+        }
+        let p = push_command_with(
+            Path::new("/r"),
+            "origin",
+            "refs/heads/m:refs/heads/m",
+            &UserGit::default(),
+        );
+        let a: Vec<_> = p.argv.iter().map(|s| s.to_str().unwrap()).collect();
+        let dd = a.iter().position(|x| *x == "--").unwrap();
+        assert_eq!(a[dd + 1..], ["origin", "refs/heads/m:refs/heads/m"]);
         assert_eq!(
-            a,
+            a[dd - 6..dd - 1],
             [
-                "-C",
-                "/r",
-                "fetch",
+                "push",
                 "--no-progress",
-                "--",
-                "--upload-pack=evil"
+                "--no-verify",
+                "--no-recurse-submodules",
+                "--no-signed"
             ]
         );
-        let p = push_command(Path::new("/r"), "origin", "refs/heads/m:refs/heads/m");
-        let a: Vec<_> = p.argv.iter().map(|s| s.to_str().unwrap()).collect();
-        assert_eq!(a[2..5], ["push", "--no-progress", "--"]);
-        assert_eq!(a[5..], ["origin", "refs/heads/m:refs/heads/m"]);
+        assert_eq!(a[dd - 1], "--receive-pack=git-receive-pack");
+    }
+
+    #[test]
+    fn helpers_parse() {
+        let v = parse_helpers("credential.helper store --file x\ncredential.https://a.b.helper\n");
+        assert_eq!(v[0], ("credential.helper".into(), "store --file x".into()));
+        assert_eq!(v[1], ("credential.https://a.b.helper".into(), "".into()));
+    }
+
+    #[test]
+    fn hostile_urls_are_not_cli() {
+        for u in [
+            "ext::sh -c touch /tmp/x",
+            "fd::3",
+            "http://h/x",
+            "git://h/x",
+            "file:///x",
+            "--upload-pack=x",
+        ] {
+            assert!(!is_network_url(u), "{u}");
+        }
+        assert!(refusal_reason("ext::sh -c id").is_some());
+        assert!(refusal_reason("http://h/x").is_some());
+        assert!(refusal_reason("/srv/x").is_none());
+        assert!(refusal_reason("git@h:x").is_none());
+    }
+
+    #[test]
+    fn remote_text_is_sanitized_and_capped() {
+        let s = sanitize_remote_text("a\u{1b}[31mb\u{202E}c\rd\tz\nq", 100);
+        assert_eq!(s, "a[31mbcd z\nq");
+        let long = "x".repeat(1000);
+        assert_eq!(sanitize_remote_text(&long, 10).chars().count(), 11);
     }
 
     #[test]
@@ -407,6 +810,7 @@ mod tests {
         let cmd = GitCommand {
             argv: vec!["-c".into(), "sleep 30 & wait".into()],
             env: BTreeMap::new(),
+            ..Default::default()
         };
         let t = Instant::now();
         let o = run("sh", &cmd, Duration::from_millis(200), 1024).unwrap();
@@ -420,6 +824,7 @@ mod tests {
         let cmd = GitCommand {
             argv: vec!["-c".into(), "head -c 100000 /dev/zero | tr '\\0' a".into()],
             env: BTreeMap::new(),
+            ..Default::default()
         };
         let o = run("sh", &cmd, Duration::from_secs(10), 1000).unwrap();
         assert!(o.success);
