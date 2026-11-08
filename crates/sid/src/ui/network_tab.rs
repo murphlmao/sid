@@ -442,7 +442,7 @@ impl PortsDelegate {
                 // wide window.
                 (
                     Column::new("addr", "Addr").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(200.),
+                    ColumnWidth::grow().weight(1.0).min_width(190.),
                 ),
                 // 100, not 80: the cells are monospace at the body rung now (see
                 // `data_cell`), and a fixed-advance 14px digit is wider than the 12px
@@ -463,7 +463,7 @@ impl PortsDelegate {
                 ),
                 (
                     Column::new("mem", "Memory").sortable(),
-                    ColumnWidth::Fixed(88.),
+                    ColumnWidth::Fixed(108.),
                 ),
                 // Not sortable — an action column, not data. Wide enough for the armed
                 // state's "confirm" label, so arming a row never resizes its column.
@@ -758,11 +758,11 @@ impl ConnectionsDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("local", "Local").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(170.),
+                    ColumnWidth::grow().weight(1.0).min_width(160.),
                 ),
                 (
                     Column::new("remote", "Remote").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(170.),
+                    ColumnWidth::grow().weight(1.0).min_width(160.),
                 ),
                 (
                     Column::new("state", "State").sortable(),
@@ -782,7 +782,7 @@ impl ConnectionsDelegate {
                 ),
                 (
                     Column::new("mem", "Memory").sortable(),
-                    ColumnWidth::Fixed(88.),
+                    ColumnWidth::Fixed(108.),
                 ),
             ]),
             active_sort: None,
@@ -952,7 +952,7 @@ impl ServicesDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("name", "Unit").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(200.),
+                    ColumnWidth::grow().weight(1.0).min_width(190.),
                 ),
                 (
                     Column::new("state", "State").sortable(),

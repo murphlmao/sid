@@ -305,7 +305,7 @@ impl ProcessesDelegate {
             columns: FillColumns::new([
                 (
                     Column::new("cpu", "CPU%").descending(),
-                    ColumnWidth::Fixed(70.),
+                    ColumnWidth::Fixed(84.),
                 ),
                 (
                     Column::new("mem", "Mem").sortable(),
@@ -327,7 +327,7 @@ impl ProcessesDelegate {
                 // grow because it is the column whose content is genuinely unbounded.
                 (
                     Column::new("cmd", "Command").sortable(),
-                    ColumnWidth::grow().weight(2.5).min_width(240.),
+                    ColumnWidth::grow().weight(2.5).min_width(226.),
                 ),
                 // Usernames (not numeric uids) land here now, up to 32 characters: a
                 // modest grower that holds a 120px floor and shows the whole name on
