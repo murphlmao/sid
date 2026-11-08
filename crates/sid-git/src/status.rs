@@ -45,22 +45,22 @@ fn collect(repo: &git2::Repository, opts: &StatusOptions) -> Result<GitStatus, G
             worktree: None,
         });
 
-        if let Some(kind) = index_kind(s) {
-            if let Some(delta) = entry.head_to_index() {
-                let old_path = s.is_index_renamed().then(|| delta_path(&delta.old_file()));
-                let path = delta_path(&delta.new_file());
-                row.path = path.clone();
-                row.index = Some(kind);
-                if old_path.is_some() {
-                    row.old_path = old_path.clone();
-                }
-                entries.push(StatusEntry {
-                    path,
-                    kind,
-                    staged: true,
-                    old_path,
-                });
+        if let Some(kind) = index_kind(s)
+            && let Some(delta) = entry.head_to_index()
+        {
+            let old_path = s.is_index_renamed().then(|| delta_path(&delta.old_file()));
+            let path = delta_path(&delta.new_file());
+            row.path = path.clone();
+            row.index = Some(kind);
+            if old_path.is_some() {
+                row.old_path = old_path.clone();
             }
+            entries.push(StatusEntry {
+                path,
+                kind,
+                staged: true,
+                old_path,
+            });
         }
         if let Some(kind) = worktree_kind(s) {
             let delta = entry.index_to_workdir();

@@ -14,7 +14,7 @@ fn decorations(
     let mut map: HashMap<git2::Oid, Vec<RefDecoration>> = HashMap::new();
     let refs = repo.references().map_err(map_git2_error)?;
     for r in refs.flatten() {
-        let Some(name) = r.name() else { continue };
+        let Ok(name) = r.name() else { continue };
         let (short, kind) = if let Some(n) = name.strip_prefix("refs/heads/") {
             (n, RefKind::Branch)
         } else if let Some(n) = name.strip_prefix("refs/remotes/") {
@@ -102,7 +102,8 @@ pub(crate) fn log_page(repo: &git2::Repository, q: &LogQuery) -> Result<LogPage,
 
 fn head_branch(repo: &git2::Repository) -> Option<String> {
     let h = repo.head().ok()?;
-    h.is_branch().then(|| h.shorthand().map(String::from))?
+    h.is_branch()
+        .then(|| h.shorthand().ok().map(String::from))?
 }
 
 pub(crate) fn worktrees(repo: &git2::Repository) -> Result<Vec<WorktreeInfo>, GitError> {
@@ -127,7 +128,7 @@ pub(crate) fn worktrees(repo: &git2::Repository) -> Result<Vec<WorktreeInfo>, Gi
         prunable: false,
     }];
     let names = main.worktrees().map_err(map_git2_error)?;
-    for name in names.iter().flatten() {
+    for name in names.iter().flatten().flatten() {
         let Ok(wt) = main.find_worktree(name) else {
             continue;
         };

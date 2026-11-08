@@ -1,8 +1,17 @@
 //! `Vt100Screen` — wraps `vt100::Parser` and exposes a styled-cell snapshot
 //! suitable for a GPUI terminal grid.
 
+use std::num::NonZeroU16;
+
 use sid_core::term::{TermCell, TermColor, TerminalScreen};
 use vt100::Parser;
+
+/// vt100 0.18 takes `NonZeroU16` dimensions (a zero row/column count always panicked
+/// inside the parser). Callers already clamp the pane to at least one cell; this keeps
+/// that guarantee local instead of trusting it.
+fn dim(n: u16) -> NonZeroU16 {
+    NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
+}
 
 /// VT100 screen state.
 ///
@@ -29,10 +38,11 @@ impl Vt100Screen {
     /// let _s = Vt100Screen::new(24, 80);
     /// ```
     pub fn new(rows: u16, cols: u16) -> Self {
+        let (rows, cols) = (dim(rows), dim(cols));
         Self {
             parser: Parser::new(rows, cols, 0),
-            rows,
-            cols,
+            rows: rows.get(),
+            cols: cols.get(),
         }
     }
 
@@ -60,9 +70,10 @@ impl Vt100Screen {
     /// assert_eq!(s.size(), (5, 20));
     /// ```
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        let (rows, cols) = (dim(rows), dim(cols));
         self.parser.screen_mut().set_size(rows, cols);
-        self.rows = rows;
-        self.cols = cols;
+        self.rows = rows.get();
+        self.cols = cols.get();
     }
 
     /// Current size as `(rows, cols)`.
