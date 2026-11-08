@@ -1388,13 +1388,16 @@ impl AppState {
     /// field is what gives up width, not the title beside it (`card.rs`'s
     /// `header_actions`).
     fn network_filter_field(&self) -> impl IntoElement + use<> {
-        div().flex().min_w_0().children(self.network.filter.clone().map(|f| {
-            TextInput::new(&f)
-                .small()
-                .fixed(px(240.))
-                .flex_shrink_1()
-                .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
-        }))
+        div()
+            .flex()
+            .min_w_0()
+            .children(self.network.filter.clone().map(|f| {
+                TextInput::new(&f)
+                    .small()
+                    .fixed(px(240.))
+                    .flex_shrink_1()
+                    .min_w(scaled(f32::from(PANEL_FILTER_FLOOR)))
+            }))
     }
 
     /// The one refresh control, routed to whichever sub-view is showing.

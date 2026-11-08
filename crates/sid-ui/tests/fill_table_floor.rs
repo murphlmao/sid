@@ -16,8 +16,8 @@ mod common;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    TestAppContext, Window, div, prelude::*, px, size,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, TestAppContext,
+    Window, div, prelude::*, px, size,
 };
 use sid_ui::{
     Button, Card, ColumnWidth, FillColumns, FillTable, FillTableDelegate, PANEL_FILTER_FLOOR,
@@ -70,14 +70,16 @@ impl Render for Panel {
                 .min_h_0()
                 // Wrapped in a div exactly as `network_tab::network_filter_field` does; that div needs
                 // `min_w_0` too, or its own min-content (240) keeps the filter from yielding.
-                .action(div().flex().min_w_0().child(
-                    TextInput::new(&self.filter)
-                        .test_id("filter")
-                        .small()
-                        .fixed(px(240.))
-                        .flex_shrink_1()
-                        .min_w(scaled(f32::from(PANEL_FILTER_FLOOR))),
-                ))
+                .action(
+                    div().flex().min_w_0().child(
+                        TextInput::new(&self.filter)
+                            .test_id("filter")
+                            .small()
+                            .fixed(px(240.))
+                            .flex_shrink_1()
+                            .min_w(scaled(f32::from(PANEL_FILTER_FLOOR))),
+                    ),
+                )
                 .action(Button::new("refresh", "Refresh"))
                 .child(FillTable::new(&self.table)),
         )
@@ -108,8 +110,14 @@ fn the_filter_shrinks_to_its_floor_before_anything_else(cx: &mut TestAppContext)
         let filter = window.find("filter").bounds();
         let refresh = window.find("refresh").bounds();
         let (w, floor) = (f32::from(filter.size.width), f32::from(PANEL_FILTER_FLOOR));
-        assert!(w < 240., "the filter must give up width at 340px (got {w}px)");
-        assert!(w >= floor - 0.5, "the filter may not go under its floor (got {w}px)");
+        assert!(
+            w < 240.,
+            "the filter must give up width at 340px (got {w}px)"
+        );
+        assert!(
+            w >= floor - 0.5,
+            "the filter may not go under its floor (got {w}px)"
+        );
         assert!(
             refresh.size.width > px(40.),
             "the refresh button keeps its content width (got {:?})",

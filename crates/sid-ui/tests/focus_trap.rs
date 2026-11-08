@@ -9,8 +9,8 @@ mod common;
 use gpui_kit::component::input::InputState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AppContext as _, Context, Entity, Focusable as _, IntoElement, Render, TestAppContext,
-    Window, div, prelude::*, px, size,
+    AppContext as _, Context, Entity, Focusable as _, IntoElement, Render, TestAppContext, Window,
+    div, prelude::*, px, size,
 };
 use sid_ui::{Button, Modal, TextInput, modal};
 
@@ -35,16 +35,14 @@ impl Render for Form {
     }
 }
 
-fn open(
-    cx: &mut TestAppContext,
-) -> (
-    gpui_kit::WindowHandle<gpui_kit::base::Root>,
-    Entity<Form>,
-) {
+fn open(cx: &mut TestAppContext) -> (gpui_kit::WindowHandle<gpui_kit::base::Root>, Entity<Form>) {
     common::open_window(cx, size(px(900.), px(700.)), |window, cx| {
         let fields = std::array::from_fn(|_| cx.new(|cx| InputState::new(window, cx)));
         let form = cx.new(|_| Form { fields });
-        form.read(cx).fields[0].read(cx).focus_handle(cx).focus(window, cx);
+        form.read(cx).fields[0]
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
         form
     })
 }
@@ -66,7 +64,10 @@ fn focused_field(
 }
 
 /// Whether anything outside the modal holds focus.
-fn page_has_focus(handle: gpui_kit::WindowHandle<gpui_kit::base::Root>, cx: &mut TestAppContext) -> bool {
+fn page_has_focus(
+    handle: gpui_kit::WindowHandle<gpui_kit::base::Root>,
+    cx: &mut TestAppContext,
+) -> bool {
     cx.update_window(handle.into(), |_, window, _| {
         window.find("outside").focused() == Some(true)
     })
@@ -77,16 +78,27 @@ fn page_has_focus(handle: gpui_kit::WindowHandle<gpui_kit::base::Root>, cx: &mut
 fn tab_never_leaves_the_modal(cx: &mut TestAppContext) {
     let (handle, form) = open(cx);
     cx.run_until_parked();
-    assert_eq!(focused_field(handle, &form, cx), Some(0), "setup: first field");
+    assert_eq!(
+        focused_field(handle, &form, cx),
+        Some(0),
+        "setup: first field"
+    );
     let mut seen_fields = std::collections::BTreeSet::new();
     for press in 1..=25 {
         common::press(handle, "tab", cx);
-        assert!(!page_has_focus(handle, cx), "Tab #{press} escaped to the page");
+        assert!(
+            !page_has_focus(handle, cx),
+            "Tab #{press} escaped to the page"
+        );
         if let Some(f) = focused_field(handle, &form, cx) {
             seen_fields.insert(f);
         }
     }
-    assert_eq!(seen_fields.len(), 3, "the Tab ring still visits every field: {seen_fields:?}");
+    assert_eq!(
+        seen_fields.len(),
+        3,
+        "the Tab ring still visits every field: {seen_fields:?}"
+    );
 }
 
 #[gpui_kit::test]
@@ -107,7 +119,10 @@ fn shift_tab_wraps_from_the_first_stop(cx: &mut TestAppContext) {
             window.find("trap-save").focused() == Some(true)
         })
         .unwrap();
-    assert!(on_save, "Shift-Tab from the first stop lands on the last (Save)");
+    assert!(
+        on_save,
+        "Shift-Tab from the first stop lands on the last (Save)"
+    );
     for _ in 0..25 {
         common::press(handle, "shift-tab", cx);
         assert!(!page_has_focus(handle, cx));

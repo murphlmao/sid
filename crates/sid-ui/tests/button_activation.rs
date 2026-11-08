@@ -19,14 +19,16 @@ impl Render for Probe {
             .flex_col()
             .gap_2()
             .child(
-                Button::new("live", "Live").tab_index(1)
+                Button::new("live", "Live")
+                    .tab_index(1)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.live += 1;
                         cx.notify();
                     })),
             )
             .child(
-                Button::new("dead", "Dead").tab_index(2)
+                Button::new("dead", "Dead")
+                    .tab_index(2)
                     .disabled(true)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dead += 1;
@@ -36,7 +38,12 @@ impl Render for Probe {
     }
 }
 
-fn open(cx: &mut TestAppContext) -> (gpui_kit::WindowHandle<gpui_kit::base::Root>, gpui_kit::Entity<Probe>) {
+fn open(
+    cx: &mut TestAppContext,
+) -> (
+    gpui_kit::WindowHandle<gpui_kit::base::Root>,
+    gpui_kit::Entity<Probe>,
+) {
     common::open_window(cx, size(px(400.), px(300.)), |_, cx| {
         cx.new(|_| Probe { live: 0, dead: 0 })
     })
@@ -59,7 +66,11 @@ fn enter_and_space_activate_the_focused_button(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.focus_next(cx);
         window.render_frame(cx);
-        assert_eq!(window.find("live").focused(), Some(true), "focus_next lands on it");
+        assert_eq!(
+            window.find("live").focused(),
+            Some(true),
+            "focus_next lands on it"
+        );
     })
     .unwrap();
     common::press(handle, "enter", cx);

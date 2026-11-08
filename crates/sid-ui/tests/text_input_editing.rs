@@ -5,8 +5,8 @@ mod common;
 use gpui_kit::component::input::InputState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, Window,
-    WindowHandle, base::Root, div, prelude::*, px, size,
+    AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, Window, WindowHandle,
+    base::Root, div, prelude::*, px, size,
 };
 use sid_ui::TextInput;
 
@@ -29,7 +29,11 @@ impl Render for Fields {
 fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Fields>) {
     common::open_window(cx, size(px(500.), px(300.)), |window, cx| {
         let plain = cx.new(|cx| InputState::new(window, cx).default_value("one two three"));
-        let secret = cx.new(|cx| InputState::new(window, cx).default_value("hunter2").masked(true));
+        let secret = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value("hunter2")
+                .masked(true)
+        });
         cx.new(|_| Fields { plain, secret })
     })
 }
@@ -97,7 +101,11 @@ fn select_all_then_typing_replaces_everything(cx: &mut TestAppContext) {
 fn a_masked_field_never_exposes_its_text(cx: &mut TestAppContext) {
     let (handle, _) = open(cx);
     // Whatever the harness reads for the secret, it is not the secret...
-    assert_eq!(value(handle, "secret", cx), None, "masked value is withheld");
+    assert_eq!(
+        value(handle, "secret", cx),
+        None,
+        "masked value is withheld"
+    );
     // ...and editing it keeps it that way, while the plain field beside it still reports.
     on_plain(handle, cx, |w, cx| {
         w.click("secret", cx);

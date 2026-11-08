@@ -26,7 +26,11 @@ fn selected(tree: &Entity<TreeState>, cx: &mut TestAppContext) -> Option<String>
     tree.read_with(cx, |t, _| t.selected().map(|s| s.to_string()))
 }
 
-fn row_exists(handle: gpui_kit::WindowHandle<gpui_kit::base::Root>, ix: usize, cx: &mut TestAppContext) -> bool {
+fn row_exists(
+    handle: gpui_kit::WindowHandle<gpui_kit::base::Root>,
+    ix: usize,
+    cx: &mut TestAppContext,
+) -> bool {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
@@ -59,14 +63,24 @@ fn arrows_move_selection_and_left_right_fold(cx: &mut TestAppContext) {
     });
     let tree = host.read_with(cx, |h, _| h.tree.clone());
     cx.run_until_parked();
-    assert!(row_exists(handle, 0, cx) && row_exists(handle, 1, cx), "a and b rendered");
+    assert!(
+        row_exists(handle, 0, cx) && row_exists(handle, 1, cx),
+        "a and b rendered"
+    );
     assert!(!row_exists(handle, 2, cx), "collapsed: no third row");
 
     common::press(handle, "down", cx);
-    assert_eq!(selected(&tree, cx).as_deref(), Some("a"), "Down from nothing lands on the first row");
+    assert_eq!(
+        selected(&tree, cx).as_deref(),
+        Some("a"),
+        "Down from nothing lands on the first row"
+    );
 
     common::press(handle, "right", cx);
-    assert!(tree.read_with(cx, |t, _| t.is_expanded("a")), "Right expands");
+    assert!(
+        tree.read_with(cx, |t, _| t.is_expanded("a")),
+        "Right expands"
+    );
     assert!(row_exists(handle, 2, cx), "expansion paints the child rows");
 
     common::press(handle, "down", cx);
@@ -78,8 +92,18 @@ fn arrows_move_selection_and_left_right_fold(cx: &mut TestAppContext) {
     assert_eq!(selected(&tree, cx).as_deref(), Some("a2"));
 
     common::press(handle, "left", cx);
-    assert_eq!(selected(&tree, cx).as_deref(), Some("a"), "Left on a leaf climbs to its parent");
+    assert_eq!(
+        selected(&tree, cx).as_deref(),
+        Some("a"),
+        "Left on a leaf climbs to its parent"
+    );
     common::press(handle, "left", cx);
-    assert!(!tree.read_with(cx, |t, _| t.is_expanded("a")), "Left on an open branch collapses");
-    assert!(!row_exists(handle, 2, cx), "collapse removes the child rows");
+    assert!(
+        !tree.read_with(cx, |t, _| t.is_expanded("a")),
+        "Left on an open branch collapses"
+    );
+    assert!(
+        !row_exists(handle, 2, cx),
+        "collapse removes the child rows"
+    );
 }
