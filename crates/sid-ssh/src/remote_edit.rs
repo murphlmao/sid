@@ -22,14 +22,17 @@
 //! cache) and only then is the temp dir removed; if the backup cannot be written the temp
 //! dir is kept and its path reported. An unchanged copy is simply removed.
 //!
-//! Upload strategy: [`UploadStrategy::TmpRename`] (default) writes an exclusively-created,
-//! randomly named `.<name>.sid-<hex>`, restores the target's permission bits, and renames
-//! over the target, so a disconnect mid-upload can never truncate the real file. When the
-//! server cannot do that (exclusive create, chmod or rename-over unsupported - plain SFTP
-//! rename usually refuses to replace, and `russh-sftp` does not expose
-//! `posix-rename@openssh.com`) it falls back to rewriting in place, reported as
-//! `Uploaded { atomic: false }`. A rename creates a new inode, so ownership is not
-//! preserved (permission bits are). [`UploadStrategy::Overwrite`] forces the in-place path.
+//! Upload strategy: [`UploadStrategy::Overwrite`] (default) rewrites the remote in place,
+//! preserving mode, owner and links, but a disconnect mid-write truncates it.
+//! [`UploadStrategy::TmpRename`] (opt-in) writes an exclusively-created, randomly named
+//! `.<name>.sid-<hex>` created with the target's permission bits (setuid/setgid/sticky
+//! dropped) in the OPEN request, and renames over the target, so a disconnect mid-upload
+//! cannot truncate it. It is taken only when the target (lstat) is a regular, non-symlink
+//! file whose uid/gid equal the temp file's; otherwise, or when exclusive create /
+//! rename-over is unsupported (plain SFTP rename usually refuses to replace, and
+//! `russh-sftp` does not expose `posix-rename@openssh.com`), it rewrites in place and
+//! reports `Uploaded { atomic: false }`. It cannot see hard links (SFTP v3 has no link
+//! count), which a rename would detach - hence opt-in.
 //!
 //! Conflict detection compares a SHA-256 of the remote's current bytes with the hash of
 //! what was downloaded / last uploaded, so a same-size, same-second edit is still caught.
@@ -48,11 +51,12 @@ pub const DEFAULT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// How an upload replaces the remote file.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UploadStrategy {
-    /// Rewrite in place (keeps mode/owner, but a disconnect mid-write truncates).
-    Overwrite,
-    /// Write `.<name>.sid-<hex>`, restore the mode, rename over the target; fall back to
-    /// overwrite when the server can't.
+    /// Rewrite in place (keeps mode/owner/links, but a disconnect mid-write truncates).
     #[default]
+    Overwrite,
+    /// Write `.<name>.sid-<hex>` with the target's mode, rename over the target; fall
+    /// back to overwrite whenever the target is not a plain same-owner regular file or the
+    /// server can't. Opt-in: hard links cannot be detected over SFTP v3.
     TmpRename,
 }
 
@@ -107,9 +111,7 @@ pub fn default_backups_root() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("sid").join("remote-edit-backups")
 }
@@ -607,12 +609,10 @@ impl RemoteEdit {
         sftp: &mut dyn SftpSession,
         force: bool,
     ) -> Result<SyncOutcome, RemoteEditError> {
-        let mut remote_mode = 0u32;
         if !force {
             match sftp.stat(&self.remote_path).await? {
                 None => return Err(RemoteEditError::Conflict(ConflictKind::RemoteDeleted)),
                 Some(e) => {
-                    remote_mode = e.mode;
                     let now = RemoteSig {
                         mtime_secs: e.mtime_secs,
                         size: e.size,
@@ -649,35 +649,7 @@ impl RemoteEdit {
         match self.strategy {
             UploadStrategy::Overwrite => sftp.put(&self.remote_path, &bytes).await?,
             UploadStrategy::TmpRename => {
-                let tmp = random_tmp_name(&self.remote_path)?;
-                #[cfg(test)]
-                let tmp = self.tmp_override.clone().unwrap_or(tmp);
-                // Exclusive create: if anything already exists at `tmp` (or exclusive
-                // create is unsupported) we do NOT write through it and do NOT remove it;
-                // we simply overwrite the real target in place instead.
-                if sftp.put_exclusive(&tmp, &bytes).await.is_ok() {
-                    // From here the tmp file is ours, so it is ours to clean up. The
-                    // target's permission bits are restored first (the tmp is created
-                    // 0600); if that is impossible we do not rename, so a 0644 file can
-                    // never silently change mode.
-                    if remote_mode & 0o7777 == 0 {
-                        // Unknown (forced upload or no bits sent): ask.
-                        if let Ok(Some(e)) = sftp.stat(&self.remote_path).await {
-                            remote_mode = e.mode;
-                        }
-                    }
-                    let mode_ok = remote_mode & 0o7777 != 0
-                        && sftp.chmod(&tmp, remote_mode & 0o7777).await.is_ok();
-                    if mode_ok && sftp.rename(&tmp, &self.remote_path).await.is_ok() {
-                        atomic = true;
-                    } else {
-                        let res = sftp.put(&self.remote_path, &bytes).await;
-                        let _ = sftp.remove_file(&tmp).await;
-                        res?;
-                    }
-                } else {
-                    sftp.put(&self.remote_path, &bytes).await?;
-                }
+                atomic = self.upload_tmp_rename(sftp, &bytes).await?;
             }
         }
         if let Some(e) = sftp.stat(&self.remote_path).await? {
@@ -693,6 +665,57 @@ impl RemoteEdit {
             hash: hash_bytes(&bytes),
         };
         Ok(SyncOutcome::Uploaded { atomic })
+    }
+
+    /// Write a temp file next to the target and rename it over. Returns whether the
+    /// rename happened; on any doubt it rewrites in place instead (`Ok(false)`).
+    ///
+    /// Rename-over is only taken for a target that is a plain regular file (lstat: not a
+    /// symlink - a rename would replace the link itself) and whose owner/group equal those
+    /// of the freshly created temp file (a rename would otherwise change ownership). The
+    /// temp file is created with the target's permission bits (minus setuid/setgid/sticky)
+    /// in the OPEN request; nothing is chmod'ed by path afterwards. SFTP v3 does not
+    /// expose a link count, so a hard-linked target (which a rename would detach from its
+    /// other names) cannot be detected - the reason this strategy is opt-in.
+    async fn upload_tmp_rename(
+        &mut self,
+        sftp: &mut dyn SftpSession,
+        bytes: &[u8],
+    ) -> Result<bool, RemoteEditError> {
+        let target = match sftp.lstat_identity(&self.remote_path).await {
+            Ok(Some(t)) if t.is_regular && !t.is_symlink && t.uid.is_some() && t.gid.is_some() => t,
+            _ => {
+                sftp.put(&self.remote_path, bytes).await?;
+                return Ok(false);
+            }
+        };
+        let tmp = random_tmp_name(&self.remote_path)?;
+        #[cfg(test)]
+        let tmp = self.tmp_override.clone().unwrap_or(tmp);
+        // Exclusive create: if anything already exists at `tmp` (or exclusive create is
+        // unsupported) we do NOT write through it and do NOT remove it; we overwrite the
+        // real target in place instead.
+        if sftp
+            .put_exclusive(&tmp, bytes, target.mode & 0o777)
+            .await
+            .is_err()
+        {
+            sftp.put(&self.remote_path, bytes).await?;
+            return Ok(false);
+        }
+        // From here the tmp file is ours, so it is ours to clean up.
+        let same_owner = matches!(
+            sftp.lstat_identity(&tmp).await,
+            Ok(Some(t)) if t.is_regular && !t.is_symlink
+                && t.uid == target.uid && t.gid == target.gid
+        );
+        if same_owner && sftp.rename(&tmp, &self.remote_path).await.is_ok() {
+            return Ok(true);
+        }
+        let res = sftp.put(&self.remote_path, bytes).await;
+        let _ = sftp.remove_file(&tmp).await;
+        res?;
+        Ok(false)
     }
 
     /// Remove the private directory and its contents, UNCONDITIONALLY. Only for a copy
@@ -747,7 +770,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use sid_core::editor::FakeEditorLauncher;
-    use sid_core::ssh::SftpEntry;
+    use sid_core::ssh::{SftpEntry, SftpIdentity};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -761,8 +784,9 @@ mod tests {
         mode: u32,
         puts: Vec<String>,
         renames: usize,
-        chmod_fails: bool,
-        chmods: Vec<(String, u32)>,
+        ident: Option<SftpIdentity>,
+        tmp_uid: u32,
+        put_modes: Vec<(String, u32)>,
     }
 
     #[derive(Clone, Default)]
@@ -818,11 +842,12 @@ mod tests {
             }
             Ok(b.clone())
         }
-        async fn put_exclusive(&mut self, p: &str, b: &[u8]) -> Result<(), SshError> {
+        async fn put_exclusive(&mut self, p: &str, b: &[u8], mode: u32) -> Result<(), SshError> {
             if !self.0.lock().unwrap().exclusive_ok || self.0.lock().unwrap().files.contains_key(p)
             {
                 return Err(SshError::Other("exists or unsupported".into()));
             }
+            self.0.lock().unwrap().put_modes.push((p.into(), mode));
             self.put(p, b).await
         }
         async fn put(&mut self, p: &str, b: &[u8]) -> Result<(), SshError> {
@@ -865,13 +890,29 @@ mod tests {
             s.files.insert(to.into(), f);
             Ok(())
         }
-        async fn chmod(&mut self, p: &str, mode: u32) -> Result<(), SshError> {
-            let mut s = self.0.lock().unwrap();
-            if s.chmod_fails {
-                return Err(SshError::Other("no chmod".into()));
+        async fn lstat_identity(&mut self, p: &str) -> Result<Option<SftpIdentity>, SshError> {
+            let s = self.0.lock().unwrap();
+            if !s.files.contains_key(p) {
+                return Ok(None);
             }
-            s.chmods.push((p.into(), mode));
-            Ok(())
+            let base = s.ident.unwrap_or(SftpIdentity {
+                is_symlink: false,
+                is_regular: true,
+                uid: Some(1000),
+                gid: Some(1000),
+                mode: 0o100644,
+            });
+            // a temp file is "owned" by tmp_uid (the ssh user); the target by `ident`
+            Ok(Some(if p.contains(".sid-") {
+                SftpIdentity {
+                    uid: Some(s.tmp_uid),
+                    is_symlink: false,
+                    is_regular: true,
+                    ..base
+                }
+            } else {
+                base
+            }))
         }
         async fn close(&mut self) -> Result<(), SshError> {
             Ok(())
@@ -1023,6 +1064,7 @@ mod tests {
         let mut sftp = FakeSftp::with(P, b"v1\n");
         sftp.0.lock().unwrap().rename_ok = true;
         sftp.0.lock().unwrap().exclusive_ok = true;
+        sftp.0.lock().unwrap().tmp_uid = 1000;
         let mut c = cfg(root.path());
         c.strategy = UploadStrategy::TmpRename;
         let mut re = RemoteEdit::open(&mut sftp, P, &c).await.unwrap();
@@ -1249,7 +1291,10 @@ mod tests {
             .await
             .unwrap();
         let dir = re.local_path().parent().unwrap().to_path_buf();
-        assert!(matches!(re.close_or_preserve("web1", 0), Preserved::Removed));
+        assert!(matches!(
+            re.close_or_preserve("web1", 0),
+            Preserved::Removed
+        ));
         assert!(!dir.exists());
         assert!(!root.path().join("backups").exists());
     }
@@ -1348,7 +1393,9 @@ mod tests {
         edit_local(&re, b"mine");
         assert!(matches!(
             re.sync(&mut sftp).await,
-            Err(RemoteEditError::Conflict(ConflictKind::RemoteChanged { .. }))
+            Err(RemoteEditError::Conflict(
+                ConflictKind::RemoteChanged { .. }
+            ))
         ));
         assert_eq!(sftp.body(P).unwrap(), b"bbbb");
     }
@@ -1365,50 +1412,93 @@ mod tests {
         assert!(re.sync(&mut sftp).await.is_ok());
     }
 
-    #[tokio::test]
-    async fn default_strategy_is_tmp_rename_and_restores_the_mode() {
-        assert_eq!(UploadStrategy::default(), UploadStrategy::TmpRename);
-        let root = tempfile::tempdir().unwrap();
+    fn tmp_cfg(root: &Path) -> RemoteEditConfig {
+        let mut c = cfg_b(root);
+        c.strategy = UploadStrategy::TmpRename;
+        c
+    }
+
+    async fn rename_fixture(root: &Path, ident: Option<SftpIdentity>) -> (FakeSftp, RemoteEdit) {
         let mut sftp = FakeSftp::with(P, b"v1\n");
         {
             let mut s = sftp.0.lock().unwrap();
             s.rename_ok = true;
             s.exclusive_ok = true;
-            s.mode = 0o100640;
+            s.tmp_uid = 1000;
+            s.ident = ident;
         }
-        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
+        let re = RemoteEdit::open(&mut sftp, P, &tmp_cfg(root))
             .await
             .unwrap();
         edit_local(&re, b"v2 longer\n");
+        (sftp, re)
+    }
+
+    fn ident(f: impl FnOnce(&mut SftpIdentity)) -> Option<SftpIdentity> {
+        let mut i = SftpIdentity {
+            is_symlink: false,
+            is_regular: true,
+            uid: Some(1000),
+            gid: Some(1000),
+            mode: 0o100640,
+        };
+        f(&mut i);
+        Some(i)
+    }
+
+    #[tokio::test]
+    async fn overwrite_is_the_default_strategy() {
+        assert_eq!(UploadStrategy::default(), UploadStrategy::Overwrite);
+    }
+
+    #[tokio::test]
+    async fn tmp_rename_sets_the_mode_at_open_and_drops_suid() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut sftp, mut re) = rename_fixture(
+            root.path(),
+            ident(|i| i.mode = 0o104755), // setuid
+        )
+        .await;
         assert_eq!(
             re.sync(&mut sftp).await.unwrap(),
             SyncOutcome::Uploaded { atomic: true }
         );
-        let chmods = sftp.0.lock().unwrap().chmods.clone();
-        assert_eq!(chmods.len(), 1);
-        assert_eq!(chmods[0].1, 0o640);
+        let modes = sftp.0.lock().unwrap().put_modes.clone();
+        assert_eq!(modes.len(), 1);
+        assert_eq!(modes[0].1, 0o755, "suid bit dropped, set at open");
     }
 
-    #[tokio::test]
-    async fn if_the_mode_cannot_be_restored_it_rewrites_in_place_instead_of_renaming() {
+    async fn assert_in_place(i: Option<SftpIdentity>, tmp_uid: u32) {
         let root = tempfile::tempdir().unwrap();
-        let mut sftp = FakeSftp::with(P, b"v1\n");
-        {
-            let mut s = sftp.0.lock().unwrap();
-            s.rename_ok = true;
-            s.exclusive_ok = true;
-            s.chmod_fails = true;
-        }
-        let mut re = RemoteEdit::open(&mut sftp, P, &cfg_b(root.path()))
-            .await
-            .unwrap();
-        edit_local(&re, b"v2 longer\n");
+        let (mut sftp, mut re) = rename_fixture(root.path(), i).await;
+        sftp.0.lock().unwrap().tmp_uid = tmp_uid;
         assert_eq!(
             re.sync(&mut sftp).await.unwrap(),
             SyncOutcome::Uploaded { atomic: false }
         );
         assert_eq!(sftp.0.lock().unwrap().renames, 0);
         assert_eq!(sftp.body(P).unwrap(), b"v2 longer\n");
-        assert_eq!(sftp.0.lock().unwrap().files.len(), 1, "tmp cleaned");
+        assert_eq!(sftp.0.lock().unwrap().files.len(), 1, "tmp cleaned up");
+    }
+
+    #[tokio::test]
+    async fn a_symlink_target_is_rewritten_in_place() {
+        assert_in_place(ident(|i| i.is_symlink = true), 1000).await;
+    }
+
+    #[tokio::test]
+    async fn a_non_regular_target_is_rewritten_in_place() {
+        assert_in_place(ident(|i| i.is_regular = false), 1000).await;
+    }
+
+    #[tokio::test]
+    async fn an_owner_mismatch_is_rewritten_in_place() {
+        // the temp file would be owned by uid 0 while the target belongs to 1000
+        assert_in_place(ident(|_| {}), 0).await;
+    }
+
+    #[tokio::test]
+    async fn unknown_ownership_is_rewritten_in_place() {
+        assert_in_place(ident(|i| i.uid = None), 1000).await;
     }
 }

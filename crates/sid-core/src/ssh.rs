@@ -194,10 +194,17 @@ pub trait SftpSession: Send + Sync {
         Ok(b)
     }
     async fn put(&mut self, path: &str, bytes: &[u8]) -> Result<(), SshError>;
-    /// Create `path` with `bytes`, failing if it already exists (`O_CREAT|O_EXCL`, so a
-    /// planted file or symlink is never written through). Default: unsupported, and
-    /// callers needing it must fall back to something that does not need a temp file.
-    async fn put_exclusive(&mut self, _path: &str, _bytes: &[u8]) -> Result<(), SshError> {
+    /// Create `path` with `bytes` and permission bits `mode` (set in the OPEN request,
+    /// never by a later path-based chmod), failing if it already exists
+    /// (`O_CREAT|O_EXCL`, so a planted file or symlink is never written through).
+    /// Default: unsupported, and callers needing it must fall back to something that does
+    /// not need a temp file.
+    async fn put_exclusive(
+        &mut self,
+        _path: &str,
+        _bytes: &[u8],
+        _mode: u32,
+    ) -> Result<(), SshError> {
         Err(SshError::Other("exclusive create not supported".into()))
     }
     async fn remove_file(&mut self, path: &str) -> Result<(), SshError>;
@@ -209,12 +216,28 @@ pub trait SftpSession: Send + Sync {
     async fn rename(&mut self, _from: &str, _to: &str) -> Result<(), SshError> {
         Err(SshError::Other("sftp rename not supported".into()))
     }
-    /// Set the permission bits of `path`. Default: unsupported (callers that need it,
-    /// e.g. the rename-over upload, then fall back to rewriting in place).
-    async fn chmod(&mut self, _path: &str, _mode: u32) -> Result<(), SshError> {
-        Err(SshError::Other("sftp chmod not supported".into()))
+    /// `lstat` (does not follow a final symlink): identity facts for deciding whether a
+    /// rename-over is safe. SFTP v3 carries no link count, so hard links are not visible.
+    /// Default: unsupported.
+    async fn lstat_identity(&mut self, _path: &str) -> Result<Option<SftpIdentity>, SshError> {
+        Err(SshError::Other("sftp lstat not supported".into()))
     }
     async fn close(&mut self) -> Result<(), SshError>;
+}
+
+/// What `lstat` says about a path, for rename-over safety checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SftpIdentity {
+    /// The path itself is a symlink.
+    pub is_symlink: bool,
+    /// It is a regular file (no type bits sent counts as regular).
+    pub is_regular: bool,
+    /// Owner, when the server reports it.
+    pub uid: Option<u32>,
+    /// Group, when the server reports it.
+    pub gid: Option<u32>,
+    /// Permission bits including type bits as sent.
+    pub mode: u32,
 }
 
 /// SSH operations needed by the SSH tab.
