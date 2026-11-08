@@ -6,10 +6,12 @@ resume point for the last session is
 [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md).
 
 **Last verified:** 2026-11-08, branch `night/wrap-2026-11-07` @ `b948145` (this refresh
-lives on `night/docs-refresh`). The **combined gate for the wrap branch is pending** — it
-merges `night/sec-binding`, `night/perf` and `night/db-polish` onto main without one. Last
-gated state: `main @ 0fa6dbe: 75 suites / 1924 tests`, 0 failed (fmt, clippy `-D warnings`,
-test; rustc 1.96, Linux).
+lives on `night/docs-refresh`). The wrap branch merges `night/sec-binding`, `night/perf` and
+`night/db-polish` onto main without a combined gate; the **official combined gate is still
+pending**. Last official gated state: `main @ 0fa6dbe: 75 suites / 1924 tests`, 0 failed
+(fmt, clippy `-D warnings`, test; rustc 1.96, Linux). Incidental check: the docs-only
+`night/docs-refresh` (wrap + docs) ran fmt, clippy and `cargo test --workspace` clean —
+75 result lines, 1980 passed, 0 failed, 48 ignored.
 
 ## What sid is (30 seconds)
 
