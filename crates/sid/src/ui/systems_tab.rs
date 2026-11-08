@@ -88,10 +88,10 @@ use sid_ui::component::{
 };
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Button, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton, EmptyState,
-    FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter, MeterTone, Row,
-    Segment, SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput, Toast,
-    Typography as _, scaled, sortable_th, v_flex,
+    ActionCell, Button, Card, CellText, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
+    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter,
+    MeterTone, Row, Segment, SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput,
+    Toast, Typography as _, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -343,7 +343,8 @@ impl ProcessesDelegate {
                 // padding — the idle "kill" chip is narrower, but a control that resizes
                 // the column it lives in when you arm it makes the whole row jump.
                 (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
-            ]),
+            ])
+            .inset_cells(0..=5),
         }
     }
 
@@ -544,36 +545,21 @@ impl TableDelegate for ProcessesDelegate {
         // scroll or drag state to keep, and an id on a cell that has none is ~180
         // `GlobalElementId` round trips per frame for nothing.
         match col_ix {
-            0 => div()
-                .px_2()
-                .text_mono(&theme)
-                .text_color(rgb(theme.fg))
-                .child(format!("{:.1}%", proc.cpu_pct)),
-            1 => div()
-                .px_2()
-                .text_mono(&theme)
-                .text_color(rgb(theme.muted))
-                .child(humanize_bytes(proc.rss_bytes)),
-            2 => div()
-                .px_2()
-                .text_mono(&theme)
-                .text_color(rgb(theme.muted))
-                .child(proc.pid.as_u32().to_string()),
-            3 => div()
-                .px_2()
-                .text_mono(&theme)
-                .text_color(rgb(theme.fg))
-                .child(proc.name.clone()),
+            0 => {
+                CellText::new(&theme, theme.fg, format!("{:.1}%", proc.cpu_pct)).into_any_element()
+            }
+            1 => CellText::new(&theme, theme.muted, humanize_bytes(proc.rss_bytes))
+                .into_any_element(),
+            2 => {
+                CellText::new(&theme, theme.muted, proc.pid.as_u32().to_string()).into_any_element()
+            }
+            3 => CellText::new(&theme, theme.fg, proc.name.clone()).into_any_element(),
             4 => {
                 // `sid_sysinfo::processes::resolve_cmd` already falls back to the
-                // process name for an empty/unreadable command line — see
-                // `ProcessInfo::cmd_is_fallback`'s doc comment — so an empty cell here
-                // only means both `cmd` and `name` were empty, which the dash still
+                // process name for an empty/unreadable command line, so an empty cell
+                // here only means both `cmd` and `name` were empty, which the dash still
                 // covers. The fallback stays on the same Mono rung as a real command
-                // line (same size, same family — the design system's "a data table
-                // sits on one rung" rule) and differs only in ink, so the user can
-                // tell "this is the name, not the argv" without the column looking
-                // like a different kind of cell.
+                // line and differs only in ink.
                 let label: SharedString = if proc.cmd.trim().is_empty() {
                     "—".into()
                 } else {
@@ -584,25 +570,12 @@ impl TableDelegate for ProcessesDelegate {
                 } else {
                     theme.fg
                 };
-                div()
-                    .px_2()
-                    .min_w(px(0.))
-                    .clamp_one_line()
-                    .text_mono(&theme)
-                    .text_color(rgb(ink))
-                    .child(label)
+                CellText::ellipsized(&theme, ink, label).into_any_element()
             }
             5 => {
                 let label: SharedString =
                     proc.user.clone().unwrap_or_else(|| "—".to_string()).into();
-                div()
-                    .px_2()
-                    .min_w(px(0.))
-                    .whitespace_normal()
-                    .clamp_one_line()
-                    .text_mono(&theme)
-                    .text_color(rgb(theme.muted))
-                    .child(label)
+                CellText::ellipsized(&theme, theme.muted, label).into_any_element()
             }
             _ => {
                 let pid = proc.pid;
@@ -612,22 +585,27 @@ impl TableDelegate for ProcessesDelegate {
                 // hand one row's hover/press state to another. The *button* needs an id;
                 // the cell wrapping it does not.
                 let button_id = ("proc-kill", pid.as_u32() as usize);
-                div().size_full().child(
-                    ActionCell::new().child(
-                        ConfirmButton::new(button_id, "kill")
-                            .armed(armed)
-                            .armed_label("confirm")
-                            .tooltip("Ask this process to stop (SIGTERM)")
-                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                let outcome =
-                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                match outcome {
-                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                    Confirm::Armed => cx.notify(),
-                                }
-                            })),
-                    ),
-                )
+                div()
+                    .size_full()
+                    .child(
+                        ActionCell::new().child(
+                            ConfirmButton::new(button_id, "kill")
+                                .armed(armed)
+                                .armed_label("confirm")
+                                .tooltip("Ask this process to stop (SIGTERM)")
+                                .on_press(cx.listener(
+                                    move |this, _ev: &ClickEvent, _window, cx| {
+                                        let outcome =
+                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                        match outcome {
+                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                            Confirm::Armed => cx.notify(),
+                                        }
+                                    },
+                                )),
+                        ),
+                    )
+                    .into_any_element()
             }
         }
     }

@@ -101,7 +101,7 @@ use crate::ui::session::ssh_runtime;
 use sid_ui::component::{Column, ColumnSort, PopupMenu, PopupMenuItem, TableDelegate, TableState};
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Badge, BadgeTone, Card, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
+    ActionCell, Badge, BadgeTone, Card, CellText, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
     EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState,
     PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl, StyledExt as _, Switch,
     TextInput, Toast, Typography as _, caveat_line, h_flex, scaled, sortable_th, v_flex,
@@ -468,7 +468,8 @@ impl PortsDelegate {
                 // Not sortable — an action column, not data. Wide enough for the armed
                 // state's "confirm" label, so arming a row never resizes its column.
                 (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
-            ]),
+            ])
+            .inset_cells(0..=6),
             active_sort: None,
         }
     }
@@ -661,16 +662,16 @@ impl TableDelegate for PortsDelegate {
                     Protocol::Tcp => "tcp",
                     Protocol::Udp => "udp",
                 };
-                data_cell(t, fg, label)
+                bare_cell(t, fg, label)
             }
-            1 => data_cell(t, fg, port.port.to_string()),
+            1 => bare_cell(t, fg, port.port.to_string()),
             2 => {
                 let label: SharedString = if port.local_addr.is_empty() {
                     "—".into()
                 } else {
                     port.local_addr.clone().into()
                 };
-                data_cell(t, muted, label)
+                bare_cell(t, muted, label)
             }
             3 => {
                 let label: SharedString = port
@@ -678,7 +679,7 @@ impl TableDelegate for PortsDelegate {
                     .map(|p| p.as_u32().to_string())
                     .unwrap_or_else(|| "—".to_string())
                     .into();
-                data_cell(t, muted, label)
+                bare_cell(t, muted, label)
             }
             4 => {
                 let label: SharedString = if port.command.is_empty() {
@@ -686,14 +687,14 @@ impl TableDelegate for PortsDelegate {
                 } else {
                     port.command.clone().into()
                 };
-                data_cell(t, fg, label)
+                bare_cell(t, fg, label)
             }
-            5 => data_cell(
+            5 => bare_cell(
                 t,
                 muted,
                 cpu_label(port.pid.and_then(|p| self.usage.get(&p)), self.cpu_ready),
             ),
-            6 => data_cell(
+            6 => bare_cell(
                 t,
                 muted,
                 mem_label(port.pid.and_then(|p| self.usage.get(&p))),
@@ -703,7 +704,10 @@ impl TableDelegate for PortsDelegate {
                     // No attributable owner, no action — an empty cell, not a
                     // substitute dash (`port_action` is the decision; PID/Process keep
                     // their own `—` for absent data, which this is not).
-                    return div().size_full().child(ActionCell::new());
+                    return div()
+                        .size_full()
+                        .child(ActionCell::new())
+                        .into_any_element();
                 };
                 let armed = self.kill_arm.is_armed(pid, now);
                 // Keyed by pid, not by row index: the rows under the pointer reorder on
@@ -711,22 +715,27 @@ impl TableDelegate for PortsDelegate {
                 // one row's hover/press state to another. The *button* needs an id; the
                 // cell wrapping it does not.
                 let button_id = ("net-kill", pid.as_u32() as usize);
-                div().size_full().child(
-                    ActionCell::new().child(
-                        ConfirmButton::new(button_id, "kill")
-                            .armed(armed)
-                            .armed_label("confirm")
-                            .tooltip("Ask this process to stop (SIGTERM)")
-                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                let outcome =
-                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                match outcome {
-                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                    Confirm::Armed => cx.notify(),
-                                }
-                            })),
-                    ),
-                )
+                div()
+                    .size_full()
+                    .child(
+                        ActionCell::new().child(
+                            ConfirmButton::new(button_id, "kill")
+                                .armed(armed)
+                                .armed_label("confirm")
+                                .tooltip("Ask this process to stop (SIGTERM)")
+                                .on_press(cx.listener(
+                                    move |this, _ev: &ClickEvent, _window, cx| {
+                                        let outcome =
+                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                        match outcome {
+                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                            Confirm::Armed => cx.notify(),
+                                        }
+                                    },
+                                )),
+                        ),
+                    )
+                    .into_any_element()
             }
         }
     }
@@ -793,7 +802,8 @@ impl ConnectionsDelegate {
                     ColumnWidth::Fixed(108.),
                 ),
                 (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
-            ]),
+            ])
+            .inset_cells(0..=6),
             active_sort: None,
         }
     }
@@ -920,24 +930,24 @@ impl TableDelegate for ConnectionsDelegate {
         let usage = c.pid.and_then(|p| self.usage.get(&p));
         // No `.id()` on cells - see `sid_ui::table`.
         match col_ix {
-            0 => data_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
-            1 => data_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
+            0 => bare_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
+            1 => bare_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
             2 => {
                 let ink = if c.state == sid_core::sys::SocketState::Established {
                     fg
                 } else {
                     muted
                 };
-                data_cell(t, ink, c.state_label.clone())
+                bare_cell(t, ink, c.state_label.clone())
             }
-            3 => data_cell(
+            3 => bare_cell(
                 t,
                 muted,
                 c.pid
                     .map(|p| p.as_u32().to_string())
                     .unwrap_or_else(|| "—".into()),
             ),
-            4 => data_cell(
+            4 => bare_cell(
                 t,
                 fg,
                 if c.command.is_empty() {
@@ -946,30 +956,38 @@ impl TableDelegate for ConnectionsDelegate {
                     c.command.clone()
                 },
             ),
-            5 => data_cell(t, muted, cpu_label(usage, self.cpu_ready)),
-            6 => data_cell(t, muted, mem_label(usage)),
+            5 => bare_cell(t, muted, cpu_label(usage, self.cpu_ready)),
+            6 => bare_cell(t, muted, mem_label(usage)),
             _ => {
                 let Some(PortAction::Kill(pid)) = port_action(c.pid) else {
-                    return div().size_full().child(ActionCell::new());
+                    return div()
+                        .size_full()
+                        .child(ActionCell::new())
+                        .into_any_element();
                 };
                 let armed = self.kill_arm.is_armed(pid, Instant::now());
                 // Keyed by pid so the id follows the process, not the row slot.
-                div().size_full().child(
-                    ActionCell::new().child(
-                        ConfirmButton::new(("conn-kill", pid.as_u32() as usize), "kill")
-                            .armed(armed)
-                            .armed_label("confirm")
-                            .tooltip("Ask the owning process to stop (SIGTERM)")
-                            .on_press(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                let outcome =
-                                    this.delegate_mut().kill_arm.press(pid, Instant::now());
-                                match outcome {
-                                    Confirm::Fire => this.delegate_mut().kill(pid, cx),
-                                    Confirm::Armed => cx.notify(),
-                                }
-                            })),
-                    ),
-                )
+                div()
+                    .size_full()
+                    .child(
+                        ActionCell::new().child(
+                            ConfirmButton::new(("conn-kill", pid.as_u32() as usize), "kill")
+                                .armed(armed)
+                                .armed_label("confirm")
+                                .tooltip("Ask the owning process to stop (SIGTERM)")
+                                .on_press(cx.listener(
+                                    move |this, _ev: &ClickEvent, _window, cx| {
+                                        let outcome =
+                                            this.delegate_mut().kill_arm.press(pid, Instant::now());
+                                        match outcome {
+                                            Confirm::Fire => this.delegate_mut().kill(pid, cx),
+                                            Confirm::Armed => cx.notify(),
+                                        }
+                                    },
+                                )),
+                        ),
+                    )
+                    .into_any_element()
             }
         }
     }
@@ -2685,6 +2703,13 @@ fn notice_row(title: &'static str, message: Option<String>) -> Option<impl IntoE
 /// gpui's `truncate()`, arriving by inheritance instead. Restoring `Normal` on the cell
 /// itself is what lets the second layout pass carry a real width and truncate; without
 /// it, `clean`/`…` never appears and every over-long cell in this tab is cut mid-glyph.
+/// A text cell with **no node of its own** (`sid_ui::table::CellText`): the same mono
+/// body rung, ink and ellipsis as [`data_cell`], but the inset is carried by the column
+/// (`FillColumns::inset_cells`) so nothing is wrapped around the text.
+fn bare_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> AnyElement {
+    CellText::ellipsized(theme, ink, label).into_any_element()
+}
+
 fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
     div()
         .px_2()

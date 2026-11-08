@@ -10,7 +10,8 @@
 //! It deliberately needs no `App`, `Window` or entity, so its behaviour is unit-tested
 //! at the same millisecond speed as the resolver underneath it.
 
-use gpui::px;
+use gpui::{Edges, Pixels, px};
+use gpui_component::Size;
 use gpui_component::table::{Column, ColumnSort};
 
 use super::column_width::{ColumnWidth, resolve_widths};
@@ -43,6 +44,9 @@ pub const TABLE_CHROME: f32 = REAL_CHROME + CHROME_SLACK;
 
 /// The chrome that physically exists: the table's 2px border plus the 12px trailing
 /// strip. Not the reserve — see [`TABLE_CHROME`] for why the reserve must exceed it.
+/// `px_2` at 100% zoom, in logical pixels.
+const INSET: f32 = 8.0;
+
 const REAL_CHROME: f32 = 14.0;
 
 /// How far inside the row's content box the columns are kept. See [`TABLE_CHROME`].
@@ -61,6 +65,9 @@ pub struct FillColumns {
     columns: Vec<Column>,
     declared: Vec<ColumnWidth>,
     chrome: f32,
+    /// Columns whose text inset is carried by `Column::paddings` instead of a `px_2` div
+    /// in every cell. See [`FillColumns::inset_cells`].
+    inset: Vec<bool>,
 }
 
 impl FillColumns {
@@ -81,11 +88,56 @@ impl FillColumns {
             columns,
             declared,
             chrome: TABLE_CHROME,
+            inset: Vec::new(),
         }
     }
 
     /// Override the [`TABLE_CHROME`] reserve — for a delegate that overrides
     /// `render_last_empty_col` or renders the table unbordered.
+    /// Inset these columns' body text by `px_2`, the way every sid text cell used to do
+    /// with a wrapper `div` -- but through `Column::paddings`, which upstream's cell
+    /// wrapper already applies, so a cell can be a bare [`CellText`](super::CellText)
+    /// with no node of its own (`docs/design/2026-11-07-perf-pass.md`, table section).
+    ///
+    /// Only the **left** edge grows: the header shares `Column::paddings` and parks its
+    /// sort chevron against the right padding, so growing that edge would move every
+    /// chevron. [`sortable_th`](super::sortable_th) cancels the left growth with a
+    /// negative margin, so header text stays where it was. The cost is the right edge of
+    /// an ellipsised cell, which now ends at the column's default 8px padding rather than
+    /// 16px.
+    ///
+    /// Columns that hold a widget (a kill button) are simply left out of `cols`.
+    pub fn inset_cells(mut self, cols: impl IntoIterator<Item = usize>) -> Self {
+        self.inset = vec![false; self.columns.len()];
+        for ix in cols {
+            if let Some(slot) = self.inset.get_mut(ix) {
+                *slot = true;
+            }
+        }
+        self.apply_insets(UiScale::DEFAULT);
+        self
+    }
+
+    /// The left padding an inset column carries at `scale`: upstream's default cell
+    /// padding plus `px_2` (0.5rem, which is zoomed).
+    fn inset_padding(scale: UiScale) -> Edges<Pixels> {
+        let mut pad = Size::default().table_cell_padding();
+        pad.left += scale.scale_px(px(INSET));
+        pad
+    }
+
+    fn apply_insets(&mut self, scale: UiScale) -> bool {
+        let pad = Self::inset_padding(scale);
+        let mut changed = false;
+        for (column, inset) in self.columns.iter_mut().zip(&self.inset) {
+            if *inset && column.paddings != Some(pad) {
+                column.paddings = Some(pad);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn chrome(mut self, chrome: f32) -> Self {
         self.chrome = chrome;
         self
@@ -125,7 +177,7 @@ impl FillColumns {
         let declared: Vec<ColumnWidth> = self.declared.iter().map(|d| d.scaled(scale)).collect();
         let chrome = f32::from(scale.scale_px(px(self.chrome)));
         let resolved = resolve_widths(&declared, viewport - chrome);
-        let mut changed = false;
+        let mut changed = self.apply_insets(scale);
         for (column, width) in self.columns.iter_mut().zip(resolved) {
             if (f32::from(column.width) - width).abs() >= REDRAW_EPSILON {
                 column.width = px(width);
@@ -337,6 +389,33 @@ mod tests {
         assert_eq!(cols.column(5).sort, None);
         cols.apply_sort(5, ColumnSort::Ascending);
         assert_eq!(cols.column(5).sort, None);
+    }
+
+    #[test]
+    fn an_inset_column_carries_px_2_in_its_left_padding_only() {
+        let cols = processes().inset_cells(0..=4);
+        let default = Size::default().table_cell_padding();
+        let pad = cols.column(0).paddings.expect("inset column has paddings");
+        assert_eq!(pad.left, default.left + px(8.));
+        assert_eq!(
+            pad.right, default.right,
+            "the chevron lives against this edge"
+        );
+        assert_eq!(pad.top, default.top);
+        // The widget column is left alone.
+        assert!(cols.column(5).paddings.is_none());
+    }
+
+    #[test]
+    fn insets_follow_the_app_zoom() {
+        let mut cols = processes().inset_cells(0..=4);
+        let big = UiScale::from_percent(150);
+        assert!(cols.sync(2000., big), "a new inset is a change");
+        let default = Size::default().table_cell_padding();
+        assert_eq!(
+            cols.column(0).paddings.unwrap().left,
+            default.left + big.scale_px(px(8.))
+        );
     }
 
     #[test]

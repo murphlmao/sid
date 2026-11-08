@@ -124,7 +124,7 @@ pub use switch::Switch;
 // `ColumnWidth` from here, and having exactly one of the pair live a module deeper was
 // a papercut with no rule behind it.
 pub use table::{
-    ColumnWidth, FillColumns, FillTable, FillTableDelegate, TABLE_CHROME, sortable_th,
+    CellText, ColumnWidth, FillColumns, FillTable, FillTableDelegate, TABLE_CHROME, sortable_th,
 };
 pub use theme::Theme;
 pub use toast::{Toast, ToastPaint, ToastTone};

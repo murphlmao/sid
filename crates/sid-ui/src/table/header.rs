@@ -104,9 +104,18 @@ pub fn sortable_th<D: FillTableDelegate>(
     let sortable = column.sort.is_some();
     let theme = crate::theme::active(cx).clone();
 
+    // An inset column (`FillColumns::inset_cells`) has extra left padding for its body
+    // cells; the header must not move, so give it back.
+    let give_back = column
+        .paddings
+        .map(|p| p.left - gpui_component::Size::default().table_cell_padding().left);
+
     div()
         .id(("sid-th", col_ix))
         .size_full()
+        .when_some(give_back.filter(|g| *g > gpui::px(0.)), |this, g| {
+            this.ml(-g)
+        })
         .when(sortable, |this| {
             this.cursor_pointer()
                 .on_click(cx.listener(move |table, _, window, cx| {
