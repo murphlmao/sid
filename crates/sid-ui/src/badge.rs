@@ -239,17 +239,30 @@ impl RenderOnce for Badge {
             .child(
                 div()
                     // A badge's word is usually short and occasionally a workspace name
-                    // or a state string from a remote. `min_w_0` + a clamp keeps the
-                    // long case from setting the whole row's minimum width — a chip is
-                    // furniture and must never be the thing that widens a table.
-                    .min_w_0()
-                    .clamp_one_line()
+                    // or a state string from a remote. A long one is clamped so it can
+                    // never set the whole row's minimum width — a chip is furniture and
+                    // must never be the thing that widens a table. A *short* one is
+                    // never clamped: inside a content-sized (`flex_none`) wrapper the
+                    // clamp's intrinsic pass measured `v0.1.0` at three glyphs and drew
+                    // `v0...`, so a label that fits in any sane chip is just not given
+                    // the chance to be cut.
+                    .map(|label| {
+                        if self.label.chars().count() <= SHORT_LABEL_CHARS {
+                            label.whitespace_nowrap()
+                        } else {
+                            label.min_w_0().clamp_one_line()
+                        }
+                    })
                     .text_meta(&theme)
                     .text_color(rgb(paint.ink))
                     .child(self.label),
             )
     }
 }
+
+/// Labels this short are laid out at their natural width, unclamped. See
+/// [`Badge`]'s render for why.
+const SHORT_LABEL_CHARS: usize = 28;
 
 #[cfg(test)]
 mod tests {
