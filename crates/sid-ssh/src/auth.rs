@@ -126,13 +126,20 @@ pub fn agent_unavailable(gap: AgentGap<'_>) -> String {
 }
 
 async fn auth_agent(handle: &mut Handle<ClientHandler>, user: &str) -> Result<(), SshError> {
+    // Windows' OpenSSH agent listens on a well-known named pipe when SSH_AUTH_SOCK is unset.
+    #[cfg(windows)]
+    let sock = std::env::var("SSH_AUTH_SOCK")
+        .unwrap_or_else(|_| r"\\.\pipe\openssh-ssh-agent".to_string());
+    #[cfg(not(windows))]
     let sock = std::env::var("SSH_AUTH_SOCK")
         .map_err(|_| SshError::AuthFailed(agent_unavailable(AgentGap::NoSocket)))?;
-    let mut agent = russh::keys::agent::client::AgentClient::connect_uds(&sock)
-        .await
-        .map_err(|e| {
-            SshError::AuthFailed(agent_unavailable(AgentGap::Unreachable(&e.to_string())))
-        })?;
+    #[cfg(unix)]
+    let connected = russh::keys::agent::client::AgentClient::connect_uds(&sock).await;
+    #[cfg(windows)]
+    let connected = russh::keys::agent::client::AgentClient::connect_named_pipe(&sock).await;
+    let mut agent = connected.map_err(|e| {
+        SshError::AuthFailed(agent_unavailable(AgentGap::Unreachable(&e.to_string())))
+    })?;
     let identities = agent.request_identities().await.map_err(|e| {
         SshError::AuthFailed(agent_unavailable(AgentGap::Unreachable(&e.to_string())))
     })?;

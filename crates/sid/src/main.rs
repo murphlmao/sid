@@ -47,7 +47,7 @@ fn main() {
     // and only hard-fail — with a human diagnosis instead of a panic — when no
     // rendering path exists at all. Cached by environment fingerprint, so
     // healthy machines pay nothing after their first launch.
-    let preflight = sid_gpu::LinuxGpuPreflight::from_env(env!("CARGO_PKG_VERSION"));
+    let preflight = sid_gpu::PlatformGpuPreflight::from_env(env!("CARGO_PKG_VERSION"));
     let render_soft_reason = match preflight.ensure_renderable() {
         Ok(ok) => {
             for (key, value) in &ok.env_pins {
@@ -227,7 +227,7 @@ fn run_gpu_report() -> ! {
     env_logger::Builder::new()
         .parse_filters("warn,blade_graphics=info")
         .init();
-    let preflight = sid_gpu::LinuxGpuPreflight::from_env(env!("CARGO_PKG_VERSION"));
+    let preflight = sid_gpu::PlatformGpuPreflight::from_env(env!("CARGO_PKG_VERSION"));
     let report = preflight.report();
     print!("{}", report.text);
     std::process::exit(if report.renderable { 0 } else { 1 });

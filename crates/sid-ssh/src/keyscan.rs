@@ -29,7 +29,9 @@ impl LocalIdentities {
     /// otherwise would just hide that fact one layer deeper. Whether the socket is
     /// *live* is still re-checked per call; see [`IdentityScan::agent_available`].
     pub fn from_env() -> Result<Self, KeyScanError> {
-        let home = std::env::var_os("HOME").ok_or(KeyScanError::NoHome)?;
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or(KeyScanError::NoHome)?;
         Ok(Self::new(
             Path::new(&home).join(".ssh"),
             std::env::var_os("SSH_AUTH_SOCK")
@@ -190,6 +192,7 @@ mod tests {
         assert_eq!(names(&source), vec!["id_ed25519"]);
     }
 
+    #[cfg(unix)] // fixture permissions are POSIX modes
     #[test]
     fn a_public_sibling_is_recorded_on_the_candidate_it_belongs_to() {
         let dir = ssh_dir(&[
