@@ -28,6 +28,9 @@ use sid_ui::{
 /// How many matches the palette shows at once.
 const MAX_RESULTS: usize = 30;
 
+/// How many compact rows the palette's list shows before it scrolls.
+const VISIBLE_ROWS: f32 = 9.;
+
 /// How many recently run entries are remembered (persisted in Settings).
 pub(crate) const MAX_RECENT: usize = sid_store::PALETTE_RECENTS_CAP;
 
@@ -325,6 +328,10 @@ impl AppState {
         };
 
         for &action in keymap::ALL_ACTIONS {
+            // The palette does not list itself: you are already in it.
+            if action == Action::CommandPalette {
+                continue;
+            }
             let label = action.label();
             if let Some(score) = fuzzy_score(query, label) {
                 push(
@@ -484,10 +491,11 @@ impl AppState {
         let panel = div()
             .id("palette-panel")
             .w(scaled(580.))
-            .max_h(scaled(460.))
             .flex()
             .flex_col()
-            .elevation(Elevation::Floating, &t)
+            // `Overlay`, not `Floating`: the palette sits over a scrim, and `Floating`'s
+            // brightened fill reads as a saturated purple slab against cosmos.
+            .elevation(Elevation::Overlay, &t)
             .corners(Radius::Lg)
             .overflow_hidden()
             .child(
@@ -504,6 +512,9 @@ impl AppState {
                     .flex_col()
                     .overflow_y_scroll()
                     .p_1()
+                    // A whole number of 36px compact rows plus the 4px padding either
+                    // side, so the list ends on a row edge instead of mid-row.
+                    .max_h(scaled(VISIBLE_ROWS * 36. + 8.))
                     .children(rows)
                     .when(no_matches, |this| {
                         this.child(

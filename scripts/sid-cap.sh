@@ -69,6 +69,7 @@
 #                      e.g. one with a saved test host + pinned known_hosts
 #   --env KEY=VALUE    extra env var for the sid process (repeatable) — e.g. passing
 #                      a host SSH_AUTH_SOCK through so a live-ssh capture can agent-auth
+#   --zoom PERCENT     app zoom for this run (sets SID_UI_SCALE, e.g. 150)
 #   --keep             leave the compositor + app running (debug; prints env)
 #   --tree             print swaymsg -t get_tree instead of capturing
 #
@@ -156,6 +157,7 @@ while [[ $# -gt 0 ]]; do
         --real)  REAL=1; shift ;;
         --xdg)   XDG_SRC="$2"; shift 2 ;;
         --env)   EXTRA_ENV+=("$2"); shift 2 ;;
+        --zoom)  EXTRA_ENV+=("SID_UI_SCALE=$2"); shift 2 ;;
         --keep)  KEEP=1; shift ;;
         --tree)  TREE=1; shift ;;
         *) die "unknown argument: $1 (see the header of this script)" ;;

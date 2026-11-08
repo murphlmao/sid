@@ -67,7 +67,7 @@ impl Action {
     /// doc comment on why `keymap` stays decoupled from `app`.
     pub fn label(self) -> &'static str {
         match self {
-            Action::CommandPalette => "Command Palette",
+            Action::CommandPalette => "Command palette",
             Action::PrimaryTab(1) => "Go to SSH / SFTP",
             Action::PrimaryTab(2) => "Go to Database",
             Action::PrimaryTab(3) => "Go to Network",
@@ -75,18 +75,18 @@ impl Action {
             Action::PrimaryTab(5) => "Go to System",
             Action::PrimaryTab(6) => "Go to Settings",
             Action::PrimaryTab(_) => "Go to tab",
-            Action::CycleTabForward => "Next Tab",
-            Action::CycleTabBack => "Previous Tab",
-            Action::CycleSessionForward => "Next SSH Session",
-            Action::CycleSessionBack => "Previous SSH Session",
-            Action::NewSession => "New SSH Session",
-            Action::CloseSession => "Close SSH Session",
+            Action::CycleTabForward => "Next tab",
+            Action::CycleTabBack => "Previous tab",
+            Action::CycleSessionForward => "Next SSH session",
+            Action::CycleSessionBack => "Previous SSH session",
+            Action::NewSession => "New SSH session",
+            Action::CloseSession => "Close SSH session",
             Action::Settings => "Settings",
-            Action::CheatSheet => "Keyboard Shortcuts",
-            Action::FocusFilter => "Find / Filter",
-            Action::ZoomIn => "Zoom In",
-            Action::ZoomOut => "Zoom Out",
-            Action::ZoomReset => "Reset Zoom",
+            Action::CheatSheet => "Keyboard shortcuts",
+            Action::FocusFilter => "Find / filter",
+            Action::ZoomIn => "Zoom in",
+            Action::ZoomOut => "Zoom out",
+            Action::ZoomReset => "Reset zoom",
         }
     }
 
@@ -325,6 +325,14 @@ pub fn default_bindings() -> Vec<Binding> {
         // fire while some other widget (a text field, most importantly) holds keyboard
         // focus, so a literal `?` typed anywhere is never stolen.
         binding(chord("?", false, None), NormalOnly, Action::CheatSheet),
+        // Some input paths (wtype, certain xkb layouts) deliver the physical `/` key
+        // with Shift held rather than the resolved `?` — accept that spelling too. Ctrl
+        // is false here, so `Ctrl+/` (FocusFilter) is untouched.
+        binding(
+            chord("/", false, Some(true)),
+            NormalOnly,
+            Action::CheatSheet,
+        ),
         // Find/filter: no terminal-focus fallback is bound (the tabs that currently wire
         // this — Network — have no terminal), so plain `NormalOnly` is enough; inside a
         // focused terminal both chords simply resolve to `None` and pass through as their
@@ -1512,6 +1520,48 @@ mod tests {
             Some(Action::CheatSheet)
         );
         assert_eq!(resolve(&key("?"), FocusContext::Terminal, &bindings), None);
+    }
+
+    #[test]
+    fn cheat_sheet_also_opens_on_shift_slash() {
+        let bindings = default_bindings();
+        let shift_slash = Keystroke {
+            modifiers: Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            key: "/".to_string(),
+            key_char: None,
+        };
+        assert_eq!(
+            resolve(&shift_slash, FocusContext::Normal, &bindings),
+            Some(Action::CheatSheet)
+        );
+        assert_eq!(
+            resolve(&ctrl("/"), FocusContext::Normal, &bindings),
+            Some(Action::FocusFilter)
+        );
+    }
+
+    #[test]
+    fn action_labels_are_sentence_case() {
+        for a in ALL_ACTIONS {
+            let l = a.label();
+            // `Go to <Tab>` names a tab, which is a proper noun.
+            if l.starts_with("Go to ") {
+                continue;
+            }
+            let rest: Vec<&str> = l.split_whitespace().skip(1).collect();
+            for w in rest {
+                let acronym = w
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || !c.is_alphabetic());
+                assert!(
+                    acronym || !w.starts_with(|c: char| c.is_uppercase()),
+                    "{l:?}: {w}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -123,11 +123,13 @@ pub(crate) const LONG_QUERY_MS: u128 = 5_000;
 /// The narrowest window the six tab *words* fit in, beside the wordmark and the scope
 /// switcher.
 ///
-/// Measured off the 1920px capture: the labels are ~540px, the wordmark ~62, the
-/// switcher ~220, the bar's own padding and gaps ~40 — ~860, so 900 is the first round
-/// number with headroom. Below it the words go and the icons stay, which is ~280px of
+/// Measured off the 1024px capture (QA sweep #1): the labels are ~620px with their
+/// icons, the wordmark ~70, a switcher holding `Global` + a workspace ~260 (it may grow
+/// to its 360px cap), the bar's own padding and gaps ~40 — ~990 typical, ~1090 worst
+/// case, so 1100 is the first round number with headroom (900 clipped "Settings" to
+/// "Sett" at 1024). Below it the words go and the icons stay, which is ~280px of
 /// tabs instead of ~540.
-const LABELLED_TABS_MIN_VIEWPORT: f32 = 900.;
+const LABELLED_TABS_MIN_VIEWPORT: f32 = 1100.;
 
 /// Which shape the top bar's tabs take.
 ///
@@ -1750,7 +1752,9 @@ impl AppState {
                     // Only when the word is gone: a tooltip repeating a label the user
                     // can already read is noise, and gpui debug-asserts on a second
                     // `tooltip()` call for the same element anyway.
-                    .when(!chrome.shows_label(), |this| this.tip(tab.label()))
+                    .when(!chrome.shows_label(), |this| {
+                        this.tip_with_key(tab.label(), &format!("ctrl-{}", ix + 1))
+                    })
                     .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                         this.set_active_tab(tab);
                         // Mouse-driven tab switches need the same refocus as the
@@ -2385,7 +2389,7 @@ impl AppState {
                             .cursor_pointer()
                             .bg(rgb(selection))
                             .text_color(rgb(fg_strong))
-                            .child("← close tab")
+                            .child("← Close tab")
                             .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                                 this.close_session(ix, window, cx);
                             })),
@@ -2554,7 +2558,7 @@ fn secrets_fact(degraded: bool) -> (&'static str, BadgeTone) {
 /// Hidden rather than rendered as `0 ssh sessions`: the bar reports what sid is holding,
 /// and a count of nothing is not a fact about the app — it is a fact about the bar.
 fn ssh_session_fact(open: usize) -> Option<String> {
-    (open > 0).then(|| count_label(open, "ssh session"))
+    (open > 0).then(|| count_label(open, "SSH session"))
 }
 
 /// The frame timer, as an element.
@@ -3010,8 +3014,8 @@ mod tests {
 
         // Sessions: absent at zero, pluralised after one.
         assert_eq!(ssh_session_fact(0), None);
-        assert_eq!(ssh_session_fact(1).as_deref(), Some("1 ssh session"));
-        assert_eq!(ssh_session_fact(3).as_deref(), Some("3 ssh sessions"));
+        assert_eq!(ssh_session_fact(1).as_deref(), Some("1 SSH session"));
+        assert_eq!(ssh_session_fact(3).as_deref(), Some("3 SSH sessions"));
 
         // Zoom rides a predicate `UiScale` already owns — asserted here so the bar's
         // "only when it has something to say" rule is written down beside the others.
@@ -3161,6 +3165,8 @@ mod tests {
             TabChrome::Labelled,
             "the breakpoint itself"
         );
+        assert_eq!(TabChrome::for_window(px(1024.), rem), TabChrome::IconOnly);
+        assert_eq!(TabChrome::for_window(px(1280.), rem), TabChrome::Labelled);
         assert_eq!(TabChrome::for_window(px(700.), rem), TabChrome::IconOnly);
         assert_eq!(TabChrome::for_window(px(620.), rem), TabChrome::IconOnly);
     }
