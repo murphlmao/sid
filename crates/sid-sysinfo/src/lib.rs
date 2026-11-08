@@ -29,8 +29,11 @@
 //! - `overview`: refreshes CPU usage + memory on the same cached `System` used by
 //!   `list_processes` (see `overview.rs`'s module doc for the CPU% warm-up caveat).
 
+use std::collections::HashMap;
+
 use sid_core::sys::{
-    ListeningPort, NetInterface, Pid, ProcessInfo, Signal, SysError, SysProvider, SystemOverview,
+    Connection, ListeningPort, NetInterface, Pid, ProcUsage, ProcessInfo, Signal, SysError,
+    SysProvider, SystemOverview,
 };
 
 pub mod default_route;
@@ -107,6 +110,14 @@ impl SysProvider for SysinfoProvider {
 
     fn default_route_iface_name(&mut self) -> Result<Option<String>, SysError> {
         default_route::read_default_route_iface()
+    }
+
+    fn list_connections(&mut self) -> Result<Vec<Connection>, SysError> {
+        ports::list_connections(&mut self.inner)
+    }
+
+    fn process_usage(&mut self, pids: &[Pid]) -> Result<HashMap<Pid, ProcUsage>, SysError> {
+        ports::process_usage(&mut self.inner, pids)
     }
 }
 
