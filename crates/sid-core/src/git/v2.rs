@@ -241,6 +241,18 @@ pub struct FetchReport {
     pub behind: Option<usize>,
 }
 
+/// Outcome of [`super::GitProvider::push`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PushReport {
+    pub remote: String,
+    /// Local branch that was pushed.
+    pub branch: String,
+    /// Full ref it was pushed to on the remote (e.g. `refs/heads/main`).
+    pub upstream_ref: String,
+    /// The remote already had everything.
+    pub up_to_date: bool,
+}
+
 // ─── Worktrees ──────────────────────────────────────────────────────────────
 
 /// One linked (or the main) worktree.

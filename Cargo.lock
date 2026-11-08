@@ -7661,6 +7661,7 @@ name = "sid-git"
 version = "0.0.1"
 dependencies = [
  "git2",
+ "libc",
  "sid-core",
  "tempfile",
 ]

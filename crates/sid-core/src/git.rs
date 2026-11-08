@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 mod v2;
 pub use v2::{
     Diff, DiffHunk, DiffLimits, DiffLine, DiffLineKind, DiffStatus, DiffTarget, FetchReport,
-    FileDiff, FileStatus, LogEntry, LogPage, LogQuery, RefDecoration, RefKind, StashEntry,
-    StatusCounts, StatusOptions, WorktreeInfo,
+    FileDiff, FileStatus, LogEntry, LogPage, LogQuery, PushReport, RefDecoration, RefKind,
+    StashEntry, StatusCounts, StatusOptions, WorktreeInfo,
 };
 
 /// Domain-shaped git error. Concrete impls map their library errors into this.
@@ -453,6 +453,13 @@ pub trait GitProvider: Send + Sync {
     /// is time-bounded ([`GitError::TimedOut`]). Reports ahead/behind afterwards.
     fn fetch(&self, _remote: &str) -> Result<FetchReport, GitError> {
         Err(GitError::Unsupported("fetch"))
+    }
+
+    /// Push the current branch to its configured upstream. Never prompts
+    /// ([`GitError::AuthFailed`]); time-bounded ([`GitError::TimedOut`]); a rejected
+    /// non-fast-forward is [`GitError::Conflict`].
+    fn push(&self) -> Result<PushReport, GitError> {
+        Err(GitError::Unsupported("push"))
     }
 
     /// The main worktree plus linked ones (read-only).
