@@ -95,6 +95,8 @@ mod sidebar_metrics {
 // ponytail: fixed-interval poll, not event-driven — fine at ~30Hz for a terminal; revisit only
 // if `SshShellReader` grows a readable-notify.
 const POLL_INTERVAL: Duration = Duration::from_millis(33);
+/// The poll interval while no sid window has keyboard focus.
+const POLL_INTERVAL_UNFOCUSED: Duration = Duration::from_millis(133);
 
 /// Placeholder pane size until the viewport-driven resize computes the real one.
 const DEFAULT_ROWS: u16 = 24;
@@ -569,8 +571,9 @@ impl SshSession {
     fn start_read_loop(&mut self, reader: Box<dyn SshShellReader>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let mut reader = reader;
+            let mut interval = POLL_INTERVAL;
             loop {
-                cx.background_executor().timer(POLL_INTERVAL).await;
+                cx.background_executor().timer(interval).await;
                 // `SshShellReader::try_read` always returns `Ok` (it just drains a buffer —
                 // it never learns the channel closed), so `disconnect()` setting `status` is
                 // the only signal this loop gets; check it before every read rather than
@@ -578,7 +581,15 @@ impl SshSession {
                 // some other strong `Entity<SshSession>` handle keeps the session alive would
                 // leak this task polling forever.
                 let still_connected = this
-                    .update(cx, |session, _cx| {
+                    .update(cx, |session, cx| {
+                        // Nobody is typing into an unfocused window, so drain its
+                        // output at a quarter of the rate (fewer thread hops and
+                        // wakeups); full rate resumes the tick after focus returns.
+                        interval = if cx.active_window().is_none() {
+                            POLL_INTERVAL_UNFOCUSED
+                        } else {
+                            POLL_INTERVAL
+                        };
                         session.status == SessionStatus::Connected
                     })
                     .unwrap_or(false);
