@@ -5,13 +5,9 @@ orientation doc: current state, tab by tab, what is open, where the landmines ar
 resume point for the last session is
 [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md).
 
-**Last verified:** 2026-11-08, branch `night/wrap-2026-11-07` @ `b948145` (this refresh
-lives on `night/docs-refresh`). The wrap branch merges `night/sec-binding`, `night/perf` and
-`night/db-polish` onto main without a combined gate; the **official combined gate is still
-pending**. Last official gated state: `main @ 0fa6dbe: 75 suites / 1924 tests`, 0 failed
-(fmt, clippy `-D warnings`, test; rustc 1.96, Linux). Incidental check: the docs-only
-`night/docs-refresh` (wrap + docs) ran fmt, clippy and `cargo test --workspace` clean —
-75 result lines, 1980 passed, 0 failed, 48 ignored.
+**Last verified:** `main @ 56ca357 — 76 suites / 2054 tests / 0 failed (fmt, clippy -D warnings clean)`
+(rustc 1.96, Linux). Everything from the 2026-11-07 night sprint, the 2026-11-08 integration,
+security review #2 and the QA-sweep fixes is merged; there are no pending branches.
 
 ## What sid is (30 seconds)
 
@@ -27,7 +23,7 @@ adapters; the MCP server, `.claude` plugin and CI are un-deferred and built.
 1. [`../CLAUDE.md`](../CLAUDE.md) — the binding ruleset.
 2. [`ARCHITECTURE.md`](ARCHITECTURE.md) — crate graph, seam table, runtime model, recipes.
 3. [`../.interface-design/system.md`](../.interface-design/system.md) — design law (v2); spec and per-tab rollout guide in [`design/2026-11-07-friendly-ui-v2.md`](design/2026-11-07-friendly-ui-v2.md).
-4. [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md) — what landed, what is ungated, next steps, pending decisions.
+4. [`design/2026-11-07-night-sprint-handoff.md`](design/2026-11-07-night-sprint-handoff.md) — what landed in the sprint (closed 2026-11-08; see the note at its top).
 5. [`design/2026-11-07-perf-pass.md`](design/2026-11-07-perf-pass.md) — frame-cost method and what is left.
 6. `crates/<crate>/CLAUDE.md` — per-crate invariants and how to test.
 7. History only: `design/2026-09-09-ui-cohesion-loop.md` (annotated), `design/2026-06-27-gpui-rebuild-design.md` (North Star).
@@ -39,34 +35,29 @@ in `sid-ui`; every tab was rolled onto it on 2026-11-07.
 
 | Tab | Shipped | Known gaps |
 |:--|:--|:--|
-| **SSH/SFTP** | Multi-tab shell (home + per-connection sessions); host groups as a `Tree`; import from `~/.ssh/config` (`ui/ssh_import.rs`, from the home header, empty state and a first-run banner); quick-connect add; SFTP browser (bounded view/download, no-overwrite downloads, display-safe remote names); secret bindings (`secret_binding.rs`) and the unknown-host-key "Trust and connect" prompt (`ui/host_key_prompt.rs`); terminal fidelity A/B-matched to kitty; zoom incl. terminal reflow. | Session v2, SFTP edit-in-place UI, keep-server-copy backup and Esc on modals sit on `night/ssh-session` (conflicts with sec-binding in `ui/session.rs`; its tip does not compile, last green `18175d4`). Downloads over 256 MiB are refused (no streaming read on `SftpSession`). `EditorLauncher` (`sid-os`) is not yet wired into `crates/sid`. |
-| **Database** | Query editor (Run/Explain), schema `Tree` (select vs activate fixed, table/column icons, folder headers), relationships diagram, CSV export, query history, empty states, error toasts; hardened Postgres/TimescaleDB decoding. | Only gated as part of the pending wrap gate. Table frame cost (per-cell wrapper div ~11% of a frame, perf-pass doc). The diagram pop-out window cannot be captured by the harness. |
-| **Network** | Ports / Services / Interfaces / Docker / Kubernetes / **Connections** sub-tabs (Connections has kill), CPU/mem columns, friendlier empty states. | Table frame cost (shared with Database). |
-| **Workspaces** | v2: changes, diff, commit, stash, branches, paged log, fetch/push via the git CLI (`crates/sid-git/src/cli.rs`); Umbrella fleet table; pin-a-directory. UI in `crates/sid/src/ui/workspaces/` (`model.rs`, `ops.rs`, `views.rs`). | Log badges live on `night/polish-settings-ws`. The git CLI honours repo config and runs hooks, unlike libgit2 — hardening review not yet done (see Open). |
-| **System** | CPU/mem/swap with history sparklines, sortable process table with kill, pinned config-file manager with sudo-elevated no-shell editor (focus-trap sudo-password leak is **fixed**: `config_editor.rs::trap_owner`); unfocused probe runs ~5x slower (perf). | No "cached" memory in the overview; no "collecting…" state for empty sparklines at launch; narrower `ProcessRefreshKind` not done; unfocused interval (10 s) awaits Murphy's call. |
-| **Settings** | Section rail (Appearance / Behaviour / Keyboard / Storage), four palettes (cosmos, void, dusk, cosmos-light), keymap rebinding UI, zoom, reduce motion, desktop notifications, last-tab restore (Settings v6), keyring status. | "Text rendering" option (Auto / Subpixel / Grayscale), Settings v7, theme swatch cards, palette recents are on `night/polish-settings-ws` (conflicts with `secret_bindings` in `crates/sid-store/src/{global.rs,lib.rs}`; keep both, re-check the v6 to v7 migration test). |
+| **SSH/SFTP** | Multi-tab shell (home + per-connection sessions, session v2 in `ui/session.rs` + `ui/session/`); host groups as a `Tree`; import from `~/.ssh/config` (parsed off the UI thread); add form whose save-to is always preselected (focused workspace, else global); few-hosts home with a second row of cards; SFTP browser (bounded view/download, no-overwrite downloads, display-safe remote names); **SFTP edit-in-place** (`ui/session/edit.rs` over `sid-ssh::remote_edit`: SHA-256 conflict check with a queued-conflict UI, opt-in atomic tmp-rename upload, unsaved edits preserved as backups under the data dir on every exit path, `LinuxEditorLauncher` wired); secret bindings (`secret_binding.rs`) and the unknown-host-key fingerprint prompt "Trust and connect" (`ui/host_key_prompt.rs`); friendly connect errors (`ui/connect_error.rs`: host:port in the title, plain-language hint, raw error under Details); terminal fidelity A/B-matched to kitty; zoom incl. terminal reflow. | Downloads over 256 MiB are refused (no streaming read on `SftpSession`). Placeholders still use ASCII dots (QA #17). The third get-started card at 1024x700 is unverified after the home rework (QA #19). Tmp-rename upload is opt-in because hard links are invisible over SFTP v3. |
+| **Database** | Query editor (Run/Explain), schema `Tree` (select vs activate, icons, folder headers), relationships diagram (button shows why it is disabled), CSV export, query history, empty states, error toasts; query errors map to the user's SQL (engine message only, offset shifted past the pagination wrapper, "check the SQL near" hint, cursor moves to the error); SQLite plans render as an indented detail tree under "Query plan"; add-connection form (engine first Tab stop, sentence case, save-to preselected); hardened Postgres/TimescaleDB decoding. | Export is still a one-item menu "CSV (current page)"; history rows are one-line truncations; double-click on a connection row renames in place with no hint (QA #11, #18). The diagram pop-out window cannot be captured by the harness. |
+| **Network** | Ports / Services / Interfaces / Docker / Kubernetes / **Connections** sub-tabs (Connections has kill); Interfaces as a responsive card grid; Docker summary cards and a wider Status column; row actions (Kill/Stop/Restart) show only on the hovered, selected or armed row; system services read "needs root" with a tooltip for a non-root user; shared page gutters; table text cells without a wrapper node (perf). | Kubernetes empty state has no link or action (QA #17). |
+| **Workspaces** | v2: changes (Heading + count pill group headers), diff, commit, stash (by oid), branches, **log as a full-width table** (commit/message/author/date, ref badges), fetch/push via the CLI; **Overview is a card grid** (branch, last commit, working tree, remotes, tags, stash, scope Hosts/Connections); Umbrella fleet table; pin-a-directory. The CLI path is hardened against repo-configured commands (hooks skipped, `core.fsmonitor`/`askPass` off, `GIT_ALLOW_PROTOCOL=ssh:https`, scrubbed `GIT_*` env, literal discard, nested-repo guard); UI in `crates/sid/src/ui/workspaces/`. | Workspace rows truncate the path at the end rather than the middle (QA #16, unverified). Hooks are skipped on CLI-driven operations, so a repo's own hooks do not run for sid's fetch/push. |
+| **System** | CPU/mem (cached memory shown)/swap with history sparklines that show real data after ~2.5 s (warmup tick, 3-sample minimum), sortable process table with kill, pinned config-file manager with sudo-elevated no-shell editor (`config_editor.rs::trap_owner`). **Hibernation:** when hidden or unfocused the probe does nothing unless the user sets Settings → Behaviour → background refresh (Off by default, Settings v8). | Narrower `ProcessRefreshKind` for the process table is not done. |
+| **Settings** | Section rail (Appearance / Behaviour / Keyboard / Storage) with two-column cards on every section; four palettes shown as theme cards (cosmos, void, dusk, cosmos-light); violet accent (red is destructive only); text rendering (Auto / Subpixel / Grayscale); background refresh; keymap rebinding UI; zoom, reduce motion, desktop notifications, last-tab restore, palette recents (Settings v8), keyring status. | The keyring probe is synchronous at startup (`sid_secrets::probe_keyring`), so the status bar cannot show "checking…"; making it async needs a design decision. Settings gutter versus the other tabs was not re-measured (QA #9). |
 
-Chrome (sprint handoff): app-wide `StatusBar`, command-palette hub, `?` shortcut modal.
+Chrome: app-wide `StatusBar`; command-palette hub (current-tab actions and recents ranked first, recents keyed by origin + alias, no self-entry); `?` or Shift+/ opens the shortcut modal; the top-bar tabs collapse to icons (with a Ctrl+N tooltip) below 1100px; action labels are sentence case (keymap test).
 
 ## Open
 
-Order and detail are in the sprint handoff; in short:
-
-1. Gate `night/wrap-2026-11-07`; merge `night/ssh-session`, `night/polish-settings-ws`,
-   `night/ci-fix` one at a time (type-check after every textual merge); gate; fast-forward `main`.
-2. Second adversarial security review (planned, not run): `crates/sid-git/src/cli.rs`
-   (consider `-c core.hooksPath=/dev/null`, `--no-verify`, `protocol.ext.allow=never`, a
-   `core.sshCommand` override), the remote-edit UI, the import dialog, the committed hook.
-3. sysinfo 0.40 (fallible constructors) — held back, as is zbus 6 (keyring store still on 5).
-4. QA sweep: every tab x 4 themes x 1920/1280, keyboard-only pass, live docker sshd/postgres.
-5. Perf leftovers: per-cell wrapper div in tables, narrower `ProcessRefreshKind`.
-6. Security leftovers from `night/sec-binding`: global secrets saved before bindings existed
+1. Waiting on Murphy: making the CI `gate` job a required check, keeping fetch/push on
+   the CLI, SFTP keep-server-copy semantics, and an async keyring probe (status bar
+   "checking…") which needs a design decision.
+2. Remaining QA findings (annotated in [`design/2026-11-08-qa-sweep.md`](design/2026-11-08-qa-sweep.md)):
+   #11 (Export menu, history rows), #16, #17, #18, #19, and a full re-sweep (every tab x 4
+   themes x 1920/1280, live SFTP edit-in-place, keyboard-only pass) since the fixes landed.
+3. zbus 6 is held back (keyring store still on 5).
+4. Perf leftovers: narrower `ProcessRefreshKind` (see `design/2026-11-07-perf-pass.md`).
+5. Security leftovers from `night/sec-binding`: global secrets saved before bindings existed
    bind on first use (a global record tampered with before that first connect still sends
    once); workspace secrets saved before per-workspace keys re-prompt once and leave a bare
    keyring entry behind; `GlobalStore::record_host_command` must never be wired from raw keystrokes.
-7. Waiting on Murphy: D5 accent (cosmos red primary reads as danger), unfocused System
-   refresh interval, SFTP keep-server-copy semantics, making the CI `gate` job a required
-   check, keeping fetch/push on the git CLI.
 
 ## Crates and key files
 

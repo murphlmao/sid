@@ -55,6 +55,7 @@ Project plugin: `.claude/plugins/sid-dev/` (skills `sid-gate`, `sid-capture`,
      `default_scope`. New write paths get a `StoreError::Conflict` guard + a test.
 3. **Cross-platform is accommodated.** Wayland/Linux is the primary target; macOS/Windows
    are now being added behind cfg-gated platform adapters (never in `sid-core`/domain).
+4. **Introspection is idle unless the user opts in.** Hidden or unfocused tabs do no background work (no timers, probes or repaints) unless the user sets it in Settings → Behaviour (`background_refresh_secs`, Off by default). Live external connections (SSH sessions, DB connections) are exempt.
 
 ## Testing (pragmatic mode)
 

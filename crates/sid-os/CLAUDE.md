@@ -18,7 +18,7 @@ platforms (macOS/Windows) are cfg-gated slots to be added here, never in `sid-co
   file's name/content may be chosen by a remote party (SFTP edit-in-place).
 - Notification text is escaped for the server's markup subset; never pass raw remote strings.
 - Hand-off launchers (`xdg-open`) report `awaitable() == false`; callers need a "Done" path.
-- `DbusNotifier` is wired in `crates/sid/src/app.rs`; `LinuxEditorLauncher` is not wired yet.
+- `DbusNotifier` is wired in `crates/sid/src/app.rs`; `LinuxEditorLauncher` in `crates/sid/src/ui/session/edit.rs` (`default_launcher()`, SFTP edit-in-place, policy `EditorOnly`).
 
 ## Test
 `nice -n 10 cargo test -p sid-os -j 3` — pure planner tests with a fake `EditorEnv`; no

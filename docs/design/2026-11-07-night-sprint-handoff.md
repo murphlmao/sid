@@ -1,5 +1,34 @@
 # Night sprint handoff — 2026-11-07
 
+> **Closed 2026-11-08.** Everything below is integrated: `night/wrap-2026-11-07`,
+> `night/ssh-session`, `night/polish-settings-ws` and `night/ci-fix` merged through
+> `night/integrate`, sysinfo 0.40 landed, and `main` is `56ca357` (76 suites / 2054 tests /
+> 0 failed; fmt and clippy `-D warnings` clean). Read the sections below as history; the
+> current state is `docs/HANDOFF.md`.
+>
+> **Security review #2** (run on the integrated tree) is fixed:
+> - M-1, the git CLI path honoured repo config and hooks: env scrubbed, `GIT_ALLOW_PROTOCOL=ssh:https`,
+>   hooks/fsmonitor/askPass neutralised via `-c`, `ext::`/http/git remotes refused (`a35aec2`).
+> - M-4, discard treated a path as a glob: now literal; `remove_untracked` spares nested repos (`7c5baca`).
+> - M-2 and M-3 are the remote-edit and secret-binding findings (mapped here by commit subject, not
+>   from the review text): edit-in-place never loses edits, shell-inert local names, SHA-256
+>   conflict check (`11134b1`, `f226209`); tmp-rename sets mode at open and swaps only safe
+>   targets, and is opt-in (`93e7689`); a binding's layer is derived from the key (`1a468ed`),
+>   promote/demote mints a fresh ref (`520058e`), a moved record never keeps the old ref (`97b90c8`).
+> - LOWs: deceptive bidi/zero-width characters stripped from notifications and toasts
+>   (`a8c5f62`), bounded regular-file config and identity reads (`e83b096`), config-editor saves
+>   through a symlink (`52f1905`), ssh_config import parsed off the UI thread (`2af7817`),
+>   stash ops keyed by oid and hostile text neutralised (`620a0ee`), ConfirmArm 300 ms guard
+>   (`413d39f`), palette recents keyed by origin plus clipboard sanitising (`aa438db`),
+>   adapter-violation hook covers MultiEdit (`527cf9b`), CI least-privilege and SHA pins (`3d6653f`).
+>
+> **Also done since:** violet accent (D5), Settings v8 background refresh (Off by default),
+> QA-sweep fixes across every tab (see `2026-11-08-qa-sweep.md`).
+>
+> **What remains:** QA findings #11 (part) and #16-#19; an async keyring probe (needs a design
+> decision); zbus 6; narrower `ProcessRefreshKind`; making the CI `gate` job a required check;
+> a full re-sweep including live SFTP edit-in-place.
+
 A parallel-agent sprint (≈ 20:15–23:12) that cleared most of the backlog, upgraded every
 dependency, rolled out design system v2 across the app, and built the previously deferred
 MCP server, `.claude` plugin, CI and Mac/Windows support. It ended on a hard stop, so the
