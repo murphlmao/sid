@@ -131,3 +131,14 @@ unicode-segmentation = "1"
 # Test
 tempfile = "3"
 proptest = "1"
+
+# Lean dev builds. Full debuginfo for ~1070 dependency crates is most of a ~13 GB
+# target dir and most of link time and linker RAM — and parallel agent worktrees each
+# carry their own target dir. Line tables keep backtraces readable for sid's own
+# crates; dependencies drop debuginfo entirely. A debugger session that needs more can
+# override per-invocation: `CARGO_PROFILE_DEV_DEBUG=full cargo build`.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
