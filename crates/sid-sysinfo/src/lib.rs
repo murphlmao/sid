@@ -52,6 +52,8 @@ mod processes;
 pub struct SysinfoProvider {
     /// Cached sysinfo handle. `&mut self` access makes refreshes serialized.
     inner: sysinfo::System,
+    /// Cached uid -> username table (refreshed rarely, not per poll).
+    users: processes::UserNames,
 }
 
 impl SysinfoProvider {
@@ -69,7 +71,10 @@ impl SysinfoProvider {
         let mut inner = sysinfo::System::new();
         // Prime the CPU sampling baseline.
         inner.refresh_cpu_usage();
-        Self { inner }
+        Self {
+            inner,
+            users: processes::UserNames::new(),
+        }
     }
 }
 
@@ -81,7 +86,7 @@ impl Default for SysinfoProvider {
 
 impl SysProvider for SysinfoProvider {
     fn list_processes(&mut self) -> Result<Vec<ProcessInfo>, SysError> {
-        processes::list_processes(&mut self.inner)
+        processes::list_processes(&mut self.inner, &mut self.users)
     }
 
     fn list_listening_ports(&mut self) -> Result<Vec<ListeningPort>, SysError> {
