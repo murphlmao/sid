@@ -730,9 +730,11 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
                 offset: db_err
                     .position()
                     .map(|p| match p {
-                        tokio_postgres::error::ErrorPosition::Original(n) => *n as usize,
+                        tokio_postgres::error::ErrorPosition::Original(n) => {
+                            pg_position_to_offset(*n)
+                        }
                         tokio_postgres::error::ErrorPosition::Internal { position, .. } => {
-                            *position as usize
+                            pg_position_to_offset(*position)
                         }
                     })
                     .unwrap_or(0),
@@ -742,6 +744,13 @@ pub(crate) fn map_pg_error(e: tokio_postgres::Error) -> DbError {
         return DbError::Query(db_err.message().to_string());
     }
     DbError::Query(e.to_string())
+}
+
+/// Postgres reports error positions 1-based (`POSITION: 1` is the first
+/// character); `DbError::Syntax::offset` is 0-based. Convert once, here, so the
+/// wrapper-prefix adjustment and the UI's cursor/"near ..." hint line up.
+fn pg_position_to_offset(position: u32) -> usize {
+    (position as usize).saturating_sub(1)
 }
 
 /// Adjust a `DbError::Syntax` offset from being relative to `query_paged`'s
@@ -924,6 +933,25 @@ mod tests {
             DbError::Syntax { offset, .. } => assert_eq!(offset, 0),
             other => panic!("expected Syntax, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pg_position_is_converted_from_one_based_and_points_at_the_right_char() {
+        // Real shape: `SELEC 1` wrapped as `SELECT * FROM ( SELEC 1 ) AS ...`;
+        // Postgres reports POSITION 17 for the `S` of `SELEC` (1-based).
+        const WRAP_PREFIX_LEN: usize = "SELECT * FROM ( ".len();
+        let sql = "SELEC 1";
+        let raw = pg_position_to_offset(WRAP_PREFIX_LEN as u32 + 1);
+        let err = DbError::Syntax {
+            offset: raw,
+            message: "syntax error at or near \"SELEC\"".into(),
+        };
+        match adjust_wrapped_syntax_offset(err, WRAP_PREFIX_LEN, sql.len()) {
+            DbError::Syntax { offset, .. } => assert_eq!(&sql[offset..offset + 5], "SELEC"),
+            other => panic!("expected Syntax, got {other:?}"),
+        }
+        assert_eq!(pg_position_to_offset(0), 0);
+        assert_eq!(pg_position_to_offset(1), 0);
     }
 
     #[test]

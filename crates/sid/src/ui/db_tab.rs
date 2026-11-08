@@ -24,10 +24,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Anchor, AnyElement, App, Bounds, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, SharedString, Subscription,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, anchored, deferred, div,
-    point, prelude::*, px, rgb, rgba, size,
+    Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, ClipboardItem, Context, Entity,
+    FocusHandle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, SharedString,
+    Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, anchored,
+    deferred, div, point, prelude::*, px, rgb, rgba, size,
 };
 use sid_core::db::{
     Column as DbColumn, ColumnType, DbClient, DbError, DbKind, OpenParams, PageCursor, QueryPage,
@@ -228,6 +228,9 @@ pub struct DbTabState {
     /// view living in another window. Weak on purpose: the strong reference belongs to
     /// that window's `Root`, so closing the window is all it takes to drop the view.
     diagram: Option<WeakEntity<DiagramView>>,
+    /// The relationships pop-out's window and the connection it was opened for, so a
+    /// second click raises it instead of opening another.
+    diagram_window: Option<(AnyWindowHandle, Option<String>)>,
 
     // ---- D2: cell copy / view -------------------------------------------------------
     /// The `view` popover's contents, if open.
@@ -243,7 +246,9 @@ pub struct DbTabState {
     // ---- D4: query history -----------------------------------------------------------
     /// Most-recent-first ring of run queries, capped at [`HISTORY_CAP`] with
     /// consecutive-duplicate suppression — see [`push_history`].
-    history: Vec<String>,
+    history: Vec<HistoryEntry>,
+    /// Index (into `history`) of the row a right-click landed on, reset on capture.
+    history_target: Option<usize>,
 
     // ---- connections panel (top of the unified left column): folders / inline rename --
     /// Which folders are collapsed in the connections panel, keyed by folder name.
@@ -321,16 +326,18 @@ enum QueryStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExportFormat {
     Csv,
+    Json,
 }
 
 impl ExportFormat {
     /// Every format, in menu order. The one place a new variant needs to be listed.
-    const ALL: &'static [ExportFormat] = &[ExportFormat::Csv];
+    const ALL: &'static [ExportFormat] = &[ExportFormat::Csv, ExportFormat::Json];
 
     /// The menu item's label.
     fn label(self) -> &'static str {
         match self {
-            ExportFormat::Csv => "CSV (current page)",
+            ExportFormat::Csv => "CSV, current page",
+            ExportFormat::Json => "JSON, current page",
         }
     }
 }
@@ -437,6 +444,25 @@ fn plan_result_columns(columns: &[DbColumn], rows: &[Row]) -> Vec<ColumnWidth> {
                     // column of empty strings still counts as a grower.
                     .weight(chars.max(1.0))
             }
+        })
+        .collect()
+}
+
+/// Display names for a result set's columns, unique by construction: the second `id`
+/// becomes `id (2)`, the third `id (3)`. A generated name that itself collides with a
+/// later real column name keeps counting until it is free.
+fn unique_column_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    names
+        .into_iter()
+        .map(|name| {
+            let mut candidate = name.to_string();
+            let mut n = 2;
+            while !seen.insert(candidate.clone()) {
+                candidate = format!("{name} ({n})");
+                n += 1;
+            }
+            candidate
         })
         .collect()
 }
@@ -805,19 +831,22 @@ impl ResultDelegate {
     /// columns means this is the next page of the same query, where keeping the sort is
     /// what the user expects.
     fn set_page(&mut self, page: QueryPage) {
+        let names = unique_column_names(page.columns.iter().map(|c| c.name.as_str()));
         let same_shape = self.column_types.len() == page.columns.len()
             && (0..self.columns.len())
-                .all(|ix| self.columns.column(ix).name.as_ref() == page.columns[ix].name.as_str());
+                .all(|ix| self.columns.column(ix).name.as_ref() == names[ix].as_str());
         if !same_shape {
             self.sort = None;
         }
         let plan = plan_result_columns(&page.columns, &page.rows);
-        self.columns = FillColumns::new(page.columns.iter().zip(plan).map(|(c, width)| {
-            (
-                Column::new(c.name.clone(), c.name.clone()).sortable(),
-                width,
-            )
-        }));
+        // Display names, not raw ones: two columns named `id` would otherwise share a
+        // column key (the grid renders the clash as `id:1`) and read as one column.
+        self.columns = FillColumns::new(
+            names
+                .iter()
+                .zip(plan)
+                .map(|(name, width)| (Column::new(name.clone(), name.clone()).sortable(), width)),
+        );
         // Re-assert the surviving sort on the freshly declared columns, or the header
         // chevron would come back blank on a page that is still sorted.
         if let Some(ResultSort { col_ix, descending }) = self.sort {
@@ -888,7 +917,12 @@ impl TableDelegate for ResultDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        sortable_th(col_ix, self.columns.column(col_ix), cx)
+        // The body cells carry `px_2`; give the header the same inset so its label
+        // starts where the values below it do.
+        div()
+            .size_full()
+            .px_2()
+            .child(sortable_th(col_ix, self.columns.column(col_ix), cx))
     }
 
     /// Re-order the page by `col_ix`.
@@ -1253,10 +1287,12 @@ impl DbTabState {
             _schema_tree_sub: None,
             schema_tree_dirty: true,
             diagram: None,
+            diagram_window: None,
             cell_view: None,
             notice: None,
             export_menu_open: false,
             history: Vec::new(),
+            history_target: None,
             collapsed_folders: HashSet::new(),
             conn_focus: None,
             renaming: None,
@@ -2199,7 +2235,7 @@ impl AppState {
         let button = Button::new("db-export-open", "Export")
             .icon(Icon::Export)
             .size(QUERY_ACTION_SIZE)
-            .tooltip("export the results now on screen")
+            .tooltip("Export the results now on screen")
             .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                 this.db.export_menu_open = !this.db.export_menu_open;
                 cx.notify();
@@ -2214,6 +2250,10 @@ impl AppState {
                         v_flex()
                             .id("db-export-menu")
                             .occlude()
+                            .on_mouse_down_out(cx.listener(|this, _ev: &MouseDownEvent, _w, cx| {
+                                this.db.export_menu_open = false;
+                                cx.notify();
+                            }))
                             .mt_1()
                             .min_w(px(180.))
                             .rounded_md()
@@ -2222,6 +2262,7 @@ impl AppState {
                             .children(ExportFormat::ALL.iter().enumerate().map(|(ix, fmt)| {
                                 let fmt = *fmt;
                                 UiRow::new(("db-export-item", ix))
+                                    .compact()
                                     .child(div().text_body(&t).child(fmt.label()))
                                     .on_click(cx.listener(
                                         move |this, _ev: &ClickEvent, _window, cx| {
@@ -2244,6 +2285,7 @@ impl AppState {
         self.db.export_menu_open = false;
         match format {
             ExportFormat::Csv => self.export_csv(cx),
+            ExportFormat::Json => self.export_json(cx),
         }
     }
 
@@ -2451,6 +2493,22 @@ impl AppState {
         };
         let graph = self.db.schema_graph.clone().unwrap_or_default();
         let connection_id = self.db.active_id.clone();
+        if let Some((handle, for_conn)) = self.db.diagram_window.take() {
+            if for_conn == connection_id {
+                // Same connection: raise the window we already have. `update` fails
+                // once the window was closed, and then we fall through and reopen.
+                if handle
+                    .update(cx, |_, window, _| window.activate_window())
+                    .is_ok()
+                {
+                    self.db.diagram_window = Some((handle, for_conn));
+                    return;
+                }
+            } else {
+                // Another connection: retire the stale window, open a fresh one below.
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        }
         let connection_label = if self.browse_mode() {
             STORE_BROWSE_LABEL.to_string()
         } else {
@@ -2478,7 +2536,7 @@ impl AppState {
         self.db.diagram = Some(view.downgrade());
 
         let bounds = Bounds::centered(None, size(px(1000.), px(700.)), cx);
-        let _ = cx.open_window(
+        let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -2497,6 +2555,9 @@ impl AppState {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         );
+        if let Ok(handle) = opened {
+            self.db.diagram_window = Some((handle.into(), self.db.active_id.clone()));
+        }
     }
 
     /// D4: the query-history panel — most-recent-first, click an entry to reload it
@@ -2505,6 +2566,7 @@ impl AppState {
         let t = theme::active(cx).clone();
         let entries = self.db.history.clone();
         let count = entries.len();
+        let now = std::time::Instant::now();
 
         let body: AnyElement = if entries.is_empty() {
             EmptyState::new("No queries yet")
@@ -2514,33 +2576,41 @@ impl AppState {
         } else {
             List::scrolling("db-history-body")
                 .px_1()
-                .children(entries.into_iter().enumerate().map(|(ix, sql)| {
-                    let full = sql.clone();
-                    let label: SharedString = if sql.chars().count() > 34 {
-                        let head: String = sql.chars().take(34).collect();
-                        format!("{head}…").into()
-                    } else {
-                        sql.clone().into()
-                    };
+                .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    if ev.button == MouseButton::Right {
+                        this.db.history_target = None;
+                        cx.notify();
+                    }
+                }))
+                // Newest first: `history` is append-order, so walk it backwards but keep
+                // each row's true index for the click and the menu.
+                .children(entries.into_iter().enumerate().rev().map(|(ix, entry)| {
+                    let full = entry.sql.clone();
+                    let age = history_age(now.saturating_duration_since(entry.at).as_secs());
                     UiRow::new(("db-history", ix))
-                        .py_0p5()
-                        .px_2()
-                        // SQL, so: mono. The 34-character head above is a *content*
-                        // decision (one line of a statement is enough to recognise it);
-                        // the clamp underneath is the layout one, for the entries that
-                        // are shorter than the cut but wider than the panel.
+                        .compact()
+                        // SQL, so: mono, and clamped to ONE line (a pasted multi-line
+                        // statement must not make the row grow).
                         .child(
                             div()
                                 .min_w(px(0.))
                                 .clamp_one_line()
                                 .text_mono(&t)
                                 .text_color(rgb(t.fg))
-                                .child(label),
+                                .child(single_line(&entry.sql)),
                         )
+                        .meta(div().flex_none().text_label(&t).child(age))
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
                             this.reload_history_entry(&full, window, cx);
                         }))
+                        .on_secondary_mouse_down(cx.listener(
+                            move |this, _ev: &MouseDownEvent, _window, cx| {
+                                this.db.history_target = Some(ix);
+                                cx.notify();
+                            },
+                        ))
                 }))
+                .context_menu(self.history_context_menu(cx))
                 .into_any_element()
         };
 
@@ -2549,6 +2619,53 @@ impl AppState {
             .h(scaled(160.))
             .flex_none()
             .child(body)
+    }
+
+    /// Right-click menu for a history row: run again / copy / delete.
+    fn history_context_menu(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+        let this = cx.entity();
+        move |menu, _window, cx| {
+            let Some(ix) = this.read(cx).db.history_target else {
+                return menu;
+            };
+            let Some(sql) = this.read(cx).db.history.get(ix).map(|e| e.sql.clone()) else {
+                return menu;
+            };
+            let run = {
+                let this = this.clone();
+                let sql = sql.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    let sql = sql.clone();
+                    this.update(cx, |state, cx| {
+                        state.reload_history_entry(&sql, window, cx);
+                        state.run_query(window, cx);
+                    });
+                }
+            };
+            let copy = move |_w: &mut Window, cx: &mut App| {
+                cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
+            };
+            let delete = {
+                let this = this.clone();
+                move |_w: &mut Window, cx: &mut App| {
+                    this.update(cx, |state, cx| {
+                        if ix < state.db.history.len() {
+                            state.db.history.remove(ix);
+                        }
+                        state.db.history_target = None;
+                        cx.notify();
+                    });
+                }
+            };
+            ContextMenu::new()
+                .item(MenuItem::new("Run again").icon(Icon::Run).on_select(run))
+                .item(MenuItem::new("Copy").icon(Icon::Copy).on_select(copy))
+                .danger_item(MenuItem::new("Delete").icon(Icon::Trash).on_select(delete))
+                .apply(menu, cx)
+        }
     }
 
     /// The DBeaver-style connections list — the top section of the unified left panel
@@ -4194,6 +4311,16 @@ impl AppState {
     /// security-load-bearing piece of this increment). Reports success/failure as a
     /// transient `db.notice`, mirroring how `db.status` reports query results.
     pub(crate) fn export_csv(&mut self, cx: &mut Context<Self>) {
+        self.export_as("csv", page_to_csv, cx);
+    }
+
+    /// Same as [`Self::export_csv`], as a JSON array of objects (one per row, keyed by
+    /// the display column names).
+    pub(crate) fn export_json(&mut self, cx: &mut Context<Self>) {
+        self.export_as("json", page_to_json, cx);
+    }
+
+    fn export_as(&mut self, ext: &str, render: fn(&QueryPage) -> String, cx: &mut Context<Self>) {
         let Some(page) = self.db.last_page.clone() else {
             self.db.notice = Some("nothing to export — run a query first".to_string());
             cx.notify();
@@ -4213,8 +4340,8 @@ impl AppState {
                 .unwrap_or_else(|| "query".to_string())
         };
 
-        let csv = page_to_csv(&page);
-        self.db.notice = Some(match write_csv_export(&conn_label, &csv) {
+        let body = render(&page);
+        self.db.notice = Some(match write_export(&conn_label, ext, &body) {
             Ok(path) => format!("✓ exported to {}", path.display()),
             Err(e) => format!("✗ export failed: {e}"),
         });
@@ -4434,11 +4561,31 @@ fn tree_event_table(ev: &TreeEvent, is_table: impl Fn(&str) -> bool) -> Option<S
     }
 }
 
-fn push_history(history: &mut Vec<String>, sql: String, cap: usize) {
-    if history.last() == Some(&sql) {
+/// One remembered statement and when it was run.
+#[derive(Clone, Debug)]
+struct HistoryEntry {
+    sql: String,
+    at: std::time::Instant,
+}
+
+/// A short age for a history row: `now`, `5m`, `2h`, `3d`.
+fn history_age(secs: u64) -> String {
+    match secs {
+        0..=59 => "now".to_string(),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+fn push_history(history: &mut Vec<HistoryEntry>, sql: String, cap: usize) {
+    if history.last().is_some_and(|e| e.sql == sql) {
         return;
     }
-    history.push(sql);
+    history.push(HistoryEntry {
+        sql,
+        at: std::time::Instant::now(),
+    });
     if history.len() > cap {
         history.remove(0);
     }
@@ -4494,6 +4641,45 @@ fn page_to_csv(page: &QueryPage) -> String {
         out.push_str(&line);
         out.push_str("\r\n");
     }
+    out
+}
+
+/// Render a [`QueryPage`] as a pretty JSON array of objects keyed by the (de-duplicated)
+/// column names. Values are the display strings the grid shows, so every value is a JSON
+/// string; no JSON crate is pulled into the frontend for this.
+fn page_to_json(page: &QueryPage) -> String {
+    let names = unique_column_names(page.columns.iter().map(|c| c.name.as_str()));
+    let mut out = String::from("[");
+    for (ri, row) in page.rows.iter().enumerate() {
+        out.push_str(if ri == 0 { "\n  {" } else { ",\n  {" });
+        for (ci, name) in names.iter().enumerate() {
+            if ci > 0 {
+                out.push_str(", ");
+            }
+            let v = row.values.get(ci).map(String::as_str).unwrap_or("");
+            out.push_str(&format!("{}: {}", json_string(name), json_string(v)));
+        }
+        out.push('}');
+    }
+    out.push_str(if page.rows.is_empty() { "]\n" } else { "\n]\n" });
+    out
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -4648,11 +4834,11 @@ fn sanitize_filename_component(label: &str) -> String {
 
 /// The first `~/Downloads/<conn>-<n>.csv` (n = 1, 2, 3, …) that doesn't already exist —
 /// so repeated exports for the same connection accumulate rather than clobber.
-fn next_csv_export_path(dir: &Path, conn_label: &str) -> PathBuf {
+fn next_export_path(dir: &Path, conn_label: &str, ext: &str) -> PathBuf {
     let stem = sanitize_filename_component(conn_label);
     let mut n = 1u32;
     loop {
-        let candidate = dir.join(format!("{stem}-{n}.csv"));
+        let candidate = dir.join(format!("{stem}-{n}.{ext}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -4662,11 +4848,11 @@ fn next_csv_export_path(dir: &Path, conn_label: &str) -> PathBuf {
 
 /// Write `csv` to the next free export path for `conn_label` under `~/Downloads`,
 /// creating the directory if needed. Returns the path written on success.
-fn write_csv_export(conn_label: &str, csv: &str) -> Result<PathBuf, String> {
+fn write_export(conn_label: &str, ext: &str, body: &str) -> Result<PathBuf, String> {
     let dir = downloads_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
-    let path = next_csv_export_path(&dir, conn_label);
-    fs::write(&path, csv).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    let path = next_export_path(&dir, conn_label, ext);
+    fs::write(&path, body).map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -5274,7 +5460,7 @@ mod csv_export_tests {
     }
 
     #[test]
-    fn next_csv_export_path_increments_past_existing_files() {
+    fn next_export_path_increments_past_existing_files() {
         let dir = std::env::temp_dir().join(format!(
             "sid-db-csv-test-{}-{:?}",
             std::process::id(),
@@ -5283,7 +5469,7 @@ mod csv_export_tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("demo-1.csv"), "x").unwrap();
         fs::write(dir.join("demo-2.csv"), "x").unwrap();
-        let next = next_csv_export_path(&dir, "demo");
+        let next = next_export_path(&dir, "demo", "csv");
         assert_eq!(next, dir.join("demo-3.csv"));
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -5293,13 +5479,62 @@ mod csv_export_tests {
 mod history_tests {
     use super::*;
 
+    fn sqls(h: &[HistoryEntry]) -> Vec<String> {
+        h.iter().map(|e| e.sql.clone()).collect()
+    }
+
+    #[test]
+    fn age_labels_pick_the_coarsest_unit() {
+        assert_eq!(history_age(5), "now");
+        assert_eq!(history_age(120), "2m");
+        assert_eq!(history_age(7200), "2h");
+        assert_eq!(history_age(200_000), "2d");
+    }
+
+    #[test]
+    fn duplicate_result_columns_get_numbered_display_names() {
+        assert_eq!(
+            unique_column_names(["id", "name", "id", "id"]),
+            vec!["id", "name", "id (2)", "id (3)"]
+        );
+        assert_eq!(
+            unique_column_names(["a", "a", "a (2)"]),
+            vec!["a", "a (2)", "a (2) (2)"]
+        );
+    }
+
+    #[test]
+    fn json_export_escapes_and_disambiguates() {
+        let page = QueryPage {
+            columns: vec![
+                sid_core::db::Column {
+                    name: "id".into(),
+                    ty: sid_core::db::ColumnType::Integer,
+                },
+                sid_core::db::Column {
+                    name: "id".into(),
+                    ty: sid_core::db::ColumnType::Text,
+                },
+            ],
+            rows: vec![Row {
+                values: vec!["1".into(), "a\"b\n".into()],
+            }],
+            next_cursor: None,
+            duration_ms: 0,
+        };
+        assert_eq!(
+            page_to_json(&page),
+            "[\n  {\"id\": \"1\", \"id (2)\": \"a\\\"b\\n\"}\n]\n"
+        );
+    }
+
     #[test]
     fn pushes_grow_the_list_in_order() {
         let mut history = Vec::new();
         push_history(&mut history, "select 1".to_string(), 50);
         push_history(&mut history, "select 2".to_string(), 50);
         assert_eq!(
-            history,
+            sqls(&history),
             vec!["select 1".to_string(), "select 2".to_string()]
         );
     }
@@ -5309,7 +5544,7 @@ mod history_tests {
         let mut history = Vec::new();
         push_history(&mut history, "select 1".to_string(), 50);
         push_history(&mut history, "select 1".to_string(), 50);
-        assert_eq!(history, vec!["select 1".to_string()]);
+        assert_eq!(sqls(&history), vec!["select 1".to_string()]);
     }
 
     #[test]
@@ -5319,7 +5554,7 @@ mod history_tests {
         push_history(&mut history, "select 2".to_string(), 50);
         push_history(&mut history, "select 1".to_string(), 50);
         assert_eq!(
-            history,
+            sqls(&history),
             vec![
                 "select 1".to_string(),
                 "select 2".to_string(),
@@ -5335,7 +5570,7 @@ mod history_tests {
             push_history(&mut history, format!("select {i}"), 3);
         }
         assert_eq!(
-            history,
+            sqls(&history),
             vec![
                 "select 2".to_string(),
                 "select 3".to_string(),
