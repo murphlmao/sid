@@ -81,8 +81,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, SharedString, Subscription,
-    Window, div, prelude::*, px, rgb,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, IntoElement, SharedString,
+    Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use sid_containers::{DockerCliProvider, KubectlCliProvider};
 use sid_core::containers::{
@@ -103,9 +103,9 @@ use sid_ui::component::{
 };
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Badge, BadgeTone, Card, CardGrid, CellText, ColumnWidth, Confirm, ConfirmArm,
-    ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, GridCard, Icon,
-    IconButton, InputState, PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl,
+    ActionCell, Badge, BadgeTone, Button, Card, CardGrid, CellText, ColumnWidth, Confirm,
+    ConfirmArm, ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, GridCard,
+    Icon, IconButton, InputState, PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl,
     StyledExt as _, Switch, TextInput, Tipped as _, Toast, Typography as _, caveat_line, h_flex,
     scaled, sortable_th, v_flex,
 };
@@ -2098,15 +2098,18 @@ impl AppState {
             let images: std::collections::HashSet<&str> =
                 all.iter().map(|c| c.image.as_str()).collect();
             // Per-image container counts, busiest first, for the list under the cards.
-            let mut per_image: HashMap<&str, usize> = HashMap::new();
+            let mut per_image: HashMap<&str, Vec<String>> = HashMap::new();
             for c in all {
-                *per_image.entry(c.image.as_str()).or_default() += 1;
+                per_image
+                    .entry(c.image.as_str())
+                    .or_default()
+                    .push(c.name.clone());
             }
-            let mut per_image: Vec<(String, usize)> = per_image
+            let mut per_image: Vec<(String, Vec<String>)> = per_image
                 .into_iter()
-                .map(|(image, n)| (image.to_string(), n))
+                .map(|(image, names)| (image.to_string(), names))
                 .collect();
-            per_image.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            per_image.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
             Some((running, all.len() - running, images.len(), per_image))
         });
         let theme = theme::active(cx).clone();
@@ -2121,11 +2124,13 @@ impl AppState {
                             .child(n.to_string()),
                     )
             };
-            // The images behind those containers: fills the strip under the cards so a
-            // handful of containers doesn't leave the panel reading as empty.
-            let shown = 6;
+            // Few containers: the table is sized to its rows and the Images panel takes
+            // every pixel below it, so no void sits under the content.
+            let compact = count <= DOCKER_COMPACT_ROWS;
+            let shown = if compact { usize::MAX } else { 6 };
             let more = per_image.len().saturating_sub(shown);
-            let image_rows = per_image.iter().take(shown).map(|(image, n)| {
+            let image_rows = per_image.iter().take(shown).map(|(image, names)| {
+                let n = names.len();
                 div()
                     .flex()
                     .flex_row()
@@ -2134,54 +2139,101 @@ impl AppState {
                     .py_1()
                     .child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.))
+                            .flex_none()
+                            .max_w(relative(0.45))
                             .text_mono(&theme)
                             .text_color(rgb(theme.fg))
                             .clamp_one_line()
                             .child(image.clone()),
                     )
-                    .child(div().flex_none().text_meta(&theme).child(if *n == 1 {
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_meta(&theme)
+                            .clamp_one_line()
+                            .child(names.join(", ")),
+                    )
+                    .child(div().flex_none().text_meta(&theme).child(if n == 1 {
                         "1 container".to_string()
                     } else {
                         format!("{n} containers")
                     }))
             });
-            div()
-                .flex_none()
-                .w_full()
-                .p_3()
+            let cards = CardGrid::new()
+                .min_col(px(180.))
+                .max_col(px(260.))
+                .child(stat(0, "Running", running))
+                .child(stat(1, "Stopped", stopped))
+                .child(stat(2, "Images in use", images));
+            let image_list = div()
                 .flex()
                 .flex_col()
-                .gap_3()
-                .child(
-                    CardGrid::new()
-                        .min_col(px(180.))
-                        .max_col(px(260.))
-                        .child(stat(0, "Running", running))
-                        .child(stat(1, "Stopped", stopped))
-                        .child(stat(2, "Images in use", images)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_meta(&theme).pb_1().child("Images"))
-                        .children(image_rows)
-                        .when(more > 0, |this| {
-                            this.child(div().text_meta(&theme).child(format!("and {more} more")))
-                        }),
-                )
+                .when(!compact, |this| {
+                    this.child(div().text_meta(&theme).pb_1().child("Images"))
+                })
+                .children(image_rows)
+                .when(more > 0, |this| {
+                    this.child(div().text_meta(&theme).child(format!("and {more} more")))
+                });
+            (compact, cards, image_list)
         });
 
-        self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx)
-            .children(notice_row(
-                "Couldn't read containers",
-                self.network.docker_error.clone(),
-            ))
-            .children(summary_strip)
-            .child(body)
-            .into_any_element()
+        let sub = self.sub_view_panel(NetSubTab::Docker, count, refreshing, None, cx);
+        let sub = sub.children(notice_row(
+            "Couldn't read containers",
+            self.network.docker_error.clone(),
+        ));
+        match summary_strip {
+            Some((true, cards, image_list)) if !not_installed && count > 0 => {
+                let table_h = scaled(DOCKER_HEADER_PX + DOCKER_ROW_PX * count as f32 + 2.);
+                let pane = match table.as_ref() {
+                    Some(t) => div()
+                        .flex_none()
+                        .w_full()
+                        .h(table_h)
+                        .child(FillTable::new(t).stripe(true))
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                };
+                sub.child(div().flex_none().w_full().p_3().child(cards))
+                    .child(pane)
+                    .child(
+                        div().flex_1().min_h(px(0.)).w_full().p_3().flex().flex_col().child(
+                            Card::panel("Images")
+                                .flex_1()
+                                .min_h_0()
+                                .child(div().flex_none().p_3().child(image_list))
+                                .child(
+                                    div().flex_1().min_h(px(0.)).child(
+                                        EmptyState::new("That's every container")
+                                            .icon(Icon::Info)
+                                            .guidance(
+                                                "Containers and the images behind them show up here as you start them. Refresh (F5) after a docker run.",
+                                            )
+                                            .compact(),
+                                    ),
+                                ),
+                        ),
+                    )
+                    .into_any_element()
+            }
+            Some((_, cards, image_list)) => sub
+                .child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(cards)
+                        .child(image_list),
+                )
+                .child(body)
+                .into_any_element(),
+            None => sub.child(body).into_any_element(),
+        }
     }
 
     /// Kubernetes: toolbar (with the context control in it), then the pods table, the
@@ -2197,15 +2249,19 @@ impl AppState {
             .unwrap_or(0);
 
         let body: AnyElement = if not_installed {
-            EmptyState::new("kubectl isn't available")
-                .icon(Icon::Info)
-                .guidance("Install kubectl and configure a context to see pods here.")
-                .into_any_element()
+            kube_empty(
+                "No Kubernetes cluster available",
+                "Either kubectl isn't installed, no context is configured, or the cluster can't be reached. Install kubectl and point it at a cluster, then retry.",
+                cx,
+            )
+            .into_any_element()
         } else if context_count == 0 {
-            EmptyState::new("No Kubernetes contexts")
-                .icon(Icon::Info)
-                .guidance("Add a cluster to your kubeconfig to see its pods here.")
-                .into_any_element()
+            kube_empty(
+                "No Kubernetes contexts",
+                "kubectl is installed but your kubeconfig has no contexts. Add a cluster, then retry.",
+                cx,
+            )
+            .into_any_element()
         } else {
             let empty =
                 (count == 0 && !refreshing && self.network.kube_error.is_none()).then(|| {
@@ -2416,7 +2472,7 @@ impl AppState {
             self.network.kube_pods_table = Some(table);
         }
         if self.network.filter.is_none() {
-            let filter = cx.new(|cx| InputState::new(window, cx).placeholder("filter"));
+            let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
             // `TextInput` has no change-callback; `cx.observe` fires on every
             // `cx.notify()` it makes while editing, i.e. every keystroke — see the
             // module doc's "Filtering" section.
@@ -2930,6 +2986,42 @@ fn table_pane<D: FillTableDelegate + 'static>(
             .into_any_element(),
         (None, None) => pane.into_any_element(),
     }
+}
+
+/// At or below this many containers the Docker table is sized to its rows and the Images
+/// panel fills the rest (see `docker_view`); above it the table takes the height.
+const DOCKER_COMPACT_ROWS: usize = 6;
+/// Header and row heights of the Docker table at 100% scale, for sizing it to its rows.
+const DOCKER_HEADER_PX: f32 = 32.;
+const DOCKER_ROW_PX: f32 = 32.;
+
+/// The Kubernetes empty state, with the two actions that help: retry the probe, or copy
+/// the command that lists configured contexts.
+fn kube_empty(
+    headline: &'static str,
+    guidance: &'static str,
+    cx: &mut Context<AppState>,
+) -> EmptyState {
+    EmptyState::new(headline)
+        .icon(Icon::Info)
+        .guidance(guidance)
+        .action(
+            Button::new("net-kube-retry", "Retry")
+                .primary()
+                .icon(Icon::Refresh)
+                .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                    this.refresh_network_kube(cx);
+                })),
+        )
+        .secondary(
+            Button::new("net-kube-copy", "Copy kubectl config get-contexts").on_click(cx.listener(
+                |_this, _ev: &ClickEvent, _window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        "kubectl config get-contexts".to_string(),
+                    ));
+                },
+            )),
+        )
 }
 
 /// An inline failure notice (`Toast::danger`: what happened as the title, the raw OS
