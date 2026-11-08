@@ -121,8 +121,13 @@ impl RenderOnce for Toolbar {
         h_flex()
             .w_full()
             .gap_2()
-            .px_3()
-            .py_2()
+            // The same strip a panel header draws (`card::PANEL_HEADER_HEIGHT`): a bare
+            // toolbar and a panel's header row must never be two different boxes.
+            .px(crate::metrics::CARD_PADDING.len())
+            .h(crate::scale::scaled(f32::from(
+                crate::card::PANEL_HEADER_HEIGHT,
+            )))
+            .flex_none()
             .hairline_b(&theme)
             .when_some(self.filter, |this, filter| {
                 this.child(div().flex_1().min_w_0().child(filter))
