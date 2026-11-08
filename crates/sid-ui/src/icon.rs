@@ -176,6 +176,10 @@ pub enum Icon {
     /// `workflow`'s two boxes-and-a-line read as "entities, related", which is the
     /// diagram button's actual job; `git-fork` reads as version-control branching.
     Diagram,
+    /// A database table — schema-tree table rows.
+    Table,
+    /// A table's columns — schema-tree column rows (Lucide `columns-3`).
+    Columns,
 }
 
 impl Icon {
@@ -233,6 +237,8 @@ impl Icon {
         Icon::Kubernetes,
         Icon::Interfaces,
         Icon::Diagram,
+        Icon::Table,
+        Icon::Columns,
     ];
 
     /// The bundled asset this icon draws. Going through the library's own `IconName`
@@ -291,6 +297,8 @@ impl Icon {
             Icon::Kubernetes => IconName::Boxes,
             Icon::Interfaces => IconName::Network,
             Icon::Diagram => IconName::Workflow,
+            Icon::Table => IconName::Table,
+            Icon::Columns => IconName::Columns3,
         }
     }
 
