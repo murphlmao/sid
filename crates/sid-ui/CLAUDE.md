@@ -35,6 +35,8 @@ emoji, and `gpui_component::` in `crates/sid/src` outside `main.rs`. Visual chec
 ## Landmines
 - `FillTable` measures in prepaint; widths land next frame via `Window::on_next_frame`
   (`Window::refresh` is a no-op mid-draw). `Column.width` is `Pixels`-only.
+- Column drag is off unless the store is `FillColumns::reorderable()`; once on, upstream's
+  `col_ix` is a display position: `render_td`/sort keys go through `columns.logical(col_ix)`.
 - A gpui-component widget not threaded through the bridge renders in the library's stock theme
   (looks like a missing style). `sid_ui::Kbd` draws its own chip for this reason.
 - Hygiene allowlists must have no dead entries (tests enforce it) — delete entries when fixed.

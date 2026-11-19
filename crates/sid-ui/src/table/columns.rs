@@ -10,7 +10,7 @@
 //! It deliberately needs no `App`, `Window` or entity, so its behaviour is unit-tested
 //! at the same millisecond speed as the resolver underneath it.
 
-use gpui::{Edges, Pixels, px};
+use gpui::{Edges, Pixels, Subscription, px};
 use gpui_component::Size;
 use gpui_component::table::{Column, ColumnSort};
 
@@ -61,6 +61,13 @@ const REDRAW_EPSILON: f32 = 0.5;
 /// Build it once in the delegate's constructor, return [`FillColumns::column`] and
 /// [`FillColumns::len`] from `TableDelegate::column`/`columns_count`, and let
 /// [`super::FillTable`] drive [`FillColumns::sync`] from the measured viewport.
+///
+/// # Order
+///
+/// `columns`, `declared` and `inset` stay in **declaration order** forever and are
+/// indexed by declaration index. A user's reorder touches only `order`, which maps a
+/// display position to a declaration index, so a column's width, inset and sort state
+/// cannot be separated from it by a move: there is nothing parallel to permute.
 pub struct FillColumns {
     columns: Vec<Column>,
     declared: Vec<ColumnWidth>,
@@ -68,6 +75,18 @@ pub struct FillColumns {
     /// Columns whose text inset is carried by `Column::paddings` instead of a `px_2` div
     /// in every cell. See [`FillColumns::inset_cells`].
     inset: Vec<bool>,
+    /// Display position -> declaration index.
+    order: Vec<usize>,
+    /// See [`FillColumns::reorderable`]. Read by [`super::FillTable`].
+    pub(super) reorderable: bool,
+    /// The order changed outside a drag ([`FillColumns::apply_order`]); the next `sync`
+    /// reports it so the table re-reads its columns.
+    reordered: bool,
+    /// [`super::FillTable`]'s subscription to this table's `MoveColumn` events. Kept
+    /// here so it lives exactly as long as the store it updates: a delegate that
+    /// rebuilds its `FillColumns` (the Database grid, every page) drops the old one,
+    /// and the next render subscribes the new one.
+    pub(super) moves: Option<Subscription>,
 }
 
 impl FillColumns {
@@ -85,10 +104,14 @@ impl FillColumns {
             .map(|(column, width)| (column.resizable(false), width))
             .unzip();
         Self {
+            order: (0..columns.len()).collect(),
             columns,
             declared,
             chrome: TABLE_CHROME,
             inset: Vec::new(),
+            reorderable: false,
+            reordered: false,
+            moves: None,
         }
     }
 
@@ -107,6 +130,7 @@ impl FillColumns {
     /// 16px.
     ///
     /// Columns that hold a widget (a kill button) are simply left out of `cols`.
+    /// `cols` are declaration indices.
     pub fn inset_cells(mut self, cols: impl IntoIterator<Item = usize>) -> Self {
         self.inset = vec![false; self.columns.len()];
         for ix in cols {
@@ -138,6 +162,84 @@ impl FillColumns {
         changed
     }
 
+    /// Let the user drag headers to reorder the columns.
+    ///
+    /// Off by default because it is a promise about the delegate, not a style: after a
+    /// move, the `col_ix` upstream passes to `render_td` and `perform_sort` is a
+    /// **display position**, and the only correct way to read it is through
+    /// [`FillColumns::logical`]. A delegate that still matches on `col_ix` directly
+    /// would draw every cell under the wrong header, so tables that have not made that
+    /// change get no drag at all ([`super::FillTable`] turns the gesture off).
+    ///
+    /// A column declared `Column::movable(false)` (an action column) cannot be picked
+    /// up, though other columns can still be dropped on either side of it.
+    pub fn reorderable(mut self) -> Self {
+        self.reorderable = true;
+        self
+    }
+
+    /// The declaration index of the column drawn at display position `col_ix`: its
+    /// position in the list given to [`FillColumns::new`], whatever the user has done
+    /// to the order since.
+    ///
+    /// Every `col_ix` a delegate receives from upstream (`render_td`, `perform_sort`,
+    /// `context_menu` cells, ...) goes through this before it is matched on. Header
+    /// code does not need it: [`FillColumns::column`] already takes a display position.
+    pub fn logical(&self, col_ix: usize) -> usize {
+        self.order[col_ix]
+    }
+
+    /// The column keys (`Column::key`) in display order, for persisting a user's order.
+    pub fn order(&self) -> Vec<String> {
+        self.order
+            .iter()
+            .map(|&ix| self.columns[ix].key.to_string())
+            .collect()
+    }
+
+    /// Restore an order saved by [`FillColumns::order`].
+    ///
+    /// Lenient, because a saved order outlives the declaration it was taken from: keys
+    /// this table no longer has are ignored, a key named twice counts once, and columns
+    /// the saved order does not mention (added since) follow in declaration order. A
+    /// table that is not [`reorderable`](Self::reorderable) ignores it, for the reason
+    /// given there. The next [`FillColumns::sync`] reports a change, so a mounted
+    /// [`super::FillTable`] refreshes itself.
+    pub fn apply_order(&mut self, saved: &[String]) {
+        if !self.reorderable {
+            return;
+        }
+        let mut order = Vec::with_capacity(self.columns.len());
+        for key in saved {
+            if let Some(ix) = self.columns.iter().position(|c| c.key.as_ref() == key)
+                && !order.contains(&ix)
+            {
+                order.push(ix);
+            }
+        }
+        for ix in 0..self.columns.len() {
+            if !order.contains(&ix) {
+                order.push(ix);
+            }
+        }
+        if order != self.order {
+            self.order = order;
+            self.reordered = true;
+        }
+    }
+
+    /// Follow a move the table has just made to its own copy of the columns
+    /// (`TableEvent::MoveColumn`): the same remove-then-insert upstream applies to
+    /// `col_groups`, applied to the one vector that maps positions to columns.
+    pub(super) fn move_column(&mut self, from: usize, to: usize) {
+        let len = self.order.len();
+        if !self.reorderable || from >= len || to >= len {
+            return;
+        }
+        let ix = self.order.remove(from);
+        self.order.insert(to, ix);
+    }
+
     pub fn chrome(mut self, chrome: f32) -> Self {
         self.chrome = chrome;
         self
@@ -153,13 +255,13 @@ impl FillColumns {
         self.columns.is_empty()
     }
 
-    /// The column at `ix`, for `TableDelegate::column`.
+    /// The column at display position `ix`, for `TableDelegate::column` and `render_th`.
     ///
     /// Panics on an out-of-range index, exactly as upstream's own `render_th` does — a
     /// delegate whose `columns_count` disagrees with its store is a bug worth a loud
     /// failure rather than a silently blank column.
     pub fn column(&self, ix: usize) -> &Column {
-        &self.columns[ix]
+        &self.columns[self.order[ix]]
     }
 
     /// Resize the columns to a measured viewport width, in logical pixels, at the app
@@ -176,8 +278,10 @@ impl FillColumns {
     pub fn sync(&mut self, viewport: f32, scale: UiScale) -> bool {
         let declared: Vec<ColumnWidth> = self.declared.iter().map(|d| d.scaled(scale)).collect();
         let chrome = f32::from(scale.scale_px(px(self.chrome)));
+        // Resolved in declaration order: a width depends on the declarations and the
+        // viewport, never on where the user has put the column.
         let resolved = resolve_widths(&declared, viewport - chrome);
-        let mut changed = self.apply_insets(scale);
+        let mut changed = self.apply_insets(scale) | std::mem::take(&mut self.reordered);
         for (column, width) in self.columns.iter_mut().zip(resolved) {
             if (f32::from(column.width) - width).abs() >= REDRAW_EPSILON {
                 column.width = px(width);
@@ -201,12 +305,15 @@ impl FillColumns {
     /// Matches upstream's cycle exactly: the sorted column takes `sort`, every other
     /// *sortable* column falls back to `ColumnSort::Default`, and columns that were
     /// never sortable stay that way (a `None` sort is what suppresses the chevron).
+    ///
+    /// `col_ix` is a display position, as upstream hands it to `perform_sort`.
     pub fn apply_sort(&mut self, col_ix: usize, sort: ColumnSort) {
+        let sorted = self.order.get(col_ix).copied();
         for (ix, column) in self.columns.iter_mut().enumerate() {
             if column.sort.is_none() {
                 continue;
             }
-            column.sort = Some(if ix == col_ix {
+            column.sort = Some(if Some(ix) == sorted {
                 sort
             } else {
                 ColumnSort::Default
@@ -416,6 +523,85 @@ mod tests {
             cols.column(0).paddings.unwrap().left,
             default.left + big.scale_px(px(8.))
         );
+    }
+
+    fn keys(cols: &FillColumns) -> Vec<String> {
+        cols.order()
+    }
+
+    #[test]
+    fn a_move_carries_width_inset_and_sort_with_the_column() {
+        let mut cols = processes().inset_cells(0..=4).reorderable();
+        cols.sync(2000., UiScale::DEFAULT);
+        cols.apply_sort(3, ColumnSort::Ascending);
+        let name = cols.column(3).clone();
+
+        cols.move_column(3, 0);
+        assert_eq!(keys(&cols), ["name", "cpu", "mem", "pid", "user", "kill"]);
+        assert_eq!(cols.logical(0), 3, "display 0 is the 4th declared column");
+        let moved = cols.column(0);
+        assert_eq!(moved.width, name.width);
+        assert_eq!(moved.paddings, name.paddings);
+        assert_eq!(moved.sort, Some(ColumnSort::Ascending));
+        assert!(
+            !cols.sync(2000., UiScale::DEFAULT),
+            "a width never depends on where its column sits"
+        );
+
+        // A sort arriving afterwards names a display position, and hits what is drawn there.
+        cols.apply_sort(1, ColumnSort::Descending);
+        assert_eq!(cols.column(1).key.as_ref(), "cpu");
+        assert_eq!(cols.column(1).sort, Some(ColumnSort::Descending));
+        assert_eq!(cols.column(0).sort, Some(ColumnSort::Default));
+    }
+
+    #[test]
+    fn a_saved_order_round_trips() {
+        let mut cols = processes().reorderable();
+        cols.move_column(0, 4);
+        cols.move_column(5, 0);
+        let saved = cols.order();
+        let mut fresh = processes().reorderable();
+        fresh.apply_order(&saved);
+        assert_eq!(fresh.order(), saved);
+        assert_eq!(
+            (0..6).map(|ix| fresh.logical(ix)).collect::<Vec<_>>(),
+            (0..6).map(|ix| cols.logical(ix)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_saved_order_is_merged_not_trusted() {
+        // Unknown keys dropped, a repeat counts once, and columns the saved order never
+        // heard of (added since) follow in declaration order.
+        let mut cols = processes().reorderable();
+        let saved = ["user", "gone", "pid", "user"].map(String::from);
+        cols.apply_order(&saved);
+        assert_eq!(keys(&cols), ["user", "pid", "cpu", "mem", "name", "kill"]);
+        cols.apply_order(&[]);
+        assert_eq!(keys(&cols), ["cpu", "mem", "pid", "name", "user", "kill"]);
+    }
+
+    #[test]
+    fn applying_an_order_is_reported_by_the_next_sync() {
+        // So a mounted table re-reads its columns without the caller knowing to ask.
+        let mut cols = processes().reorderable();
+        cols.sync(2000., UiScale::DEFAULT);
+        cols.apply_order(&["kill".to_string()]);
+        assert!(cols.sync(2000., UiScale::DEFAULT));
+        assert!(!cols.sync(2000., UiScale::DEFAULT));
+        // The same order again is not a change.
+        cols.apply_order(&cols.order());
+        assert!(!cols.sync(2000., UiScale::DEFAULT));
+    }
+
+    #[test]
+    fn a_store_that_is_not_reorderable_keeps_its_declared_order() {
+        // Its delegate may still match `render_td` on display position.
+        let mut cols = processes();
+        cols.move_column(0, 3);
+        cols.apply_order(&["kill".to_string()]);
+        assert_eq!(keys(&cols), ["cpu", "mem", "pid", "name", "user", "kill"]);
     }
 
     #[test]

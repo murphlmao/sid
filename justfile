@@ -61,4 +61,4 @@ gallery theme="cosmos":
 
 # Headless UI interaction tests (gpui-kit harness: find/click/press/input over a real window; no compositor needed).
 ui-test *args:
-    cargo test -p sid-ui --test button_activation --test focus_trap --test text_input_editing --test tree_keyboard --test fill_table_floor {{args}}
+    cargo test -p sid-ui --test button_activation --test focus_trap --test text_input_editing --test tree_keyboard --test fill_table_floor --test table_column_reorder {{args}}
