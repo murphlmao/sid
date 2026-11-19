@@ -327,6 +327,9 @@ pub struct AppState {
     import_banner_dismissed: bool,
     /// Dismissed hint ids (`Settings::dismissed`), cached so `render` can read them.
     dismissed: Vec<String>,
+    /// `Settings::column_order`, cached for tables built lazily from `render`. See
+    /// `ui::column_order`.
+    pub(crate) column_order: std::collections::BTreeMap<String, Vec<String>>,
     /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
     /// through here; the store only ever sees opaque `secret_ref` ids.
     pub(crate) secrets: Box<dyn SecretStore>,
@@ -594,6 +597,7 @@ impl AppState {
             ssh_config_present,
             import_banner_dismissed: prefs.import_banner_dismissed,
             dismissed: prefs.dismissed.clone(),
+            column_order: prefs.column_order.clone(),
             root_focus: cx.focus_handle(),
         };
         state
