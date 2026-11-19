@@ -1484,13 +1484,15 @@ impl DockerDelegate {
         self.recompute();
     }
 
-    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
+    /// Apply the filter, the default order (running first), then the active sort — a
+    /// stable sort, so the default order stays the tie-breaker under any column sort.
     fn recompute(&mut self) {
         let mut containers: Vec<ContainerInfo> =
             filter_containers(&self.all_containers, &self.query)
                 .into_iter()
                 .cloned()
                 .collect();
+        containers.sort_by(cmp_container_state);
         if let Some((col_ix, dir)) = self.active_sort {
             sort_containers(&mut containers, col_ix, dir);
         }
@@ -4735,6 +4737,29 @@ mod tests {
         sort_containers(&mut containers, 2, SortDir::Asc);
         let names: Vec<&str> = containers.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn docker_lists_running_first_by_default_and_keeps_that_under_a_column_sort() {
+        let mut d = DockerDelegate::new();
+        d.set_containers(vec![
+            container("old", "img-a", "exited", ""),
+            container("web", "img-b", "running", ""),
+            container("db", "img-a", "running", ""),
+            container("job", "img-b", "exited", ""),
+        ]);
+        let names = |d: &DockerDelegate| -> Vec<String> {
+            d.containers.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names(&d), ["db", "web", "job", "old"]);
+        // Sorting by image keeps running-first inside each image group.
+        d.active_sort = Some((1, SortDir::Asc));
+        d.recompute();
+        assert_eq!(names(&d), ["db", "old", "web", "job"]);
+        // Clearing the column sort returns to the default.
+        d.active_sort = None;
+        d.recompute();
+        assert_eq!(names(&d), ["db", "web", "job", "old"]);
     }
 
     #[test]
