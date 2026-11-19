@@ -90,6 +90,12 @@
 //! then `columns_count` -> `self.columns.len()`, `column` -> `self.columns.column(ix)`,
 //! `perform_sort` -> `self.columns.apply_sort(col_ix, sort)`, plus a two-line
 //! [`FillTableDelegate`] impl. Render with [`FillTable`] instead of `Table`.
+//!
+//! To let the user drag columns into a new order, end the declaration with
+//! [`FillColumns::reorderable`] and read every `col_ix` upstream hands the delegate
+//! through [`FillColumns::logical`] before matching on it (`render_td`, `perform_sort`'s
+//! own sort key). Header code and `apply_sort` take the display position as given.
+//! [`FillColumns::order`] / [`FillColumns::apply_order`] persist the result.
 
 mod cell;
 mod column_width;
@@ -102,9 +108,10 @@ pub use columns::{FillColumns, TABLE_CHROME};
 pub use header::{next_sort, sortable_th};
 
 use gpui::{
-    App, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas, div,
+    App, Context, Entity, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, canvas,
+    div,
 };
-use gpui_component::table::{DataTable, TableDelegate, TableState};
+use gpui_component::table::{DataTable, TableDelegate, TableEvent, TableState};
 use gpui_component::{FocusableExt as _, Size};
 
 use crate::scale::UiScale;
@@ -220,6 +227,37 @@ fn viewport_rows<D: FillTableDelegate>(state: &Entity<TableState<D>>, cx: &App) 
     (f32::from(height) / row_height).floor().max(0.) as usize
 }
 
+/// Make a header drag move the whole column, and only where the delegate can follow.
+///
+/// Upstream's drop handler permutes the table's private `col_groups` (width, sort, a
+/// copy of the `Column`) and tells the delegate through `TableDelegate::move_column`,
+/// a no-op by default. Left at that, a drop moves the widths and the sort chevron while
+/// the labels (`render_th`) and the cells (`render_td`), which read the delegate's store
+/// by position, stay put; and the next `TableState::refresh` (any resize, any header
+/// sort) rebuilds `col_groups` from the unmoved store and undoes the drop. That was the
+/// whole "it doesn't land where I put it" report.
+///
+/// So the store follows the table: on `TableEvent::MoveColumn` the delegate's
+/// [`FillColumns`] makes the same move and the table re-reads its columns from it,
+/// which makes the store the one source of truth for order. The event is delivered when
+/// the drop's update finishes, before the next frame, so no frame shows the two halves
+/// disagreeing. A store that is not [`FillColumns::reorderable`] gets no drag at all.
+fn follow_moves<D: FillTableDelegate>(table: &mut TableState<D>, cx: &mut Context<TableState<D>>) {
+    let columns = table.delegate_mut().fill_columns();
+    let reorderable = columns.reorderable;
+    if reorderable && columns.moves.is_none() {
+        columns.moves = Some(cx.subscribe_self(
+            |table: &mut TableState<D>, event: &TableEvent, cx| {
+                if let TableEvent::MoveColumn(from, to) = *event {
+                    table.delegate_mut().fill_columns().move_column(from, to);
+                    table.refresh(cx);
+                }
+            },
+        ));
+    }
+    table.col_movable = reorderable;
+}
+
 impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         // The phantom-row gate. See [`rows_to_paint`]: the library ties its striped
@@ -228,6 +266,9 @@ impl<D: FillTableDelegate> RenderOnce for FillTable<D> {
         let viewport = viewport_rows(&self.state, cx);
         let data = self.state.read(cx).delegate().rows_count(cx);
         let stripe = self.stripe && rows_to_paint(data, viewport) >= viewport;
+
+        // Column reorder. See [`follow_moves`].
+        self.state.update(cx, follow_moves);
 
         let measured = self.state.clone();
         div()
