@@ -2716,10 +2716,12 @@ fn conn_state_rank(c: &Connection) -> u8 {
     }
 }
 
-/// The Connections table's default order: state rank, then process, then remote.
+/// The Connections table's default order: state rank, then process (unattributed `—`
+/// rows last within a state), then remote.
 fn cmp_conn_default(a: &Connection, b: &Connection) -> Ordering {
     conn_state_rank(a)
         .cmp(&conn_state_rank(b))
+        .then_with(|| a.command.is_empty().cmp(&b.command.is_empty()))
         .then_with(|| cmp_conn_process(a, b))
         .then_with(|| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)))
 }
@@ -4175,6 +4177,7 @@ mod tests {
         d.set_connections(
             vec![
                 conn_in("TIME_WAIT", "curl"),
+                conn_in("ESTABLISHED", ""),
                 conn_in("ESTABLISHED", "zed"),
                 conn_in("CLOSE_WAIT", "app"),
                 conn_in("ESTABLISHED", "Firefox"),
@@ -4193,6 +4196,8 @@ mod tests {
             [
                 ("ESTABLISHED", "Firefox"),
                 ("ESTABLISHED", "zed"),
+                // An unattributed row (rendered `—`) trails its state group.
+                ("ESTABLISHED", ""),
                 ("SYN_SENT", "ssh"),
                 ("CLOSE_WAIT", "app"),
                 ("TIME_WAIT", "curl"),
