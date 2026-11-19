@@ -6,9 +6,10 @@
 //! `<tab>.<table>[.<variant>]`: the tab's `Tab::id()` slug, then the table, lowercase and
 //! dot-separated. Every id lives here as a constant; a table never spells its own.
 //! Renaming one orphans the orders users saved under it (harmless, an unknown id is never
-//! read, but their layout is gone), so don't. Reserved for the Network rollout:
-//! `network.ports`, `network.connections`, `network.docker`, `network.kubernetes.<kind>`
-//! and `system.services`.
+//! read, but their layout is gone), so don't. Kubernetes tables carry the resource kind
+//! as the variant (`network.kubernetes.pods`), so a future kind gets its own id.
+//!
+//! Not persisted: the Database results grid (its columns belong to a query).
 //!
 //! # The flow
 //!
@@ -31,6 +32,16 @@ use crate::app::AppState;
 
 /// The System tab's process table.
 pub(crate) const SYSTEM_PROCESSES: &str = "system.processes";
+/// The System tab's Services sub-view (both systemd scopes share one order).
+pub(crate) const SYSTEM_SERVICES: &str = "system.services";
+/// The Network tab's Ports sub-view.
+pub(crate) const NETWORK_PORTS: &str = "network.ports";
+/// The Network tab's Connections sub-view.
+pub(crate) const NETWORK_CONNECTIONS: &str = "network.connections";
+/// The Network tab's Docker containers.
+pub(crate) const NETWORK_DOCKER: &str = "network.docker";
+/// The Network tab's Kubernetes pods (every context shares one order).
+pub(crate) const NETWORK_KUBERNETES_PODS: &str = "network.kubernetes.pods";
 /// The Workspaces tab's umbrella fleet table.
 pub(crate) const WORKSPACES_FLEET: &str = "workspaces.fleet";
 
