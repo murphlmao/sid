@@ -792,8 +792,9 @@ impl AppState {
                 .when_some(empty, |this, empty| {
                     this.child(self.home_empty_state(empty, &query, cx))
                 })
-                .when(few && empty.is_none(), |this| {
-                    this.child(self.get_started(cx))
+                .children(match few && empty.is_none() {
+                    true => self.get_started(cx),
+                    false => None,
                 })
                 .when(empty.is_none(), |this| {
                     this.child(div().flex_1().min_h(scaled(48.)))
@@ -824,7 +825,85 @@ impl AppState {
     /// few connections — add one, import from `~/.ssh/config`, and the keys worth
     /// knowing (real bindings from the keymap). It collapses away at
     /// [`GET_STARTED_BELOW`] hosts.
-    fn get_started(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// A dismissible hint card: the card plus a quiet X pinned to its top-right corner.
+    /// The X is a sibling of the card, never inside it, so its click cannot reach the
+    /// card's own action.
+    fn dismissable(&self, id: &'static str, card: GridCard, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .relative()
+            .flex()
+            .w_full()
+            .child(card)
+            .child(
+                div().absolute().top_2().right_2().child(
+                    IconButton::new(
+                        SharedString::from(format!("{id}.x")),
+                        Icon::Close,
+                        "Dismiss",
+                    )
+                    .small()
+                    .on_click(cx.listener(
+                        move |this, _ev: &ClickEvent, _w, cx| {
+                            this.dismiss(&[id], cx);
+                        },
+                    )),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// One row of hint cards under a heading: dismissed cards drop out, the survivors
+    /// share the line evenly, and a row with no survivors is gone, heading included.
+    /// The heading's own X dismisses every card of the row at once.
+    fn hint_row(
+        &self,
+        heading: &'static str,
+        ids_x: &'static str,
+        cards: Vec<(&'static str, GridCard)>,
+        cols: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let all: Vec<&'static str> = cards.iter().map(|(id, _)| *id).collect();
+        let kept: Vec<_> = cards
+            .into_iter()
+            .filter(|(id, _)| !self.is_dismissed(id))
+            .collect();
+        if kept.is_empty() {
+            return None;
+        }
+        let t = theme::active(cx).clone();
+        let n = kept.len();
+        let cards = kept
+            .into_iter()
+            .map(|(id, card)| self.dismissable(id, card, cx))
+            .collect();
+        Some(
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .child(div().text_heading(&t).child(heading))
+                        .child(
+                            IconButton::new(
+                                SharedString::from(format!("{ids_x}.x")),
+                                Icon::Close,
+                                "Dismiss this row",
+                            )
+                            .small()
+                            .on_click(cx.listener(
+                                move |this, _ev: &ClickEvent, _w, cx| this.dismiss(&all, cx),
+                            )),
+                        ),
+                )
+                .child(sid_ui::even_card_rows(cards, cols.min(n)))
+                .into_any_element(),
+        )
+    }
+
+    fn get_started(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let t = theme::active(cx).clone();
         // The app rail + the home's gutters leave the grid roughly the window less 112px.
         let cols = sid_ui::fit_columns(self.ssh_home.viewport_w - 112., 320., 3);
@@ -898,50 +977,64 @@ impl AppState {
                 .child(tip("Keyboard cheat sheet", key(Action::CheatSheet))),
         );
 
-        v_flex()
-            .w_full()
-            .gap_3()
-            .child(div().text_heading(&t).child("Get started"))
-            .child(
-                sid_ui::even_card_rows(
-                    vec![
-                        add.into_any_element(),
-                        import.into_any_element(),
-                        keys.into_any_element(),
-                    ],
-                    cols,
-                ),
-            )
-            .child(
-                div()
-                    .mt(sid_ui::SECTION_GAP.len())
-                    .text_heading(&t)
-                    .child("What a session gives you"),
-            )
-            .child(
-                sid_ui::even_card_rows(
-                    vec![know_card(
+        let start = self.hint_row(
+            "Get started",
+            "ssh.row.start",
+            vec![
+                ("ssh.card.add", add),
+                ("ssh.card.import", import),
+                ("ssh.card.keys", keys),
+            ],
+            cols,
+            cx,
+        );
+        let know = self.hint_row(
+            "What a session gives you",
+            "ssh.row.know",
+            vec![
+                (
+                    "ssh.card.files",
+                    know_card(
                         "ssh-know-files",
                         Icon::Folder,
                         "Files beside the terminal",
                         "Every session opens with an SFTP panel next to the shell. Browse, preview, upload and rename without leaving the tab.",
-                    ).into_any_element(),
+                    ),
+                ),
+                (
+                    "ssh.card.edit",
                     know_card(
                         "ssh-know-edit",
                         Icon::Rename,
                         "Edit remote files locally",
                         "Open a remote file in your own editor; saving writes it back to the server.",
-                    ).into_any_element(),
+                    ),
+                ),
+                (
+                    "ssh.card.secrets",
                     know_card(
                         "ssh-know-secrets",
                         Icon::User,
                         "Secrets stay in your keyring",
                         "Passwords and key passphrases live in the OS keyring. Saved connections only hold a reference to them.",
-                    ).into_any_element()],
-                    cols,
+                    ),
                 ),
-            )
-            .into_any_element()
+            ],
+            cols,
+            cx,
+        );
+        if start.is_none() && know.is_none() {
+            return None;
+        }
+        // The gap between the rows only exists when both do.
+        Some(
+            v_flex()
+                .w_full()
+                .gap(sid_ui::SECTION_GAP.len())
+                .children(start)
+                .children(know)
+                .into_any_element(),
+        )
     }
 
     /// The list's empty state: what is missing, what to do, and the buttons that do it.

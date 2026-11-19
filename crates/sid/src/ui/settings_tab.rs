@@ -881,6 +881,33 @@ impl AppState {
             .items_start()
             .child(div().flex_1().min_w(scaled(360.)).child(themes))
             .child(div().flex_1().min_w(scaled(360.)).child(display))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(scaled(360.))
+                    .child(self.hints_card(chrome, cx)),
+            )
+    }
+
+    /// Appearance's last card: bring back the onboarding hints the user dismissed.
+    fn hints_card(&self, chrome: &theme::Theme, cx: &mut Context<Self>) -> Card {
+        let n = self.dismissed_count();
+        Card::new()
+            .child(div().text_heading(chrome).child("Hints"))
+            .child(div().text_meta(chrome).child(match n {
+                0 => "No hints are dismissed.".to_string(),
+                1 => "1 hint is dismissed. Reset it to show it again.".to_string(),
+                n => format!("{n} hints are dismissed. Reset them to show them again."),
+            }))
+            .child(
+                div().flex().child(
+                    sid_ui::Button::new("settings-reset-hints", "Reset dismissed hints")
+                        .disabled(n == 0)
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.reset_dismissed(cx);
+                        })),
+                ),
+            )
     }
 
     /// One selectable card per `theme::THEME_NAMES` entry: a miniature painted in the
