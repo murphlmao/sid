@@ -1826,6 +1826,7 @@ impl AppState {
             .position(|&tab| tab == active)
             .unwrap_or(0);
         SegmentedControl::new("net-subview")
+            .large()
             .segments(NetSubTab::ALL.iter().map(|&tab| match tab.icon() {
                 Some(icon) => Segment::new(tab.label()).icon(icon),
                 None => Segment::new(tab.label()),

@@ -217,6 +217,15 @@ impl SegmentedControl {
         self
     }
 
+    /// The primary rung: a 44px track with 36px chips and generous side padding, for the
+    /// sub-view strips that are a screen's main navigation (Network, System). The default
+    /// 36px track suits a small option picker beside a label, but made the primary strips
+    /// ~28px tall targets, which is what "too small to click" measured.
+    pub fn large(mut self) -> Self {
+        self.size = ButtonSize::Lg;
+        self
+    }
+
     /// Append one segment.
     pub fn segment(mut self, segment: impl Into<Segment>) -> Self {
         self.segments.push(segment.into());

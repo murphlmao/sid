@@ -45,7 +45,7 @@ use crate::modal::Modal;
 use crate::notice::{caveat_line, error_line};
 use crate::radio::Radio;
 use crate::scope_chip::ScopeChip;
-use crate::segmented::SegmentedControl;
+use crate::segmented::{Segment, SegmentedControl};
 use crate::skeleton::Skeleton;
 use crate::status_bar::{StatusBar, StatusItem};
 use crate::status_dot::{ALL_CONNECTION_STATES, ConnectionState, StatusDot, StatusLegend};
@@ -298,7 +298,12 @@ fn v2_band(theme: &Theme, tree: Entity<TreeState>) -> impl IntoElement + use<> {
                 )
                 .child(
                     Switch::new("v2-sw-dis", true)
-                        .label("disabled")
+                        .label("disabled on")
+                        .disabled(true),
+                )
+                .child(
+                    Switch::new("v2-sw-dis-off", false)
+                        .label("disabled off")
                         .disabled(true),
                 ),
         );
@@ -812,6 +817,31 @@ fn structure(theme: &Theme, filter: &Entity<InputState>) -> Vec<gpui::AnyElement
                 SegmentedControl::new("gallery-seg")
                     .segments(["Ports", "Services", "Interfaces"])
                     .selected(1),
+            )
+            .child(
+                SegmentedControl::new("gallery-seg-small")
+                    .small()
+                    .segments(["Off", "2 s", "30 s"])
+                    .selected(0),
+            )
+            .child(
+                SegmentedControl::new("gallery-seg-large")
+                    .large()
+                    .segments([
+                        Segment::new("Ports").icon(Icon::Ports),
+                        Segment::new("Connections").icon(Icon::Connections),
+                        Segment::new("Services").icon(Icon::Services),
+                    ])
+                    .selected(1),
+            )
+            .child(
+                SegmentedControl::new("gallery-seg-brands")
+                    .large()
+                    .segments([
+                        Segment::new("Docker").icon(Icon::Docker),
+                        Segment::new("Kubernetes").icon(Icon::Kubernetes),
+                    ])
+                    .selected(0),
             )
             .child(
                 SegmentedControl::new("gallery-seg-long")
