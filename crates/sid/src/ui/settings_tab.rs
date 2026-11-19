@@ -878,8 +878,8 @@ impl AppState {
             .flex_row()
             .flex_wrap()
             .gap_3()
-            .items_start()
-            .child(div().flex_1().min_w(scaled(360.)).child(themes))
+            .items_stretch()
+            .child(div().w_full().child(themes))
             // Custom colors: a full row of its own, under the palettes it paints over.
             // The editor applies an edit live; this persists it once it settles.
             .child(div().w_full().child(
@@ -903,12 +903,23 @@ impl AppState {
                     },
                 )),
             ))
-            .child(div().flex_1().min_w(scaled(360.)).child(display))
+            // Display and Hints share a row at equal height (stretched cards, content at
+            // the top), and stack when the window is too narrow for two.
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w(scaled(360.))
-                    .child(self.hints_card(chrome, cx)),
+                    .child(display.flex_1()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(scaled(360.))
+                    .child(self.hints_card(chrome, cx).flex_1()),
             )
     }
 

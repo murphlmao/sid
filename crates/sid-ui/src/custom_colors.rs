@@ -40,6 +40,8 @@ use crate::typography::Typography as _;
 /// The narrowest a group column may be laid out at (design px): swatch, a label like
 /// "Secondary text", a reset and the hex field, without the label eliding.
 const GROUP_MIN_W: f32 = 340.;
+/// Widest a group column grows, so a label and its hex field stay a glance apart.
+const GROUP_MAX_W: f32 = 400.;
 
 /// How a settled override map reaches the caller.
 type CommitHandler = Rc<dyn Fn(&BTreeMap<String, String>, &mut Window, &mut App)>;
@@ -349,8 +351,11 @@ impl Render for Editor {
                         self.row(ix, &t, &base, overridden, window, cx)
                     })
                     .collect();
+                // Capped: on a wide card an uncapped column parks each hex field a
+                // thousand px from its label.
                 v_flex()
                     .min_w(px(0.))
+                    .max_w(px(GROUP_MAX_W))
                     .child(div().pb_1().text_label(&t).child(group))
                     .children(rows)
             })
