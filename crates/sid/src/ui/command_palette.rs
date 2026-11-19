@@ -840,11 +840,11 @@ mod tests {
         for want in [
             "Network: Ports",
             "Network: Connections",
-            "Network: Services",
             "Network: Interfaces",
             "Network: Docker",
             "Network: Kubernetes",
             "System: Processes",
+            "System: Services",
             "System: Config files",
             "Database: Run query",
             "Database: Explain query",

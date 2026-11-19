@@ -22,6 +22,7 @@ pub mod host_form;
 pub mod host_key_prompt;
 pub mod network_tab;
 pub mod password_prompt;
+pub mod services;
 pub mod session;
 pub mod settings_tab;
 pub mod ssh_home;
