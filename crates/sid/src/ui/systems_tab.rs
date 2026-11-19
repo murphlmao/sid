@@ -276,9 +276,10 @@ enum ProcessSortKey {
     User,
 }
 
-/// Column index -> sort key, for the sortable columns only (the trailing "kill" column
-/// has no `Column::sort` set, so `TableState::perform_sort` never calls into our
+/// Declaration index -> sort key, for the sortable columns only (the trailing "kill"
+/// column has no `Column::sort` set, so `TableState::perform_sort` never calls into our
 /// `perform_sort` for it — see that method's gate in gpui-component's `table/state.rs`).
+/// Indexed through [`process_sort_key`], never by display position.
 const PROCESS_SORT_KEYS: [ProcessSortKey; 6] = [
     ProcessSortKey::Cpu,
     ProcessSortKey::Mem,
@@ -287,6 +288,11 @@ const PROCESS_SORT_KEYS: [ProcessSortKey; 6] = [
     ProcessSortKey::Command,
     ProcessSortKey::User,
 ];
+
+/// The sort key of the column drawn at `col_ix`, wherever the user has dragged it.
+fn process_sort_key(columns: &FillColumns, col_ix: usize) -> Option<ProcessSortKey> {
+    PROCESS_SORT_KEYS.get(columns.logical(col_ix)).copied()
+}
 
 /// Backs the processes [`Table`]. Same shape as `network_tab.rs`'s `PortsDelegate`:
 /// cache the full fetched set + the filtered/sorted display set, own the two-click
@@ -384,9 +390,15 @@ impl ProcessesDelegate {
                 // Wide enough for the armed state's "confirm" label plus the cell's own
                 // padding — the idle "kill" chip is narrower, but a control that resizes
                 // the column it lives in when you arm it makes the whole row jump.
-                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
+                // Not draggable: an empty header is no handle to grab.
+                (
+                    Column::new("kill", "").movable(false),
+                    ColumnWidth::Fixed(104.),
+                ),
             ])
-            .inset_cells(0..=5),
+            .inset_cells(0..=5)
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
         }
     }
 
@@ -513,7 +525,7 @@ impl TableDelegate for ProcessesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        let Some(&key) = PROCESS_SORT_KEYS.get(col_ix) else {
+        let Some(key) = process_sort_key(&self.columns, col_ix) else {
             return;
         };
         self.sort_key = key;
@@ -602,7 +614,8 @@ impl TableDelegate for ProcessesDelegate {
         // must not carry an `ElementId`" section. Nothing here has click, hover, tooltip,
         // scroll or drag state to keep, and an id on a cell that has none is ~180
         // `GlobalElementId` round trips per frame for nothing.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => {
                 CellText::new(&theme, theme.fg, format!("{:.1}%", proc.cpu_pct)).into_any_element()
             }
@@ -848,8 +861,10 @@ impl AppState {
             .detach();
         }
         if self.systems.table.is_none() {
-            let provider = self.systems.provider.clone();
-            let table = cx.new(|cx| TableState::new(ProcessesDelegate::new(provider), window, cx));
+            let mut delegate = ProcessesDelegate::new(self.systems.provider.clone());
+            let id = crate::ui::column_order::SYSTEM_PROCESSES;
+            self.persist_column_order(id, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             track_selection(&table, cx);
             self.systems.table = Some(table);
         }
@@ -2581,6 +2596,47 @@ mod tests {
         // ...and the trailing action column is deliberately not one of them.
         let last = delegate.columns.len() - 1;
         assert_eq!(delegate.columns.column(last).sort, None);
+    }
+
+    #[test]
+    fn a_saved_process_column_order_survives_a_restart_and_sorts_the_right_column() {
+        use crate::ui::column_order::{SYSTEM_PROCESSES, store_order};
+        let new = || ProcessesDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.redb");
+        let store = sid_store::Store::open(&path).expect("store");
+        // A user's drag, as the store reports it (`FillColumns::on_reorder`).
+        let mut before = new();
+        before.columns.apply_order(&["user".into(), "name".into()]);
+        store_order(&store, SYSTEM_PROCESSES, before.columns.saved_order()).unwrap();
+        drop(store);
+
+        // "Restart": reopen the file, rebuild the table, apply what was saved.
+        let store = sid_store::Store::open(&path).expect("reopen");
+        let saved = store.settings().unwrap().column_order;
+        let mut after = new();
+        after.columns.apply_order(&saved[SYSTEM_PROCESSES]);
+        assert_eq!(
+            after.columns.order(),
+            ["user", "name", "cpu", "mem", "pid", "cmd", "kill"]
+        );
+        // A header click at display position N sorts by the column drawn there.
+        let keys: Vec<_> = (0..after.columns.len())
+            .map(|ix| process_sort_key(&after.columns, ix))
+            .collect();
+        use ProcessSortKey::*;
+        assert_eq!(
+            keys,
+            [
+                Some(User),
+                Some(Name),
+                Some(Cpu),
+                Some(Mem),
+                Some(Pid),
+                Some(Command),
+                None
+            ]
+        );
     }
 
     #[test]
