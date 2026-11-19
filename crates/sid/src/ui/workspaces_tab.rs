@@ -570,7 +570,9 @@ impl FleetDelegate {
                     Column::new("path", "Path").sortable(),
                     ColumnWidth::grow().min_width(200.).weight(2.5),
                 ),
-            ]),
+            ])
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -628,7 +630,8 @@ impl TableDelegate for FleetDelegate {
         // `TableState::refresh` — which a viewport change now triggers on every resize.
         // See `FillColumns::apply_sort`.
         self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        let col = self.columns.logical(col_ix);
+        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col, dir));
         self.recompute();
         cx.notify();
     }
@@ -654,9 +657,11 @@ impl TableDelegate for FleetDelegate {
     ) -> impl IntoElement {
         let t = theme::active(cx);
         let (fg, muted) = (t.fg, t.muted);
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        let col = self.columns.logical(col_ix);
         // `ElementId` has no `From<(&str, usize, usize)>` impl — fold (row, col) into a
         // single index, same trick `network_tab` uses.
-        let cell_id = ("ws-fleet-cell", row_ix * 8 + col_ix);
+        let cell_id = ("ws-fleet-cell", row_ix * 8 + col);
 
         // Identifiers a machine chose are monospace; the two columns that read as English
         // stay proportional. Both are the same 14px rung — see `fleet_cell`.
@@ -667,7 +672,7 @@ impl TableDelegate for FleetDelegate {
 
         let content: AnyElement = match self.rows.get(row_ix) {
             None => div().into_any_element(),
-            Some(row) => match col_ix {
+            Some(row) => match col {
                 0 => ident(fg, row.name.clone().into()),
                 1 => match &row.fetch {
                     Fetch::Loading => words(muted, "…".into()),

@@ -518,6 +518,8 @@ const NULL_TEXT: &str = "NULL";
 /// and the only order that reflects an `ORDER BY` the user wrote themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ResultSort {
+    /// The column's index in the *page* (`Row::values`, `column_types`) — never its
+    /// display position, which a header drag changes. See `FillColumns::logical`.
     col_ix: usize,
     descending: bool,
 }
@@ -829,12 +831,16 @@ impl ResultDelegate {
     /// different shape would silently re-point it at an unrelated column — the exact
     /// class of bug the generation guards exist to prevent, one layer down. Same
     /// columns means this is the next page of the same query, where keeping the sort is
-    /// what the user expects.
+    /// what the user expects. The **column order** the user dragged into follows the
+    /// same rule, for the same reason.
     fn set_page(&mut self, page: QueryPage) {
         let names = unique_column_names(page.columns.iter().map(|c| c.name.as_str()));
+        // Compared by page index, so a column the user dragged elsewhere still matches.
         let same_shape = self.column_types.len() == page.columns.len()
-            && (0..self.columns.len())
-                .all(|ix| self.columns.column(ix).name.as_ref() == names[ix].as_str());
+            && (0..self.columns.len()).all(|ix| {
+                self.columns.column(ix).name.as_ref() == names[self.columns.logical(ix)].as_str()
+            });
+        let order = self.columns.order();
         if !same_shape {
             self.sort = None;
         }
@@ -846,9 +852,11 @@ impl ResultDelegate {
                 .iter()
                 .zip(plan)
                 .map(|(name, width)| (Column::new(name.clone(), name.clone()).sortable(), width)),
-        );
+        )
+        .reorderable();
         // Re-assert the surviving sort on the freshly declared columns, or the header
-        // chevron would come back blank on a page that is still sorted.
+        // chevron would come back blank on a page that is still sorted. Before the order
+        // is restored, while display position and page index still coincide.
         if let Some(ResultSort { col_ix, descending }) = self.sort {
             self.columns.apply_sort(
                 col_ix,
@@ -858,6 +866,9 @@ impl ResultDelegate {
                     ColumnSort::Ascending
                 },
             );
+        }
+        if same_shape {
+            self.columns.apply_order(&order);
         }
         self.column_types = page.columns.into_iter().map(|c| c.ty).collect();
         self.all_rows = page.rows;
@@ -944,13 +955,14 @@ impl TableDelegate for ResultDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
+        let page_ix = self.columns.logical(col_ix);
         self.sort = match sort {
             ColumnSort::Ascending => Some(ResultSort {
-                col_ix,
+                col_ix: page_ix,
                 descending: false,
             }),
             ColumnSort::Descending => Some(ResultSort {
-                col_ix,
+                col_ix: page_ix,
                 descending: true,
             }),
             ColumnSort::Default => None,
@@ -976,13 +988,15 @@ impl TableDelegate for ResultDelegate {
     ) -> impl IntoElement {
         let t = theme::active(cx);
         let (fg, selection) = (t.fg, t.selection);
+        // `col_ix` is where the cell is drawn; the page is indexed by column identity.
+        let page_ix = self.columns.logical(col_ix);
         let text = self.rows[row_ix]
             .values
-            .get(col_ix)
+            .get(page_ix)
             .cloned()
             .unwrap_or_default();
         let column_name = self.columns.column(col_ix).name.to_string();
-        let cell_ix = row_ix * 4096 + col_ix;
+        let cell_ix = row_ix * 4096 + page_ix;
 
         let copy_text = text.clone();
         let copy_app = self.app.clone();
@@ -6221,6 +6235,55 @@ mod store_browse_tests {
         assert_eq!(browse_export_stem(Some("hosts")), "sid-store-hosts");
         assert_eq!(browse_export_stem(None), "sid-store");
         assert!(!browse_export_stem(Some("hosts")).contains("__"));
+    }
+}
+
+#[cfg(test)]
+mod result_order_tests {
+    use super::*;
+
+    fn page(columns: &[&str]) -> QueryPage {
+        QueryPage {
+            columns: columns
+                .iter()
+                .map(|c| DbColumn {
+                    name: c.to_string(),
+                    ty: ColumnType::Text,
+                })
+                .collect(),
+            rows: vec![Row {
+                values: columns.iter().map(|c| format!("{c}-value")).collect(),
+            }],
+            next_cursor: None,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_dragged_order_and_its_sort_survive_the_next_page() {
+        let mut grid = ResultDelegate::empty();
+        grid.set_page(page(&["id", "name", "email"]));
+        grid.columns.apply_order(&["email".into(), "id".into()]);
+        // What `perform_sort` records for a click on `email`: its page index, 2,
+        // although it is drawn first.
+        grid.sort = Some(ResultSort {
+            col_ix: 2,
+            descending: true,
+        });
+        grid.set_page(page(&["id", "name", "email"]));
+        assert_eq!(grid.columns.order(), ["email", "id", "name"]);
+        assert_eq!(grid.columns.column(0).sort, Some(ColumnSort::Descending));
+        assert_eq!(grid.columns.column(1).sort, Some(ColumnSort::Default));
+        assert_eq!(grid.columns.logical(0), 2, "email cells read page index 2");
+    }
+
+    #[test]
+    fn a_different_query_starts_from_its_own_column_order() {
+        let mut grid = ResultDelegate::empty();
+        grid.set_page(page(&["id", "name"]));
+        grid.columns.apply_order(&["name".into()]);
+        grid.set_page(page(&["sku", "price"]));
+        assert_eq!(grid.columns.order(), ["sku", "price"]);
     }
 }
 
