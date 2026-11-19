@@ -117,15 +117,14 @@ fn main() {
             // `SID_THEME` overrides the persisted theme for this run only (never
             // written back) — the capture harness's hook for shooting every palette
             // against a hermetic store, same convention as `SID_START_TAB`.
-            let theme_name = std::env::var("SID_THEME").unwrap_or_else(|_| {
-                store
-                    .settings()
-                    .map(|s| s.theme)
-                    .unwrap_or_else(|_| "cosmos".into())
-            });
+            // The user's custom colours go in first: `install` lays them over whichever
+            // palette it is given, `SID_THEME`'s included.
+            let settings = store.settings().unwrap_or_default();
+            let theme_name = std::env::var("SID_THEME").unwrap_or(settings.theme);
+            sid_ui::theme::set_overrides(&settings.theme_overrides, cx);
             sid_ui::theme::install(&theme_name, cx);
             // Persisted "Reduce motion" (the SID_REDUCED_MOTION env only ever adds to it).
-            if store.settings().map(|s| s.reduce_motion).unwrap_or(false) {
+            if settings.reduce_motion {
                 sid_ui::motion::set_reduced(true, cx);
             }
             // Window title: names the window in bars / `hyprctl clients` (it was empty).
