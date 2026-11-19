@@ -918,13 +918,15 @@ impl AppState {
         Card::new()
             .child(div().text_heading(chrome).child("Hints"))
             .child(div().text_meta(chrome).child(match n {
-                0 => "No hints are dismissed.".to_string(),
-                1 => "1 hint is dismissed. Reset it to show it again.".to_string(),
-                n => format!("{n} hints are dismissed. Reset them to show them again."),
+                0 => "Nothing is dismissed or hidden.".to_string(),
+                1 => "1 hint or System card is dismissed. Reset it to show it again.".to_string(),
+                n => format!(
+                    "{n} hints and System cards are dismissed. Reset them to show them again."
+                ),
             }))
             .child(
                 div().flex().child(
-                    sid_ui::Button::new("settings-reset-hints", "Reset dismissed hints")
+                    sid_ui::Button::new("settings-reset-hints", "Reset hints and cards")
                         .disabled(n == 0)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                             this.reset_dismissed(cx);

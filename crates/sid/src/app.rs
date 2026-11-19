@@ -266,10 +266,23 @@ fn add_dismissed(v: &mut Vec<String>, ids: &[&str]) {
     }
 }
 
-/// Forget every dismissal, the import banner's included.
+/// Forget every dismissal, the import banner's and the hidden System metric cards
+/// included. `+id` entries in `system_metric_hidden` are opt-ins (e.g. `+swap`), not
+/// dismissals, so they stay, in order.
 fn clear_dismissed(s: &mut sid_store::Settings) {
     s.dismissed.clear();
     s.import_banner_dismissed = false;
+    unhide_metrics(&mut s.system_metric_hidden);
+}
+
+/// Drop the plain (hidden) ids, keep the `+` opt-ins.
+pub(crate) fn unhide_metrics(hidden: &mut Vec<String>) {
+    hidden.retain(|h| h.starts_with('+'));
+}
+
+/// How many System metric cards the user hid (plain ids only).
+pub(crate) fn hidden_metric_count(hidden: &[String]) -> usize {
+    hidden.iter().filter(|h| !h.starts_with('+')).count()
 }
 
 /// Whether to raise a desktop notification: only when the user opted in, and only when
@@ -604,6 +617,12 @@ impl AppState {
             column_order: prefs.column_order.clone(),
             root_focus: cx.focus_handle(),
         };
+        // Metric-card layout: loaded here once, so the System tab never reads the store
+        // from `render`.
+        state.systems.seed_metric_prefs(
+            prefs.system_metric_hidden.clone(),
+            prefs.system_metric_order.clone(),
+        );
         state
             .systems
             .seed_background(BackgroundRefresh::from_secs(prefs.background_refresh_secs));
@@ -2156,9 +2175,12 @@ impl AppState {
         self.dismissed.iter().any(|d| d == id)
     }
 
-    /// How many hints are dismissed (counting the import banner).
+    /// How many hints are dismissed (counting the import banner) plus how many System
+    /// metric cards are hidden.
     pub(crate) fn dismissed_count(&self) -> usize {
-        self.dismissed.len() + usize::from(self.import_banner_dismissed)
+        self.dismissed.len()
+            + usize::from(self.import_banner_dismissed)
+            + hidden_metric_count(&self.systems.metric_hidden)
     }
 
     /// Dismiss every hint in `ids` and persist (read-modify-write; failure is logged).
@@ -2174,10 +2196,11 @@ impl AppState {
         cx.notify();
     }
 
-    /// Bring every dismissed hint (and the import banner) back.
+    /// Bring every dismissed hint (and the import banner and hidden System cards) back.
     pub(crate) fn reset_dismissed(&mut self, cx: &mut Context<Self>) {
         self.dismissed.clear();
         self.import_banner_dismissed = false;
+        unhide_metrics(&mut self.systems.metric_hidden);
         let saved = self.store.settings().and_then(|mut s| {
             clear_dismissed(&mut s);
             self.store.set_settings(&s)
@@ -3044,6 +3067,20 @@ mod tests {
         assert_eq!(s.dismissed, ["a", "b", "c"]);
         clear_dismissed(&mut s);
         assert!(s.dismissed.is_empty() && !s.import_banner_dismissed);
+    }
+
+    #[test]
+    fn reset_brings_back_hidden_metric_cards_but_keeps_opt_ins_and_order() {
+        let mut s = sid_store::Settings {
+            system_metric_hidden: vec!["cpu".into(), "+swap".into(), "disk".into()],
+            system_metric_order: vec!["mem".into(), "cpu".into()],
+            ..Default::default()
+        };
+        assert_eq!(hidden_metric_count(&s.system_metric_hidden), 2);
+        clear_dismissed(&mut s);
+        assert_eq!(s.system_metric_hidden, ["+swap"]);
+        assert_eq!(s.system_metric_order, ["mem", "cpu"]);
+        assert_eq!(hidden_metric_count(&s.system_metric_hidden), 0);
     }
 
     // ---- startup zoom (GitHub #4) ------------------------------------------------
