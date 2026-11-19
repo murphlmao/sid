@@ -1820,13 +1820,13 @@ impl AppState {
             .position(|choice| choice.scope == current)
             .unwrap_or(0);
         // Md size (design v2 section 4.7): the most important state in the app is not a
-        // 12px chip. The workspace segments carry a Folder mark so "Global" and "a
-        // workspace" read as different kinds of thing, not two labels.
+        // 12px chip. Global carries a Globe and workspaces a Folder, so the two
+        // read as different kinds of thing and every segment has a mark.
         let scope_switcher = SegmentedControl::new("scope-switcher")
             .segments(self.scopes.iter().map(|choice| {
                 let seg = Segment::new(choice.label.clone());
                 if matches!(choice.scope, Scope::Global) {
-                    seg
+                    seg.icon(Icon::Globe)
                 } else {
                     seg.icon(Icon::Folder)
                 }

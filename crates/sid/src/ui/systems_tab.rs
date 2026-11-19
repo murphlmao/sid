@@ -129,8 +129,7 @@ impl SystemSubView {
     fn icon(self) -> Icon {
         match self {
             SystemSubView::Processes => Icon::Terminal,
-            // Placeholder (Lucide `play`, "a unit that runs"); the icon pass replaces it.
-            SystemSubView::Services => Icon::Run,
+            SystemSubView::Services => Icon::Services,
             SystemSubView::ConfigFiles => Icon::File,
         }
     }
