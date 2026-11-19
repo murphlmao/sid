@@ -12,6 +12,7 @@
 //! form-level `escape`/`enter` bindings, each scoped to its own key context (`HostForm`,
 //! `DbConnForm`, `PasswordPrompt`, …) on an ancestor of the focused field.
 
+pub mod column_order;
 pub mod command_palette;
 pub mod config_editor;
 pub mod connect_error;

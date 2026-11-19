@@ -95,7 +95,9 @@
 //! [`FillColumns::reorderable`] and read every `col_ix` upstream hands the delegate
 //! through [`FillColumns::logical`] before matching on it (`render_td`, `perform_sort`'s
 //! own sort key). Header code and `apply_sort` take the display position as given.
-//! [`FillColumns::order`] / [`FillColumns::apply_order`] persist the result.
+//! To persist it, [`FillColumns::apply_order`] a saved order when the table is built
+//! and save what [`FillColumns::on_reorder`] reports (never subscribe to upstream's
+//! `MoveColumn` for this: it can arrive before the store has moved).
 
 mod cell;
 mod column_width;
@@ -242,6 +244,8 @@ fn viewport_rows<D: FillTableDelegate>(state: &Entity<TableState<D>>, cx: &App) 
 /// which makes the store the one source of truth for order. The event is delivered when
 /// the drop's update finishes, before the next frame, so no frame shows the two halves
 /// disagreeing. A store that is not [`FillColumns::reorderable`] gets no drag at all.
+/// Only then is [`FillColumns::on_reorder`] told, so whoever persists the order reads the
+/// one the store now holds.
 fn follow_moves<D: FillTableDelegate>(table: &mut TableState<D>, cx: &mut Context<TableState<D>>) {
     let columns = table.delegate_mut().fill_columns();
     let reorderable = columns.reorderable;
@@ -249,8 +253,16 @@ fn follow_moves<D: FillTableDelegate>(table: &mut TableState<D>, cx: &mut Contex
         columns.moves = Some(cx.subscribe_self(
             |table: &mut TableState<D>, event: &TableEvent, cx| {
                 if let TableEvent::MoveColumn(from, to) = *event {
-                    table.delegate_mut().fill_columns().move_column(from, to);
+                    let columns = table.delegate_mut().fill_columns();
+                    columns.move_column(from, to);
+                    let report = columns
+                        .on_reorder
+                        .clone()
+                        .map(|save| (save, columns.saved_order()));
                     table.refresh(cx);
+                    if let Some((save, order)) = report {
+                        save(order, cx);
+                    }
                 }
             },
         ));

@@ -312,3 +312,27 @@ fn a_table_that_has_not_opted_in_does_not_offer_the_drag(cx: &mut TestAppContext
     assert_eq!(keys(&table, cx), ["a", "b", "c", "d"]);
     assert_coherent(handle, &table, cx);
 }
+
+#[gpui_kit::test]
+fn on_reorder_reports_the_order_after_the_store_has_moved(cx: &mut TestAppContext) {
+    // The persistence hook. A tab that subscribed to `TableEvent::MoveColumn` itself
+    // could run before the store followed the move and save the old order; `on_reorder`
+    // is called after, and says `None` once the table is back at its declared order.
+    let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut columns = grid(true, false);
+    let log = saved.clone();
+    columns.on_reorder(move |order, _| log.borrow_mut().push(order));
+    let (handle, _table) = open(cx, columns);
+
+    let c = header(handle, 2, cx);
+    drag_header(handle, 0, c.center().x + px(10.), cx);
+    let first = header(handle, 0, cx);
+    drag_header(handle, 2, first.left() + px(2.), cx);
+
+    let keys = |k: &[&str]| Some(k.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+    assert_eq!(
+        *saved.borrow(),
+        [keys(&["b", "c", "a", "d"]), None],
+        "one report per drop, each the order the store holds after it"
+    );
+}

@@ -881,8 +881,10 @@ impl AppState {
     /// unconditionally at the top of `workspaces_tab`, idempotent after the first call.
     fn ensure_workspaces_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspaces.fleet.is_none() {
-            self.workspaces.fleet =
-                Some(cx.new(|cx| TableState::new(FleetDelegate::empty(), window, cx)));
+            let mut delegate = FleetDelegate::empty();
+            let id = crate::ui::column_order::WORKSPACES_FLEET;
+            self.persist_column_order(id, &mut delegate.columns, cx);
+            self.workspaces.fleet = Some(cx.new(|cx| TableState::new(delegate, window, cx)));
         }
     }
 

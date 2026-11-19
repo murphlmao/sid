@@ -10,7 +10,9 @@
 //! It deliberately needs no `App`, `Window` or entity, so its behaviour is unit-tested
 //! at the same millisecond speed as the resolver underneath it.
 
-use gpui::{Edges, Pixels, Subscription, px};
+use std::rc::Rc;
+
+use gpui::{App, Edges, Pixels, Subscription, px};
 use gpui_component::Size;
 use gpui_component::table::{Column, ColumnSort};
 
@@ -87,7 +89,12 @@ pub struct FillColumns {
     /// rebuilds its `FillColumns` (the Database grid, every page) drops the old one,
     /// and the next render subscribes the new one.
     pub(super) moves: Option<Subscription>,
+    /// See [`FillColumns::on_reorder`].
+    pub(super) on_reorder: Option<Rc<SaveOrder>>,
 }
+
+/// The persistence hook [`FillColumns::on_reorder`] stores.
+type SaveOrder = dyn Fn(Option<Vec<String>>, &mut App);
 
 impl FillColumns {
     /// Declare the columns, each paired with how it wants to be sized.
@@ -112,6 +119,7 @@ impl FillColumns {
             reorderable: false,
             reordered: false,
             moves: None,
+            on_reorder: None,
         }
     }
 
@@ -197,7 +205,26 @@ impl FillColumns {
             .collect()
     }
 
-    /// Restore an order saved by [`FillColumns::order`].
+    /// The order worth persisting: the keys in display order, or `None` when the table
+    /// is in its declared order, so a table dragged back to its default leaves no entry.
+    pub fn saved_order(&self) -> Option<Vec<String>> {
+        let declared = self.order.iter().enumerate().all(|(pos, &ix)| pos == ix);
+        (!declared).then(|| self.order())
+    }
+
+    /// Call `save` with [`FillColumns::saved_order`] after every column the user drags.
+    ///
+    /// This is the only reorder signal a delegate should listen to. A subscriber to the
+    /// table's own `TableEvent::MoveColumn` can run *before* this store has followed
+    /// the move (subscribers run in the order they subscribed, and [`super::FillTable`]
+    /// subscribes on first paint), and would save the old order. `save` runs after the
+    /// store has moved, from the drop's event flush, so it may do I/O; it must not
+    /// update the table it came from.
+    pub fn on_reorder(&mut self, save: impl Fn(Option<Vec<String>>, &mut App) + 'static) {
+        self.on_reorder = Some(Rc::new(save));
+    }
+
+    /// Restore an order saved by [`FillColumns::order`] or [`FillColumns::saved_order`].
     ///
     /// Lenient, because a saved order outlives the declaration it was taken from: keys
     /// this table no longer has are ignored, a key named twice counts once, and columns
@@ -567,6 +594,24 @@ mod tests {
         assert_eq!(
             (0..6).map(|ix| fresh.logical(ix)).collect::<Vec<_>>(),
             (0..6).map(|ix| cols.logical(ix)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn only_a_changed_order_is_worth_saving() {
+        let mut cols = processes().reorderable();
+        assert_eq!(cols.saved_order(), None);
+        cols.move_column(5, 0);
+        assert_eq!(
+            cols.saved_order().as_deref(),
+            Some(&cols.order()[..]),
+            "a moved table saves its full order"
+        );
+        cols.move_column(0, 5);
+        assert_eq!(
+            cols.saved_order(),
+            None,
+            "back at its default, nothing to keep"
         );
     }
 
