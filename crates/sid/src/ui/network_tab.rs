@@ -106,8 +106,8 @@ use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, CardGrid, CellText, ColumnWidth, Confirm,
     ConfirmArm, ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, GridCard,
     Icon, IconButton, InputState, PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl,
-    StyledExt as _, Switch, TextInput, Tipped as _, Toast, Typography as _, caveat_line, h_flex,
-    scaled, sortable_th, v_flex,
+    Skeleton, StyledExt as _, Switch, TextInput, Tipped as _, Toast, Typography as _, caveat_line,
+    h_flex, scaled, sortable_th, v_flex,
 };
 
 // ---- row actions: shown on hover / selection, not on every row ------------------------
@@ -2068,10 +2068,31 @@ impl AppState {
             .map(|t| t.read(cx).delegate().containers.len())
             .unwrap_or(0);
 
+        let nothing_yet = table
+            .as_ref()
+            .is_none_or(|t| t.read(cx).delegate().all_containers.is_empty());
+
         let body: AnyElement = if not_installed {
-            EmptyState::new("Docker isn't installed")
+            EmptyState::new("Docker isn't installed or running")
                 .icon(Icon::Info)
                 .guidance("Install Docker and start the daemon to see containers here.")
+                .action(docker_retry(cx))
+                .into_any_element()
+        } else if refreshing && nothing_yet {
+            // First load (or a reload of an empty list): the shape of the table that is
+            // on its way, not a bare header row that reads as "no containers".
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .p_3()
+                .child(Skeleton::rows("net-docker-loading", 6))
+                .into_any_element()
+        } else if self.network.docker_error.is_some() && nothing_yet {
+            EmptyState::new("Couldn't list containers")
+                .icon(Icon::Info)
+                .guidance("The docker call failed (details above). Retry once the daemon is up.")
+                .action(docker_retry(cx))
                 .into_any_element()
         } else {
             let empty =
@@ -2565,7 +2586,10 @@ impl AppState {
         let conn_table = self.network.connections_table.clone();
 
         cx.spawn(async move |this, cx| {
-            let handle = ssh_runtime().spawn(async move {
+            // `spawn_blocking`: these are synchronous /proc walks under a std `Mutex`. On
+            // one of the runtime's two async workers they would stall whatever async
+            // probe (docker, kubectl, systemctl, SSH) shares that worker.
+            let handle = ssh_runtime().spawn_blocking(move || {
                 let mut guard = provider.lock().unwrap_or_else(|e| e.into_inner());
                 let ports = guard.list_listening_ports();
                 let conns = guard.list_connections();
@@ -2994,6 +3018,16 @@ const DOCKER_COMPACT_ROWS: usize = 6;
 /// Header and row heights of the Docker table at 100% scale, for sizing it to its rows.
 const DOCKER_HEADER_PX: f32 = 32.;
 const DOCKER_ROW_PX: f32 = 32.;
+
+/// The Docker empty/error states' one action: run the probe again.
+fn docker_retry(cx: &mut Context<AppState>) -> Button {
+    Button::new("net-docker-retry", "Retry")
+        .primary()
+        .icon(Icon::Refresh)
+        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+            this.refresh_network_docker(cx);
+        }))
+}
 
 /// The Kubernetes empty state, with the two actions that help: retry the probe, or copy
 /// the command that lists configured contexts.

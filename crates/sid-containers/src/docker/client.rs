@@ -2,6 +2,9 @@
 //!
 //! Request/response only — JSON-line parsing lives in [`crate::docker::parse`].
 
+use std::process::Output;
+use std::time::Duration;
+
 use sid_core::containers::ContainerError;
 use tokio::process::Command;
 
@@ -27,14 +30,31 @@ fn is_daemon_unavailable(stderr: &str) -> bool {
         || stderr.contains("permission denied while trying to connect")
 }
 
+/// `docker ps -a` as JSON lines. `--size=false` is load-bearing: `{{json .}}` touches
+/// every field, `.Size` included, and the CLI answers that by asking the daemon to walk
+/// every container's writable layer (`size=true`) — 7-8 s for 21 containers on a warm
+/// daemon, far longer on a socket-activated cold one, against ~10 ms without it. The
+/// table never shows a size.
+const PS_ARGS: [&str; 5] = ["ps", "-a", "--size=false", "--format", "{{json .}}"];
+
+/// How long one `docker` call may take. A socket-activated daemon cold-starts in ~2 s;
+/// past this the probe is a retryable failure, never a view that spins forever.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `cmd`, giving up (and killing the child) after `limit`.
+async fn output_within(cmd: &mut Command, limit: Duration) -> Result<Output, ContainerError> {
+    match tokio::time::timeout(limit, cmd.kill_on_drop(true).output()).await {
+        Ok(res) => res.map_err(map_spawn_err),
+        Err(_) => Err(ContainerError::Other(format!(
+            "docker didn't answer within {limit:?}; the daemon may still be starting"
+        ))),
+    }
+}
+
 /// Run `docker ps -a --format '{{json .}}'` and return raw stdout (one JSON object per
 /// line, one line per container — see `parse::parse_ps_lines`).
 pub(crate) async fn list_containers_raw() -> Result<String, ContainerError> {
-    let out = Command::new("docker")
-        .args(["ps", "-a", "--format", "{{json .}}"])
-        .output()
-        .await
-        .map_err(map_spawn_err)?;
+    let out = output_within(Command::new("docker").args(PS_ARGS), CALL_TIMEOUT).await?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         if is_daemon_unavailable(&stderr) {
@@ -48,6 +68,22 @@ pub(crate) async fn list_containers_raw() -> Result<String, ContainerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ps_never_asks_the_daemon_to_compute_container_sizes() {
+        // `{{json .}}` touches every field, `.Size` included, and the CLI then silently
+        // requests `size=true`: 7-8 s for 21 containers on a warm daemon (10 ms without).
+        assert!(PS_ARGS.contains(&"--size=false"), "{PS_ARGS:?}");
+    }
+
+    #[tokio::test]
+    async fn a_call_that_outlives_its_limit_is_a_retryable_error() {
+        let res = output_within(Command::new("sleep").arg("5"), Duration::from_millis(50)).await;
+        match res {
+            Err(ContainerError::Other(msg)) => assert!(msg.contains("didn't answer"), "{msg}"),
+            other => panic!("expected a timeout error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn cannot_connect_to_daemon_is_not_installed() {
