@@ -1206,12 +1206,14 @@ impl ServicesDelegate {
         self.recompute();
     }
 
-    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
+    /// Apply the filter, the default order (active first, by name), then the active
+    /// sort — stable, so the default order breaks the column sort's ties.
     fn recompute(&mut self) {
         let mut services: Vec<ServiceInfo> = filter_services(&self.all_services, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        services.sort_by(cmp_svc_state);
         if let Some((col_ix, dir)) = self.active_sort {
             sort_services(&mut services, col_ix, dir);
         }
@@ -3440,19 +3442,20 @@ fn cmp_svc_name(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
     a.name.to_lowercase().cmp(&b.name.to_lowercase())
 }
 
-/// Active-first rank used by [`cmp_svc_state`]: `active < activating < reloading <
-/// (any other/unrecognized "other" sub-state) < inactive < failed`.
-/// `SvcActiveState::Other` folds systemd's `activating`/`deactivating`/`reloading`
-/// together (see the enum's own doc comment) — `sub_state`'s text is what actually
-/// distinguishes them for ranking purposes.
+/// Active-first rank used by [`cmp_svc_state`] and the default order: `active <
+/// activating < reloading < failed < (any other "other" sub-state) < inactive`. Failed
+/// sits right after the live units because it is the one a reader needs to notice; the
+/// long tail of inactive units goes last. `SvcActiveState::Other` folds systemd's
+/// `activating`/`deactivating`/`reloading` together (see the enum's own doc comment) —
+/// `sub_state`'s text is what actually distinguishes them for ranking purposes.
 fn svc_state_rank(svc: &ServiceInfo) -> u8 {
     match svc.active {
         SvcActiveState::Active => 0,
         SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("activating") => 1,
         SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("reloading") => 2,
-        SvcActiveState::Other => 3,
-        SvcActiveState::Inactive => 4,
-        SvcActiveState::Failed => 5,
+        SvcActiveState::Failed => 3,
+        SvcActiveState::Other => 4,
+        SvcActiveState::Inactive => 5,
     }
 }
 
@@ -4704,8 +4707,35 @@ mod tests {
 
         assert!(svc_state_rank(&active) < svc_state_rank(&activating));
         assert!(svc_state_rank(&activating) < svc_state_rank(&reloading));
-        assert!(svc_state_rank(&reloading) < svc_state_rank(&inactive));
-        assert!(svc_state_rank(&inactive) < svc_state_rank(&failed));
+        assert!(svc_state_rank(&reloading) < svc_state_rank(&failed));
+        assert!(svc_state_rank(&failed) < svc_state_rank(&inactive));
+    }
+
+    #[test]
+    fn services_list_active_first_then_failed_then_inactive_by_default() {
+        let mut d = services_delegate();
+        d.set_services(vec![
+            svc_with_state("b-idle.service", SvcActiveState::Inactive, "dead"),
+            svc_with_state("Zed.service", SvcActiveState::Active, "running"),
+            svc_with_state("broken.service", SvcActiveState::Failed, "failed"),
+            svc_with_state("a-idle.service", SvcActiveState::Inactive, "dead"),
+            svc_with_state("audio.service", SvcActiveState::Active, "running"),
+        ]);
+        let names: Vec<&str> = d.services.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "audio.service",
+                "Zed.service",
+                "broken.service",
+                "a-idle.service",
+                "b-idle.service",
+            ]
+        );
+        // A column sort is stable over the default: equal descriptions keep it.
+        d.active_sort = Some((3, SortDir::Asc));
+        d.recompute();
+        assert_eq!(d.services[0].name, "audio.service");
     }
 
     #[test]
@@ -5011,7 +5041,9 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["Process", "Local", "Remote", "State", "PID", "CPU", "Memory", ""]
+            [
+                "Process", "Local", "Remote", "State", "PID", "CPU", "Memory", ""
+            ]
         );
     }
 
