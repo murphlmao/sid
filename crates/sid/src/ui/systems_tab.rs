@@ -731,6 +731,7 @@ impl AppState {
             .position(|&v| v == active)
             .unwrap_or(0);
         SegmentedControl::new("system-subview")
+            .large()
             .segments(
                 SystemSubView::ALL
                     .iter()
