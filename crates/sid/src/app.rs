@@ -32,6 +32,7 @@ use crate::ui::host_form::{
 use crate::ui::host_key_prompt::HostKeyPrompts;
 use crate::ui::network_tab::NetworkTabState;
 use crate::ui::password_prompt::{PasswordPromptEvent, PasswordPromptModal};
+use crate::ui::services::ServicesState;
 use crate::ui::settings_tab::SettingsTabState;
 use crate::ui::ssh_home::HomeTabState;
 use crate::ui::systems_tab::{BackgroundRefresh, SystemsTabState};
@@ -406,6 +407,8 @@ pub struct AppState {
     /// same "no store/scope/secrets" shape as `network`. Lives in its own module
     /// (`ui::systems_tab`).
     pub(crate) systems: SystemsTabState,
+    /// The System tab's Services sub-view (systemd units). Lives in `ui::services`.
+    pub(crate) services: ServicesState,
     /// Workspaces tab state (track U): the registered-workspace list, per-workspace git
     /// summaries/branches/status/log fetched through `sid_core::git::GitProvider`, and
     /// the Umbrella fleet table. Same "sibling cache, second `impl AppState` block in
@@ -580,6 +583,7 @@ impl AppState {
             db,
             network,
             systems,
+            services: ServicesState::new(),
             workspaces: WorkspacesTabState::new(window, cx),
             settings,
             password_prompt: None,
@@ -1667,6 +1671,10 @@ impl AppState {
                 match self.active_tab {
                     Tab::Network => {
                         self.network.focus_filter(window, cx);
+                        cx.notify();
+                    }
+                    Tab::System if self.systems.showing_services() => {
+                        self.services.focus_filter(window, cx);
                         cx.notify();
                     }
                     Tab::Ssh if self.active_session.is_none() => {

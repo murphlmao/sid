@@ -1,25 +1,23 @@
-//! Network tab v3: `[Ports] [Services] [Interfaces] [Docker] [Kubernetes]` segmented
-//! sub-tabs under one search box, sourced live from `sid_core::sys` (ports/interfaces),
-//! `sid_core::svc` (systemd services), and `sid_core::containers` (Docker/Kubernetes)
-//! adapter seams.
+//! Network tab v3: `[Ports] [Connections] [Interfaces] [Docker] [Kubernetes]` segmented
+//! sub-tabs under one search box, sourced live from `sid_core::sys` (ports/interfaces)
+//! and `sid_core::containers` (Docker/Kubernetes) adapter seams. Services moved to the
+//! System tab on 2026-11-19 (`super::services`); the table helpers it shares with this
+//! file (`SortDir`, `Tone`, `data_cell`, `table_pane`, `notice_row`, ...) stay here.
 //!
 //! [`NetworkTabState`] is deliberately **live/ephemeral** — CLAUDE.md's layered-scope
 //! invariant (global store + per-workspace `.sid/config.toml`) does not apply here.
 //! There is no store, no scope, no secrets, nothing committed; every render reflects
 //! the machine's current state and a refresh simply re-probes it. `crates/sid` is the
-//! one crate allowed to name `sid_sysinfo`'s, `sid_svcctl`'s, and `sid_containers`'s
-//! concrete `SysinfoProvider::new()` / `SvcctlProvider::new()` / `DockerCliProvider::
-//! new()` / `KubectlCliProvider::new()` constructors — every call through them after
-//! construction goes back out via the `sid_core::sys::SysProvider` /
-//! `sid_core::svc::ServiceProvider` / `sid_core::containers::{ContainerProvider,
+//! one crate allowed to name `sid_sysinfo`'s and `sid_containers`'s concrete
+//! `SysinfoProvider::new()` / `DockerCliProvider::new()` / `KubectlCliProvider::new()`
+//! constructors — every call through them after construction goes back out via the
+//! `sid_core::sys::SysProvider` / `sid_core::containers::{ContainerProvider,
 //! KubeProvider}` traits, matching `sid-db`'s `DbClient`/`db_registry` seam.
 //!
 //! ## Sub-tabs
 //!
 //! - **Ports** (ported from inc-1): the listening-ports table + two-click kill.
-//! - **Services** (new): systemd units via `sid_core::svc::ServiceProvider`, with a
-//!   `system|user` scope toggle and the same two-click confirm pattern for
-//!   restart/stop/kill.
+//! - **Connections**: established/closing TCP with each owner's CPU and memory.
 //! - **Interfaces** (ported from inc-1, regrouped): primary interfaces are always
 //!   visible; generic/virtual ones ([`is_hidden_interface`]) collapse under a
 //!   `hidden (N)` disclosure row (Murphy: docker etc. "should literally be a
@@ -30,8 +28,8 @@
 //! - **Kubernetes** (new, read-only): kubeconfig contexts + a pods table via
 //!   `sid_core::containers::KubeProvider`. Both `docker`/`kubectl` are optional local
 //!   tooling — a `NotInstalled` probe error degrades to a dim notice (reusing the same
-//!   `sub`-line-plus-error-line two-tier pattern the Ports/Services error paths already
-//!   use below) rather than a red error banner.
+//!   `sub`-line-plus-error-line two-tier pattern the Ports error path already uses
+//!   below) rather than a red error banner.
 //!
 //! ## Filtering
 //!
@@ -42,7 +40,7 @@
 //! render; `apply_network_filter` pushes the new query into whichever table
 //! delegate(s) need it. The delegates cache both the full fetched row set and the
 //! filtered rows, so `/`-style instant filtering never re-probes the OS or spawns
-//! `systemctl`/`docker`/`kubectl` — it recomputes from the cache already sitting on
+//! `docker`/`kubectl` — it recomputes from the cache already sitting on
 //! the entity, exactly the "render pure-from-cache" rule below.
 //!
 //! ## Tables (UI overhaul, 2026-07-26)
@@ -65,11 +63,11 @@
 //! (cribbed from `db_tab.rs`'s `ResultDelegate`), reused on the shared
 //! `session::ssh_runtime()` Tokio runtime for the same reason `db_tab.rs` does:
 //! `sysinfo`/`netstat2`/`nix` calls are synchronous OS calls, not async-native, but
-//! keeping them off gpui's own executor avoids blocking `render`. `sid_svcctl`'s
-//! `systemctl` and `sid_containers`'s `docker`/`kubectl` calls are genuinely async
-//! (`tokio::process`, see those crates' docs) but run on the very same shared runtime
-//! for the same reason — never inline in `render`. Unlike `ResultDelegate`,
-//! [`PortsDelegate`]/[`ServicesDelegate`] are interactive (per-row kill/restart/stop) —
+//! keeping them off gpui's own executor avoids blocking `render`. `sid_containers`'s
+//! `docker`/`kubectl` calls are genuinely async (`tokio::process`, see that crate's
+//! docs) but run on the very same shared runtime for the same reason — never inline in
+//! `render`. Unlike `ResultDelegate`, [`PortsDelegate`]/[`ConnectionsDelegate`] are
+//! interactive (per-row kill) —
 //! `TableDelegate::render_td`'s `cx: &mut Context<TableState<Self>>` is scoped to the
 //! table's own entity, so the two-click confirm state lives on each delegate itself
 //! rather than routed back through `AppState`. [`DockerDelegate`]/[`KubePodsDelegate`]
@@ -88,12 +86,10 @@ use sid_containers::{DockerCliProvider, KubectlCliProvider};
 use sid_core::containers::{
     ContainerError, ContainerInfo, ContainerProvider, KubeContext, KubeError, KubePod, KubeProvider,
 };
-use sid_core::svc::{ServiceInfo, ServiceProvider, SvcAction, SvcActiveState, SvcScope};
 use sid_core::sys::{
     Connection, ListeningPort, NetInterface, Pid, ProcUsage, Protocol, Signal, SysProvider,
     owner_pids,
 };
-use sid_svcctl::SvcctlProvider;
 use sid_sysinfo::SysinfoProvider;
 
 use crate::app::AppState;
@@ -106,7 +102,7 @@ use sid_ui::{
     ActionCell, Badge, BadgeTone, Button, Card, CardGrid, CellText, ColumnWidth, Confirm,
     ConfirmArm, ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, GridCard,
     Icon, IconButton, InputState, PANEL_FILTER_FLOOR, Segment, SegmentSelect, SegmentedControl,
-    StyledExt as _, Switch, TextInput, Tipped as _, Toast, Typography as _, caveat_line, h_flex,
+    Skeleton, StyledExt as _, Switch, TextInput, Toast, Typography as _, caveat_line, h_flex,
     scaled, sortable_th, v_flex,
 };
 
@@ -151,29 +147,11 @@ pub(crate) fn track_selection<D: TableDelegate + SelectableRows + 'static>(
     .detach();
 }
 
-/// Whether this process is root (uid 0). Only meaningful on unix; elsewhere there is no
-/// uid concept to gate on, so it reports true (nothing is hidden).
-pub(crate) fn running_as_root() -> bool {
-    static ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ROOT.get_or_init(|| {
-        if !cfg!(unix) {
-            return true;
-        }
-        std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .is_some_and(|s| s.trim() == "0")
-    })
-}
-
 /// Which sub-view is active under the Network tab's segmented control.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NetSubTab {
     Ports,
     Connections,
-    Services,
     Interfaces,
     Docker,
     Kubernetes,
@@ -182,10 +160,9 @@ enum NetSubTab {
 impl NetSubTab {
     /// In the order the segmented control lists them; the index into this array is the
     /// index the control reports back from `on_select`.
-    const ALL: [NetSubTab; 6] = [
+    const ALL: [NetSubTab; 5] = [
         NetSubTab::Ports,
         NetSubTab::Connections,
-        NetSubTab::Services,
         NetSubTab::Interfaces,
         NetSubTab::Docker,
         NetSubTab::Kubernetes,
@@ -195,7 +172,6 @@ impl NetSubTab {
         match self {
             NetSubTab::Ports => "Ports",
             NetSubTab::Connections => "Connections",
-            NetSubTab::Services => "Services",
             NetSubTab::Interfaces => "Interfaces",
             NetSubTab::Docker => "Docker",
             NetSubTab::Kubernetes => "Kubernetes",
@@ -203,13 +179,12 @@ impl NetSubTab {
     }
 
     /// This sub-view's segmented-control glyph, where the 0.6.1 bundle has an honest
-    /// one. `Ports` and `Services` stay label-only: nothing in Lucide reads as "a
-    /// listening TCP port" or "a systemd unit" without borrowing a meaning that already
-    /// belongs to something else in sid (a plug is physical hardware; a cog is the
-    /// Settings tab).
+    /// one. `Ports` and `Connections` stay label-only: nothing in Lucide reads as "a
+    /// listening TCP port" without borrowing a meaning that already belongs to something
+    /// else in sid (a plug is physical hardware).
     fn icon(self) -> Option<Icon> {
         match self {
-            NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Services => None,
+            NetSubTab::Ports | NetSubTab::Connections => None,
             NetSubTab::Interfaces => Some(Icon::Interfaces),
             NetSubTab::Docker => Some(Icon::Docker),
             NetSubTab::Kubernetes => Some(Icon::Kubernetes),
@@ -230,22 +205,18 @@ pub struct NetworkTabState {
     /// Shared (via `Arc<Mutex<_>>`) between the refresh task and the ports table's own
     /// kill task, both of which run on `session::ssh_runtime()`.
     provider: Arc<Mutex<SysinfoProvider>>,
-    /// The other seam this crate constructs concretely (`SvcctlProvider::new()`).
-    /// No `Mutex` needed — unlike `SysinfoProvider`, it caches no probe handle, so
-    /// concurrent calls need no serialization (see `sid_core::svc`'s module doc).
-    svc_provider: Arc<dyn ServiceProvider>,
     /// Set once the tab has triggered its first ports/interfaces refresh (on first
     /// paint) — guards against re-triggering it on every subsequent render.
     loaded: bool,
     /// True while a ports/interfaces refresh task is in flight — guards re-entrant
     /// ⟳ clicks.
     refreshing: bool,
-    /// Which of `[Ports] [Services] [Interfaces]` is active.
+    /// Which sub-view is active.
     sub_tab: NetSubTab,
     interfaces: Vec<NetInterface>,
     /// Cached partition of `interfaces` (per [`is_hidden_interface`]) after applying
     /// the current filter query — populated by [`Self::recompute_interfaces`],
-    /// mirroring how `PortsDelegate`/`ServicesDelegate` cache their filtered rows
+    /// mirroring how the table delegates cache their filtered rows
     /// (perf audit finding #5). `interfaces_strip` just reads these instead of
     /// re-partitioning/re-filtering `interfaces` on every render.
     visible_interfaces: Vec<NetInterface>,
@@ -268,23 +239,13 @@ pub struct NetworkTabState {
     /// How many ports/connections refreshes have sampled process usage. CPU is a delta, so
     /// the first sample reads 0 and is shown as `—` until the second ([`cpu_ready`]).
     usage_samples: u32,
-    /// The services table, lazily built alongside `table`.
-    services_table: Option<Entity<TableState<ServicesDelegate>>>,
-    /// `system` or `user` — which systemd manager the Services sub-tab queries.
-    svc_scope: SvcScope,
-    /// Set once the Services sub-tab has triggered its first load (lazy: switching to
-    /// systemctl calls the first time the tab is actually opened, not on every
-    /// Network-tab paint). Reset to `false` when the scope toggle changes.
-    svc_loaded: bool,
-    svc_refreshing: bool,
-    svc_error: Option<String>,
-    /// The third seam this crate constructs concretely (`DockerCliProvider::new()`).
-    /// No `Mutex` needed — stateless, same reasoning as `svc_provider`.
+    /// The second seam this crate constructs concretely (`DockerCliProvider::new()`).
+    /// No `Mutex` needed — stateless, it caches no probe handle.
     docker_provider: Arc<dyn ContainerProvider>,
-    /// The Docker table, lazily built alongside `table`/`services_table`.
+    /// The Docker table, lazily built alongside `table`.
     docker_table: Option<Entity<TableState<DockerDelegate>>>,
-    /// Set once the Docker sub-tab has triggered its first load (lazy, same pattern as
-    /// `svc_loaded`: `docker ps` is never called just because the Network tab is open).
+    /// Set once the Docker sub-tab has triggered its first load (lazy: `docker ps` is
+    /// never called just because the Network tab is open).
     docker_loaded: bool,
     docker_refreshing: bool,
     /// `true` when the last probe returned `ContainerError::NotInstalled` — the Docker
@@ -292,8 +253,8 @@ pub struct NetworkTabState {
     docker_not_installed: bool,
     /// A genuine (non-`NotInstalled`) probe failure, if any.
     docker_error: Option<String>,
-    /// The fourth seam this crate constructs concretely (`KubectlCliProvider::new()`).
-    /// No `Mutex` needed — stateless, same reasoning as `svc_provider`/`docker_provider`.
+    /// The third seam this crate constructs concretely (`KubectlCliProvider::new()`).
+    /// No `Mutex` needed — stateless, same reasoning as `docker_provider`.
     kube_provider: Arc<dyn KubeProvider>,
     /// Configured kubeconfig contexts, refreshed alongside the pods table.
     kube_contexts: Vec<KubeContext>,
@@ -304,7 +265,7 @@ pub struct NetworkTabState {
     /// The Kubernetes pods table, lazily built alongside the other tables.
     kube_pods_table: Option<Entity<TableState<KubePodsDelegate>>>,
     /// Set once the Kubernetes sub-tab has triggered its first load (lazy, same pattern
-    /// as `svc_loaded`/`docker_loaded`).
+    /// as `docker_loaded`).
     kube_loaded: bool,
     kube_refreshing: bool,
     /// Bumped by every pods-fetch spawn (`refresh_network_kube`'s pods leg and
@@ -325,7 +286,7 @@ pub struct NetworkTabState {
     /// A genuine (non-`NotInstalled`) probe failure, if any — from either the contexts
     /// or the pods fetch.
     kube_error: Option<String>,
-    /// The one filter input shared by all five sub-tabs.
+    /// The one filter input shared by every sub-tab.
     filter: Option<Entity<InputState>>,
     /// Kept alive so the `cx.observe(&filter, ..)` subscription (see module doc)
     /// isn't dropped — mirrors `AppState::_form_subscription`.
@@ -335,7 +296,7 @@ pub struct NetworkTabState {
 impl NetworkTabState {
     /// Sub-view names in segmented-control order, for the command palette's
     /// "Network: <view>" entries.
-    pub(crate) fn view_labels() -> [&'static str; 6] {
+    pub(crate) fn view_labels() -> [&'static str; 5] {
         NetSubTab::ALL.map(NetSubTab::label)
     }
 
@@ -349,7 +310,6 @@ impl NetworkTabState {
     pub(crate) fn new() -> Self {
         Self {
             provider: Arc::new(Mutex::new(SysinfoProvider::new())),
-            svc_provider: Arc::new(SvcctlProvider::new()),
             loaded: false,
             refreshing: false,
             sub_tab: NetSubTab::Ports,
@@ -362,11 +322,6 @@ impl NetworkTabState {
             table: None,
             connections_table: None,
             usage_samples: 0,
-            services_table: None,
-            svc_scope: SvcScope::System,
-            svc_loaded: false,
-            svc_refreshing: false,
-            svc_error: None,
             docker_provider: Arc::new(DockerCliProvider::new()),
             docker_table: None,
             docker_loaded: false,
@@ -423,13 +378,13 @@ impl NetworkTabState {
 /// `ColumnSort` through `Default -> Descending -> Ascending -> Default`; `Default` clears
 /// the delegate's `active_sort` rather than being tracked as a third direction here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SortDir {
+pub(crate) enum SortDir {
     Asc,
     Desc,
 }
 
 impl SortDir {
-    fn from_column_sort(sort: ColumnSort) -> Option<Self> {
+    pub(crate) fn from_column_sort(sort: ColumnSort) -> Option<Self> {
         match sort {
             ColumnSort::Ascending => Some(SortDir::Asc),
             ColumnSort::Descending => Some(SortDir::Desc),
@@ -438,7 +393,7 @@ impl SortDir {
     }
 
     /// Apply this direction to an `Ordering` computed by an ascending-order comparator.
-    fn apply(self, order: Ordering) -> Ordering {
+    pub(crate) fn apply(self, order: Ordering) -> Ordering {
         match self {
             SortDir::Asc => order,
             SortDir::Desc => order.reverse(),
@@ -866,7 +821,12 @@ impl ConnectionsDelegate {
             query: String::new(),
             // Both endpoints and the process are unbounded (bracketed IPv6 + port, a long
             // executable name), so they grow; the rest have a known ceiling.
+            // Process first: "who is talking" is what one scans this table for.
             columns: FillColumns::new([
+                (
+                    Column::new("process", "Process").sortable(),
+                    ColumnWidth::grow().weight(0.8).min_width(110.),
+                ),
                 (
                     Column::new("local", "Local").sortable(),
                     ColumnWidth::grow().weight(1.0).min_width(120.),
@@ -882,10 +842,6 @@ impl ConnectionsDelegate {
                 (
                     Column::new("pid", "PID").sortable(),
                     ColumnWidth::Fixed(100.),
-                ),
-                (
-                    Column::new("process", "Process").sortable(),
-                    ColumnWidth::grow().weight(0.8).min_width(110.),
                 ),
                 (
                     Column::new("cpu", "CPU").sortable(),
@@ -955,11 +911,14 @@ impl ConnectionsDelegate {
         self.recompute();
     }
 
+    /// Filter, default order (ESTABLISHED first), then the active column sort — stable,
+    /// so the default order breaks its ties.
     fn recompute(&mut self) {
         let mut rows: Vec<Connection> = filter_connections(&self.all_connections, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        rows.sort_by(cmp_conn_default);
         if let Some((col_ix, dir)) = self.active_sort {
             match col_ix {
                 5 | 6 => sort_by_usage(&mut rows, |c| c.pid, &self.usage, col_ix == 6, dir),
@@ -1040,24 +999,7 @@ impl TableDelegate for ConnectionsDelegate {
         let usage = c.pid.and_then(|p| self.usage.get(&p));
         // No `.id()` on cells - see `sid_ui::table`.
         match col_ix {
-            0 => bare_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
-            1 => bare_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
-            2 => {
-                let ink = if c.state == sid_core::sys::SocketState::Established {
-                    fg
-                } else {
-                    muted
-                };
-                bare_cell(t, ink, c.state_label.clone())
-            }
-            3 => bare_cell(
-                t,
-                muted,
-                c.pid
-                    .map(|p| p.as_u32().to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            4 => bare_cell(
+            0 => bare_cell(
                 t,
                 fg,
                 if c.command.is_empty() {
@@ -1065,6 +1007,23 @@ impl TableDelegate for ConnectionsDelegate {
                 } else {
                     c.command.clone()
                 },
+            ),
+            1 => bare_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
+            2 => bare_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
+            3 => {
+                let ink = if c.state == sid_core::sys::SocketState::Established {
+                    fg
+                } else {
+                    muted
+                };
+                bare_cell(t, ink, c.state_label.clone())
+            }
+            4 => bare_cell(
+                t,
+                muted,
+                c.pid
+                    .map(|p| p.as_u32().to_string())
+                    .unwrap_or_else(|| "—".into()),
             ),
             5 => bare_cell(t, muted, cpu_label(usage, self.cpu_ready)),
             6 => bare_cell(t, muted, mem_label(usage)),
@@ -1101,331 +1060,8 @@ impl TableDelegate for ConnectionsDelegate {
     }
 }
 
-/// Backs the Services [`Table`]. Same shape as [`PortsDelegate`] (cache the full
-/// fetched set + the filtered display set, two-click confirm state, its own task
-/// spawned on the shared runtime) with one addition: `scope`, kept in sync with
-/// [`NetworkTabState::svc_scope`] by `AppState::set_svc_scope` so `perform` always
-/// controls the unit in the scope currently selected in the UI.
-struct ServicesDelegate {
-    /// The row the table has selected (its actions stay visible; others reveal on hover).
-    selected_row: Option<usize>,
-    svc_provider: Arc<dyn ServiceProvider>,
-    scope: SvcScope,
-    all_services: Vec<ServiceInfo>,
-    services: Vec<ServiceInfo>,
-    query: String,
-    /// The (unit name, action) whose button has been clicked once — the second click
-    /// on the same pair executes it.
-    ///
-    /// Deliberately **not** a [`ConfirmArm`], which is what the Ports table's pid-keyed
-    /// kill uses: `ConfirmArm<K>` needs `K: Copy`, and this arm's key is a unit *name*
-    /// plus an action. It gets `ConfirmArm`'s load-bearing property anyway —
-    /// [`Self::retain_armed_action`] survives a refresh, dropping the arm only when the
-    /// unit itself is gone — but not its self-expiry.
-    armed_action: Option<(String, SvcAction)>,
-    /// Outcome of the last restart/stop/kill attempt, if it failed (esp.
-    /// `SvcError::PermissionDenied` for a system-scope action without root).
-    action_error: Option<String>,
-    /// See [`PortsDelegate::columns`].
-    columns: FillColumns,
-    /// See [`PortsDelegate::active_sort`].
-    active_sort: Option<(usize, SortDir)>,
-}
-
-impl ServicesDelegate {
-    fn new(svc_provider: Arc<dyn ServiceProvider>, scope: SvcScope) -> Self {
-        Self {
-            selected_row: None,
-            svc_provider,
-            scope,
-            all_services: Vec::new(),
-            services: Vec::new(),
-            query: String::new(),
-            armed_action: None,
-            action_error: None,
-            // `Unit` and `Description` are the growers: a unit name and its description
-            // are the two unbounded strings here, and the description is the one that
-            // actually reads as prose, so it takes the larger share.
-            columns: FillColumns::new([
-                (
-                    Column::new("name", "Unit").sortable(),
-                    ColumnWidth::grow().weight(1.0).min_width(190.),
-                ),
-                (
-                    Column::new("state", "State").sortable(),
-                    ColumnWidth::Fixed(100.),
-                ),
-                (
-                    Column::new("sub_state", "Sub-state").sortable(),
-                    ColumnWidth::Fixed(110.),
-                ),
-                (
-                    Column::new("description", "Description").sortable(),
-                    ColumnWidth::grow().weight(1.8).min_width(220.),
-                ),
-                // Not sortable — an action column, not data. Fits `restart` `stop` `kill`
-                // side by side with the widest of them swapped for `confirm`.
-                (Column::new("actions", ""), ColumnWidth::Fixed(220.)),
-            ]),
-            active_sort: None,
-        }
-    }
-
-    fn set_scope(&mut self, scope: SvcScope) {
-        self.scope = scope;
-    }
-
-    fn set_services(&mut self, services: Vec<ServiceInfo>) {
-        self.all_services = services;
-        self.retain_armed_action();
-        self.recompute();
-    }
-
-    /// Keep a pending confirm only while the unit it is armed on is still in the list.
-    ///
-    /// The same rule [`ConfirmArm::retain`] enforces for the Ports table, hand-rolled
-    /// here because this arm's key is not `Copy` (see [`Self::armed_action`]). Clearing
-    /// the arm on every refresh — what this did before — is what makes a two-step confirm
-    /// unreachable on a table that reloads itself after every action.
-    fn retain_armed_action(&mut self) {
-        let unit_still_listed = self
-            .armed_action
-            .as_ref()
-            .is_some_and(|(name, _)| self.all_services.iter().any(|s| &s.name == name));
-        if !unit_still_listed {
-            self.armed_action = None;
-        }
-    }
-
-    fn set_query(&mut self, query: &str) {
-        self.query = query.to_string();
-        self.recompute();
-    }
-
-    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
-    fn recompute(&mut self) {
-        let mut services: Vec<ServiceInfo> = filter_services(&self.all_services, &self.query)
-            .into_iter()
-            .cloned()
-            .collect();
-        if let Some((col_ix, dir)) = self.active_sort {
-            sort_services(&mut services, col_ix, dir);
-        }
-        self.services = services;
-    }
-
-    /// Second click on an armed (unit, action) pair: run `control` on the shared
-    /// runtime, then re-fetch the service list so the badge/sub-state reflect the new
-    /// reality immediately rather than waiting on the next manual ⟳.
-    fn perform(&mut self, name: String, action: SvcAction, cx: &mut Context<TableState<Self>>) {
-        self.armed_action = None;
-        self.action_error = None;
-        let provider = self.svc_provider.clone();
-        let scope = self.scope;
-        let unit = name.clone();
-        cx.spawn(async move |this, cx| {
-            let handle = ssh_runtime().spawn(async move {
-                let ctrl = provider.control(&unit, action, scope).await;
-                let refreshed = provider.list_services(scope).await;
-                (ctrl, refreshed)
-            });
-            let outcome = handle.await;
-            let _ = this.update(cx, |state, cx| {
-                match outcome {
-                    Ok((ctrl_res, refreshed_res)) => {
-                        if let Err(e) = ctrl_res {
-                            state.delegate_mut().action_error = Some(e.to_string());
-                        }
-                        if let Ok(services) = refreshed_res {
-                            state.delegate_mut().set_services(services);
-                        }
-                    }
-                    Err(join_err) => {
-                        state.delegate_mut().action_error =
-                            Some(format!("service control task panicked: {join_err}"));
-                    }
-                }
-                state.refresh(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-}
-
-impl FillTableDelegate for ServicesDelegate {
-    fn fill_columns(&mut self) -> &mut FillColumns {
-        &mut self.columns
-    }
-}
-
-impl SelectableRows for ServicesDelegate {
-    fn set_selected_row(&mut self, row: Option<usize>) {
-        self.selected_row = row;
-    }
-}
-
-impl TableDelegate for ServicesDelegate {
-    fn columns_count(&self, _cx: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _cx: &App) -> usize {
-        self.services.len()
-    }
-
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
-        self.columns.column(col_ix).clone()
-    }
-
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) {
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
-        self.recompute();
-        cx.notify();
-    }
-
-    /// See [`PortsDelegate::render_th`].
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        sortable_th(col_ix, self.columns.column(col_ix), cx)
-    }
-
-    /// Names the row so its action cell can reveal on hover (see `reveal_on_row`).
-    fn render_tr(
-        &mut self,
-        row_ix: usize,
-        _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
-    ) -> gpui::Stateful<Div> {
-        div().id(("row", row_ix)).group(row_group("svc", row_ix))
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let t = theme::active(cx);
-        let (fg, muted) = (t.fg, t.muted);
-        // Borrow, not clone (perf audit finding #6) — `active` is `Copy`, and every
-        // `String` field this fn needs already gets its own `.clone()` below.
-        let svc = &self.services[row_ix];
-        // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
-        // must not carry an `ElementId`" section.
-        match col_ix {
-            0 => data_cell(t, fg, svc.name.clone()),
-            1 => {
-                let (label, tone) = svc_state_badge(svc.active);
-                h_flex()
-                    .size_full()
-                    .px_2()
-                    .child(Badge::new(label).tone(badge_tone(tone)))
-            }
-            2 => {
-                let label: SharedString = if svc.sub_state.is_empty() {
-                    "—".into()
-                } else {
-                    svc.sub_state.clone().into()
-                };
-                data_cell(t, muted, label)
-            }
-            3 => {
-                let label: SharedString = if svc.description.is_empty() {
-                    "—".into()
-                } else {
-                    svc.description.clone().into()
-                };
-                // The one column on this tab that is prose rather than data — a unit
-                // description is a sentence — so it takes the proportional twin of the
-                // same rung: `Body`, dimmed. Setting it in mono would make the widest
-                // column on the screen the hardest one to read a sentence in.
-                div()
-                    .px_2()
-                    .w_full()
-                    .min_w(px(0.))
-                    .clamp_one_line()
-                    .text_body(t)
-                    .text_color(rgb(muted))
-                    .child(label)
-            }
-            _ => {
-                let actions = [
-                    (SvcAction::Restart, "restart"),
-                    (SvcAction::Stop, "stop"),
-                    (SvcAction::Kill, "kill"),
-                ];
-                // System units need root to control; a user session can only read them.
-                // The provider has no capability probe, so gate on the process uid for the
-                // system scope (user-scope units are always the user's own).
-                if self.scope == SvcScope::System && !running_as_root() {
-                    return reveal_on_row(
-                        row_group("svc", row_ix),
-                        false,
-                        ActionCell::new().child(
-                            div()
-                                .id(("svc-needs-root", row_ix))
-                                .text_meta(t)
-                                .child("needs root")
-                                .tip(NEEDS_ROOT_TIP),
-                        ),
-                    );
-                }
-                reveal_on_row(
-                    row_group("svc", row_ix),
-                    self.armed_action
-                        .as_ref()
-                        .is_some_and(|(n, _)| n == &svc.name)
-                        || self.selected_row == Some(row_ix),
-                    ActionCell::new().children(actions.into_iter().enumerate().map(
-                        |(action_ix, (action, label))| {
-                            let armed =
-                                action_click_executes(&self.armed_action, &svc.name, action);
-                            let name = svc.name.clone();
-                            ConfirmButton::new(("svc-action", row_ix * 8 + action_ix), label)
-                                .armed(armed)
-                                .armed_label("confirm")
-                                .tooltip(svc_action_tooltip(action))
-                                .on_press(cx.listener(
-                                    move |this, _ev: &ClickEvent, _window, cx| {
-                                        if action_click_executes(
-                                            &this.delegate().armed_action,
-                                            &name,
-                                            action,
-                                        ) {
-                                            this.delegate_mut().perform(name.clone(), action, cx);
-                                        } else {
-                                            this.delegate_mut().armed_action =
-                                                Some((name.clone(), action));
-                                            cx.notify();
-                                        }
-                                    },
-                                ))
-                        },
-                    )),
-                )
-            }
-        }
-    }
-}
-
-/// Why a system-scope unit shows no actions for a non-root user.
-const NEEDS_ROOT_TIP: &str = "Needs root — run sid with sudo or use systemctl";
-
 /// Backs the Docker [`Table`]. Read-only (no per-row actions, unlike
-/// [`PortsDelegate`]/[`ServicesDelegate`]) — closer in shape to `db_tab.rs`'s
+/// [`PortsDelegate`]/[`ConnectionsDelegate`]) — closer in shape to `db_tab.rs`'s
 /// `ResultDelegate`: cache the full fetched set + the filtered display set, no
 /// interactive state of its own.
 struct DockerDelegate {
@@ -1484,13 +1120,15 @@ impl DockerDelegate {
         self.recompute();
     }
 
-    /// Apply the filter, then the active sort — see [`PortsDelegate::recompute`].
+    /// Apply the filter, the default order (running first), then the active sort — a
+    /// stable sort, so the default order stays the tie-breaker under any column sort.
     fn recompute(&mut self) {
         let mut containers: Vec<ContainerInfo> =
             filter_containers(&self.all_containers, &self.query)
                 .into_iter()
                 .cloned()
                 .collect();
+        containers.sort_by(cmp_container_state);
         if let Some((col_ix, dir)) = self.active_sort {
             sort_containers(&mut containers, col_ix, dir);
         }
@@ -1742,9 +1380,6 @@ impl AppState {
             self.network.loaded = true;
             self.refresh_network(cx);
         }
-        if self.network.sub_tab == NetSubTab::Services && !self.network.svc_loaded {
-            self.refresh_network_services(cx);
-        }
         if self.network.sub_tab == NetSubTab::Docker && !self.network.docker_loaded {
             self.refresh_network_docker(cx);
         }
@@ -1757,7 +1392,6 @@ impl AppState {
         let body: AnyElement = match sub_tab {
             NetSubTab::Ports => self.ports_view(cx),
             NetSubTab::Connections => self.connections_view(cx),
-            NetSubTab::Services => self.services_view(cx),
             NetSubTab::Interfaces => self.interfaces_view(&theme, cx),
             NetSubTab::Docker => self.docker_view(cx),
             NetSubTab::Kubernetes => self.kube_view(cx),
@@ -1803,7 +1437,7 @@ impl AppState {
             .action(self.network_refresh_button(sub_tab, refreshing, cx))
     }
 
-    /// The `[Ports] [Services] [Interfaces] [Docker] [Kubernetes]` strip.
+    /// The `[Ports] [Connections] [Interfaces] [Docker] [Kubernetes]` strip.
     ///
     /// This control is where `sid_ui::SegmentedControl` came from — the audit called the
     /// hand-rolled original *"the best-looking control in the app"* — but the original
@@ -1814,7 +1448,7 @@ impl AppState {
     ///
     /// Segment icons: Interfaces/Docker/Kubernetes now draw the glyph the 0.6.1 bundle
     /// finally shipped (`network`/`container`/`boxes` — see `Icon`'s module doc and
-    /// `NetSubTab::icon`). Ports and Services stay label-only rather than getting a
+    /// `NetSubTab::icon`). Ports and Connections stay label-only rather than getting a
     /// borrowed, slightly-wrong picture.
     fn network_sub_view_strip(
         &self,
@@ -1878,7 +1512,6 @@ impl AppState {
             .loading(refreshing)
             .on_click(
                 cx.listener(move |this, _ev: &ClickEvent, _window, cx| match sub_tab {
-                    NetSubTab::Services => this.refresh_network_services(cx),
                     NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
                         this.refresh_network(cx)
                     }
@@ -1974,87 +1607,6 @@ impl AppState {
             .into_any_element()
     }
 
-    /// Services: the panel header (with the `system|user` scope control in it), the
-    /// table, then any list or action error.
-    fn services_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let refreshing = self.network.svc_refreshing;
-        let scope = self.network.svc_scope;
-        let table = self.network.services_table.clone();
-        let count = table
-            .as_ref()
-            .map(|t| t.read(cx).delegate().services.len())
-            .unwrap_or(0);
-        let action_error = table
-            .as_ref()
-            .and_then(|t| t.read(cx).delegate().action_error.clone());
-        let unsupported = self
-            .network
-            .svc_error
-            .as_deref()
-            .is_some_and(svc_unsupported);
-        let empty = unsupported.then(|| {
-            EmptyState::new("Services aren't available here")
-                .icon(Icon::Settings)
-                .guidance(
-                    "sid manages services through systemd, which this system doesn't use. \
-                     Ports, Connections, Docker and Kubernetes work as usual.",
-                )
-        });
-        let empty = empty.or_else(|| {
-            (count == 0 && !refreshing && self.network.svc_error.is_none()).then(|| {
-                EmptyState::new("No service units")
-                    .icon(Icon::Settings)
-                    .guidance(empty_guidance(
-                        &self.network_query(cx),
-                        "This systemd manager reports no units. Try the other scope.",
-                    ))
-            })
-        });
-
-        // The scope control is a *secondary* header action, between the filter and
-        // refresh: it narrows the same list the filter beside it narrows, and a second
-        // full-width bar for two chips was a third horizontal rule in the top 100px of
-        // the screen.
-        let secondary = self.svc_scope_control(scope, cx).into_any_element();
-        self.sub_view_panel(NetSubTab::Services, count, refreshing, Some(secondary), cx)
-            // The one sub-view whose header says more than its own name: the two scopes
-            // are disjoint unit sets, so `SYSTEM SERVICES · 12` and `USER SERVICES · 3`
-            // are counts of different things and the header has to say which.
-            .title(format!("{} services", svc_scope_label(scope)))
-            .children(notice_row(
-                "Couldn't read services",
-                self.network
-                    .svc_error
-                    .clone()
-                    .filter(|e| !svc_unsupported(e)),
-            ))
-            .child(table_pane(table.as_ref(), empty))
-            .children(notice_row("That service action failed", action_error))
-            .into_any_element()
-    }
-
-    /// The Services sub-view's `system|user` scope control. Switching scope forces a
-    /// fresh `list_services` call (`svc_loaded` reset) — the two scopes are disjoint unit
-    /// sets, not a filter over one cached list.
-    fn svc_scope_control(
-        &self,
-        active: SvcScope,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let selected = SVC_SCOPES
-            .iter()
-            .position(|&(scope, _)| scope == active)
-            .unwrap_or(0);
-        SegmentedControl::new("net-svc-scope")
-            .segments(SVC_SCOPES.iter().map(|&(_, label)| Segment::new(label)))
-            .selected(selected)
-            .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
-                if let Some(&(scope, _)) = SVC_SCOPES.get(ev.index) {
-                    this.set_svc_scope(scope, cx);
-                }
-            }))
-    }
-
     /// Docker: toolbar, then either the containers table or the graceful-absence state.
     ///
     /// `docker not installed` is an expected local-machine condition, not a failure, so it
@@ -2069,10 +1621,31 @@ impl AppState {
             .map(|t| t.read(cx).delegate().containers.len())
             .unwrap_or(0);
 
+        let nothing_yet = table
+            .as_ref()
+            .is_none_or(|t| t.read(cx).delegate().all_containers.is_empty());
+
         let body: AnyElement = if not_installed {
-            EmptyState::new("Docker isn't installed")
+            EmptyState::new("Docker isn't installed or running")
                 .icon(Icon::Info)
                 .guidance("Install Docker and start the daemon to see containers here.")
+                .action(docker_retry(cx))
+                .into_any_element()
+        } else if refreshing && nothing_yet {
+            // First load (or a reload of an empty list): the shape of the table that is
+            // on its way, not a bare header row that reads as "no containers".
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .p_3()
+                .child(Skeleton::rows("net-docker-loading", 6))
+                .into_any_element()
+        } else if self.network.docker_error.is_some() && nothing_yet {
+            EmptyState::new("Couldn't list containers")
+                .icon(Icon::Info)
+                .guidance("The docker call failed (details above). Retry once the daemon is up.")
+                .action(docker_retry(cx))
                 .into_any_element()
         } else {
             let empty =
@@ -2439,7 +2012,7 @@ impl AppState {
             .into_any_element()
     }
 
-    /// Lazily build the ports table, the services table, the Docker/Kubernetes tables,
+    /// Lazily build the ports/connections tables, the Docker/Kubernetes tables,
     /// and the shared filter input on first paint of the Network tab. Idempotent
     /// (checked every render) — mirrors `db_tab.rs`'s `ensure_query_widgets`.
     fn ensure_network_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2455,14 +2028,6 @@ impl AppState {
                 cx.new(|cx| TableState::new(ConnectionsDelegate::new(provider), window, cx));
             track_selection(&table, cx);
             self.network.connections_table = Some(table);
-        }
-        if self.network.services_table.is_none() {
-            let svc_provider = self.network.svc_provider.clone();
-            let scope = self.network.svc_scope;
-            let table = cx
-                .new(|cx| TableState::new(ServicesDelegate::new(svc_provider, scope), window, cx));
-            track_selection(&table, cx);
-            self.network.services_table = Some(table);
         }
         if self.network.docker_table.is_none() {
             let table = cx.new(|cx| TableState::new(DockerDelegate::new(), window, cx));
@@ -2509,12 +2074,6 @@ impl AppState {
                 state.refresh(cx);
             });
         }
-        if let Some(table) = self.network.services_table.clone() {
-            table.update(cx, |state, cx| {
-                state.delegate_mut().set_query(&query);
-                state.refresh(cx);
-            });
-        }
         if let Some(table) = self.network.docker_table.clone() {
             table.update(cx, |state, cx| {
                 state.delegate_mut().set_query(&query);
@@ -2528,24 +2087,6 @@ impl AppState {
             });
         }
         self.network.recompute_interfaces(&query);
-        cx.notify();
-    }
-
-    /// Switch the Services sub-tab's scope, forcing a fresh `list_services` call —
-    /// system and user units are disjoint sets, so this isn't a filter over one
-    /// cached list the way the filter box is.
-    fn set_svc_scope(&mut self, scope: SvcScope, cx: &mut Context<Self>) {
-        if self.network.svc_scope == scope {
-            return;
-        }
-        self.network.svc_scope = scope;
-        self.network.svc_loaded = false;
-        if let Some(table) = self.network.services_table.clone() {
-            table.update(cx, |state, cx| {
-                state.delegate_mut().set_scope(scope);
-                state.refresh(cx);
-            });
-        }
         cx.notify();
     }
 
@@ -2566,7 +2107,10 @@ impl AppState {
         let conn_table = self.network.connections_table.clone();
 
         cx.spawn(async move |this, cx| {
-            let handle = ssh_runtime().spawn(async move {
+            // `spawn_blocking`: these are synchronous /proc walks under a std `Mutex`. On
+            // one of the runtime's two async workers they would stall whatever async
+            // probe (docker, kubectl, systemctl, SSH) shares that worker.
+            let handle = ssh_runtime().spawn_blocking(move || {
                 let mut guard = provider.lock().unwrap_or_else(|e| e.into_inner());
                 let ports = guard.list_listening_ports();
                 let conns = guard.list_connections();
@@ -2657,49 +2201,6 @@ impl AppState {
                     Err(join_err) => {
                         this.network.error =
                             Some(format!("network probe task panicked: {join_err}"));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// ⟳ refresh (Services): re-fetch the unit list for the active scope on the
-    /// shared runtime. Also the Services sub-tab's lazy first-load hook — `systemctl`
-    /// is never called just because the Network tab is open, only once Services is
-    /// actually selected.
-    pub(crate) fn refresh_network_services(&mut self, cx: &mut Context<Self>) {
-        if self.network.svc_refreshing {
-            return;
-        }
-        self.network.svc_refreshing = true;
-        self.network.svc_error = None;
-        cx.notify();
-
-        let provider = self.network.svc_provider.clone();
-        let scope = self.network.svc_scope;
-        let table = self.network.services_table.clone();
-
-        cx.spawn(async move |this, cx| {
-            let handle = ssh_runtime().spawn(async move { provider.list_services(scope).await });
-            let outcome = handle.await;
-            let _ = this.update(cx, |this, cx| {
-                this.network.svc_refreshing = false;
-                this.network.svc_loaded = true;
-                match outcome {
-                    Ok(Ok(services)) => {
-                        if let Some(table) = &table {
-                            table.update(cx, |state, cx| {
-                                state.delegate_mut().set_services(services);
-                                state.refresh(cx);
-                            });
-                        }
-                    }
-                    Ok(Err(e)) => this.network.svc_error = Some(e.to_string()),
-                    Err(join_err) => {
-                        this.network.svc_error =
-                            Some(format!("service probe task panicked: {join_err}"));
                     }
                 }
                 cx.notify();
@@ -2913,7 +2414,7 @@ impl AppState {
     }
 
     /// Switch the Kubernetes sub-tab's selected context and re-fetch just the pods
-    /// table for it — mirrors `set_svc_scope`'s "switching context forces a fresh
+    /// table for it — mirrors Services' `set_svc_scope`'s "switching context forces a fresh
     /// fetch, it isn't a filter over one cached list" reasoning.
     fn select_kube_context(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         if self.network.kube_selected_context == name {
@@ -2936,34 +2437,10 @@ fn should_apply_pods(current_gen: u64, fetched_gen: u64) -> bool {
 
 // ---- view helpers -------------------------------------------------------------------
 
-/// The Services scope control's choices, in display order. The index into this array is
-/// the index `SegmentedControl` reports back from `on_select`.
-const SVC_SCOPES: [(SvcScope, &str); 2] = [(SvcScope::System, "system"), (SvcScope::User, "user")];
-
-/// The word for a systemd manager scope, for the count line ("12 system services").
-fn svc_scope_label(scope: SvcScope) -> &'static str {
-    match scope {
-        SvcScope::User => "user",
-        SvcScope::System => "system",
-    }
-}
-
-/// A tooltip naming what a Services row action actually does. Required by
-/// [`ConfirmButton`]'s tooltip slot for the same reason `IconButton` demands one: `kill`
-/// on a unit row is not self-describing, and it is the destructive one.
-fn svc_action_tooltip(action: SvcAction) -> &'static str {
-    match action {
-        SvcAction::Start => "systemctl start this unit",
-        SvcAction::Restart => "systemctl restart this unit",
-        SvcAction::Stop => "systemctl stop this unit",
-        SvcAction::Kill => "systemctl kill this unit",
-    }
-}
-
 /// What an empty table should say: whether it is empty because the machine has nothing,
 /// or because the filter excluded everything. Pure, so the distinction is unit-tested
 /// rather than eyeballed.
-fn empty_guidance(query: &str, unfiltered: &str) -> String {
+pub(crate) fn empty_guidance(query: &str, unfiltered: &str) -> String {
     let query = query.trim();
     if query.is_empty() {
         return unfiltered.to_string();
@@ -2975,7 +2452,7 @@ fn empty_guidance(query: &str, unfiltered: &str) -> String {
 ///
 /// Substituting rather than stacking: a header row above a centred "nothing here" panel
 /// reads as a broken render, which is exactly the failure the audit flagged on Workspaces.
-fn table_pane<D: FillTableDelegate + 'static>(
+pub(crate) fn table_pane<D: FillTableDelegate + 'static>(
     table: Option<&Entity<TableState<D>>>,
     empty: Option<EmptyState>,
 ) -> AnyElement {
@@ -2995,6 +2472,16 @@ const DOCKER_COMPACT_ROWS: usize = 6;
 /// Header and row heights of the Docker table at 100% scale, for sizing it to its rows.
 const DOCKER_HEADER_PX: f32 = 32.;
 const DOCKER_ROW_PX: f32 = 32.;
+
+/// The Docker empty/error states' one action: run the probe again.
+fn docker_retry(cx: &mut Context<AppState>) -> Button {
+    Button::new("net-docker-retry", "Retry")
+        .primary()
+        .icon(Icon::Refresh)
+        .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+            this.refresh_network_docker(cx);
+        }))
+}
 
 /// The Kubernetes empty state, with the two actions that help: retry the probe, or copy
 /// the command that lists configured contexts.
@@ -3028,7 +2515,10 @@ fn kube_empty(
 /// An inline failure notice (`Toast::danger`: what happened as the title, the raw OS
 /// error beneath), carrying the padding a panel body deliberately does not supply, or nothing at all when there is no
 /// message. `flex_none` so it never eats the height the table below it is claiming.
-fn notice_row(title: &'static str, message: Option<String>) -> Option<impl IntoElement + use<>> {
+pub(crate) fn notice_row(
+    title: &'static str,
+    message: Option<String>,
+) -> Option<impl IntoElement + use<>> {
     message.map(|m| {
         div()
             .flex_none()
@@ -3073,7 +2563,7 @@ fn bare_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> AnyElem
     CellText::ellipsized(theme, ink, label).into_any_element()
 }
 
-fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
+pub(crate) fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
     div()
         .px_2()
         .w_full()
@@ -3086,19 +2576,6 @@ fn data_cell(theme: &Theme, ink: u32, label: impl Into<SharedString>) -> Div {
 }
 
 // ---- pure helpers (unit-tested) ---------------------------------------------------
-
-/// Two-click confirm for a Services row action: `true` when `(name, action)` matches
-/// the armed pair exactly (a different action on the same unit, or the same action on
-/// a different unit, re-arms rather than executing).
-fn action_click_executes(
-    armed: &Option<(String, SvcAction)>,
-    name: &str,
-    action: SvcAction,
-) -> bool {
-    armed
-        .as_ref()
-        .is_some_and(|(armed_name, armed_action)| armed_name == name && *armed_action == action)
-}
 
 /// What the Ports table's action cell offers for one row, from the one fact that
 /// decides it: whether the socket has an attributable pid. A row with none is not
@@ -3114,20 +2591,10 @@ fn port_action(pid: Option<Pid>) -> Option<PortAction> {
     pid.map(PortAction::Kill)
 }
 
-/// How many rows in `ports` have no attributable owner (no pid — usually another
-/// user's or the kernel's socket, unreadable without root). Backs the panel's one
-/// Meta-role note, so the tab says *why* some rows have no `kill` instead of leaving
-/// it to look inconsistent.
 /// Friendly caveat under the ports table. There is deliberately no "unlock with sudo"
 /// action: `sid-privfs` only reads *files* through sudo, and per-socket owner info comes
 /// from /proc of other users, which only a root-run sid can read. Inventing an elevation
 /// path for that would be a new privilege boundary, so the line explains why instead.
-/// True when the service provider reported "not supported on <os> (systemd only)" — an
-/// expected state on macOS/Windows, shown as a friendly empty state, not an error toast.
-fn svc_unsupported(err: &str) -> bool {
-    err.contains("not supported on") && err.contains("systemd only")
-}
-
 fn unowned_caveat(n: usize) -> String {
     let (count, verb) = if n == 1 {
         ("1 port has".to_string(), "it likely belongs")
@@ -3140,6 +2607,10 @@ fn unowned_caveat(n: usize) -> String {
     )
 }
 
+/// How many rows in `ports` have no attributable owner (no pid — usually another
+/// user's or the kernel's socket, unreadable without root). Backs the panel's one
+/// Meta-role note, so the tab says *why* some rows have no `kill` instead of leaving
+/// it to look inconsistent.
 fn ports_without_owner(ports: &[ListeningPort]) -> usize {
     ports.iter().filter(|p| p.pid.is_none()).count()
 }
@@ -3215,18 +2686,45 @@ fn filter_connections<'a>(conns: &'a [Connection], query: &str) -> Vec<&'a Conne
         .collect()
 }
 
-/// Column dispatch for Connections (`local, remote, state, pid, process`; cpu/mem go through
-/// [`sort_by_usage`]).
+/// Column dispatch for Connections (`process, local, remote, state, pid`; cpu/mem go
+/// through [`sort_by_usage`]).
 fn sort_connections(rows: &mut [Connection], col_ix: usize, dir: SortDir) {
     let cmp: fn(&Connection, &Connection) -> Ordering = match col_ix {
-        0 => |a, b| (&a.local_addr, a.local_port).cmp(&(&b.local_addr, b.local_port)),
-        1 => |a, b| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)),
-        2 => |a, b| a.state_label.cmp(&b.state_label),
-        3 => |a, b| a.pid.map(Pid::as_u32).cmp(&b.pid.map(Pid::as_u32)),
-        4 => |a, b| a.command.to_lowercase().cmp(&b.command.to_lowercase()),
+        0 => cmp_conn_process,
+        1 => |a, b| (&a.local_addr, a.local_port).cmp(&(&b.local_addr, b.local_port)),
+        2 => |a, b| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)),
+        3 => |a, b| conn_state_rank(a).cmp(&conn_state_rank(b)),
+        4 => |a, b| a.pid.map(Pid::as_u32).cmp(&b.pid.map(Pid::as_u32)),
         _ => return,
     };
     rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+fn cmp_conn_process(a: &Connection, b: &Connection) -> Ordering {
+    a.command.to_lowercase().cmp(&b.command.to_lowercase())
+}
+
+/// Live first, then the connection lifecycle: opening, half-closed by the peer
+/// (CLOSE_WAIT — the one that hints at a leak), closing, lingering, anything else.
+fn conn_state_rank(c: &Connection) -> u8 {
+    match c.state_label.as_str() {
+        "ESTABLISHED" => 0,
+        "SYN_SENT" | "SYN_RECV" => 1,
+        "CLOSE_WAIT" => 2,
+        "FIN_WAIT1" | "FIN_WAIT2" | "CLOSING" | "LAST_ACK" => 3,
+        "TIME_WAIT" => 4,
+        _ => 5,
+    }
+}
+
+/// The Connections table's default order: state rank, then process (unattributed `—`
+/// rows last within a state), then remote.
+fn cmp_conn_default(a: &Connection, b: &Connection) -> Ordering {
+    conn_state_rank(a)
+        .cmp(&conn_state_rank(b))
+        .then_with(|| a.command.is_empty().cmp(&b.command.is_empty()))
+        .then_with(|| cmp_conn_process(a, b))
+        .then_with(|| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)))
 }
 
 /// Case-insensitive filter over the ports table: port-number prefix match,
@@ -3306,26 +2804,11 @@ fn cmp_port_pid(a: &ListeningPort, b: &ListeningPort) -> Ordering {
     }
 }
 
-/// Case-insensitive substring filter over a service's name/description. Empty (or
-/// all-whitespace) query matches everything.
-fn filter_services<'a>(services: &'a [ServiceInfo], query: &str) -> Vec<&'a ServiceInfo> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return services.iter().collect();
-    }
-    services
-        .iter()
-        .filter(|s| {
-            s.name.to_lowercase().contains(&query) || s.description.to_lowercase().contains(&query)
-        })
-        .collect()
-}
-
 /// A state badge's coarse semantic tone, resolved to an actual theme color only at
-/// render time ([`tone_color`]) — keeps [`svc_state_badge`]/[`docker_state_badge`]/
+/// render time ([`tone_color`]) — keeps `services::svc_state_badge`/[`docker_state_badge`]/
 /// [`kube_phase_badge`] pure and unit-testable without a `Window`/`App`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tone {
+pub(crate) enum Tone {
     Ok,
     Danger,
     Muted,
@@ -3338,73 +2821,12 @@ enum Tone {
 /// scanning 300 rows does not reliably resolve. A [`Badge`] gives the state a bounded
 /// chip, and the tone ladder is the component's problem from here (it is the thing that
 /// keeps the label legible on all four palettes).
-fn badge_tone(tone: Tone) -> BadgeTone {
+pub(crate) fn badge_tone(tone: Tone) -> BadgeTone {
     match tone {
         Tone::Ok => BadgeTone::Success,
         Tone::Danger => BadgeTone::Danger,
         Tone::Muted => BadgeTone::Neutral,
     }
-}
-
-/// Badge label + tone for a service's active state.
-fn svc_state_badge(state: SvcActiveState) -> (&'static str, Tone) {
-    match state {
-        SvcActiveState::Active => ("active", Tone::Ok),
-        SvcActiveState::Failed => ("failed", Tone::Danger),
-        SvcActiveState::Inactive => ("inactive", Tone::Muted),
-        SvcActiveState::Other => ("other", Tone::Muted),
-    }
-}
-
-/// Column-index dispatch for the Services table's sort — `col_ix` matches
-/// [`ServicesDelegate::columns`]' order (`name, state, sub_state, description`;
-/// `actions` at index 4 carries no comparator, same reasoning as [`sort_ports`]'s
-/// `kill` column).
-fn sort_services(rows: &mut [ServiceInfo], col_ix: usize, dir: SortDir) {
-    let cmp: fn(&ServiceInfo, &ServiceInfo) -> Ordering = match col_ix {
-        0 => cmp_svc_name,
-        1 => cmp_svc_state,
-        2 => cmp_svc_sub_state,
-        3 => cmp_svc_description,
-        _ => return,
-    };
-    rows.sort_by(|a, b| dir.apply(cmp(a, b)));
-}
-
-/// Case-insensitive unit-name compare.
-fn cmp_svc_name(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
-    a.name.to_lowercase().cmp(&b.name.to_lowercase())
-}
-
-/// Active-first rank used by [`cmp_svc_state`]: `active < activating < reloading <
-/// (any other/unrecognized "other" sub-state) < inactive < failed`.
-/// `SvcActiveState::Other` folds systemd's `activating`/`deactivating`/`reloading`
-/// together (see the enum's own doc comment) — `sub_state`'s text is what actually
-/// distinguishes them for ranking purposes.
-fn svc_state_rank(svc: &ServiceInfo) -> u8 {
-    match svc.active {
-        SvcActiveState::Active => 0,
-        SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("activating") => 1,
-        SvcActiveState::Other if svc.sub_state.eq_ignore_ascii_case("reloading") => 2,
-        SvcActiveState::Other => 3,
-        SvcActiveState::Inactive => 4,
-        SvcActiveState::Failed => 5,
-    }
-}
-
-/// State rank first, then alphabetical by name for units sharing a rank.
-fn cmp_svc_state(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
-    svc_state_rank(a)
-        .cmp(&svc_state_rank(b))
-        .then_with(|| cmp_svc_name(a, b))
-}
-
-fn cmp_svc_sub_state(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
-    a.sub_state.cmp(&b.sub_state)
-}
-
-fn cmp_svc_description(a: &ServiceInfo, b: &ServiceInfo) -> Ordering {
-    a.description.cmp(&b.description)
 }
 
 /// Case-insensitive filter over the Docker containers table: name, image, state, or
@@ -3442,7 +2864,7 @@ fn filter_pods<'a>(pods: &'a [KubePod], query: &str) -> Vec<&'a KubePod> {
 /// Badge label + color for a Docker container's coarse lifecycle state
 /// (`docker ps`'s `.State`: `"running"`, `"exited"`, `"paused"`, `"restarting"`, ...).
 /// Unrecognized values pass through verbatim with the dim "other" color rather than
-/// erroring — same "still render the row" rule as `svc_state_badge`.
+/// erroring — same "still render the row" rule as `services::svc_state_badge`.
 fn docker_state_badge(state: &str) -> (&str, Tone) {
     match state {
         "running" => ("running", Tone::Ok),
@@ -3839,15 +3261,6 @@ mod tests {
         }
     }
 
-    fn svc(name: &str, description: &str) -> ServiceInfo {
-        ServiceInfo {
-            name: name.to_string(),
-            description: description.to_string(),
-            active: SvcActiveState::Active,
-            sub_state: "running".to_string(),
-        }
-    }
-
     fn container(name: &str, image: &str, state: &str, status: &str) -> ContainerInfo {
         ContainerInfo {
             id: "abc123".to_string(),
@@ -3872,14 +3285,6 @@ mod tests {
 
     fn ports_delegate() -> PortsDelegate {
         PortsDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())))
-    }
-
-    #[test]
-    fn svc_unsupported_recognises_the_provider_message_only() {
-        assert!(svc_unsupported(
-            "service management is not supported on macos (systemd only)"
-        ));
-        assert!(!svc_unsupported("systemctl failed: access denied"));
     }
 
     #[test]
@@ -3916,10 +3321,6 @@ mod tests {
 
     fn conns_delegate() -> ConnectionsDelegate {
         ConnectionsDelegate::new(Arc::new(Mutex::new(SysinfoProvider::new())))
-    }
-
-    fn services_delegate() -> ServicesDelegate {
-        ServicesDelegate::new(Arc::new(SvcctlProvider::new()), SvcScope::System)
     }
 
     /// The resolved pixel width of every column at `viewport`.
@@ -3985,24 +3386,6 @@ mod tests {
         assert!(!delegate.kill_arm.is_armed(pid, now));
     }
 
-    /// The Services arm is hand-rolled (its key is not `Copy`, so `ConfirmArm` cannot
-    /// hold it — see `ServicesDelegate::armed_action`), so it needs the same pin.
-    #[test]
-    fn a_refresh_that_still_lists_the_unit_keeps_the_action_armed() {
-        let mut delegate = services_delegate();
-        delegate.armed_action = Some(("nginx.service".to_string(), SvcAction::Restart));
-
-        delegate.set_services(vec![svc("nginx.service", "web server")]);
-        assert!(action_click_executes(
-            &delegate.armed_action,
-            "nginx.service",
-            SvcAction::Restart
-        ));
-
-        delegate.set_services(vec![svc("sshd.service", "openssh")]);
-        assert_eq!(delegate.armed_action, None);
-    }
-
     #[test]
     fn should_apply_pods_matches_only_the_current_generation() {
         // The fetch that's still current when it completes wins.
@@ -4014,31 +3397,6 @@ mod tests {
         // A fetch somehow reporting a generation ahead of the current one (should
         // never happen since the counter only increases) is also not "current".
         assert!(!should_apply_pods(1, 2));
-    }
-
-    #[test]
-    fn action_click_needs_two_clicks_on_same_unit_and_action() {
-        let armed = Some(("nginx.service".to_string(), SvcAction::Restart));
-        assert!(action_click_executes(
-            &armed,
-            "nginx.service",
-            SvcAction::Restart
-        ));
-        assert!(!action_click_executes(
-            &armed,
-            "nginx.service",
-            SvcAction::Stop
-        ));
-        assert!(!action_click_executes(
-            &armed,
-            "sshd.service",
-            SvcAction::Restart
-        ));
-        assert!(!action_click_executes(
-            &None,
-            "nginx.service",
-            SvcAction::Restart
-        ));
     }
 
     #[test]
@@ -4093,41 +3451,6 @@ mod tests {
         ];
         let got: Vec<u16> = filter_ports(&ports, "123").iter().map(|p| p.port).collect();
         assert_eq!(got, vec![22]);
-    }
-
-    #[test]
-    fn filter_services_empty_query_matches_all() {
-        let services = vec![
-            svc("nginx.service", "web server"),
-            svc("sshd.service", "secure shell"),
-        ];
-        assert_eq!(filter_services(&services, "").len(), 2);
-    }
-
-    #[test]
-    fn filter_services_matches_name_or_description_case_insensitively() {
-        let services = vec![
-            svc("nginx.service", "web server"),
-            svc("sshd.service", "secure shell"),
-        ];
-        let by_name: Vec<&str> = filter_services(&services, "NGINX")
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
-        assert_eq!(by_name, vec!["nginx.service"]);
-        let by_desc: Vec<&str> = filter_services(&services, "shell")
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
-        assert_eq!(by_desc, vec!["sshd.service"]);
-    }
-
-    #[test]
-    fn svc_state_badge_labels_cover_all_variants() {
-        assert_eq!(svc_state_badge(SvcActiveState::Active).0, "active");
-        assert_eq!(svc_state_badge(SvcActiveState::Failed).0, "failed");
-        assert_eq!(svc_state_badge(SvcActiveState::Inactive).0, "inactive");
-        assert_eq!(svc_state_badge(SvcActiveState::Other).0, "other");
     }
 
     #[test]
@@ -4349,14 +3672,12 @@ mod tests {
     #[test]
     fn every_table_fills_the_width_it_is_given() {
         let mut ports = ports_delegate();
-        let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
         let mut conns = conns_delegate();
-        let plans: [(&str, &mut FillColumns); 5] = [
+        let plans: [(&str, &mut FillColumns); 4] = [
             ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
-            ("services", &mut services.columns),
             ("docker", &mut docker.columns),
             ("pods", &mut pods.columns),
         ];
@@ -4377,14 +3698,12 @@ mod tests {
     #[test]
     fn no_column_plan_overflows_a_narrow_window() {
         let mut ports = ports_delegate();
-        let mut services = services_delegate();
         let mut docker = DockerDelegate::new();
         let mut pods = KubePodsDelegate::new();
         let mut conns = conns_delegate();
-        let plans: [(&str, &mut FillColumns); 5] = [
+        let plans: [(&str, &mut FillColumns); 4] = [
             ("connections", &mut conns.columns),
             ("ports", &mut ports.columns),
-            ("services", &mut services.columns),
             ("docker", &mut docker.columns),
             ("pods", &mut pods.columns),
         ];
@@ -4394,9 +3713,9 @@ mod tests {
         }
     }
 
-    /// The action columns carry no comparator (`sort_ports`/`sort_services` return early
-    /// on their index), and `Column::sort == None` is what keeps `TableState` from ever
-    /// calling back with it — as well as what suppresses the header chevron.
+    /// The action columns carry no comparator (`sort_ports` returns early on its index),
+    /// and `Column::sort == None` is what keeps `TableState` from ever calling back with
+    /// it — as well as what suppresses the header chevron. (Services: `services.rs`.)
     #[test]
     fn action_columns_are_not_sortable_and_data_columns_are() {
         let ports = ports_delegate();
@@ -4404,16 +3723,6 @@ mod tests {
         assert_eq!(ports.columns.column(last).sort, None);
         for ix in 0..last {
             assert!(ports.columns.column(ix).sort.is_some(), "ports column {ix}");
-        }
-
-        let services = services_delegate();
-        let last = services.columns.len() - 1;
-        assert_eq!(services.columns.column(last).sort, None);
-        for ix in 0..last {
-            assert!(
-                services.columns.column(ix).sort.is_some(),
-                "services column {ix}"
-            );
         }
 
         // The two read-only tables have no action column; every column sorts.
@@ -4436,7 +3745,6 @@ mod tests {
     fn every_column_plan_has_the_arity_its_comparator_dispatch_assumes() {
         assert_eq!(ports_delegate().columns.len(), 8);
         assert_eq!(conns_delegate().columns.len(), 8);
-        assert_eq!(services_delegate().columns.len(), 5);
         assert_eq!(DockerDelegate::new().columns.len(), 5);
         assert_eq!(KubePodsDelegate::new().columns.len(), 6);
     }
@@ -4461,15 +3769,6 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), labels.len(), "{labels:?}");
-    }
-
-    /// The scope control reports back an index into `SVC_SCOPES`, same contract.
-    #[test]
-    fn the_scope_control_agrees_with_the_scope_label() {
-        for &(scope, label) in &SVC_SCOPES {
-            assert_eq!(svc_scope_label(scope), label);
-        }
-        assert_eq!(SVC_SCOPES[0].0, SvcScope::System);
     }
 
     // ---- empty states ---------------------------------------------------------------
@@ -4501,22 +3800,6 @@ mod tests {
         assert_eq!(badge_tone(Tone::Ok), BadgeTone::Success);
         assert_eq!(badge_tone(Tone::Danger), BadgeTone::Danger);
         assert_eq!(badge_tone(Tone::Muted), BadgeTone::Neutral);
-    }
-
-    #[test]
-    fn every_service_action_names_its_consequence() {
-        let actions = [
-            SvcAction::Start,
-            SvcAction::Restart,
-            SvcAction::Stop,
-            SvcAction::Kill,
-        ];
-        let tips: Vec<&str> = actions.iter().map(|&a| svc_action_tooltip(a)).collect();
-        assert!(tips.iter().all(|t| t.starts_with("systemctl ")));
-        let mut unique = tips.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), tips.len(), "{tips:?}");
     }
 
     // ---- Ports: sort comparators --------------------------------------------------
@@ -4619,70 +3902,6 @@ mod tests {
         assert_eq!(nums, vec![80, 443, 8080]);
     }
 
-    // ---- Services: sort comparators ------------------------------------------------
-
-    fn svc_with_state(name: &str, active: SvcActiveState, sub_state: &str) -> ServiceInfo {
-        ServiceInfo {
-            name: name.to_string(),
-            description: String::new(),
-            active,
-            sub_state: sub_state.to_string(),
-        }
-    }
-
-    #[test]
-    fn svc_state_rank_orders_active_first() {
-        let active = svc_with_state("a", SvcActiveState::Active, "running");
-        let activating = svc_with_state("b", SvcActiveState::Other, "activating");
-        let reloading = svc_with_state("c", SvcActiveState::Other, "reloading");
-        let inactive = svc_with_state("d", SvcActiveState::Inactive, "dead");
-        let failed = svc_with_state("e", SvcActiveState::Failed, "failed");
-
-        assert!(svc_state_rank(&active) < svc_state_rank(&activating));
-        assert!(svc_state_rank(&activating) < svc_state_rank(&reloading));
-        assert!(svc_state_rank(&reloading) < svc_state_rank(&inactive));
-        assert!(svc_state_rank(&inactive) < svc_state_rank(&failed));
-    }
-
-    #[test]
-    fn cmp_svc_state_sorts_by_rank_then_name() {
-        let mut services = vec![
-            svc_with_state("z-active", SvcActiveState::Active, "running"),
-            svc_with_state("nginx.service", SvcActiveState::Failed, "failed"),
-            svc_with_state("a-active", SvcActiveState::Active, "running"),
-        ];
-        sort_services(&mut services, 1, SortDir::Asc);
-        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["a-active", "z-active", "nginx.service"]);
-    }
-
-    #[test]
-    fn cmp_svc_name_is_case_insensitive() {
-        let mut services = vec![svc("Zsh.service", ""), svc("bash.service", "")];
-        sort_services(&mut services, 0, SortDir::Asc);
-        let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["bash.service", "Zsh.service"]);
-    }
-
-    #[test]
-    fn cmp_svc_sub_state_orders_lexicographically() {
-        let mut services = vec![
-            svc_with_state("a", SvcActiveState::Active, "running"),
-            svc_with_state("b", SvcActiveState::Active, "dead"),
-        ];
-        sort_services(&mut services, 2, SortDir::Asc);
-        let sub_states: Vec<&str> = services.iter().map(|s| s.sub_state.as_str()).collect();
-        assert_eq!(sub_states, vec!["dead", "running"]);
-    }
-
-    #[test]
-    fn cmp_svc_description_orders_lexicographically() {
-        let mut services = vec![svc("a", "web server"), svc("b", "database")];
-        sort_services(&mut services, 3, SortDir::Asc);
-        let descriptions: Vec<&str> = services.iter().map(|s| s.description.as_str()).collect();
-        assert_eq!(descriptions, vec!["database", "web server"]);
-    }
-
     // ---- Docker: sort comparators ---------------------------------------------------
 
     #[test]
@@ -4702,6 +3921,29 @@ mod tests {
         sort_containers(&mut containers, 2, SortDir::Asc);
         let names: Vec<&str> = containers.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn docker_lists_running_first_by_default_and_keeps_that_under_a_column_sort() {
+        let mut d = DockerDelegate::new();
+        d.set_containers(vec![
+            container("old", "img-a", "exited", ""),
+            container("web", "img-b", "running", ""),
+            container("db", "img-a", "running", ""),
+            container("job", "img-b", "exited", ""),
+        ]);
+        let names = |d: &DockerDelegate| -> Vec<String> {
+            d.containers.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names(&d), ["db", "web", "job", "old"]);
+        // Sorting by image keeps running-first inside each image group.
+        d.active_sort = Some((1, SortDir::Asc));
+        d.recompute();
+        assert_eq!(names(&d), ["db", "old", "web", "job"]);
+        // Clearing the column sort returns to the default.
+        d.active_sort = None;
+        d.recompute();
+        assert_eq!(names(&d), ["db", "web", "job", "old"]);
     }
 
     #[test]
@@ -4899,9 +4141,72 @@ mod tests {
             conn(("a", 1), ("9.9.9.9", 80), Some(5), "x"),
             conn(("a", 1), ("1.1.1.1", 80), None, "y"),
         ];
-        sort_connections(&mut rows, 1, SortDir::Asc);
+        sort_connections(&mut rows, 2, SortDir::Asc);
         assert_eq!(rows[0].remote_addr, "1.1.1.1");
-        sort_connections(&mut rows, 3, SortDir::Asc);
+        sort_connections(&mut rows, 4, SortDir::Asc);
         assert_eq!(rows[0].pid, None);
+        sort_connections(&mut rows, 0, SortDir::Desc);
+        assert_eq!(rows[0].command, "y");
+    }
+
+    fn conn_in(state: &str, cmd: &str) -> Connection {
+        let mut c = conn(("a", 1), ("b", 2), Some(1), cmd);
+        c.state_label = state.into();
+        if state != "ESTABLISHED" {
+            c.state = sid_core::sys::SocketState::Other;
+        }
+        c
+    }
+
+    #[test]
+    fn connections_read_process_first_in_the_asked_column_order() {
+        let d = conns_delegate();
+        let names: Vec<String> = (0..d.columns.len())
+            .map(|i| d.columns.column(i).name.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Process", "Local", "Remote", "State", "PID", "CPU", "Memory", ""
+            ]
+        );
+    }
+
+    #[test]
+    fn connections_list_established_first_by_default_then_by_lifecycle() {
+        let mut d = conns_delegate();
+        d.set_connections(
+            vec![
+                conn_in("TIME_WAIT", "curl"),
+                conn_in("ESTABLISHED", ""),
+                conn_in("ESTABLISHED", "zed"),
+                conn_in("CLOSE_WAIT", "app"),
+                conn_in("ESTABLISHED", "Firefox"),
+                conn_in("SYN_SENT", "ssh"),
+            ],
+            HashMap::new(),
+            false,
+        );
+        let order: Vec<(&str, &str)> = d
+            .connections
+            .iter()
+            .map(|c| (c.state_label.as_str(), c.command.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("ESTABLISHED", "Firefox"),
+                ("ESTABLISHED", "zed"),
+                // An unattributed row (rendered `—`) trails its state group.
+                ("ESTABLISHED", ""),
+                ("SYN_SENT", "ssh"),
+                ("CLOSE_WAIT", "app"),
+                ("TIME_WAIT", "curl"),
+            ]
+        );
+        // A column sort keeps ESTABLISHED-first as its tie-breaker (all pids equal).
+        d.active_sort = Some((4, SortDir::Asc));
+        d.recompute();
+        assert_eq!(d.connections[0].state_label, "ESTABLISHED");
     }
 }

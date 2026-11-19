@@ -40,7 +40,7 @@
 //!
 //! ```text
 //! ┌ STATCLUSTER ─ host line · CPU / Memory / Swap meters ───────────────┐
-//! ├ [ Processes | Config files ] ───────────────────────────────────────┤
+//! ├ [ Processes | Services | Config files ] ────────────────────────────┤
 //! └ the active sub-view, full width ────────────────────────────────────┘
 //! ```
 //!
@@ -104,17 +104,24 @@ use sid_ui::{
 pub(crate) enum SystemSubView {
     #[default]
     Processes,
+    /// systemd units (`super::services`), moved here from the Network tab.
+    Services,
     ConfigFiles,
 }
 
 impl SystemSubView {
     /// In the order the segmented control lists them; the index into this array is the
     /// index the control reports back from `on_select`.
-    const ALL: [SystemSubView; 2] = [SystemSubView::Processes, SystemSubView::ConfigFiles];
+    const ALL: [SystemSubView; 3] = [
+        SystemSubView::Processes,
+        SystemSubView::Services,
+        SystemSubView::ConfigFiles,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             SystemSubView::Processes => "Processes",
+            SystemSubView::Services => "Services",
             SystemSubView::ConfigFiles => "Config files",
         }
     }
@@ -122,6 +129,8 @@ impl SystemSubView {
     fn icon(self) -> Icon {
         match self {
             SystemSubView::Processes => Icon::Terminal,
+            // Placeholder (Lucide `play`, "a unit that runs"); the icon pass replaces it.
+            SystemSubView::Services => Icon::Run,
             SystemSubView::ConfigFiles => Icon::File,
         }
     }
@@ -161,8 +170,8 @@ pub struct SystemsTabState {
     background: BackgroundRefresh,
     /// Whether the window-activation observer has been registered.
     activation_observed: bool,
-    /// Which of `[Processes] [Config files]` is showing. Purely a view choice — both
-    /// sub-views keep their own state loaded whichever one is on screen, so switching
+    /// Which of `[Processes] [Services] [Config files]` is showing. Purely a view choice —
+    /// the sub-views keep their own state loaded whichever one is on screen, so switching
     /// back never costs a re-probe.
     sub_view: SystemSubView,
     overview: Option<SystemOverview>,
@@ -222,7 +231,7 @@ impl SystemsTabState {
     }
 
     /// Sub-view names in segmented-control order, for the command palette.
-    pub(crate) fn view_labels() -> [&'static str; 2] {
+    pub(crate) fn view_labels() -> [&'static str; 3] {
         SystemSubView::ALL.map(SystemSubView::label)
     }
 
@@ -231,6 +240,11 @@ impl SystemsTabState {
         if let Some(view) = SystemSubView::at(ix) {
             self.sub_view = view;
         }
+    }
+
+    /// Whether the Services sub-view is the one on screen (`Ctrl+F`'s target).
+    pub(crate) fn showing_services(&self) -> bool {
+        self.sub_view == SystemSubView::Services
     }
 
     pub(crate) fn new() -> Self {
@@ -731,6 +745,7 @@ impl AppState {
         let sub_view = self.systems.sub_view;
         let body: AnyElement = match sub_view {
             SystemSubView::Processes => self.processes_view(cx),
+            SystemSubView::Services => self.services_view(window, cx),
             SystemSubView::ConfigFiles => self.config_files_view(&theme, cx),
         };
         let editor_overlay = self.config_editor_overlay(window, cx);
@@ -750,7 +765,7 @@ impl AppState {
             .into_any_element()
     }
 
-    /// The `[Processes] [Config files]` segmented control. The meters above it are
+    /// The `[Processes] [Services] [Config files]` segmented control. The meters above it are
     /// shared context for both; everything below it belongs to one sub-view.
     fn system_sub_view_strip(
         &self,
@@ -2700,14 +2715,12 @@ mod tests {
         for &view in &SystemSubView::ALL {
             assert!(!view.label().is_empty(), "{view:?}");
         }
-        assert_ne!(
-            SystemSubView::Processes.label(),
-            SystemSubView::ConfigFiles.label()
-        );
-        assert_ne!(
-            SystemSubView::Processes.icon(),
-            SystemSubView::ConfigFiles.icon()
-        );
+        for (i, &a) in SystemSubView::ALL.iter().enumerate() {
+            for &b in &SystemSubView::ALL[i + 1..] {
+                assert_ne!(a.label(), b.label());
+                assert_ne!(a.icon(), b.icon());
+            }
+        }
     }
 
     // ---- config files (Round E §D) -------------------------------------------------
