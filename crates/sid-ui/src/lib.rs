@@ -53,6 +53,7 @@ pub mod card;
 pub mod checkbox;
 pub mod context_menu;
 pub mod copy;
+pub mod custom_colors;
 pub mod elevation;
 pub mod empty_state;
 pub mod focus;
@@ -92,6 +93,7 @@ pub use card::{Card, PANEL_FILTER_FLOOR};
 pub use checkbox::{CheckState, Checkbox};
 pub use context_menu::{ContextMenu, MenuItem};
 pub use copy::sentence_case;
+pub use custom_colors::CustomColors;
 pub use elevation::Elevation;
 pub use empty_state::EmptyState;
 /// Identity registration for the headless UI test harness (`.test_support()`); a no-op in

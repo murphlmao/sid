@@ -880,6 +880,29 @@ impl AppState {
             .gap_3()
             .items_start()
             .child(div().flex_1().min_w(scaled(360.)).child(themes))
+            // Custom colors: a full row of its own, under the palettes it paints over.
+            // The editor applies an edit live; this persists it once it settles.
+            .child(div().w_full().child(
+                sid_ui::CustomColors::new("settings-custom-colors").on_commit(cx.listener(
+                    |this, overrides: &std::collections::BTreeMap<String, String>, _, cx| {
+                        let saved = this.store.settings().and_then(|mut s| {
+                            s.theme_overrides = overrides.clone();
+                            this.store.set_settings(&s)
+                        });
+                        match saved {
+                            Ok(()) => {
+                                this.settings.cached.theme_overrides = overrides.clone();
+                                this.settings.error = None;
+                            }
+                            Err(e) => {
+                                this.settings.error =
+                                    Some(format!("Could not save custom colors: {e}"))
+                            }
+                        }
+                        cx.notify();
+                    },
+                )),
+            ))
             .child(div().flex_1().min_w(scaled(360.)).child(display))
             .child(
                 div()

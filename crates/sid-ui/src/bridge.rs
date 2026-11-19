@@ -155,6 +155,12 @@ fn relative_luminance(color: u32) -> f32 {
     0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 }
 
+/// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`.
+pub fn contrast(a: u32, b: u32) -> f32 {
+    let (x, y) = (relative_luminance(a), relative_luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
 /// A token as hue, saturation and lightness, each `0.0..=1.0`, through gpui's own
 /// conversion — the same one the renderer uses, so a colour read here is the colour
 /// that lands on screen.
@@ -555,6 +561,9 @@ fn base_colors(t: &Theme, out: &mut ThemeColor) {
 /// Sync `gpui-component`'s theme global with the active sid palette, and refresh
 /// `window` so widgets already on screen re-read it.
 ///
+/// The user's custom colours ride along for free: [`theme::active`] is already the base
+/// palette with its overrides applied (see [`theme::install`]).
+///
 /// Call this everywhere the sid theme is installed or changed: `main.rs`'s startup
 /// window, the settings screen's live switch, and any second window that mounts its own
 /// `gpui_component::Root`. Without it, every borrowed widget renders in stock shadcn.
@@ -792,12 +801,6 @@ mod tests {
                 t.name
             );
         }
-    }
-
-    /// WCAG 2.1 contrast ratio between two `0xRRGGBB` tokens, `1.0..=21.0`.
-    fn contrast(a: u32, b: u32) -> f32 {
-        let (x, y) = (relative_luminance(a), relative_luminance(b));
-        (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
     #[test]
