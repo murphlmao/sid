@@ -45,6 +45,7 @@
 extern crate gpui as gpui_kit;
 
 pub mod action_cell;
+pub mod assets;
 pub mod badge;
 pub mod bridge;
 pub mod button;
@@ -84,6 +85,7 @@ pub mod tree;
 pub mod typography;
 
 pub use action_cell::{ActionCell, Confirm, ConfirmArm, ConfirmButton};
+pub use assets::SidAssets;
 pub use badge::{Badge, BadgeFill, BadgeTone};
 pub use button::{ALL_BUTTON_SIZES, Button, ButtonSize, ButtonState, ButtonVariant, IconButton};
 pub use card::{Card, PANEL_FILTER_FLOOR};
