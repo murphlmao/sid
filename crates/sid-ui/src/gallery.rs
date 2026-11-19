@@ -828,11 +828,20 @@ fn structure(theme: &Theme, filter: &Entity<InputState>) -> Vec<gpui::AnyElement
                 SegmentedControl::new("gallery-seg-large")
                     .large()
                     .segments([
-                        Segment::new("Ports").icon(Icon::Interfaces),
-                        Segment::new("Connections").icon(Icon::Globe),
-                        Segment::new("Services").icon(Icon::Settings),
+                        Segment::new("Ports").icon(Icon::Ports),
+                        Segment::new("Connections").icon(Icon::Connections),
+                        Segment::new("Services").icon(Icon::Services),
                     ])
                     .selected(1),
+            )
+            .child(
+                SegmentedControl::new("gallery-seg-brands")
+                    .large()
+                    .segments([
+                        Segment::new("Docker").icon(Icon::Docker),
+                        Segment::new("Kubernetes").icon(Icon::Kubernetes),
+                    ])
+                    .selected(0),
             )
             .child(
                 SegmentedControl::new("gallery-seg-long")

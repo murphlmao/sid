@@ -88,11 +88,11 @@ fn main() {
     preflight.mark_launch_attempt();
 
     gpui_platform::application()
-        // The complete Lucide catalog (1830 SVGs), not `gpui_kit_assets::Assets`'s
-        // 86-icon compatibility subset: `sid_ui::Icon` (icon.rs) resolves through the
-        // full set now, so the running app needs the same source the registry's own
-        // test loads bytes from, or a bundle-bump-honest icon renders as nothing.
-        .with_assets(gpui_kit_assets::AllAssets)
+        // sid's own brand marks (Docker, Kubernetes) over the complete Lucide catalog
+        // (1830 SVGs): `sid_ui::Icon` (icon.rs) resolves through `SidAssets`, so the
+        // running app needs the same source the registry's own test loads bytes from,
+        // or an icon renders as nothing.
+        .with_assets(sid_ui::SidAssets)
         .run(move |cx| {
             ui::init(cx);
             gpui_component::init(cx);

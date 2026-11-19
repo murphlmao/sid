@@ -162,12 +162,18 @@ pub enum Icon {
     Run,
     /// Save results out of sid — the Database tab's export control.
     Export,
-    /// A Docker container.
+    /// The Docker whale — the real brand mark ([`crate::assets`]), not a Lucide stand-in.
     Docker,
-    /// A Kubernetes cluster / pod set.
+    /// The Kubernetes helm — the real brand mark ([`crate::assets`]).
     Kubernetes,
     /// Network interfaces / adapters.
     Interfaces,
+    /// Listening ports — Lucide `ethernet-port`, a socket.
+    Ports,
+    /// Live connections — Lucide `arrow-left-right`, traffic between two endpoints.
+    Connections,
+    /// System services — Lucide `server-cog`, a daemon.
+    Services,
     /// A relationships/ER diagram — the Database tab's schema pop-out.
     ///
     /// Draws Lucide's `workflow` (two linked boxes) rather than `git-fork` (three
@@ -236,6 +242,9 @@ impl Icon {
         Icon::Docker,
         Icon::Kubernetes,
         Icon::Interfaces,
+        Icon::Ports,
+        Icon::Connections,
+        Icon::Services,
         Icon::Diagram,
         Icon::Table,
         Icon::Columns,
@@ -243,8 +252,10 @@ impl Icon {
 
     /// The bundled asset this icon draws. Going through the library's own `IconName`
     /// means a rename upstream is a compile error here, not a blank square.
-    fn name(self) -> IconName {
-        match self {
+    ///
+    /// `None` for the brand marks, which are sid's own assets rather than Lucide's.
+    fn name(self) -> Option<IconName> {
+        Some(match self {
             Icon::Refresh => IconName::Redo,
             Icon::Search => IconName::Search,
             Icon::Database => IconName::Database,
@@ -293,25 +304,32 @@ impl Icon {
             Icon::Calendar => IconName::Calendar,
             Icon::Run => IconName::Play,
             Icon::Export => IconName::Download,
-            Icon::Docker => IconName::Container,
-            Icon::Kubernetes => IconName::Boxes,
+            Icon::Docker => return None,
+            Icon::Kubernetes => return None,
             Icon::Interfaces => IconName::Network,
+            Icon::Ports => IconName::EthernetPort,
+            Icon::Connections => IconName::ArrowLeftRight,
+            Icon::Services => IconName::ServerCog,
             Icon::Diagram => IconName::Workflow,
             Icon::Table => IconName::Table,
             Icon::Columns => IconName::Columns3,
-        }
+        })
     }
 
     /// The embedded asset path, e.g. `icons/search.svg`.
     pub fn path(self) -> SharedString {
-        self.name().path()
+        match (self, self.name()) {
+            (_, Some(name)) => name.path(),
+            (Icon::Docker, None) => crate::assets::DOCKER.into(),
+            _ => crate::assets::KUBERNETES.into(),
+        }
     }
 
     /// The icon as a styleable element — chain `.text_color(..)` / `.size_*()` on the
     /// result. Plain `Icon` also renders directly as a child, inheriting the ambient
     /// text colour and size.
     pub fn el(self) -> gpui_component::Icon {
-        gpui_component::Icon::new(self.name())
+        gpui_component::Icon::empty().path(self.path())
     }
 
     /// The icon at 14px — the size that sits level with `text_xs` and `text_sm`, which
@@ -339,12 +357,12 @@ mod tests {
 
     #[test]
     fn every_named_icon_exists_in_the_bundle() {
-        // `AllAssets`, not `Assets`: the latter is `gpui_kit_assets`'s 86-icon
+        // `SidAssets` (brand marks + all of Lucide), not `Assets`: the latter is `gpui_kit_assets`'s 86-icon
         // compatibility subset, which is missing exactly the glyphs this registry now
         // relies on (`trash`, `pencil`, `play`, ...). `main.rs`'s `with_assets(..)` has
         // to register the same source this test loads bytes from, or a name that
         // resolves here still renders as nothing at runtime.
-        let assets = gpui_kit_assets::AllAssets;
+        let assets = crate::assets::SidAssets;
         for &icon in Icon::ALL {
             let path = icon.path();
             let bytes = assets
@@ -355,6 +373,21 @@ mod tests {
             assert!(
                 path.ends_with(".svg"),
                 "{icon:?}: {path} is not an SVG — monochrome line art only"
+            );
+        }
+    }
+
+    #[test]
+    fn the_brand_marks_are_the_real_logos_not_lucide_stand_ins() {
+        let assets = crate::assets::SidAssets;
+        for (icon, title) in [(Icon::Docker, "Docker"), (Icon::Kubernetes, "Kubernetes")] {
+            assert!(icon.path().starts_with("icons/brand/"), "{icon:?}");
+            let svg = assets.load(&icon.path()).unwrap().unwrap();
+            let svg = std::str::from_utf8(&svg).unwrap();
+            assert!(svg.contains(&format!("<title>{title}</title>")), "{icon:?}");
+            assert!(
+                !svg.contains("fill="),
+                "{icon:?}: would not take text colour"
             );
         }
     }
