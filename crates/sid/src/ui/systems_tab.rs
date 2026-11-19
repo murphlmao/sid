@@ -73,7 +73,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
+    MouseDownEvent, Render, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
@@ -89,10 +89,10 @@ use sid_ui::component::{
 };
 use sid_ui::theme::{self, Theme};
 use sid_ui::{
-    ActionCell, Button, Card, CellText, ColumnWidth, Confirm, ConfirmArm, ConfirmButton,
-    EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton, InputState, Meter,
-    MeterTone, Row, Segment, SegmentSelect, SegmentedControl, Skeleton, StyledExt as _, TextInput,
-    Toast, Typography as _, scaled, sortable_th, v_flex,
+    ActionCell, Button, Card, CellText, CheckState, Checkbox, ColumnWidth, Confirm, ConfirmArm,
+    ConfirmButton, EmptyState, FillColumns, FillTable, FillTableDelegate, Icon, IconButton,
+    InputState, Meter, MeterTone, Row, Segment, SegmentSelect, SegmentedControl, Skeleton,
+    StyledExt as _, TextInput, Toast, Typography as _, h_flex, scaled, sortable_th, v_flex,
 };
 
 /// Which sub-view is active under the System tab's segmented control.
@@ -168,6 +168,13 @@ pub struct SystemsTabState {
     overview: Option<SystemOverview>,
     /// Rolling CPU / memory / swap utilisation (0..=1) behind the overview sparklines.
     history: UsageHistory,
+    /// The metric cards' saved layout (`Settings::system_metric_hidden` / `_order`),
+    /// loaded once on first paint and written back on every change. See [`metric_visible`].
+    metric_hidden: Vec<String>,
+    metric_order: Vec<String>,
+    metrics_loaded: bool,
+    /// Whether the cluster's customize row (visibility, reset, move arrows) is open.
+    customizing: bool,
     error: Option<String>,
     /// The processes table. Lazily built by `ensure_systems_widgets` (needs `window`,
     /// which isn't available from `SystemsTabState::new`) — mirrors `NetworkTabState::
@@ -238,6 +245,10 @@ impl SystemsTabState {
             sub_view: SystemSubView::default(),
             overview: None,
             history: UsageHistory::default(),
+            metric_hidden: Vec::new(),
+            metric_order: Vec::new(),
+            metrics_loaded: false,
+            customizing: false,
             error: None,
             table: None,
             filter: None,
@@ -663,6 +674,13 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.ensure_systems_widgets(window, cx);
+        if !self.systems.metrics_loaded {
+            self.systems.metrics_loaded = true;
+            if let Ok(prefs) = self.store.settings() {
+                self.systems.metric_hidden = prefs.system_metric_hidden;
+                self.systems.metric_order = prefs.system_metric_order;
+            }
+        }
         let first_load = !self.systems.loaded;
         if first_load {
             self.systems.loaded = true;
@@ -1525,7 +1543,7 @@ impl AppState {
     ///
     /// It carries no refresh control of its own: the screen has exactly one, in the
     /// Processes toolbar, and the overview re-probes itself every 2 seconds regardless.
-    fn overview_cluster(&self, cx: &App) -> AnyElement {
+    fn overview_cluster(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(ov) = self.systems.overview.as_ref() else {
             // Probing: three skeleton cards in the shape the real ones will take.
             return div()
@@ -1554,37 +1572,107 @@ impl AppState {
         .into();
 
         let cores = ov.cpu_per_core.len();
-        let cpu = Meter::new("CPU", ov.cpu_total_pct / 100.0)
-            .value(format!("{:.1}%", ov.cpu_total_pct))
-            .segments(
-                ov.cpu_per_core.iter().map(|&pct| pct / 100.0),
-                // The caption the bare tick strip never had.
-                sid_ui::toolbar::count_label(cores, "core"),
-            );
-
-        let memory = Meter::new("Memory", Meter::ratio(ov.mem_used, ov.mem_total)).value(format!(
-            "{} / {}",
-            humanize_bytes(ov.mem_used),
-            humanize_bytes(ov.mem_total)
-        ));
-
-        let swap = if ov.swap_total > 0 {
-            Meter::new("Swap", Meter::ratio(ov.swap_used, ov.swap_total)).value(format!(
-                "{} / {}",
-                humanize_bytes(ov.swap_used),
-                humanize_bytes(ov.swap_total)
-            ))
-        } else {
-            // Unconfigured swap used to say so three ways at once: an em-dash value, an
-            // empty bar, and this caption. One fact, one caption — no value, no bar.
-            Meter::new("Swap", 0.0).hide_bar().note("none configured")
-        };
-
-        // Host facts as one Meta line, then CPU / Memory / Swap as three cards in a row.
+        let has_swap = ov.swap_total > 0;
         let theme = theme::active(cx).clone();
+        let this = cx.entity();
+        let customizing = self.systems.customizing;
+        let hidden = &self.systems.metric_hidden;
+        let visible: Vec<&'static str> = resolve_metric_order(&self.systems.metric_order)
+            .into_iter()
+            .filter(|id| metric_visible(id, has_swap, hidden))
+            .collect();
+
+        // One card: the meter, its sparkline, a footer line, and the card's own controls
+        // (move arrows while customizing, dismiss always).
         let hist = &self.systems.history;
-        let card = |m: Meter, samples: &VecDeque<f32>, line: String, chart_h: f32| {
-            Card::new().flex_1().min_w_0().child(
+        let card = |id: &'static str| {
+            let label = metric_label(id);
+            let (m, samples, line, chart_h) = match id {
+                "cpu" => (
+                    Meter::new("CPU", ov.cpu_total_pct / 100.0)
+                        .value(format!("{:.1}%", ov.cpu_total_pct))
+                        .segments(
+                            ov.cpu_per_core.iter().map(|&pct| pct / 100.0),
+                            // The caption the bare tick strip never had.
+                            sid_ui::toolbar::count_label(cores, "core"),
+                        ),
+                    &hist.cpu,
+                    format!(
+                        "load {:.2} · {} logical {}",
+                        ov.load_avg.0,
+                        cores,
+                        if cores == 1 { "core" } else { "cores" }
+                    ),
+                    56.,
+                ),
+                "memory" => (
+                    Meter::new("Memory", Meter::ratio(ov.mem_used, ov.mem_total)).value(format!(
+                        "{} / {}",
+                        humanize_bytes(ov.mem_used),
+                        humanize_bytes(ov.mem_total)
+                    )),
+                    &hist.mem,
+                    format!(
+                        // No total: the meter's value above already reads "used / total".
+                        "{} used · {} cached · {} available",
+                        humanize_bytes(ov.mem_used),
+                        humanize_bytes(ov.mem_cached),
+                        humanize_bytes(ov.mem_total.saturating_sub(ov.mem_used)),
+                    ),
+                    112.,
+                ),
+                _ if has_swap => (
+                    Meter::new("Swap", Meter::ratio(ov.swap_used, ov.swap_total)).value(format!(
+                        "{} / {}",
+                        humanize_bytes(ov.swap_used),
+                        humanize_bytes(ov.swap_total)
+                    )),
+                    &hist.swap,
+                    format!(
+                        "{} used · {} free",
+                        humanize_bytes(ov.swap_used),
+                        humanize_bytes(ov.swap_total.saturating_sub(ov.swap_used))
+                    ),
+                    112.,
+                ),
+                // Opted in on a machine without swap: one fact, one caption — no value,
+                // no bar.
+                _ => (
+                    Meter::new("Swap", 0.0).hide_bar().note("none configured"),
+                    &hist.swap,
+                    "Add a swap file or partition to give memory some headroom.".to_string(),
+                    112.,
+                ),
+            };
+            // Dismiss: a quiet X at the card's top-right, on the label row. No border at
+            // rest (the Ghost variant's border is overridden), dim until the card is
+            // hovered, full strength on hover.
+            let group = SharedString::from(format!("sys-card-{id}"));
+            let hide = div()
+                .absolute()
+                .top(px(6.))
+                .right(px(6.))
+                .opacity(0.5)
+                .group_hover(group.clone(), |s| s.opacity(1.))
+                .child(
+                    IconButton::new(
+                        SharedString::from(format!("sys-metric-hide-{id}")),
+                        Icon::Close,
+                        format!("Hide {label}"),
+                    )
+                    .size(sid_ui::ButtonSize::Xs)
+                    .border_0()
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |s, cx| {
+                                s.edit_metrics(|h, _| set_metric_visible(h, id, has_swap, false));
+                                cx.notify();
+                            })
+                        }
+                    }),
+                );
+            let body = Card::new().flex_1().min_w_0().child(
                 v_flex()
                     .flex_1()
                     .w_full()
@@ -1594,51 +1682,296 @@ impl AppState {
                     // Wraps rather than clips: at 1280 the three cards are ~400px each
                     // and a one-line footer cut "31.1 GB t…" off mid-figure.
                     .child(div().w_full().min_w_0().text_meta(&theme).child(line)),
-            )
+            );
+            // The drag target: a 2px edge that turns accent on the side the dropped card
+            // will land on (after the target when dragging rightwards, before otherwise).
+            let order_now = visible.clone();
+            let (accent, drop_this) = (theme.accent, this.clone());
+            div()
+                .id(SharedString::from(format!("sys-metric-{id}")))
+                .group(group)
+                .relative()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .border_x_2()
+                .border_color(gpui::transparent_black())
+                .cursor_grab()
+                .on_drag(MetricDrag { id, label }, |d, _, _, cx| {
+                    cx.new(|_| MetricDragGhost(d.label))
+                })
+                .drag_over::<MetricDrag>(move |s, d, _, _| {
+                    if d.id == id {
+                        return s;
+                    }
+                    let from = order_now.iter().position(|i| *i == d.id);
+                    let to = order_now.iter().position(|i| *i == id);
+                    if from < to {
+                        s.border_l_0().border_r_2().border_color(rgb(accent))
+                    } else {
+                        s.border_r_0().border_l_2().border_color(rgb(accent))
+                    }
+                })
+                .on_drop(move |d: &MetricDrag, _, cx| {
+                    drop_this.update(cx, |s, cx| {
+                        s.edit_metrics(|_, o| move_metric_to(o, d.id, id));
+                        cx.notify();
+                    })
+                })
+                .child(body)
+                .child(hide)
         };
-        let mem_line = format!(
-            // No total: the meter's value above already reads "used / total".
-            "{} used · {} cached · {} available",
-            humanize_bytes(ov.mem_used),
-            humanize_bytes(ov.mem_cached),
-            humanize_bytes(ov.mem_total.saturating_sub(ov.mem_used)),
-        );
-        let swap_line = if ov.swap_total > 0 {
-            format!(
-                "{} used · {} free",
-                humanize_bytes(ov.swap_used),
-                humanize_bytes(ov.swap_total.saturating_sub(ov.swap_used))
+
+        let customize_btn = IconButton::new(
+            "sys-metrics-customize",
+            Icon::Settings,
+            if customizing {
+                "Done customizing"
+            } else {
+                "Customize metrics"
+            },
+        )
+        .small()
+        .on_click({
+            let this = this.clone();
+            move |_, _, cx| {
+                this.update(cx, |s, cx| {
+                    s.systems.customizing = !s.systems.customizing;
+                    cx.notify();
+                })
+            }
+        });
+        let customize_row = customizing.then(|| {
+            let mut row = h_flex()
+                .w_full()
+                .flex_wrap()
+                .gap_3()
+                .px(sid_ui::CARD_PADDING.len());
+            for (id, label) in SYSTEM_METRICS {
+                let on = metric_visible(id, has_swap, hidden);
+                let this = this.clone();
+                let arrow = |dir: isize, icon: Icon, tip: String| {
+                    let this = this.clone();
+                    IconButton::new(
+                        SharedString::from(format!("sys-metric-move-{id}-{dir}")),
+                        icon,
+                        tip,
+                    )
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |s, cx| {
+                            s.edit_metrics(|h, o| shift_metric(h, o, id, has_swap, dir));
+                            cx.notify();
+                        })
+                    })
+                };
+                let toggle = this.clone();
+                row = row.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Checkbox::new(
+                                format!("sys-metric-vis-{id}"),
+                                if on { CheckState::On } else { CheckState::Off },
+                            )
+                            .label(label)
+                            .on_toggle(move |next, _, cx| {
+                                toggle.update(cx, |s, cx| {
+                                    s.edit_metrics(|h, _| {
+                                        set_metric_visible(h, id, has_swap, next == CheckState::On)
+                                    });
+                                    cx.notify();
+                                })
+                            }),
+                        )
+                        .child(arrow(-1, Icon::ChevronLeft, format!("Move {label} left")))
+                        .child(arrow(1, Icon::ChevronRight, format!("Move {label} right"))),
+                );
+            }
+            row.child(
+                Button::new("sys-metrics-reset", "Reset layout")
+                    .ghost()
+                    .small()
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |s, cx| {
+                                s.edit_metrics(|h, o| {
+                                    h.clear();
+                                    o.clear();
+                                });
+                                cx.notify();
+                            })
+                        }
+                    }),
             )
-        } else {
-            "Add a swap file or partition to give memory some headroom.".to_string()
-        };
-        let cpu_line = format!(
-            "load {:.2} · {} logical {}",
-            ov.load_avg.0,
-            cores,
-            if cores == 1 { "core" } else { "cores" }
-        );
+        });
+
+        // Host facts as one Meta line (with the customize control), then the visible
+        // metrics as cards in a row. With none visible the row is simply absent, so
+        // the table takes the space.
         v_flex()
             .w_full()
             .gap_2()
-            // Inset by the card padding so the line starts where the card contents do,
-            // not flush with the card edge.
             .child(
-                div()
-                    .px(sid_ui::CARD_PADDING.len())
-                    .text_meta(&theme)
-                    .child(summary),
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            // Inset by the card padding so the line starts where the card
+                            // contents do, not flush with the card edge.
+                            .px(sid_ui::CARD_PADDING.len())
+                            .text_meta(&theme)
+                            .child(summary),
+                    )
+                    .child(customize_btn),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(sid_ui::SECTION_GAP.len())
-                    .child(card(cpu, &hist.cpu, cpu_line, 56.))
-                    .child(card(memory, &hist.mem, mem_line, 112.))
-                    .child(card(swap, &hist.swap, swap_line, 112.)),
-            )
+            .children(customize_row)
+            .when(!visible.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(sid_ui::SECTION_GAP.len())
+                        .children(visible.iter().map(|&id| card(id))),
+                )
+            })
             .into_any_element()
+    }
+
+    /// Apply a layout edit to the cached prefs and persist it (read-modify-write, like
+    /// `persist_import_banner_dismissed`). Only called from click handlers.
+    fn edit_metrics(&mut self, f: impl FnOnce(&mut Vec<String>, &mut Vec<String>)) {
+        let s = &mut self.systems;
+        f(&mut s.metric_hidden, &mut s.metric_order);
+        let (hidden, order) = (s.metric_hidden.clone(), s.metric_order.clone());
+        let saved = self.store.settings().and_then(|mut p| {
+            p.system_metric_hidden = hidden;
+            p.system_metric_order = order;
+            self.store.set_settings(&p)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not save system metric layout: {e}");
+        }
+    }
+}
+
+/// The metric cards in default order: stable opaque ids (stored) and display labels.
+const SYSTEM_METRICS: [(&str, &str); 3] = [("cpu", "CPU"), ("memory", "Memory"), ("swap", "Swap")];
+
+fn metric_label(id: &str) -> &'static str {
+    SYSTEM_METRICS
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map_or("", |(_, l)| l)
+}
+
+/// Whether a metric card shows. `Settings::system_metric_hidden` holds `"id"` for a card
+/// the user hid and `"+id"` for one they opted in against its default (swap on a machine
+/// with none); untouched cards follow the default: only swap-without-swap is hidden.
+fn metric_visible(id: &str, has_swap: bool, hidden: &[String]) -> bool {
+    if hidden.iter().any(|h| h == id) {
+        return false;
+    }
+    if hidden.iter().any(|h| h.strip_prefix('+') == Some(id)) {
+        return true;
+    }
+    id != "swap" || has_swap
+}
+
+/// Record the user's choice: drop any previous mark, then store one only when the choice
+/// differs from the default (so "show swap while it exists" leaves no residue).
+fn set_metric_visible(hidden: &mut Vec<String>, id: &str, has_swap: bool, show: bool) {
+    hidden.retain(|h| h != id && h.strip_prefix('+') != Some(id));
+    if show != (id != "swap" || has_swap) {
+        hidden.push(if show {
+            format!("+{id}")
+        } else {
+            id.to_string()
+        });
+    }
+}
+
+/// Saved order first (unknown ids and repeats ignored), then any metric the save does
+/// not mention, in default order — so a metric added later appears at the end.
+fn resolve_metric_order(saved: &[String]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for s in saved {
+        if let Some((id, _)) = SYSTEM_METRICS.iter().find(|(i, _)| i == s)
+            && !out.contains(id)
+        {
+            out.push(id);
+        }
+    }
+    for (id, _) in SYSTEM_METRICS {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// The payload of a metric-card drag.
+#[derive(Clone, Copy)]
+struct MetricDrag {
+    id: &'static str,
+    label: &'static str,
+}
+
+/// What follows the pointer while a card is dragged: its name on a raised chip.
+struct MetricDragGhost(&'static str);
+
+impl Render for MetricDragGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx).clone();
+        div()
+            .px_3()
+            .py_1()
+            .bg(rgb(t.surface))
+            .border_1()
+            .border_color(rgb(t.accent))
+            .rounded_md()
+            .text_label(&t)
+            .text_color(rgb(t.fg_strong))
+            .child(self.0)
+    }
+}
+
+/// Drop `from` where `to` sits: after it when moving rightwards, before it when moving
+/// left, so the card ends up exactly where the indicator showed. Stores the resolved order.
+fn move_metric_to(order: &mut Vec<String>, from: &str, to: &str) {
+    let mut ids = resolve_metric_order(order);
+    let (Some(f), Some(t)) = (
+        ids.iter().position(|i| *i == from),
+        ids.iter().position(|i| *i == to),
+    ) else {
+        return;
+    };
+    if f != t {
+        let moved = ids.remove(f);
+        ids.insert(t, moved);
+        *order = ids.iter().map(|i| (*i).to_string()).collect();
+    }
+}
+
+/// Move `id` one step in `dir` (-1 / +1) past the next *visible* card and store the whole
+/// resolved order. At an edge nothing changes.
+fn shift_metric(hidden: &[String], order: &mut Vec<String>, id: &str, has_swap: bool, dir: isize) {
+    let mut ids = resolve_metric_order(order);
+    let Some(ix) = ids.iter().position(|i| *i == id) else {
+        return;
+    };
+    let in_range = |j: isize| (0..ids.len() as isize).contains(&j);
+    let mut j = ix as isize + dir;
+    while in_range(j) && !metric_visible(ids[j as usize], has_swap, hidden) {
+        j += dir;
+    }
+    if in_range(j) {
+        ids.swap(ix, j as usize);
+        *order = ids.iter().map(|i| (*i).to_string()).collect();
     }
 }
 
@@ -1939,6 +2272,90 @@ mod tests {
         assert_eq!(warmup_wait(tick, true, 1), Some(WARMUP_DELAY));
         assert_eq!(warmup_wait(tick, false, 1), tick);
         assert_eq!(warmup_wait(tick, true, 2), tick);
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn swap_hidden_only_when_absent_and_untouched() {
+        assert!(!metric_visible("swap", false, &[]));
+        assert!(metric_visible("swap", true, &[]));
+        assert!(metric_visible("cpu", false, &[]));
+        assert!(!metric_visible("swap", true, &strs(&["swap"])));
+        assert!(!metric_visible("swap", false, &strs(&["swap"])));
+        assert!(metric_visible("swap", false, &strs(&["+swap"])));
+    }
+
+    #[test]
+    fn set_visible_leaves_no_residue_when_matching_default() {
+        let mut h = vec![];
+        set_metric_visible(&mut h, "swap", false, true);
+        assert_eq!(h, ["+swap"]);
+        set_metric_visible(&mut h, "swap", false, false);
+        assert!(h.is_empty());
+        set_metric_visible(&mut h, "cpu", true, false);
+        assert_eq!(h, ["cpu"]);
+        set_metric_visible(&mut h, "cpu", true, true);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn order_ignores_unknown_and_appends_new() {
+        assert_eq!(resolve_metric_order(&[]), ["cpu", "memory", "swap"]);
+        assert_eq!(
+            resolve_metric_order(&strs(&["swap", "bogus", "swap", "cpu"])),
+            ["swap", "cpu", "memory"]
+        );
+    }
+
+    #[test]
+    fn drop_lands_where_the_indicator_showed() {
+        let mut o = vec![];
+        move_metric_to(&mut o, "cpu", "memory"); // rightwards: after memory
+        assert_eq!(o, ["memory", "cpu", "swap"]);
+        move_metric_to(&mut o, "swap", "memory"); // leftwards: before memory
+        assert_eq!(o, ["swap", "memory", "cpu"]);
+        let before = o.clone();
+        move_metric_to(&mut o, "cpu", "cpu");
+        move_metric_to(&mut o, "bogus", "cpu");
+        assert_eq!(o, before);
+    }
+
+    #[test]
+    fn layout_survives_a_restart() {
+        // What `edit_metrics` writes is exactly what the first paint loads.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.redb");
+        let store = sid_store::Store::open(&path).expect("store");
+        let (mut hidden, mut order) = (vec![], vec![]);
+        set_metric_visible(&mut hidden, "swap", false, true);
+        set_metric_visible(&mut hidden, "cpu", false, false);
+        move_metric_to(&mut order, "memory", "swap");
+        let mut p = store.settings().unwrap();
+        p.system_metric_hidden = hidden.clone();
+        p.system_metric_order = order.clone();
+        store.set_settings(&p).unwrap();
+        drop(store); // "restart": reopen the same file
+        let store = sid_store::Store::open(&path).expect("reopen");
+        let p = store.settings().unwrap();
+        assert_eq!(
+            (p.system_metric_hidden, p.system_metric_order),
+            (hidden, order)
+        );
+    }
+
+    #[test]
+    fn shift_skips_hidden_and_stops_at_edges() {
+        let h = strs(&["memory"]);
+        let mut o = vec![];
+        shift_metric(&h, &mut o, "cpu", true, 1);
+        // Memory is hidden, so cpu trades places with the next *visible* card, swap.
+        assert_eq!(o, ["swap", "memory", "cpu"]);
+        let before = o.clone();
+        shift_metric(&h, &mut o, "cpu", true, 1); // already last
+        assert_eq!(o, before);
     }
 
     #[test]
