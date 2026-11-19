@@ -366,6 +366,7 @@ pub struct Button {
     loading: bool,
     full_width: bool,
     tab_index: isize,
+    palette: Option<Theme>,
     style: StyleRefinement,
     on_click: Option<ClickHandler>,
 }
@@ -385,6 +386,7 @@ impl Button {
             loading: false,
             full_width: false,
             tab_index: 0,
+            palette: None,
             style: StyleRefinement::default(),
             on_click: None,
         }
@@ -393,6 +395,14 @@ impl Button {
     /// Set the variant.
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Paint with `palette` instead of the active theme. For the one control that must
+    /// stay legible whatever the active colours are: the custom-colours editor's "Reset
+    /// all", drawn in the un-overridden base palette.
+    pub fn palette(mut self, palette: Theme) -> Self {
+        self.palette = Some(palette);
         self
     }
 
@@ -504,7 +514,10 @@ impl Styled for Button {
 
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = theme::active(cx).clone();
+        let theme = self
+            .palette
+            .clone()
+            .unwrap_or_else(|| theme::active(cx).clone());
         let state = self.state();
         let paint = self.variant.paint(state, &theme);
         let size = self.size;

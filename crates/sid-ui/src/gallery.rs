@@ -33,6 +33,7 @@ use crate::button::{
 use crate::card::Card;
 use crate::checkbox::{CheckState, Checkbox};
 use crate::context_menu::{ContextMenu, MenuItem};
+use crate::custom_colors::CustomColors;
 use crate::elevation::Elevation;
 use crate::empty_state::EmptyState;
 use crate::grid::{CardGrid, GridCard};
@@ -181,6 +182,7 @@ impl Render for Gallery {
             // width proof needs a parent that offers no width, and a gallery column is
             // the opposite of that.
             .child(field_band)
+            .child(custom_colors_band())
             // The overlays are a band for the same reason, plus one of their own: a
             // modal panel is 460px wide at its real size, and a fifth column that wide
             // squeezed the other four until the host rows wrapped mid-word.
@@ -1402,6 +1404,17 @@ fn no_floor_field(theme: &Theme) -> impl IntoElement + use<> {
         .rounded_md()
         .elevation(Elevation::Well, theme)
         .child(div().text_meta(theme).child(""))
+}
+
+/// The custom-colors editor, live: an edit here really repaints the gallery (there is
+/// no `on_commit`, so nothing is saved). Its overridden / invalid / low-contrast states
+/// appear by editing a row.
+fn custom_colors_band() -> impl IntoElement {
+    div()
+        .w_full()
+        .px_4()
+        .pb_4()
+        .child(CustomColors::new("gallery-custom-colors"))
 }
 
 /// The focus band — every tab stop `sid-ui` has, in one run.

@@ -21,6 +21,16 @@
 //! The active theme name persists as `sid_store::Settings::theme` (v4); resolution is
 //! by name via [`by_name`], falling back to `cosmos` for unknown names (never an
 //! error — a store written by a future sid with more themes must still open here).
+//!
+//! **Custom colours** (`Settings::theme_overrides`, v9) are a token-key -> `#rrggbb` map
+//! laid over whichever base palette is active. [`install`] is the one choke point: it
+//! always resolves `base palette + current overrides`, so startup, a palette switch and
+//! `SID_THEME` all pick them up, and so does everything downstream of [`active`] (every
+//! tab, the gpui-component [`crate::bridge`], the terminal's ANSI set). Overrides are
+//! global, not per palette — they survive a palette switch. Resolution is lenient: an
+//! unknown key or a malformed value is skipped, never an error.
+
+use std::collections::BTreeMap;
 
 use gpui::{App, Global};
 use gpui_component::ThemeMode;
@@ -214,11 +224,153 @@ pub fn by_name(name: &str) -> Theme {
     }
 }
 
-/// Install `name`'s palette as the process-wide active theme. Call once at startup
-/// (from the persisted `Settings::theme`) and again whenever the settings screen
-/// switches themes (followed by `cx.refresh_windows()` so every element re-reads it).
+// ---- custom colours -----------------------------------------------------------
+
+/// One user-customisable colour token: its stable storage key (the field name, what
+/// `Settings::theme_overrides` is keyed by), its label, the group the editor files it
+/// under, and the field it writes.
+pub struct ColorToken {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub group: &'static str,
+    slot: fn(&mut Theme) -> &mut u32,
+}
+
+impl ColorToken {
+    /// This token's value in `t`.
+    pub fn get(&self, t: &Theme) -> u32 {
+        *(self.slot)(&mut t.clone())
+    }
+}
+
+/// The editor's groups, in display order.
+pub const COLOR_GROUPS: [&str; 3] = ["Surfaces", "Text", "Accent and status"];
+
+/// Every customisable token, grouped as the editor lists them. `shadow` is left out on
+/// purpose (it is an ink for alpha-blended shadows, not a colour anyone sees as such), and
+/// so is the terminal's `ansi` set.
+pub const COLOR_TOKENS: [ColorToken; 13] = {
+    const fn token(
+        key: &'static str,
+        label: &'static str,
+        group: &'static str,
+        slot: fn(&mut Theme) -> &mut u32,
+    ) -> ColorToken {
+        ColorToken {
+            key,
+            label,
+            group,
+            slot,
+        }
+    }
+    let [surfaces, text, status] = COLOR_GROUPS;
+    [
+        token("bg", "Background", surfaces, |t| &mut t.bg),
+        token("surface", "Panels", surfaces, |t| &mut t.surface),
+        token("well", "Inputs", surfaces, |t| &mut t.well),
+        token("border", "Borders", surfaces, |t| &mut t.border),
+        token("selection", "Selection", surfaces, |t| &mut t.selection),
+        token("fg", "Text", text, |t| &mut t.fg),
+        token("fg_strong", "Headings", text, |t| &mut t.fg_strong),
+        token("muted", "Secondary text", text, |t| &mut t.muted),
+        token("faint", "Faint text", text, |t| &mut t.faint),
+        token("accent", "Accent", status, |t| &mut t.accent),
+        token("success", "Success", status, |t| &mut t.success),
+        token("warning", "Warning", status, |t| &mut t.warning),
+        token("danger", "Danger", status, |t| &mut t.danger),
+    ]
+};
+
+/// `#rrggbb` or `rrggbb`, case-insensitive, surrounding whitespace ignored. Anything
+/// else (short `#rgb`, alpha, a sign, a name) is `None`.
+pub fn parse_hex(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let digits = value.strip_prefix('#').unwrap_or(value);
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
+
+/// A token as the `#rrggbb` string overrides are stored in.
+pub fn to_hex(color: u32) -> String {
+    format!("#{:06x}", color & 0xff_ffff)
+}
+
+/// `base` with every valid override applied. Unknown keys and malformed values are
+/// skipped, so an empty (or all-garbage) map returns `base` unchanged.
+pub fn with_overrides(mut base: Theme, overrides: &BTreeMap<String, String>) -> Theme {
+    for token in &COLOR_TOKENS {
+        if let Some(color) = overrides.get(token.key).and_then(|v| parse_hex(v)) {
+            *(token.slot)(&mut base) = color;
+        }
+    }
+    base
+}
+
+/// The overrides that would actually apply, normalised to lowercase `#rrggbb` — what the
+/// editor treats as "this token is customised".
+pub fn valid_overrides(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    COLOR_TOKENS
+        .iter()
+        .filter_map(|token| {
+            let color = overrides.get(token.key).and_then(|v| parse_hex(v))?;
+            Some((token.key.to_string(), to_hex(color)))
+        })
+        .collect()
+}
+
+/// Whether a text token is barely readable on the panels it sits on — the quiet
+/// warning the editor shows on the row. Only the reading inks are checked (`faint` is
+/// meant to recede); 3:1 is "very low", well under the 4.5:1 the built-ins clear.
+pub fn low_contrast(t: &Theme, key: &str) -> bool {
+    let ink = match key {
+        "fg" => t.fg,
+        "fg_strong" => t.fg_strong,
+        "muted" => t.muted,
+        _ => return false,
+    };
+    [t.bg, t.surface]
+        .into_iter()
+        .any(|bed| crate::bridge::contrast(ink, bed) < 3.0)
+}
+
+/// The process-wide override map ([`valid_overrides`] of whatever was set).
+struct Overrides(BTreeMap<String, String>);
+
+impl Global for Overrides {}
+
+static NO_OVERRIDES: BTreeMap<String, String> = BTreeMap::new();
+
+/// The active overrides, already validated and normalised.
+pub fn overrides(cx: &App) -> &BTreeMap<String, String> {
+    cx.try_global::<Overrides>().map_or(&NO_OVERRIDES, |o| &o.0)
+}
+
+/// Replace the overrides and, if a palette is already installed, re-install it with
+/// them. Callers then [`crate::bridge::sync`] and refresh, exactly as after [`install`].
+/// At startup call this *before* `install`.
+pub fn set_overrides(overrides: &BTreeMap<String, String>, cx: &mut App) {
+    let base = cx.try_global::<Theme>().map(|t| t.name);
+    cx.set_global(Overrides(valid_overrides(overrides)));
+    if let Some(base) = base {
+        install(base, cx);
+    }
+}
+
+/// The active base palette without any overrides — what a per-token reset returns to,
+/// and the guaranteed-legible ink for the editor's own "Reset all".
+pub fn base(cx: &App) -> Theme {
+    by_name(active(cx).name)
+}
+
+/// Install `name`'s palette, with the current [`overrides`] laid over it, as the
+/// process-wide active theme. Call once at startup (from the persisted
+/// `Settings::theme`) and again whenever the settings screen switches themes (followed
+/// by `cx.refresh_windows()` so every element re-reads it).
 pub fn install(name: &str, cx: &mut App) {
-    cx.set_global(by_name(name));
+    let theme = with_overrides(by_name(name), overrides(cx));
+    cx.set_global(theme);
     // The one startup hook sid-ui owns, so `SID_REDUCED_MOTION` works without the app
     // shell having to know about it. Idempotent and one-way (it can only switch motion
     // off), so re-running on every theme switch cannot undo a Settings choice.
@@ -465,6 +617,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_override_map_is_the_base_palette_exactly() {
+        for &name in THEME_NAMES {
+            assert_eq!(
+                with_overrides(by_name(name), &BTreeMap::new()),
+                by_name(name)
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_override_is_applied_and_nothing_else_moves() {
+        let got = with_overrides(cosmos(), &map(&[("accent", "#112233")]));
+        assert_eq!(got.accent, 0x112233);
+        assert_eq!(
+            Theme {
+                accent: cosmos().accent,
+                ..got
+            },
+            cosmos()
+        );
+    }
+
+    #[test]
+    fn unknown_keys_and_malformed_values_are_ignored() {
+        let got = with_overrides(
+            cosmos(),
+            &map(&[
+                ("shadow", "#123456"),
+                ("ansi", "#123456"),
+                ("nope", "#123456"),
+                ("bg", "#12345"),
+                ("fg", "#fff"),
+                ("muted", "#12345g"),
+                ("accent", "+12345"),
+                ("danger", "##123456"),
+                ("warning", "#1234567"),
+            ]),
+        );
+        assert_eq!(got, cosmos());
+        assert!(valid_overrides(&map(&[("nope", "#123456"), ("bg", "x")])).is_empty());
+    }
+
+    #[test]
+    fn hex_parsing_is_lenient_about_case_hash_and_whitespace_only() {
+        for ok in ["#7c6cf2", "7c6cf2", "#7C6CF2", " 7c6cF2 "] {
+            assert_eq!(parse_hex(ok), Some(0x7c6cf2), "{ok:?}");
+        }
+        for bad in ["", "#", "#7c6cf", "#7c6cf2ff", "#fff", "violet", "7c 6cf2"] {
+            assert_eq!(parse_hex(bad), None, "{bad:?}");
+        }
+        assert_eq!(to_hex(0x0a0b0c), "#0a0b0c");
+    }
+
+    #[test]
+    fn overrides_are_normalised_and_survive_a_palette_switch() {
+        let overrides = valid_overrides(&map(&[("accent", " 11AA33 ")]));
+        assert_eq!(overrides, map(&[("accent", "#11aa33")]));
+        for &name in THEME_NAMES {
+            assert_eq!(with_overrides(by_name(name), &overrides).accent, 0x11aa33);
+        }
+    }
+
+    #[test]
+    fn every_token_key_is_unique_and_reads_its_own_field() {
+        let mut keys: Vec<_> = COLOR_TOKENS.iter().map(|t| t.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), COLOR_TOKENS.len());
+        // A distinct value per token: each one lands in its own field, none shares a slot.
+        let mut t = cosmos();
+        for (ix, token) in COLOR_TOKENS.iter().enumerate() {
+            *(token.slot)(&mut t) = ix as u32;
+        }
+        for (ix, token) in COLOR_TOKENS.iter().enumerate() {
+            assert_eq!(token.get(&t), ix as u32, "{}", token.key);
+        }
+        assert!(COLOR_TOKENS.iter().all(|t| COLOR_GROUPS.contains(&t.group)));
+    }
+
+    #[test]
+    fn low_contrast_flags_unreadable_text_and_no_built_in() {
+        for &name in THEME_NAMES {
+            for token in &COLOR_TOKENS {
+                assert!(
+                    !low_contrast(&by_name(name), token.key),
+                    "{name}: {}",
+                    token.key
+                );
+            }
+        }
+        let silly = with_overrides(cosmos(), &map(&[("fg", "#0b0b14")]));
+        assert!(low_contrast(&silly, "fg"));
+        assert!(
+            !low_contrast(&silly, "accent"),
+            "only reading inks are checked"
+        );
     }
 
     #[test]
