@@ -73,7 +73,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
+    MouseDownEvent, Render, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use sid_core::sys::{Pid, ProcessInfo, Signal, SysProvider, SystemOverview};
 use sid_store::PinnedFile;
@@ -1644,47 +1644,35 @@ impl AppState {
                     112.,
                 ),
             };
-            let act = |f: fn(&mut Vec<String>, &mut Vec<String>, &'static str, bool)| {
-                let this = this.clone();
-                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                    this.update(cx, |s, cx| {
-                        s.edit_metrics(|h, o| f(h, o, id, has_swap));
-                        cx.notify();
-                    })
-                }
-            };
-            let controls = h_flex()
-                .flex_none()
-                .when(customizing, |d| {
-                    d.child(
-                        IconButton::new(
-                            SharedString::from(format!("sys-metric-left-{id}")),
-                            Icon::ChevronLeft,
-                            format!("Move {label} left"),
-                        )
-                        .small()
-                        .on_click(act(|h, o, id, sw| shift_metric(h, o, id, sw, -1))),
-                    )
-                    .child(
-                        IconButton::new(
-                            SharedString::from(format!("sys-metric-right-{id}")),
-                            Icon::ChevronRight,
-                            format!("Move {label} right"),
-                        )
-                        .small()
-                        .on_click(act(|h, o, id, sw| shift_metric(h, o, id, sw, 1))),
-                    )
-                })
+            // Dismiss: a quiet X at the card's top-right, on the label row. No border at
+            // rest (the Ghost variant's border is overridden), dim until the card is
+            // hovered, full strength on hover.
+            let group = SharedString::from(format!("sys-card-{id}"));
+            let hide = div()
+                .absolute()
+                .top(px(6.))
+                .right(px(6.))
+                .opacity(0.5)
+                .group_hover(group.clone(), |s| s.opacity(1.))
                 .child(
                     IconButton::new(
                         SharedString::from(format!("sys-metric-hide-{id}")),
                         Icon::Close,
                         format!("Hide {label}"),
                     )
-                    .small()
-                    .on_click(act(|h, _, id, sw| set_metric_visible(h, id, sw, false))),
+                    .size(sid_ui::ButtonSize::Xs)
+                    .border_0()
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |s, cx| {
+                                s.edit_metrics(|h, _| set_metric_visible(h, id, has_swap, false));
+                                cx.notify();
+                            })
+                        }
+                    }),
                 );
-            Card::new().flex_1().min_w_0().child(
+            let body = Card::new().flex_1().min_w_0().child(
                 v_flex()
                     .flex_1()
                     .w_full()
@@ -1693,14 +1681,45 @@ impl AppState {
                     .child(sparkline(&theme, samples, chart_h))
                     // Wraps rather than clips: at 1280 the three cards are ~400px each
                     // and a one-line footer cut "31.1 GB t…" off mid-figure.
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2()
-                            .child(div().flex_1().min_w_0().text_meta(&theme).child(line))
-                            .child(controls),
-                    ),
-            )
+                    .child(div().w_full().min_w_0().text_meta(&theme).child(line)),
+            );
+            // The drag target: a 2px edge that turns accent on the side the dropped card
+            // will land on (after the target when dragging rightwards, before otherwise).
+            let order_now = visible.clone();
+            let (accent, drop_this) = (theme.accent, this.clone());
+            div()
+                .id(SharedString::from(format!("sys-metric-{id}")))
+                .group(group)
+                .relative()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .border_x_2()
+                .border_color(gpui::transparent_black())
+                .cursor_grab()
+                .on_drag(MetricDrag { id, label }, |d, _, _, cx| {
+                    cx.new(|_| MetricDragGhost(d.label))
+                })
+                .drag_over::<MetricDrag>(move |s, d, _, _| {
+                    if d.id == id {
+                        return s;
+                    }
+                    let from = order_now.iter().position(|i| *i == d.id);
+                    let to = order_now.iter().position(|i| *i == id);
+                    if from < to {
+                        s.border_l_0().border_r_2().border_color(rgb(accent))
+                    } else {
+                        s.border_r_0().border_l_2().border_color(rgb(accent))
+                    }
+                })
+                .on_drop(move |d: &MetricDrag, _, cx| {
+                    drop_this.update(cx, |s, cx| {
+                        s.edit_metrics(|_, o| move_metric_to(o, d.id, id));
+                        cx.notify();
+                    })
+                })
+                .child(body)
+                .child(hide)
         };
 
         let customize_btn = IconButton::new(
@@ -1731,20 +1750,42 @@ impl AppState {
             for (id, label) in SYSTEM_METRICS {
                 let on = metric_visible(id, has_swap, hidden);
                 let this = this.clone();
-                row = row.child(
-                    Checkbox::new(
-                        format!("sys-metric-vis-{id}"),
-                        if on { CheckState::On } else { CheckState::Off },
+                let arrow = |dir: isize, icon: Icon, tip: String| {
+                    let this = this.clone();
+                    IconButton::new(
+                        SharedString::from(format!("sys-metric-move-{id}-{dir}")),
+                        icon,
+                        tip,
                     )
-                    .label(label)
-                    .on_toggle(move |next, _, cx| {
+                    .small()
+                    .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.edit_metrics(|h, _| {
-                                set_metric_visible(h, id, has_swap, next == CheckState::On)
-                            });
+                            s.edit_metrics(|h, o| shift_metric(h, o, id, has_swap, dir));
                             cx.notify();
                         })
-                    }),
+                    })
+                };
+                let toggle = this.clone();
+                row = row.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Checkbox::new(
+                                format!("sys-metric-vis-{id}"),
+                                if on { CheckState::On } else { CheckState::Off },
+                            )
+                            .label(label)
+                            .on_toggle(move |next, _, cx| {
+                                toggle.update(cx, |s, cx| {
+                                    s.edit_metrics(|h, _| {
+                                        set_metric_visible(h, id, has_swap, next == CheckState::On)
+                                    });
+                                    cx.notify();
+                                })
+                            }),
+                        )
+                        .child(arrow(-1, Icon::ChevronLeft, format!("Move {label} left")))
+                        .child(arrow(1, Icon::ChevronRight, format!("Move {label} right"))),
                 );
             }
             row.child(
@@ -1871,6 +1912,49 @@ fn resolve_metric_order(saved: &[String]) -> Vec<&'static str> {
         }
     }
     out
+}
+
+/// The payload of a metric-card drag.
+#[derive(Clone, Copy)]
+struct MetricDrag {
+    id: &'static str,
+    label: &'static str,
+}
+
+/// What follows the pointer while a card is dragged: its name on a raised chip.
+struct MetricDragGhost(&'static str);
+
+impl Render for MetricDragGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::active(cx).clone();
+        div()
+            .px_3()
+            .py_1()
+            .bg(rgb(t.surface))
+            .border_1()
+            .border_color(rgb(t.accent))
+            .rounded_md()
+            .text_label(&t)
+            .text_color(rgb(t.fg_strong))
+            .child(self.0)
+    }
+}
+
+/// Drop `from` where `to` sits: after it when moving rightwards, before it when moving
+/// left, so the card ends up exactly where the indicator showed. Stores the resolved order.
+fn move_metric_to(order: &mut Vec<String>, from: &str, to: &str) {
+    let mut ids = resolve_metric_order(order);
+    let (Some(f), Some(t)) = (
+        ids.iter().position(|i| *i == from),
+        ids.iter().position(|i| *i == to),
+    ) else {
+        return;
+    };
+    if f != t {
+        let moved = ids.remove(f);
+        ids.insert(t, moved);
+        *order = ids.iter().map(|i| (*i).to_string()).collect();
+    }
 }
 
 /// Move `id` one step in `dir` (-1 / +1) past the next *visible* card and store the whole
@@ -2223,6 +2307,42 @@ mod tests {
         assert_eq!(
             resolve_metric_order(&strs(&["swap", "bogus", "swap", "cpu"])),
             ["swap", "cpu", "memory"]
+        );
+    }
+
+    #[test]
+    fn drop_lands_where_the_indicator_showed() {
+        let mut o = vec![];
+        move_metric_to(&mut o, "cpu", "memory"); // rightwards: after memory
+        assert_eq!(o, ["memory", "cpu", "swap"]);
+        move_metric_to(&mut o, "swap", "memory"); // leftwards: before memory
+        assert_eq!(o, ["swap", "memory", "cpu"]);
+        let before = o.clone();
+        move_metric_to(&mut o, "cpu", "cpu");
+        move_metric_to(&mut o, "bogus", "cpu");
+        assert_eq!(o, before);
+    }
+
+    #[test]
+    fn layout_survives_a_restart() {
+        // What `edit_metrics` writes is exactly what the first paint loads.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.redb");
+        let store = sid_store::Store::open(&path).expect("store");
+        let (mut hidden, mut order) = (vec![], vec![]);
+        set_metric_visible(&mut hidden, "swap", false, true);
+        set_metric_visible(&mut hidden, "cpu", false, false);
+        move_metric_to(&mut order, "memory", "swap");
+        let mut p = store.settings().unwrap();
+        p.system_metric_hidden = hidden.clone();
+        p.system_metric_order = order.clone();
+        store.set_settings(&p).unwrap();
+        drop(store); // "restart": reopen the same file
+        let store = sid_store::Store::open(&path).expect("reopen");
+        let p = store.settings().unwrap();
+        assert_eq!(
+            (p.system_metric_hidden, p.system_metric_order),
+            (hidden, order)
         );
     }
 
