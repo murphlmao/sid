@@ -178,16 +178,14 @@ impl NetSubTab {
         }
     }
 
-    /// This sub-view's segmented-control glyph, where the 0.6.1 bundle has an honest
-    /// one. `Ports` and `Connections` stay label-only: nothing in Lucide reads as "a
-    /// listening TCP port" without borrowing a meaning that already belongs to something
-    /// else in sid (a plug is physical hardware).
-    fn icon(self) -> Option<Icon> {
+    /// This sub-view's segmented-control glyph. Every segment has one.
+    fn icon(self) -> Icon {
         match self {
-            NetSubTab::Ports | NetSubTab::Connections => None,
-            NetSubTab::Interfaces => Some(Icon::Interfaces),
-            NetSubTab::Docker => Some(Icon::Docker),
-            NetSubTab::Kubernetes => Some(Icon::Kubernetes),
+            NetSubTab::Ports => Icon::Ports,
+            NetSubTab::Connections => Icon::Connections,
+            NetSubTab::Interfaces => Icon::Interfaces,
+            NetSubTab::Docker => Icon::Docker,
+            NetSubTab::Kubernetes => Icon::Kubernetes,
         }
     }
 
@@ -1446,10 +1444,8 @@ impl AppState {
     /// one, so the strip read as four raised chips with one dent in it. The component
     /// inverts that structurally (recessed track, transparent unselected, one filled chip).
     ///
-    /// Segment icons: Interfaces/Docker/Kubernetes now draw the glyph the 0.6.1 bundle
-    /// finally shipped (`network`/`container`/`boxes` — see `Icon`'s module doc and
-    /// `NetSubTab::icon`). Ports and Connections stay label-only rather than getting a
-    /// borrowed, slightly-wrong picture.
+    /// Every segment carries an icon (`NetSubTab::icon`); Docker and Kubernetes draw the
+    /// real brand marks.
     fn network_sub_view_strip(
         &self,
         active: NetSubTab,
@@ -1461,10 +1457,11 @@ impl AppState {
             .unwrap_or(0);
         SegmentedControl::new("net-subview")
             .large()
-            .segments(NetSubTab::ALL.iter().map(|&tab| match tab.icon() {
-                Some(icon) => Segment::new(tab.label()).icon(icon),
-                None => Segment::new(tab.label()),
-            }))
+            .segments(
+                NetSubTab::ALL
+                    .iter()
+                    .map(|&tab| Segment::new(tab.label()).icon(tab.icon())),
+            )
             .selected(selected)
             .on_select(cx.listener(|this, ev: &SegmentSelect, _window, cx| {
                 if let Some(tab) = NetSubTab::at(ev.index) {
@@ -1826,6 +1823,15 @@ impl AppState {
             kube_empty(
                 "No Kubernetes cluster available",
                 "Either kubectl isn't installed, no context is configured, or the cluster can't be reached. Install kubectl and point it at a cluster, then retry.",
+                cx,
+            )
+            .into_any_element()
+        } else if self.network.kube_error.is_some() && count == 0 && !refreshing {
+            // A failed or timed-out probe (the exact message is in the notice above): say
+            // so with a Retry, not an empty table under an error.
+            kube_empty(
+                "Couldn't read the cluster",
+                "kubectl failed or didn't answer in time; the reason is shown above. Check the cluster is reachable, then retry.",
                 cx,
             )
             .into_any_element()

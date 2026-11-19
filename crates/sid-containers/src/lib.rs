@@ -19,6 +19,7 @@
 
 mod docker;
 mod kube;
+mod proc;
 
 pub use docker::DockerCliProvider;
 pub use kube::KubectlCliProvider;

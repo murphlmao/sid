@@ -129,8 +129,7 @@ impl SystemSubView {
     fn icon(self) -> Icon {
         match self {
             SystemSubView::Processes => Icon::Terminal,
-            // Placeholder (Lucide `play`, "a unit that runs"); the icon pass replaces it.
-            SystemSubView::Services => Icon::Run,
+            SystemSubView::Services => Icon::Services,
             SystemSubView::ConfigFiles => Icon::File,
         }
     }
@@ -178,10 +177,9 @@ pub struct SystemsTabState {
     /// Rolling CPU / memory / swap utilisation (0..=1) behind the overview sparklines.
     history: UsageHistory,
     /// The metric cards' saved layout (`Settings::system_metric_hidden` / `_order`),
-    /// loaded once on first paint and written back on every change. See [`metric_visible`].
-    metric_hidden: Vec<String>,
+    /// seeded once at startup (`AppState::new`) and written back on every change. See [`metric_visible`].
+    pub(crate) metric_hidden: Vec<String>,
     metric_order: Vec<String>,
-    metrics_loaded: bool,
     /// Whether the cluster's customize row (visibility, reset, move arrows) is open.
     customizing: bool,
     error: Option<String>,
@@ -247,6 +245,12 @@ impl SystemsTabState {
         self.sub_view == SystemSubView::Services
     }
 
+    /// Seed the metric-card layout from the startup settings snapshot.
+    pub(crate) fn seed_metric_prefs(&mut self, hidden: Vec<String>, order: Vec<String>) {
+        self.metric_hidden = hidden;
+        self.metric_order = order;
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             provider: Arc::new(Mutex::new(SysinfoProvider::new())),
@@ -261,7 +265,6 @@ impl SystemsTabState {
             history: UsageHistory::default(),
             metric_hidden: Vec::new(),
             metric_order: Vec::new(),
-            metrics_loaded: false,
             customizing: false,
             error: None,
             table: None,
@@ -701,13 +704,6 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.ensure_systems_widgets(window, cx);
-        if !self.systems.metrics_loaded {
-            self.systems.metrics_loaded = true;
-            if let Ok(prefs) = self.store.settings() {
-                self.systems.metric_hidden = prefs.system_metric_hidden;
-                self.systems.metric_order = prefs.system_metric_order;
-            }
-        }
         let first_load = !self.systems.loaded;
         if first_load {
             self.systems.loaded = true;
@@ -1674,9 +1670,8 @@ impl AppState {
                     112.,
                 ),
             };
-            // Dismiss: a quiet X at the card's top-right, on the label row. No border at
-            // rest (the Ghost variant's border is overridden), dim until the card is
-            // hovered, full strength on hover.
+            // Dismiss: a quiet X at the card's top-right, on the label row. The Quiet
+            // variant has no border at rest; dim until the card is hovered, full on hover.
             let group = SharedString::from(format!("sys-card-{id}"));
             let hide = div()
                 .absolute()
@@ -1690,8 +1685,8 @@ impl AppState {
                         Icon::Close,
                         format!("Hide {label}"),
                     )
+                    .quiet()
                     .size(sid_ui::ButtonSize::Xs)
-                    .border_0()
                     .on_click({
                         let this = this.clone();
                         move |_, _, cx| {

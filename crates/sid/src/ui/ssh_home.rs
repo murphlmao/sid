@@ -841,6 +841,7 @@ impl AppState {
                         Icon::Close,
                         "Dismiss",
                     )
+                    .quiet()
                     .small()
                     .on_click(cx.listener(
                         move |this, _ev: &ClickEvent, _w, cx| {
@@ -892,6 +893,7 @@ impl AppState {
                                 Icon::Close,
                                 "Dismiss this row",
                             )
+                            .quiet()
                             .small()
                             .on_click(cx.listener(
                                 move |this, _ev: &ClickEvent, _w, cx| this.dismiss(&all, cx),
