@@ -256,6 +256,21 @@ fn import_banner_visible(host_count: usize, config_present: bool, dismissed: boo
     host_count == 0 && config_present && !dismissed
 }
 
+/// Mark hint `ids` dismissed in `v` (idempotent; keeps order, never duplicates).
+fn add_dismissed(v: &mut Vec<String>, ids: &[&str]) {
+    for id in ids {
+        if !v.iter().any(|d| d == id) {
+            v.push((*id).to_string());
+        }
+    }
+}
+
+/// Forget every dismissal, the import banner's included.
+fn clear_dismissed(s: &mut sid_store::Settings) {
+    s.dismissed.clear();
+    s.import_banner_dismissed = false;
+}
+
 /// Whether to raise a desktop notification: only when the user opted in, and only when
 /// they cannot already see the event happen.
 pub(crate) fn should_notify(enabled: bool, user_is_looking: bool) -> bool {
@@ -310,6 +325,8 @@ pub struct AppState {
     ssh_config_present: bool,
     /// The user closed the import banner this run.
     import_banner_dismissed: bool,
+    /// Dismissed hint ids (`Settings::dismissed`), cached so `render` can read them.
+    dismissed: Vec<String>,
     /// The secret backend (OS keyring or the in-memory fallback). All secret bytes go
     /// through here; the store only ever sees opaque `secret_ref` ids.
     pub(crate) secrets: Box<dyn SecretStore>,
@@ -576,6 +593,7 @@ impl AppState {
             notifier: std::sync::Arc::new(sid_os::DbusNotifier::new()),
             ssh_config_present,
             import_banner_dismissed: prefs.import_banner_dismissed,
+            dismissed: prefs.dismissed.clone(),
             root_focus: cx.focus_handle(),
         };
         state
@@ -2120,6 +2138,44 @@ impl AppState {
     /// First-run banner: no saved hosts yet and an `~/.ssh/config` to start from. Friendly
     /// and dismissible; the import itself is [`Self::open_ssh_import`].
     /// Remember "Not now" on the import banner across restarts.
+    /// Whether hint `id` (a `ssh.card.<slug>`-style opaque id) was dismissed. Reads the
+    /// cached settings, so it is safe to call from `render`.
+    pub(crate) fn is_dismissed(&self, id: &str) -> bool {
+        self.dismissed.iter().any(|d| d == id)
+    }
+
+    /// How many hints are dismissed (counting the import banner).
+    pub(crate) fn dismissed_count(&self) -> usize {
+        self.dismissed.len() + usize::from(self.import_banner_dismissed)
+    }
+
+    /// Dismiss every hint in `ids` and persist (read-modify-write; failure is logged).
+    pub(crate) fn dismiss(&mut self, ids: &[&str], cx: &mut Context<Self>) {
+        add_dismissed(&mut self.dismissed, ids);
+        let saved = self.store.settings().and_then(|mut s| {
+            add_dismissed(&mut s.dismissed, ids);
+            self.store.set_settings(&s)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not save hint dismissal: {e}");
+        }
+        cx.notify();
+    }
+
+    /// Bring every dismissed hint (and the import banner) back.
+    pub(crate) fn reset_dismissed(&mut self, cx: &mut Context<Self>) {
+        self.dismissed.clear();
+        self.import_banner_dismissed = false;
+        let saved = self.store.settings().and_then(|mut s| {
+            clear_dismissed(&mut s);
+            self.store.set_settings(&s)
+        });
+        if let Err(e) = saved {
+            eprintln!("sid: could not reset dismissed hints: {e}");
+        }
+        cx.notify();
+    }
+
     fn persist_import_banner_dismissed(&self) {
         let saved = self.store.settings().and_then(|mut s| {
             s.import_banner_dismissed = true;
@@ -2963,6 +3019,19 @@ mod tests {
 
     fn ws(id: &str) -> Scope {
         Scope::Workspace(WorkspaceId(id.to_string()))
+    }
+
+    #[test]
+    fn dismissals_dedupe_and_reset_clears_set_and_banner() {
+        let mut s = sid_store::Settings {
+            import_banner_dismissed: true,
+            ..Default::default()
+        };
+        add_dismissed(&mut s.dismissed, &["a", "b"]);
+        add_dismissed(&mut s.dismissed, &["b", "c"]);
+        assert_eq!(s.dismissed, ["a", "b", "c"]);
+        clear_dismissed(&mut s);
+        assert!(s.dismissed.is_empty() && !s.import_banner_dismissed);
     }
 
     // ---- startup zoom (GitHub #4) ------------------------------------------------
