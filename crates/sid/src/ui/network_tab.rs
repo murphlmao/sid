@@ -866,7 +866,12 @@ impl ConnectionsDelegate {
             query: String::new(),
             // Both endpoints and the process are unbounded (bracketed IPv6 + port, a long
             // executable name), so they grow; the rest have a known ceiling.
+            // Process first: "who is talking" is what one scans this table for.
             columns: FillColumns::new([
+                (
+                    Column::new("process", "Process").sortable(),
+                    ColumnWidth::grow().weight(0.8).min_width(110.),
+                ),
                 (
                     Column::new("local", "Local").sortable(),
                     ColumnWidth::grow().weight(1.0).min_width(120.),
@@ -882,10 +887,6 @@ impl ConnectionsDelegate {
                 (
                     Column::new("pid", "PID").sortable(),
                     ColumnWidth::Fixed(100.),
-                ),
-                (
-                    Column::new("process", "Process").sortable(),
-                    ColumnWidth::grow().weight(0.8).min_width(110.),
                 ),
                 (
                     Column::new("cpu", "CPU").sortable(),
@@ -955,11 +956,14 @@ impl ConnectionsDelegate {
         self.recompute();
     }
 
+    /// Filter, default order (ESTABLISHED first), then the active column sort — stable,
+    /// so the default order breaks its ties.
     fn recompute(&mut self) {
         let mut rows: Vec<Connection> = filter_connections(&self.all_connections, &self.query)
             .into_iter()
             .cloned()
             .collect();
+        rows.sort_by(cmp_conn_default);
         if let Some((col_ix, dir)) = self.active_sort {
             match col_ix {
                 5 | 6 => sort_by_usage(&mut rows, |c| c.pid, &self.usage, col_ix == 6, dir),
@@ -1040,24 +1044,7 @@ impl TableDelegate for ConnectionsDelegate {
         let usage = c.pid.and_then(|p| self.usage.get(&p));
         // No `.id()` on cells - see `sid_ui::table`.
         match col_ix {
-            0 => bare_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
-            1 => bare_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
-            2 => {
-                let ink = if c.state == sid_core::sys::SocketState::Established {
-                    fg
-                } else {
-                    muted
-                };
-                bare_cell(t, ink, c.state_label.clone())
-            }
-            3 => bare_cell(
-                t,
-                muted,
-                c.pid
-                    .map(|p| p.as_u32().to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            4 => bare_cell(
+            0 => bare_cell(
                 t,
                 fg,
                 if c.command.is_empty() {
@@ -1065,6 +1052,23 @@ impl TableDelegate for ConnectionsDelegate {
                 } else {
                     c.command.clone()
                 },
+            ),
+            1 => bare_cell(t, muted, socket_label(&c.local_addr, c.local_port)),
+            2 => bare_cell(t, fg, socket_label(&c.remote_addr, c.remote_port)),
+            3 => {
+                let ink = if c.state == sid_core::sys::SocketState::Established {
+                    fg
+                } else {
+                    muted
+                };
+                bare_cell(t, ink, c.state_label.clone())
+            }
+            4 => bare_cell(
+                t,
+                muted,
+                c.pid
+                    .map(|p| p.as_u32().to_string())
+                    .unwrap_or_else(|| "—".into()),
             ),
             5 => bare_cell(t, muted, cpu_label(usage, self.cpu_ready)),
             6 => bare_cell(t, muted, mem_label(usage)),
@@ -3250,18 +3254,43 @@ fn filter_connections<'a>(conns: &'a [Connection], query: &str) -> Vec<&'a Conne
         .collect()
 }
 
-/// Column dispatch for Connections (`local, remote, state, pid, process`; cpu/mem go through
-/// [`sort_by_usage`]).
+/// Column dispatch for Connections (`process, local, remote, state, pid`; cpu/mem go
+/// through [`sort_by_usage`]).
 fn sort_connections(rows: &mut [Connection], col_ix: usize, dir: SortDir) {
     let cmp: fn(&Connection, &Connection) -> Ordering = match col_ix {
-        0 => |a, b| (&a.local_addr, a.local_port).cmp(&(&b.local_addr, b.local_port)),
-        1 => |a, b| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)),
-        2 => |a, b| a.state_label.cmp(&b.state_label),
-        3 => |a, b| a.pid.map(Pid::as_u32).cmp(&b.pid.map(Pid::as_u32)),
-        4 => |a, b| a.command.to_lowercase().cmp(&b.command.to_lowercase()),
+        0 => cmp_conn_process,
+        1 => |a, b| (&a.local_addr, a.local_port).cmp(&(&b.local_addr, b.local_port)),
+        2 => |a, b| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)),
+        3 => |a, b| conn_state_rank(a).cmp(&conn_state_rank(b)),
+        4 => |a, b| a.pid.map(Pid::as_u32).cmp(&b.pid.map(Pid::as_u32)),
         _ => return,
     };
     rows.sort_by(|a, b| dir.apply(cmp(a, b)));
+}
+
+fn cmp_conn_process(a: &Connection, b: &Connection) -> Ordering {
+    a.command.to_lowercase().cmp(&b.command.to_lowercase())
+}
+
+/// Live first, then the connection lifecycle: opening, half-closed by the peer
+/// (CLOSE_WAIT — the one that hints at a leak), closing, lingering, anything else.
+fn conn_state_rank(c: &Connection) -> u8 {
+    match c.state_label.as_str() {
+        "ESTABLISHED" => 0,
+        "SYN_SENT" | "SYN_RECV" => 1,
+        "CLOSE_WAIT" => 2,
+        "FIN_WAIT1" | "FIN_WAIT2" | "CLOSING" | "LAST_ACK" => 3,
+        "TIME_WAIT" => 4,
+        _ => 5,
+    }
+}
+
+/// The Connections table's default order: state rank, then process, then remote.
+fn cmp_conn_default(a: &Connection, b: &Connection) -> Ordering {
+    conn_state_rank(a)
+        .cmp(&conn_state_rank(b))
+        .then_with(|| cmp_conn_process(a, b))
+        .then_with(|| (&a.remote_addr, a.remote_port).cmp(&(&b.remote_addr, b.remote_port)))
 }
 
 /// Case-insensitive filter over the ports table: port-number prefix match,
@@ -4957,9 +4986,67 @@ mod tests {
             conn(("a", 1), ("9.9.9.9", 80), Some(5), "x"),
             conn(("a", 1), ("1.1.1.1", 80), None, "y"),
         ];
-        sort_connections(&mut rows, 1, SortDir::Asc);
+        sort_connections(&mut rows, 2, SortDir::Asc);
         assert_eq!(rows[0].remote_addr, "1.1.1.1");
-        sort_connections(&mut rows, 3, SortDir::Asc);
+        sort_connections(&mut rows, 4, SortDir::Asc);
         assert_eq!(rows[0].pid, None);
+        sort_connections(&mut rows, 0, SortDir::Desc);
+        assert_eq!(rows[0].command, "y");
+    }
+
+    fn conn_in(state: &str, cmd: &str) -> Connection {
+        let mut c = conn(("a", 1), ("b", 2), Some(1), cmd);
+        c.state_label = state.into();
+        if state != "ESTABLISHED" {
+            c.state = sid_core::sys::SocketState::Other;
+        }
+        c
+    }
+
+    #[test]
+    fn connections_read_process_first_in_the_asked_column_order() {
+        let d = conns_delegate();
+        let names: Vec<String> = (0..d.columns.len())
+            .map(|i| d.columns.column(i).name.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["Process", "Local", "Remote", "State", "PID", "CPU", "Memory", ""]
+        );
+    }
+
+    #[test]
+    fn connections_list_established_first_by_default_then_by_lifecycle() {
+        let mut d = conns_delegate();
+        d.set_connections(
+            vec![
+                conn_in("TIME_WAIT", "curl"),
+                conn_in("ESTABLISHED", "zed"),
+                conn_in("CLOSE_WAIT", "app"),
+                conn_in("ESTABLISHED", "Firefox"),
+                conn_in("SYN_SENT", "ssh"),
+            ],
+            HashMap::new(),
+            false,
+        );
+        let order: Vec<(&str, &str)> = d
+            .connections
+            .iter()
+            .map(|c| (c.state_label.as_str(), c.command.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("ESTABLISHED", "Firefox"),
+                ("ESTABLISHED", "zed"),
+                ("SYN_SENT", "ssh"),
+                ("CLOSE_WAIT", "app"),
+                ("TIME_WAIT", "curl"),
+            ]
+        );
+        // A column sort keeps ESTABLISHED-first as its tie-breaker (all pids equal).
+        d.active_sort = Some((4, SortDir::Asc));
+        d.recompute();
+        assert_eq!(d.connections[0].state_label, "ESTABLISHED");
     }
 }
