@@ -1673,9 +1673,8 @@ impl AppState {
                     112.,
                 ),
             };
-            // Dismiss: a quiet X at the card's top-right, on the label row. No border at
-            // rest (the Ghost variant's border is overridden), dim until the card is
-            // hovered, full strength on hover.
+            // Dismiss: a quiet X at the card's top-right, on the label row. The Quiet
+            // variant has no border at rest; dim until the card is hovered, full on hover.
             let group = SharedString::from(format!("sys-card-{id}"));
             let hide = div()
                 .absolute()
@@ -1689,8 +1688,8 @@ impl AppState {
                         Icon::Close,
                         format!("Hide {label}"),
                     )
+                    .quiet()
                     .size(sid_ui::ButtonSize::Xs)
-                    .border_0()
                     .on_click({
                         let this = this.clone();
                         move |_, _, cx| {

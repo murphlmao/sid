@@ -614,6 +614,23 @@ fn buttons(theme: &Theme) -> Vec<gpui::AnyElement> {
             ))
             .child(row(
                 theme,
+                "quiet — no border or fill until hovered (dismiss Xs)",
+                h_flex()
+                    .gap_2()
+                    .child(IconButton::new("gib-q1", Icon::Close, "dismiss").quiet())
+                    .child(
+                        IconButton::new("gib-q2", Icon::Close, "dismiss")
+                            .quiet()
+                            .small(),
+                    )
+                    .child(
+                        IconButton::new("gib-q3", Icon::Close, "dismiss")
+                            .quiet()
+                            .size(ButtonSize::Xs),
+                    ),
+            ))
+            .child(row(
+                theme,
                 "disabled · loading",
                 h_flex()
                     .gap_2()

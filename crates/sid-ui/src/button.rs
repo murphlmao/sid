@@ -79,6 +79,10 @@ pub enum ButtonVariant {
     /// Quiet: no fill, but still a hairline and a hover fill — a ghost is a *button*
     /// with the volume down, never a coloured word.
     Ghost,
+    /// Quieter than [`Ghost`](ButtonVariant::Ghost): no fill and **no hairline** at rest,
+    /// muted ink, a `selection` fill on hover. For dismiss Xs and other controls that sit
+    /// on content and must not read as a button until pointed at.
+    Quiet,
     /// Destructive: `danger` fill.
     Danger,
 }
@@ -88,6 +92,7 @@ pub const ALL_BUTTON_VARIANTS: &[ButtonVariant] = &[
     ButtonVariant::Primary,
     ButtonVariant::Secondary,
     ButtonVariant::Ghost,
+    ButtonVariant::Quiet,
     ButtonVariant::Danger,
 ];
 
@@ -289,7 +294,7 @@ impl ButtonVariant {
                 ButtonPaint {
                     fill,
                     ink: theme.faint,
-                    border: Some(theme.border),
+                    border: normal.border.map(|_| theme.border),
                     hover_fill: fill,
                     pressed_fill: fill,
                 }
@@ -321,6 +326,13 @@ impl ButtonVariant {
                 hover_fill: Some(theme.selection),
                 pressed_fill: Some(pressed_of(theme, theme.selection)),
             },
+            ButtonVariant::Quiet => ButtonPaint {
+                fill: None,
+                ink: theme.muted,
+                border: None,
+                hover_fill: Some(theme.selection),
+                pressed_fill: Some(pressed_of(theme, theme.selection)),
+            },
         }
     }
 
@@ -330,6 +342,7 @@ impl ButtonVariant {
             ButtonVariant::Primary => "primary",
             ButtonVariant::Secondary => "secondary",
             ButtonVariant::Ghost => "ghost",
+            ButtonVariant::Quiet => "quiet",
             ButtonVariant::Danger => "danger",
         }
     }
@@ -615,6 +628,11 @@ impl IconButton {
         self.variant(ButtonVariant::Danger)
     }
 
+    /// No border or fill at rest; hover fill and focus ring on interaction. For dismiss Xs.
+    pub fn quiet(self) -> Self {
+        self.variant(ButtonVariant::Quiet)
+    }
+
     /// The screen's one engage action.
     pub fn primary(self) -> Self {
         self.variant(ButtonVariant::Primary)
@@ -810,11 +828,29 @@ mod tests {
     }
 
     #[test]
+    fn quiet_has_no_chrome_at_rest_but_moves_on_hover() {
+        for t in palettes() {
+            let p = ButtonVariant::Quiet.paint(ButtonState::Normal, &t);
+            assert!(p.fill.is_none() && p.border.is_none(), "{}", t.name);
+            assert_eq!(p.hover_fill, Some(t.selection), "{}", t.name);
+            let off = ButtonVariant::Quiet.paint(ButtonState::Disabled, &t);
+            assert!(
+                off.border.is_none(),
+                "{}: disabled stays chromeless",
+                t.name
+            );
+        }
+    }
+
+    #[test]
     fn every_variant_reads_as_a_button() {
         // The whole point of the crate: no variant may render as bare coloured text.
         // Each one must carry a fill or a hairline, and must visibly move on hover.
         for t in palettes() {
-            for &v in ALL_BUTTON_VARIANTS {
+            for &v in ALL_BUTTON_VARIANTS
+                .iter()
+                .filter(|v| **v != ButtonVariant::Quiet)
+            {
                 let p = v.paint(ButtonState::Normal, &t);
                 assert!(
                     p.fill.is_some() || p.border.is_some(),
@@ -976,7 +1012,10 @@ mod tests {
         // "nothing rendered here" — the library's own disabled style drops it, which
         // is why sid resolves this state itself.
         for t in palettes() {
-            for &v in ALL_BUTTON_VARIANTS {
+            for &v in ALL_BUTTON_VARIANTS
+                .iter()
+                .filter(|v| **v != ButtonVariant::Quiet)
+            {
                 let normal = v.paint(ButtonState::Normal, &t);
                 let off = v.paint(ButtonState::Disabled, &t);
                 assert_eq!(off.ink, t.faint, "{}/{}: faint ink", t.name, v.label());
