@@ -34,7 +34,7 @@ use sid_svcctl::SvcctlProvider;
 
 use crate::app::AppState;
 use crate::ui::network_tab::{
-    SelectableRows, SortDir, Tone, badge_tone, data_cell, empty_guidance, notice_row,
+    SelectableRows, SortDir, Tone, badge_tone, column_sort, data_cell, empty_guidance, notice_row,
     reveal_on_row, row_group, table_pane, track_selection,
 };
 use crate::ui::session::ssh_runtime;
@@ -170,9 +170,15 @@ impl ServicesDelegate {
                     ColumnWidth::grow().weight(1.8).min_width(220.),
                 ),
                 // Not sortable — an action column, not data. Fits `restart` `stop` `kill`
-                // side by side with the widest of them swapped for `confirm`.
-                (Column::new("actions", ""), ColumnWidth::Fixed(220.)),
-            ]),
+                // side by side with the widest of them swapped for `confirm`. Not
+                // draggable either: an empty header is no handle.
+                (
+                    Column::new("actions", "").movable(false),
+                    ColumnWidth::Fixed(220.),
+                ),
+            ])
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -293,8 +299,7 @@ impl TableDelegate for ServicesDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.active_sort = column_sort(&mut self.columns, col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -333,7 +338,8 @@ impl TableDelegate for ServicesDelegate {
         let svc = &self.services[row_ix];
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => data_cell(t, fg, svc.name.clone()),
             1 => {
                 let (label, tone) = svc_state_badge(svc.active);
@@ -522,9 +528,10 @@ impl AppState {
     fn ensure_services_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.services.table.is_none() {
             let provider = self.services.provider.clone();
-            let scope = self.services.scope;
-            let table =
-                cx.new(|cx| TableState::new(ServicesDelegate::new(provider, scope), window, cx));
+            let mut delegate = ServicesDelegate::new(provider, self.services.scope);
+            let id = crate::ui::column_order::SYSTEM_SERVICES;
+            self.persist_column_order(id, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             track_selection(&table, cx);
             self.services.table = Some(table);
         }
@@ -994,5 +1001,41 @@ mod tests {
         sort_services(&mut services, 3, SortDir::Asc);
         let descriptions: Vec<&str> = services.iter().map(|s| s.description.as_str()).collect();
         assert_eq!(descriptions, vec!["database", "web server"]);
+    }
+
+    /// After a saved order (data columns reversed, the action column left last), a header
+    /// click at every display position sorts by the column drawn there, and the default
+    /// active-first order still breaks ties.
+    #[test]
+    fn a_saved_column_order_keeps_every_sort_on_its_own_column() {
+        let declared = services_delegate().columns;
+        let mut d = services_delegate();
+        let saved = ["description", "sub_state", "state", "name"].map(String::from);
+        d.columns.apply_order(&saved);
+        assert_eq!(
+            d.columns.order(),
+            ["description", "sub_state", "state", "name", "actions"]
+        );
+        for ix in 0..4 {
+            let key = d.columns.column(ix).key.clone();
+            let (col, _) = column_sort(&mut d.columns, ix, ColumnSort::Ascending).unwrap();
+            assert_eq!(declared.column(col).key, key, "position {ix}");
+        }
+
+        d.set_services(vec![
+            svc_with_state("b", SvcActiveState::Inactive, "dead"),
+            svc("a", "web server"),
+            svc("c", "database"),
+        ]);
+        d.active_sort = column_sort(&mut d.columns, 0, ColumnSort::Ascending);
+        d.recompute();
+        let descriptions: Vec<&str> = d.services.iter().map(|s| s.description.as_str()).collect();
+        assert_eq!(descriptions, ["", "database", "web server"]);
+        d.active_sort = None;
+        d.recompute();
+        assert_eq!(
+            d.services[2].name, "b",
+            "inactive units still trail by default"
+        );
     }
 }

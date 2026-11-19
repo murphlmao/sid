@@ -401,6 +401,21 @@ impl SortDir {
     }
 }
 
+/// A header sort, as every reorderable delegate's `perform_sort` records it: mirror it
+/// onto `columns` (so the chevron survives the next refresh) and return the delegate's
+/// `active_sort`, which names the column by **declaration index**, the index its
+/// `sort_*` dispatch matches on, never the display position a header drag changes
+/// (`FillColumns::logical`). `None` is the cycle's unsorted state.
+pub(crate) fn column_sort(
+    columns: &mut FillColumns,
+    col_ix: usize,
+    sort: ColumnSort,
+) -> Option<(usize, SortDir)> {
+    columns.apply_sort(col_ix, sort);
+    let col = columns.logical(col_ix);
+    SortDir::from_column_sort(sort).map(|dir| (col, dir))
+}
+
 /// Backs the ports table. Constructed empty by `ensure_network_widgets`, then
 /// mutated in place (`set_ports`) on every refresh — mirrors `db_tab.rs`'s
 /// `ResultDelegate`. Unlike `ResultDelegate`, this delegate is interactive: it owns the
@@ -437,7 +452,7 @@ struct PortsDelegate {
     /// The columns and the width each one declared. Resized to the live viewport by
     /// [`FillTable`] — see `sid_ui::table`'s module docs.
     columns: FillColumns,
-    /// The active sort column (index into `columns`) + direction, if any — `None` means
+    /// The active sort column (declaration index, see [`column_sort`]) + direction, if any — `None` means
     /// unsorted (rows stay in probe order). Set by `TableDelegate::perform_sort`,
     /// applied by `recompute` after the filter.
     active_sort: Option<(usize, SortDir)>,
@@ -499,9 +514,15 @@ impl PortsDelegate {
                 ),
                 // Not sortable — an action column, not data. Wide enough for the armed
                 // state's "confirm" label, so arming a row never resizes its column.
-                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
+                // Not draggable either: an empty header is no handle.
+                (
+                    Column::new("kill", "").movable(false),
+                    ColumnWidth::Fixed(104.),
+                ),
             ])
-            .inset_cells(0..=6),
+            .inset_cells(0..=6)
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -620,9 +641,8 @@ impl TableDelegate for PortsDelegate {
     ) {
         // Mirror the sort onto our own columns so the header indicator survives the next
         // `TableState::refresh` — which every viewport change now triggers. See
-        // `FillColumns::apply_sort`.
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        // `FillColumns::apply_sort` and [`column_sort`].
+        self.active_sort = column_sort(&mut self.columns, col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -704,7 +724,8 @@ impl TableDelegate for PortsDelegate {
         let now = Instant::now();
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => {
                 let label = match port.protocol {
                     Protocol::Tcp => "tcp",
@@ -851,9 +872,14 @@ impl ConnectionsDelegate {
                     Column::new("mem", "Memory").sortable(),
                     ColumnWidth::Fixed(108.),
                 ),
-                (Column::new("kill", ""), ColumnWidth::Fixed(104.)),
+                (
+                    Column::new("kill", "").movable(false),
+                    ColumnWidth::Fixed(104.),
+                ),
             ])
-            .inset_cells(0..=6),
+            .inset_cells(0..=6)
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -961,8 +987,7 @@ impl TableDelegate for ConnectionsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.active_sort = column_sort(&mut self.columns, col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -998,7 +1023,8 @@ impl TableDelegate for ConnectionsDelegate {
         let c = &self.connections[row_ix];
         let usage = c.pid.and_then(|p| self.usage.get(&p));
         // No `.id()` on cells - see `sid_ui::table`.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => bare_cell(
                 t,
                 fg,
@@ -1105,7 +1131,9 @@ impl DockerDelegate {
                     Column::new("ports", "Ports").sortable(),
                     ColumnWidth::grow().weight(0.8).min_width(180.),
                 ),
-            ]),
+            ])
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -1162,8 +1190,7 @@ impl TableDelegate for DockerDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.active_sort = column_sort(&mut self.columns, col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -1190,7 +1217,8 @@ impl TableDelegate for DockerDelegate {
         let container = &self.containers[row_ix];
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => data_cell(t, fg, container.name.clone()),
             1 => data_cell(t, muted, container.image.clone()),
             2 => {
@@ -1258,7 +1286,9 @@ impl KubePodsDelegate {
                     Column::new("node", "Node").sortable(),
                     ColumnWidth::grow().weight(1.0).min_width(160.),
                 ),
-            ]),
+            ])
+            // Draggable headers: every upstream `col_ix` below goes through `logical`.
+            .reorderable(),
             active_sort: None,
         }
     }
@@ -1312,8 +1342,7 @@ impl TableDelegate for KubePodsDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.columns.apply_sort(col_ix, sort);
-        self.active_sort = SortDir::from_column_sort(sort).map(|dir| (col_ix, dir));
+        self.active_sort = column_sort(&mut self.columns, col_ix, sort);
         self.recompute();
         cx.notify();
     }
@@ -1340,7 +1369,8 @@ impl TableDelegate for KubePodsDelegate {
         let pod = &self.pods[row_ix];
         // Deliberately **no `.id()` on these cells** — see `sid_ui::table`'s "Why a cell
         // must not carry an `ElementId`" section.
-        match col_ix {
+        // `col_ix` is where the cell is drawn; the arms below are declaration indices.
+        match self.columns.logical(col_ix) {
             0 => data_cell(t, muted, pod.namespace.clone()),
             1 => data_cell(t, fg, pod.name.clone()),
             2 => data_cell(t, muted, pod.ready.clone()),
@@ -2016,25 +2046,33 @@ impl AppState {
     /// and the shared filter input on first paint of the Network tab. Idempotent
     /// (checked every render) — mirrors `db_tab.rs`'s `ensure_query_widgets`.
     fn ensure_network_widgets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Every table is built through `persist_column_order`: its saved column order is
+        // applied before the first paint and each drag is saved (`ui::column_order`).
+        use crate::ui::column_order as ids;
         if self.network.table.is_none() {
-            let provider = self.network.provider.clone();
-            let table = cx.new(|cx| TableState::new(PortsDelegate::new(provider), window, cx));
+            let mut delegate = PortsDelegate::new(self.network.provider.clone());
+            self.persist_column_order(ids::NETWORK_PORTS, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             track_selection(&table, cx);
             self.network.table = Some(table);
         }
         if self.network.connections_table.is_none() {
-            let provider = self.network.provider.clone();
-            let table =
-                cx.new(|cx| TableState::new(ConnectionsDelegate::new(provider), window, cx));
+            let mut delegate = ConnectionsDelegate::new(self.network.provider.clone());
+            self.persist_column_order(ids::NETWORK_CONNECTIONS, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             track_selection(&table, cx);
             self.network.connections_table = Some(table);
         }
         if self.network.docker_table.is_none() {
-            let table = cx.new(|cx| TableState::new(DockerDelegate::new(), window, cx));
+            let mut delegate = DockerDelegate::new();
+            self.persist_column_order(ids::NETWORK_DOCKER, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             self.network.docker_table = Some(table);
         }
         if self.network.kube_pods_table.is_none() {
-            let table = cx.new(|cx| TableState::new(KubePodsDelegate::new(), window, cx));
+            let mut delegate = KubePodsDelegate::new();
+            self.persist_column_order(ids::NETWORK_KUBERNETES_PODS, &mut delegate.columns, cx);
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
             self.network.kube_pods_table = Some(table);
         }
         if self.network.filter.is_none() {
@@ -4208,5 +4246,153 @@ mod tests {
         d.active_sort = Some((4, SortDir::Asc));
         d.recompute();
         assert_eq!(d.connections[0].state_label, "ESTABLISHED");
+    }
+
+    // ---- column reorder (`FillColumns::reorderable`, `column_sort`) -------------------
+
+    /// A saved order that moves every data column: the declared keys reversed, an
+    /// action column (`kill`) left last where its `movable(false)` keeps it.
+    fn reversed(columns: &FillColumns) -> Vec<String> {
+        let mut keys = columns.order();
+        let action = keys.last().filter(|k| k.as_str() == "kill").cloned();
+        if action.is_some() {
+            keys.pop();
+        }
+        keys.reverse();
+        keys.extend(action);
+        keys
+    }
+
+    /// After a saved order, a header click at every display position sorts by the column
+    /// drawn there: `column_sort` names it by the declaration index `declared` (the same
+    /// table in its declared order) holds that key at.
+    fn assert_each_position_sorts_its_own_column(moved: &mut FillColumns, declared: &FillColumns) {
+        for ix in 0..moved.len() {
+            let column = moved.column(ix).clone();
+            if column.sort.is_none() {
+                continue;
+            }
+            let (col, _) = column_sort(moved, ix, ColumnSort::Ascending).expect("a sort");
+            assert_eq!(
+                declared.column(col).key,
+                column.key,
+                "display position {ix} sorted another column"
+            );
+        }
+    }
+
+    #[test]
+    fn every_network_table_sorts_the_column_drawn_at_each_position_after_a_saved_order() {
+        let tables = [
+            (ports_delegate().columns, ports_delegate().columns),
+            (conns_delegate().columns, conns_delegate().columns),
+            (DockerDelegate::new().columns, DockerDelegate::new().columns),
+            (
+                KubePodsDelegate::new().columns,
+                KubePodsDelegate::new().columns,
+            ),
+        ];
+        for (mut moved, declared) in tables {
+            let saved = reversed(&moved);
+            moved.apply_order(&saved);
+            assert_eq!(moved.order(), saved, "every table opted in to reordering");
+            assert_each_position_sorts_its_own_column(&mut moved, &declared);
+        }
+    }
+
+    #[test]
+    fn a_moved_column_sorts_its_own_rows_in_every_network_table() {
+        let first = |c: &mut FillColumns, key: &str| c.apply_order(&[key.to_string()]);
+
+        let mut ports = ports_delegate();
+        first(&mut ports.columns, "process");
+        ports.set_ports(
+            vec![
+                port(80, Some(1), "nginx", "0.0.0.0"),
+                port(22, Some(2), "sshd", "0.0.0.0"),
+                port(443, Some(3), "caddy", "0.0.0.0"),
+            ],
+            HashMap::new(),
+            false,
+        );
+        ports.active_sort = column_sort(&mut ports.columns, 0, ColumnSort::Ascending);
+        ports.recompute();
+        let got: Vec<_> = ports.ports.iter().map(|p| p.command.as_str()).collect();
+        assert_eq!(got, ["caddy", "nginx", "sshd"]);
+
+        let mut docker = DockerDelegate::new();
+        first(&mut docker.columns, "image");
+        docker.set_containers(vec![
+            container("a", "redis", "running", ""),
+            container("b", "nginx", "running", ""),
+        ]);
+        docker.active_sort = column_sort(&mut docker.columns, 0, ColumnSort::Ascending);
+        docker.recompute();
+        assert_eq!(docker.containers[0].image, "nginx");
+
+        let mut pods = KubePodsDelegate::new();
+        first(&mut pods.columns, "node");
+        let (mut a, mut b) = (pod("default", "a"), pod("default", "b"));
+        a.node = "node-2".into();
+        b.node = "node-1".into();
+        pods.set_pods(vec![a, b]);
+        pods.active_sort = column_sort(&mut pods.columns, 0, ColumnSort::Ascending);
+        pods.recompute();
+        assert_eq!(pods.pods[0].node, "node-1");
+    }
+
+    #[test]
+    fn connections_keep_their_default_order_and_lifecycle_sort_with_state_moved_first() {
+        let mut d = conns_delegate();
+        d.columns.apply_order(&["state".to_string()]);
+        assert_eq!(d.columns.column(0).key.as_ref(), "state");
+        d.set_connections(
+            vec![
+                conn_in("TIME_WAIT", "curl"),
+                conn_in("ESTABLISHED", "zed"),
+                conn_in("CLOSE_WAIT", "app"),
+                conn_in("ESTABLISHED", "Firefox"),
+                conn_in("SYN_SENT", "ssh"),
+            ],
+            HashMap::new(),
+            false,
+        );
+        let rows = |d: &ConnectionsDelegate| -> Vec<(String, String)> {
+            d.connections
+                .iter()
+                .map(|c| (c.state_label.clone(), c.command.clone()))
+                .collect()
+        };
+        let default_order = rows(&d);
+        assert_eq!(
+            default_order[..2],
+            [
+                ("ESTABLISHED".into(), "Firefox".into()),
+                ("ESTABLISHED".into(), "zed".into())
+            ],
+            "a moved column changes no row order on its own"
+        );
+
+        // Clicking State, now drawn first, sorts by lifecycle rank.
+        d.active_sort = column_sort(&mut d.columns, 0, ColumnSort::Descending);
+        d.recompute();
+        let states: Vec<String> = rows(&d).into_iter().map(|(s, _)| s).collect();
+        assert_eq!(
+            states,
+            [
+                "TIME_WAIT",
+                "CLOSE_WAIT",
+                "SYN_SENT",
+                "ESTABLISHED",
+                "ESTABLISHED"
+            ]
+        );
+        d.active_sort = column_sort(&mut d.columns, 0, ColumnSort::Ascending);
+        d.recompute();
+        assert_eq!(
+            rows(&d),
+            default_order,
+            "ascending rank is the default order"
+        );
     }
 }
