@@ -8,6 +8,8 @@
 //! [`Scope`]: crate::scope::Scope
 //! [`Attributed`]: crate::scope::Attributed
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use sid_core::db::DbKind;
 
@@ -314,6 +316,29 @@ pub struct Settings {
     /// v1..v7 stores — `0`.
     #[serde(default)]
     pub background_refresh_secs: u32,
+    /// Opaque ids of hint/onboarding cards the user dismissed (e.g. "ssh.card.add-connection").
+    /// Ids this build no longer knows are ignored at resolve time, never at decode time.
+    /// Absent in v1..v8 stores — empty.
+    #[serde(default)]
+    pub dismissed: Vec<String>,
+    /// Colour-token overrides applied over the base palette named by `theme`:
+    /// token name -> "#rrggbb". Free strings; unknown tokens / malformed values are ignored
+    /// at resolve time, never at decode time. Absent in v1..v8 stores — empty.
+    #[serde(default)]
+    pub theme_overrides: BTreeMap<String, String>,
+    /// System tab metric cards the user hid (opaque ids, e.g. "swap"). Absent in v1..v8
+    /// stores — empty.
+    #[serde(default)]
+    pub system_metric_hidden: Vec<String>,
+    /// The user's order for the System tab metric cards (opaque ids); empty = default
+    /// order. Absent in v1..v8 stores — empty.
+    #[serde(default)]
+    pub system_metric_order: Vec<String>,
+    /// Per-table column order: table id -> column keys in the user's order. A table with
+    /// no entry uses its default order; unknown keys are ignored at resolve time. Absent in
+    /// v1..v8 stores — empty.
+    #[serde(default)]
+    pub column_order: BTreeMap<String, Vec<String>>,
 }
 
 /// How many command-palette recents are kept.
@@ -348,6 +373,11 @@ impl Default for Settings {
             palette_recents: Vec::new(),
             import_banner_dismissed: false,
             background_refresh_secs: 0,
+            dismissed: Vec::new(),
+            theme_overrides: BTreeMap::new(),
+            system_metric_hidden: Vec::new(),
+            system_metric_order: Vec::new(),
+            column_order: BTreeMap::new(),
         }
     }
 }
@@ -595,9 +625,9 @@ pub(crate) struct SettingsV7 {
     pub import_banner_dismissed: bool,
 }
 
-impl From<SettingsV7> for Settings {
+impl From<SettingsV7> for SettingsV8 {
     fn from(v: SettingsV7) -> Self {
-        Settings {
+        SettingsV8 {
             default_scope: v.default_scope,
             file_browser_side: v.file_browser_side,
             secret_keyring_enabled: v.secret_keyring_enabled,
@@ -611,6 +641,59 @@ impl From<SettingsV7> for Settings {
             palette_recents: v.palette_recents,
             import_banner_dismissed: v.import_banner_dismissed,
             background_refresh_secs: 0,
+        }
+    }
+}
+
+/// The version-8 on-disk shape of [`Settings`] (after `background_refresh_secs`, before
+/// `dismissed`). Decode-only; postcard is positional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SettingsV8 {
+    #[serde(default)]
+    pub default_scope: DefaultScope,
+    #[serde(default)]
+    pub file_browser_side: PanelSide,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_keyring_enabled: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub secret_file_enabled: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+    #[serde(default)]
+    pub reduce_motion: bool,
+    #[serde(default = "default_secret_backend_enabled")]
+    pub desktop_notifications: bool,
+    #[serde(default)]
+    pub last_tab: String,
+    #[serde(default)]
+    pub text_rendering: TextRendering,
+    #[serde(default)]
+    pub palette_recents: Vec<String>,
+    #[serde(default)]
+    pub import_banner_dismissed: bool,
+    #[serde(default)]
+    pub background_refresh_secs: u32,
+}
+
+impl From<SettingsV8> for Settings {
+    fn from(v: SettingsV8) -> Self {
+        Settings {
+            default_scope: v.default_scope,
+            file_browser_side: v.file_browser_side,
+            secret_keyring_enabled: v.secret_keyring_enabled,
+            secret_file_enabled: v.secret_file_enabled,
+            theme: v.theme,
+            ui_scale_percent: v.ui_scale_percent,
+            reduce_motion: v.reduce_motion,
+            desktop_notifications: v.desktop_notifications,
+            last_tab: v.last_tab,
+            text_rendering: v.text_rendering,
+            palette_recents: v.palette_recents,
+            import_banner_dismissed: v.import_banner_dismissed,
+            background_refresh_secs: v.background_refresh_secs,
+            ..Settings::default()
         }
     }
 }
