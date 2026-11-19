@@ -1826,6 +1826,15 @@ impl AppState {
                 cx,
             )
             .into_any_element()
+        } else if self.network.kube_error.is_some() && count == 0 && !refreshing {
+            // A failed or timed-out probe (the exact message is in the notice above): say
+            // so with a Retry, not an empty table under an error.
+            kube_empty(
+                "Couldn't read the cluster",
+                "kubectl failed or didn't answer in time; the reason is shown above. Check the cluster is reachable, then retry.",
+                cx,
+            )
+            .into_any_element()
         } else if context_count == 0 {
             kube_empty(
                 "No Kubernetes contexts",

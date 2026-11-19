@@ -43,9 +43,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run `cmd`, giving up (and killing the child) after `limit`.
 async fn output_within(cmd: &mut Command, limit: Duration) -> Result<Output, ContainerError> {
-    match tokio::time::timeout(limit, cmd.kill_on_drop(true).output()).await {
-        Ok(res) => res.map_err(map_spawn_err),
-        Err(_) => Err(ContainerError::Other(format!(
+    match crate::proc::run_within(cmd, limit).await {
+        Ok(out) => Ok(out),
+        Err(crate::proc::RunError::Spawn(e)) => Err(map_spawn_err(e)),
+        Err(crate::proc::RunError::TimedOut(limit)) => Err(ContainerError::Other(format!(
             "docker didn't answer within {limit:?}; the daemon may still be starting"
         ))),
     }
