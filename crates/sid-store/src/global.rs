@@ -18,7 +18,7 @@ use crate::codec::{decode_versioned, encode_versioned};
 use crate::entities::{
     DbConnection, DbConnectionV1, DbConnectionV2, HistoryEntry, Host, HostHistory, HostV1, HostV2,
     Identity, KeyBinding, PinnedFile, QuickAction, SecretBinding, Settings, SettingsV1, SettingsV2,
-    SettingsV3, SettingsV4, SettingsV5, SettingsV6, SettingsV7,
+    SettingsV3, SettingsV4, SettingsV5, SettingsV6, SettingsV7, SettingsV8,
 };
 use crate::error::{Result, StoreError};
 use crate::scope::{Scope, WorkspaceMeta};
@@ -73,7 +73,7 @@ pub(crate) const CONNECTION_VERSION: u8 = 3;
 /// added, to 3 when `secret_keyring_enabled`/`secret_file_enabled` were added, to 4 when
 /// `theme` was, to 5 when `ui_scale_percent` was and to 6 when `reduce_motion`/`desktop_notifications`/`last_tab` were; reads branch on the leading version
 /// byte and migrate older values forward (see [`decode_settings`]).
-pub(crate) const SETTINGS_VERSION: u8 = 8;
+pub(crate) const SETTINGS_VERSION: u8 = 9;
 
 /// The machine-local global layer.
 pub struct GlobalStore {
@@ -537,14 +537,14 @@ fn decode_connection(bytes: &[u8]) -> Result<DbConnection> {
 /// `1` → the pre-`file_browser_side` [`SettingsV1`] shape; `2` → the pre-secret-toggle
 /// [`SettingsV2`] shape; `3` → the pre-`theme` [`SettingsV3`] shape; `4` → the
 /// pre-`ui_scale_percent` [`SettingsV4`] shape; each migrates forward through the version
-/// chain, filling added fields with defaults; `5` → the pre-`reduce_motion` [`SettingsV5`] shape; `6` → the current [`Settings`] shape. Any
+/// chain, filling added fields with defaults; `5` → the pre-`reduce_motion` [`SettingsV5`] shape; `6`/`7`/`8` → the older [`SettingsV6`]/[`SettingsV7`]/[`SettingsV8`] shapes; `9` → the current [`Settings`] shape. Any
 /// other version is rejected.
 fn decode_settings(bytes: &[u8]) -> Result<Settings> {
     let &version = bytes.first().ok_or_else(|| StoreError::Decode {
         version: 0,
         msg: "empty settings payload".into(),
     })?;
-    let from_v6 = |v: SettingsV6| Settings::from(SettingsV7::from(v));
+    let from_v6 = |v: SettingsV6| Settings::from(SettingsV8::from(SettingsV7::from(v)));
     let from_v4 = |v: SettingsV4| from_v6(SettingsV6::from(SettingsV5::from(v)));
     match version {
         1 => Ok(from_v4(SettingsV4::from(SettingsV3::from(
@@ -561,7 +561,8 @@ fn decode_settings(bytes: &[u8]) -> Result<Settings> {
             decode_versioned::<SettingsV5>(bytes)?.1,
         ))),
         6 => Ok(from_v6(decode_versioned::<SettingsV6>(bytes)?.1)),
-        7 => Ok(decode_versioned::<SettingsV7>(bytes)?.1.into()),
+        7 => Ok(SettingsV8::from(decode_versioned::<SettingsV7>(bytes)?.1).into()),
+        8 => Ok(decode_versioned::<SettingsV8>(bytes)?.1.into()),
         SETTINGS_VERSION => Ok(decode_versioned::<Settings>(bytes)?.1),
         other => Err(StoreError::UnsupportedVersion(other)),
     }
@@ -1051,6 +1052,74 @@ mod tests {
         assert_eq!(s.text_rendering, TextRendering::Subpixel);
         assert_eq!(s.palette_recents, vec!["x".to_string()]);
         assert!(s.import_banner_dismissed);
+    }
+
+    /// A v8 payload migrates with every old field carried and the five v9 fields empty.
+    #[test]
+    fn settings_v8_payload_migrates_to_empty_v9_fields() {
+        use crate::entities::{DefaultScope, TextRendering};
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let v8 = SettingsV8 {
+            default_scope: DefaultScope::Global,
+            file_browser_side: PanelSide::Right,
+            secret_keyring_enabled: false,
+            secret_file_enabled: true,
+            theme: "dusk".into(),
+            ui_scale_percent: 125,
+            reduce_motion: true,
+            desktop_notifications: false,
+            last_tab: "db".into(),
+            text_rendering: TextRendering::Grayscale,
+            palette_recents: vec!["a".into(), "b".into()],
+            import_banner_dismissed: true,
+            background_refresh_secs: 60,
+        };
+        let bytes = encode_versioned(8, &v8).unwrap();
+        store
+            .with_write("seed v8", |txn| {
+                let mut tbl = write_table(txn, SETTINGS, "open settings")?;
+                tbl.insert(SETTINGS_KEY, &bytes[..])
+                    .map_err(|e| StoreError::Storage(format!("insert: {e}")))?;
+                Ok(())
+            })
+            .unwrap();
+        let s = store.get_settings().unwrap();
+        assert_eq!(s.default_scope, DefaultScope::Global);
+        assert_eq!(s.file_browser_side, PanelSide::Right);
+        assert!(!s.secret_keyring_enabled);
+        assert!(s.secret_file_enabled);
+        assert_eq!(s.theme, "dusk");
+        assert_eq!(s.ui_scale_percent, 125);
+        assert!(s.reduce_motion);
+        assert!(!s.desktop_notifications);
+        assert_eq!(s.last_tab, "db");
+        assert_eq!(s.text_rendering, TextRendering::Grayscale);
+        assert_eq!(s.palette_recents, vec!["a".to_string(), "b".to_string()]);
+        assert!(s.import_banner_dismissed);
+        assert_eq!(s.background_refresh_secs, 60);
+        assert!(s.dismissed.is_empty());
+        assert!(s.theme_overrides.is_empty());
+        assert!(s.system_metric_hidden.is_empty());
+        assert!(s.system_metric_order.is_empty());
+        assert!(s.column_order.is_empty());
+    }
+
+    /// The v9 collection fields (incl. both `BTreeMap`s) survive a real redb round-trip.
+    #[test]
+    fn settings_v9_fields_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GlobalStore::open(&dir.path().join("sid.redb")).unwrap();
+        let want = Settings {
+            dismissed: vec!["ssh.card.add-connection".into()],
+            theme_overrides: [("accent".to_string(), "#112233".to_string())].into(),
+            system_metric_hidden: vec!["swap".into()],
+            system_metric_order: vec!["cpu".into(), "mem".into()],
+            column_order: [("ssh.hosts".to_string(), vec!["name".into(), "host".into()])].into(),
+            ..Default::default()
+        };
+        store.set_settings(&want).unwrap();
+        assert_eq!(store.get_settings().unwrap(), want);
     }
 
     /// `background_refresh_secs` survives a write/read round-trip.
