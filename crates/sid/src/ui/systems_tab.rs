@@ -834,7 +834,7 @@ impl AppState {
                     .children(filter.map(|f| TextInput::new(&f).small())),
             )
             .action(
-                IconButton::new("systems-refresh", Icon::Refresh, "Refresh (F5)")
+                IconButton::new("systems-refresh", Icon::Refresh, self.refresh_tooltip())
                     .loading(refreshing)
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.refresh_systems(cx);
@@ -913,6 +913,15 @@ impl AppState {
             });
         }
         cx.notify();
+    }
+
+    /// Refresh the System sub-view that is showing — what `Action::Refresh` (F5) runs.
+    pub(crate) fn refresh_system_view(&mut self, cx: &mut Context<Self>) {
+        match self.systems.sub_view {
+            SystemSubView::Processes => self.refresh_systems(cx),
+            SystemSubView::Services => self.refresh_services(cx),
+            SystemSubView::ConfigFiles => self.refresh_config_files(cx),
+        }
     }
 
     /// Refresh: re-probe the overview + processes on the shared runtime, then apply

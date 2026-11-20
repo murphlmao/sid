@@ -76,7 +76,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, IntoElement, SharedString,
@@ -1462,7 +1462,7 @@ impl AppState {
             .min_h_0()
             .action(self.network_filter_field())
             .when_some(secondary, Card::action)
-            .action(self.network_refresh_button(sub_tab, refreshing, cx))
+            .action(self.network_refresh_button(refreshing, cx))
     }
 
     /// The `[Ports] [Connections] [Interfaces] [Docker] [Kubernetes]` strip.
@@ -1529,23 +1529,26 @@ impl AppState {
     /// box — the same defect on this tab as on System. It is a real [`Button`] now, and
     /// the in-flight state is the button's own spinner rather than the label turning into
     /// a single ellipsis character.
-    fn network_refresh_button(
-        &self,
-        sub_tab: NetSubTab,
-        refreshing: bool,
-        cx: &mut Context<Self>,
-    ) -> IconButton {
-        IconButton::new("net-refresh", Icon::Refresh, "Refresh (F5)")
+    fn network_refresh_button(&self, refreshing: bool, cx: &mut Context<Self>) -> IconButton {
+        IconButton::new("net-refresh", Icon::Refresh, self.refresh_tooltip())
             .loading(refreshing)
             .on_click(
-                cx.listener(move |this, _ev: &ClickEvent, _window, cx| match sub_tab {
-                    NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
-                        this.refresh_network(cx)
-                    }
-                    NetSubTab::Docker => this.refresh_network_docker(cx),
-                    NetSubTab::Kubernetes => this.refresh_network_kube(cx),
+                cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.refresh_network_view(cx)
                 }),
             )
+    }
+
+    /// Refresh whichever Network sub-view is showing — the refresh button and
+    /// `Action::Refresh` (F5) both land here so they cannot drift.
+    pub(crate) fn refresh_network_view(&mut self, cx: &mut Context<Self>) {
+        match self.network.sub_tab {
+            NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
+                self.refresh_network(cx)
+            }
+            NetSubTab::Docker => self.refresh_network_docker(cx),
+            NetSubTab::Kubernetes => self.refresh_network_kube(cx),
+        }
     }
 
     /// The filter box's current text — read for the empty states' wording, so "nothing
@@ -1810,7 +1813,7 @@ impl AppState {
                                         EmptyState::new("That's every container")
                                             .icon(Icon::Info)
                                             .guidance(
-                                                "Containers and the images behind them show up here as you start them. Refresh (F5) after a docker run.",
+                                                "Containers and the images behind them show up here as you start them. Refresh after a docker run.",
                                             )
                                             .compact(),
                                     ),
@@ -2186,6 +2189,19 @@ impl AppState {
                         let mut err = None;
                         this.network.usage_samples = this.network.usage_samples.saturating_add(1);
                         let cpu_ready = this.network.usage_samples >= 2;
+                        if warmup_due(this.network.usage_samples) {
+                            // One-shot second sample so CPU% isn't "—" until the user
+                            // refreshes by hand. Never a loop; skipped if the user left.
+                            cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(CPU_WARMUP_DELAY).await;
+                                let _ = this.update(cx, |this, cx| {
+                                    if this.active_tab() == crate::app::Tab::Network {
+                                        this.refresh_network(cx);
+                                    }
+                                });
+                            })
+                            .detach();
+                        }
                         match conns_res {
                             Ok(conns) => {
                                 if let Some(table) = &conn_table {
@@ -2669,6 +2685,14 @@ fn socket_label(addr: &str, port: u16) -> String {
     } else {
         format!("{addr}:{port}")
     }
+}
+
+/// Delay before the one-shot CPU warm-up refresh (mirrors the System tab's `WARMUP_DELAY`).
+const CPU_WARMUP_DELAY: Duration = Duration::from_millis(500);
+
+/// CPU% is a delta between two samples: after exactly the first one, take a second.
+fn warmup_due(usage_samples: u32) -> bool {
+    usage_samples == 1
 }
 
 /// CPU cell: `—` when the owner is unknown, or until the second sample (a delta reads 0
@@ -3196,6 +3220,14 @@ fn sort_interfaces_default_first(interfaces: &mut [NetInterface], default_name: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_warmup_is_due_only_after_the_first_sample() {
+        assert!(!warmup_due(0));
+        assert!(warmup_due(1));
+        assert!(!warmup_due(2));
+        assert!(!warmup_due(3));
+    }
 
     /// The gate defect: an ownerless row (no pid) rendered a bare `—` in the action
     /// cell instead of nothing, where every other row shows `kill`.

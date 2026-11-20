@@ -1683,6 +1683,13 @@ impl AppState {
             Action::ZoomIn => self.set_ui_scale(self.ui_scale.zoom_in(), cx),
             Action::ZoomOut => self.set_ui_scale(self.ui_scale.zoom_out(), cx),
             Action::ZoomReset => self.set_ui_scale(self.ui_scale.reset(), cx),
+            Action::Refresh => match self.active_tab {
+                Tab::Network => self.refresh_network_view(cx),
+                Tab::System => self.refresh_system_view(cx),
+                Tab::Workspaces => self.refresh_workspaces(cx),
+                Tab::Database => self.refresh_schema(window, cx),
+                _ => {}
+            },
             Action::FocusFilter => {
                 // Tabs with a filter input claim this; the rest have nothing to focus
                 // yet and it stays a no-op there. SSH Home's quick-connect box doubles

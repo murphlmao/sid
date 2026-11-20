@@ -694,6 +694,7 @@ fn action_icon(action: Action) -> Icon {
         Action::CheatSheet => Icon::Info,
         Action::FocusFilter => Icon::Search,
         Action::ZoomIn | Action::ZoomOut | Action::ZoomReset => Icon::Maximize,
+        Action::Refresh => Icon::Refresh,
     }
 }
 
