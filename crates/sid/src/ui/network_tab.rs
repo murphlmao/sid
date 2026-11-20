@@ -76,7 +76,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, Div, Entity, IntoElement, SharedString,
@@ -2189,6 +2189,19 @@ impl AppState {
                         let mut err = None;
                         this.network.usage_samples = this.network.usage_samples.saturating_add(1);
                         let cpu_ready = this.network.usage_samples >= 2;
+                        if warmup_due(this.network.usage_samples) {
+                            // One-shot second sample so CPU% isn't "—" until the user
+                            // refreshes by hand. Never a loop; skipped if the user left.
+                            cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(CPU_WARMUP_DELAY).await;
+                                let _ = this.update(cx, |this, cx| {
+                                    if this.active_tab() == crate::app::Tab::Network {
+                                        this.refresh_network(cx);
+                                    }
+                                });
+                            })
+                            .detach();
+                        }
                         match conns_res {
                             Ok(conns) => {
                                 if let Some(table) = &conn_table {
@@ -2672,6 +2685,14 @@ fn socket_label(addr: &str, port: u16) -> String {
     } else {
         format!("{addr}:{port}")
     }
+}
+
+/// Delay before the one-shot CPU warm-up refresh (mirrors the System tab's `WARMUP_DELAY`).
+const CPU_WARMUP_DELAY: Duration = Duration::from_millis(500);
+
+/// CPU% is a delta between two samples: after exactly the first one, take a second.
+fn warmup_due(usage_samples: u32) -> bool {
+    usage_samples == 1
 }
 
 /// CPU cell: `—` when the owner is unknown, or until the second sample (a delta reads 0
@@ -3198,6 +3219,14 @@ fn sort_interfaces_default_first(interfaces: &mut [NetInterface], default_name: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cpu_warmup_is_due_only_after_the_first_sample() {
+        assert!(!super::warmup_due(0));
+        assert!(super::warmup_due(1));
+        assert!(!super::warmup_due(2));
+        assert!(!super::warmup_due(3));
+    }
+
     use super::*;
 
     /// The gate defect: an ownerless row (no pid) rendered a bare `—` in the action
