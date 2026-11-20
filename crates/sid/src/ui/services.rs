@@ -376,11 +376,7 @@ impl TableDelegate for ServicesDelegate {
                     .child(label)
             }
             _ => {
-                let actions = [
-                    (SvcAction::Restart, "restart"),
-                    (SvcAction::Stop, "stop"),
-                    (SvcAction::Kill, "kill"),
-                ];
+                let actions = row_actions(svc.active);
                 // System units need root to control; a user session can only read them.
                 // The provider has no capability probe, so gate on the process uid for the
                 // system scope (user-scope units are always the user's own).
@@ -403,7 +399,7 @@ impl TableDelegate for ServicesDelegate {
                         .as_ref()
                         .is_some_and(|(n, _)| n == &svc.name)
                         || self.selected_row == Some(row_ix),
-                    ActionCell::new().children(actions.into_iter().enumerate().map(
+                    ActionCell::new().children(actions.iter().copied().enumerate().map(
                         |(action_ix, (action, label))| {
                             let armed =
                                 action_click_executes(&self.armed_action, &svc.name, action);
@@ -754,6 +750,20 @@ fn svc_unsupported(err: &str) -> bool {
     err.contains("not supported on") && err.contains("systemd only")
 }
 
+/// The controls a row offers: a unit that is up (or mid-transition — `Other` folds
+/// activating/reloading/deactivating, which are exactly when restart/stop/kill matter)
+/// gets restart/stop/kill; a stopped or failed one can only be started.
+fn row_actions(active: SvcActiveState) -> &'static [(SvcAction, &'static str)] {
+    match active {
+        SvcActiveState::Active | SvcActiveState::Other => &[
+            (SvcAction::Restart, "restart"),
+            (SvcAction::Stop, "stop"),
+            (SvcAction::Kill, "kill"),
+        ],
+        SvcActiveState::Inactive | SvcActiveState::Failed => &[(SvcAction::Start, "start")],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,6 +889,15 @@ mod tests {
             .map(|s| s.name.as_str())
             .collect();
         assert_eq!(by_desc, vec!["sshd.service"]);
+    }
+
+    #[test]
+    fn stopped_units_offer_only_start() {
+        let names = |a| row_actions(a).iter().map(|&(_, l)| l).collect::<Vec<_>>();
+        assert_eq!(names(SvcActiveState::Inactive), ["start"]);
+        assert_eq!(names(SvcActiveState::Failed), ["start"]);
+        assert_eq!(names(SvcActiveState::Active), ["restart", "stop", "kill"]);
+        assert_eq!(names(SvcActiveState::Other), ["restart", "stop", "kill"]);
     }
 
     #[test]

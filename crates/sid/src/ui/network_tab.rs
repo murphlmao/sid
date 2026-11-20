@@ -1529,11 +1529,7 @@ impl AppState {
     /// box — the same defect on this tab as on System. It is a real [`Button`] now, and
     /// the in-flight state is the button's own spinner rather than the label turning into
     /// a single ellipsis character.
-    fn network_refresh_button(
-        &self,
-        refreshing: bool,
-        cx: &mut Context<Self>,
-    ) -> IconButton {
+    fn network_refresh_button(&self, refreshing: bool, cx: &mut Context<Self>) -> IconButton {
         IconButton::new("net-refresh", Icon::Refresh, self.refresh_tooltip())
             .loading(refreshing)
             .on_click(
