@@ -509,7 +509,7 @@ impl AppState {
             // Secondary action between the filter and refresh: it narrows the same list.
             .action(self.svc_scope_control(scope, cx))
             .action(
-                IconButton::new("svc-refresh", Icon::Refresh, "Refresh (F5)")
+                IconButton::new("svc-refresh", Icon::Refresh, self.refresh_tooltip())
                     .loading(refreshing)
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.refresh_services(cx);
@@ -594,7 +594,7 @@ impl AppState {
 
     /// Re-fetch the unit list for the active scope on the shared runtime. Runs from the
     /// refresh button and the sub-view's lazy first load, never from a timer.
-    fn refresh_services(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_services(&mut self, cx: &mut Context<Self>) {
         if self.services.refreshing {
             return;
         }

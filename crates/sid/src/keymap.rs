@@ -59,6 +59,9 @@ pub enum Action {
     ZoomOut,
     /// Return the UI to 100%.
     ZoomReset,
+    /// Refresh what the active tab is showing (same code as its refresh button). A no-op
+    /// on tabs without one. Bare `F5`, never inside a terminal (programs use F5).
+    Refresh,
 }
 
 impl Action {
@@ -87,6 +90,7 @@ impl Action {
             Action::ZoomIn => "Zoom in",
             Action::ZoomOut => "Zoom out",
             Action::ZoomReset => "Reset zoom",
+            Action::Refresh => "Refresh",
         }
     }
 
@@ -121,6 +125,7 @@ impl Action {
             Action::ZoomIn => "zoom_in",
             Action::ZoomOut => "zoom_out",
             Action::ZoomReset => "zoom_reset",
+            Action::Refresh => "refresh",
         }
     }
 
@@ -153,6 +158,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::ZoomIn,
     Action::ZoomOut,
     Action::ZoomReset,
+    Action::Refresh,
 ];
 
 /// Whether the keyboard focus is currently inside a live SSH terminal pane — the one
@@ -325,6 +331,8 @@ pub fn default_bindings() -> Vec<Binding> {
         // fire while some other widget (a text field, most importantly) holds keyboard
         // focus, so a literal `?` typed anywhere is never stolen.
         binding(chord("?", false, None), NormalOnly, Action::CheatSheet),
+        // Refresh: bare F5, `NormalOnly` so a terminal program still receives it.
+        binding(chord("f5", false, None), NormalOnly, Action::Refresh),
         // Some input paths (wtype, certain xkb layouts) deliver the physical `/` key
         // with Shift held rather than the resolved `?` — accept that spelling too. Ctrl
         // is false here, so `Ctrl+/` (FocusFilter) is untouched.
@@ -1520,6 +1528,16 @@ mod tests {
             Some(Action::CheatSheet)
         );
         assert_eq!(resolve(&key("?"), FocusContext::Terminal, &bindings), None);
+    }
+
+    #[test]
+    fn f5_refreshes_outside_a_terminal_only() {
+        let bindings = default_bindings();
+        assert_eq!(
+            resolve(&key("f5"), FocusContext::Normal, &bindings),
+            Some(Action::Refresh)
+        );
+        assert_eq!(resolve(&key("f5"), FocusContext::Terminal, &bindings), None);
     }
 
     #[test]

@@ -834,7 +834,7 @@ impl AppState {
                     .children(filter.map(|f| TextInput::new(&f).small())),
             )
             .action(
-                IconButton::new("systems-refresh", Icon::Refresh, "Refresh (F5)")
+                IconButton::new("systems-refresh", Icon::Refresh, self.refresh_tooltip())
                     .loading(refreshing)
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.refresh_systems(cx);
@@ -921,6 +921,15 @@ impl AppState {
     /// `network_tab.rs`'s `refresh_network` (overview + processes share the one
     /// `Mutex<SysinfoProvider>` lock for the same reason ports + interfaces do there:
     /// serialized `&mut` access to the cached `sysinfo::System`).
+    /// Refresh the System sub-view that is showing (button + `Action::Refresh`).
+    pub(crate) fn refresh_system_view(&mut self, cx: &mut Context<Self>) {
+        match self.systems.sub_view {
+            SystemSubView::Processes => self.refresh_systems(cx),
+            SystemSubView::Services => self.refresh_services(cx),
+            SystemSubView::ConfigFiles => self.refresh_config_files(cx),
+        }
+    }
+
     pub(crate) fn refresh_systems(&mut self, cx: &mut Context<Self>) {
         self.refresh_systems_inner(true, cx);
     }

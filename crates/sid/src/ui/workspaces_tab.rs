@@ -1464,7 +1464,7 @@ impl AppState {
             .flex_none()
             .h_full()
             .action(
-                IconButton::new("ws-refresh", Icon::Refresh, "refresh")
+                IconButton::new("ws-refresh", Icon::Refresh, self.refresh_tooltip())
                     .small()
                     .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                         this.refresh_workspaces(cx);

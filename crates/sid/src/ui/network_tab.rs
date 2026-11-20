@@ -1462,7 +1462,7 @@ impl AppState {
             .min_h_0()
             .action(self.network_filter_field())
             .when_some(secondary, Card::action)
-            .action(self.network_refresh_button(sub_tab, refreshing, cx))
+            .action(self.network_refresh_button(refreshing, cx))
     }
 
     /// The `[Ports] [Connections] [Interfaces] [Docker] [Kubernetes]` strip.
@@ -1531,21 +1531,28 @@ impl AppState {
     /// a single ellipsis character.
     fn network_refresh_button(
         &self,
-        sub_tab: NetSubTab,
         refreshing: bool,
         cx: &mut Context<Self>,
     ) -> IconButton {
-        IconButton::new("net-refresh", Icon::Refresh, "Refresh (F5)")
+        IconButton::new("net-refresh", Icon::Refresh, self.refresh_tooltip())
             .loading(refreshing)
             .on_click(
-                cx.listener(move |this, _ev: &ClickEvent, _window, cx| match sub_tab {
-                    NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
-                        this.refresh_network(cx)
-                    }
-                    NetSubTab::Docker => this.refresh_network_docker(cx),
-                    NetSubTab::Kubernetes => this.refresh_network_kube(cx),
+                cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    this.refresh_network_view(cx)
                 }),
             )
+    }
+
+    /// Refresh whichever Network sub-view is showing — the refresh button and
+    /// `Action::Refresh` (F5) both land here so they cannot drift.
+    pub(crate) fn refresh_network_view(&mut self, cx: &mut Context<Self>) {
+        match self.network.sub_tab {
+            NetSubTab::Ports | NetSubTab::Connections | NetSubTab::Interfaces => {
+                self.refresh_network(cx)
+            }
+            NetSubTab::Docker => self.refresh_network_docker(cx),
+            NetSubTab::Kubernetes => self.refresh_network_kube(cx),
+        }
     }
 
     /// The filter box's current text — read for the empty states' wording, so "nothing
@@ -1810,7 +1817,7 @@ impl AppState {
                                         EmptyState::new("That's every container")
                                             .icon(Icon::Info)
                                             .guidance(
-                                                "Containers and the images behind them show up here as you start them. Refresh (F5) after a docker run.",
+                                                "Containers and the images behind them show up here as you start them. Refresh after a docker run.",
                                             )
                                             .compact(),
                                     ),
