@@ -915,13 +915,7 @@ impl AppState {
         cx.notify();
     }
 
-    /// Refresh: re-probe the overview + processes on the shared runtime, then apply
-    /// the results. No blocking in `render` — this only ever runs from a click, the
-    /// lazy first-paint trigger in `systems_tab`, or the periodic loop's tick. Mirrors
-    /// `network_tab.rs`'s `refresh_network` (overview + processes share the one
-    /// `Mutex<SysinfoProvider>` lock for the same reason ports + interfaces do there:
-    /// serialized `&mut` access to the cached `sysinfo::System`).
-    /// Refresh the System sub-view that is showing (button + `Action::Refresh`).
+    /// Refresh the System sub-view that is showing — what `Action::Refresh` (F5) runs.
     pub(crate) fn refresh_system_view(&mut self, cx: &mut Context<Self>) {
         match self.systems.sub_view {
             SystemSubView::Processes => self.refresh_systems(cx),
@@ -930,6 +924,12 @@ impl AppState {
         }
     }
 
+    /// Refresh: re-probe the overview + processes on the shared runtime, then apply
+    /// the results. No blocking in `render` — this only ever runs from a click, the
+    /// lazy first-paint trigger in `systems_tab`, or the periodic loop's tick. Mirrors
+    /// `network_tab.rs`'s `refresh_network` (overview + processes share the one
+    /// `Mutex<SysinfoProvider>` lock for the same reason ports + interfaces do there:
+    /// serialized `&mut` access to the cached `sysinfo::System`).
     pub(crate) fn refresh_systems(&mut self, cx: &mut Context<Self>) {
         self.refresh_systems_inner(true, cx);
     }

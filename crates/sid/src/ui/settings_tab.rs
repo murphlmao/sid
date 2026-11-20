@@ -1284,10 +1284,6 @@ impl AppState {
 
     // ---- Keyboard section (the rebinding editor) ---------------------------
 
-    /// **The** answer to "what is bound right now", for every consumer: the root key
-    /// handler, the command palette, the `?` cheat sheet and this screen all resolve
-    /// through here, so a rebind is live everywhere the moment it is written — no
-    /// second copy of the registry to keep in step.
     /// "Refresh (F5)" — or plain "Refresh" if the user unbound it. Tooltip text for every
     /// tab's refresh button.
     pub(crate) fn refresh_tooltip(&self) -> String {
@@ -1297,6 +1293,10 @@ impl AppState {
         }
     }
 
+    /// **The** answer to "what is bound right now", for every consumer: the root key
+    /// handler, the command palette, the `?` cheat sheet and this screen all resolve
+    /// through here, so a rebind is live everywhere the moment it is written — no
+    /// second copy of the registry to keep in step.
     pub(crate) fn effective_bindings(&self) -> Vec<keymap::Binding> {
         keymap::effective_bindings(&self.settings.overrides())
     }

@@ -3219,15 +3219,15 @@ fn sort_interfaces_default_first(interfaces: &mut [NetInterface], default_name: 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn cpu_warmup_is_due_only_after_the_first_sample() {
-        assert!(!super::warmup_due(0));
-        assert!(super::warmup_due(1));
-        assert!(!super::warmup_due(2));
-        assert!(!super::warmup_due(3));
+        assert!(!warmup_due(0));
+        assert!(warmup_due(1));
+        assert!(!warmup_due(2));
+        assert!(!warmup_due(3));
     }
-
-    use super::*;
 
     /// The gate defect: an ownerless row (no pid) rendered a bare `—` in the action
     /// cell instead of nothing, where every other row shows `kill`.
